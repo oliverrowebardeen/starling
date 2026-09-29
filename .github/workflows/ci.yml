@@ -1,0 +1,26 @@
+name: CI
+
+# Pull requests and main only: the repo is private and pays for macOS minutes (ADR 0007).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: Package tests (Xcode 27)
+    # Only this preview image has the iOS 27 SDK (ADR 0007).
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 27.0
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Test all packages (warnings as errors)
+        run: Tools/test-all.sh
