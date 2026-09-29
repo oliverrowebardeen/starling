@@ -36,7 +36,11 @@ public enum TransportError: Error, Hashable, Sendable {
 ///
 /// Rules for implementations:
 /// - `events` has a single consumer (normally `Inbox`). It finishes after `stop()`.
-/// - `send` delivers the frame intact or throws. Ordering per peer is preserved.
+/// - `send` returns once the frame is handed to the link, and throws if the
+///   peer is unreachable. It does not guarantee delivery: a link can drop with
+///   frames in flight. Frames that do arrive from one peer arrive intact and
+///   in order. Everything above the transport must tolerate lost messages
+///   (timeouts, idempotent retries).
 /// - Transports do not authenticate (ADR 0003). The Phase 1 secure channel is a
 ///   decorator that itself conforms to `Transport`, so nothing above changes.
 /// - Transports never inspect frame contents.
