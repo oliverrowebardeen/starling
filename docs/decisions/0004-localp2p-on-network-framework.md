@@ -16,8 +16,8 @@
 
 1. LocalP2P uses `NetworkListener` advertising a Bonjour service (`_starling._tcp`) and `NetworkBrowser` discovering it, both with peer-to-peer Wi-Fi enabled.
 2. Phase 0 uses **TCP with Network framework TLV framing** (`TLV(type: UInt8.self, length: UInt16.self) { TCP() }`). The 16-bit length caps any frame at 64 KiB inside the framer, so a hostile peer cannot make us buffer an arbitrarily large "frame" before our own checks run. TCP avoids the TLS identity problem while ADR 0003 is pending, and TN3213 notes it makes listener management simpler.
-3. Topology is fully connected with TN3213's deduplication rule: when two connections exist between a pair, the peer with the greater `PeerID` keeps its outgoing connection.
-4. The Bonjour service name is a random per-launch value, not the device name or a persistent ID, following TN3213 "Design for privacy." The `PeerID` travels in the first frame on the connection, not in the TXT record.
+3. Topology is one connection per pair. The side whose random per-launch service name sorts higher dials; the other dials only as a fallback after 3 seconds, in case discovery was one-sided. If a fallback races the normal dial, TN3213's rule resolves the duplicate: the peer with the greater `PeerID` keeps its outgoing connection. (Revised 2026-09-29: letting both sides dial and arbitrating afterwards lost in-flight frames on the dropped connection in about one real-network run in five.)
+4. The Bonjour service name is a random per-launch value, not the device name or a persistent ID, following TN3213 "Design for privacy." The `PeerID` and service name travel in a link hello, the first TLV message on each connection, not in the TXT record.
 5. Stormo is a reading reference, not a dependency.
 6. QUIC is revisited when identities exist (Phase 1), mainly for the Wi-Fi Aware transport.
 
