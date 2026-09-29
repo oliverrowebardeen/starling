@@ -25,7 +25,7 @@
 
 - The LocalP2P code only runs on real devices or between Macs; unit tests cover the framing and dedup logic, and the Loopback transport covers everything above the wire.
 - Needs `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_starling._tcp`) in the app's Info.plist.
-- Apple warns that peer-to-peer Wi-Fi can degrade network performance; browsing stops once a group is connected.
+- Apple warns that peer-to-peer Wi-Fi can degrade network performance. Phase 0 keeps browsing while the transport runs, because friends can join a group moment late; the app stops the transport when the moment ends. Revisit if device tests show degraded performance.
 
 ## Sources
 
