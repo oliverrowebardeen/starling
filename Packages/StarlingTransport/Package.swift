@@ -12,12 +12,18 @@ let package = Package(
     ],
     products: [
         .library(name: "StarlingTransport", targets: ["StarlingTransport"]),
+        .library(name: "StarlingLocalP2P", targets: ["StarlingLocalP2P"]),
     ],
     dependencies: [
         .package(path: "../StarlingCore"),
     ],
     targets: [
         .target(name: "StarlingTransport", dependencies: [.product(name: "StarlingCore", package: "StarlingCore")]),
+        .target(name: "StarlingLocalP2P", dependencies: [.product(name: "StarlingCore", package: "StarlingCore")]),
+        .testTarget(
+            name: "StarlingLocalP2PTests",
+            dependencies: ["StarlingLocalP2P", .product(name: "StarlingCore", package: "StarlingCore")]
+        ),
         .testTarget(
             name: "StarlingTransportTests",
             dependencies: [
