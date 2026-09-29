@@ -12,9 +12,14 @@ let package = Package(
     ],
     products: [
         .library(name: "StarlingCore", targets: ["StarlingCore"]),
+        // Deterministic test doubles every lane tests against. Includes the
+        // insecure PSI stub, so release builds must not ship it.
+        .library(name: "StarlingFakes", targets: ["StarlingFakes"]),
     ],
     targets: [
         .target(name: "StarlingCore"),
-        .testTarget(name: "StarlingCoreTests", dependencies: ["StarlingCore"]),
+        .target(name: "StarlingFakes", dependencies: ["StarlingCore"]),
+        .testTarget(name: "StarlingCoreTests", dependencies: ["StarlingCore", "StarlingFakes"]),
+        .testTarget(name: "StarlingFakesTests", dependencies: ["StarlingCore", "StarlingFakes"]),
     ]
 )
