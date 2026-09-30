@@ -58,6 +58,18 @@ import Testing
         #expect(throws: CodecError.self) { _ = try codec.decode(Data(json.utf8)) }
     }
 
+    @Test func answersCarryTheirIssueOnTheWire() throws {
+        let answer = try Answer(query: Fixtures.messageID, issue: .diet, status: .declined)
+        let envelope = try Envelope(
+            conversation: Fixtures.conversation, sender: Fixtures.alice, recipient: Fixtures.bob,
+            sequence: 0, sentAt: Timestamp(Fixtures.now), body: .answer(answer)
+        )
+        let json = String(decoding: try codec.encode(envelope), as: UTF8.self)
+        #expect(json.contains(#""issue":"diet""#))
+        let withoutIssue = json.replacingOccurrences(of: #""issue":"diet","#, with: "")
+        #expect(throws: CodecError.self) { _ = try codec.decode(Data(withoutIssue.utf8)) }
+    }
+
     @Test func rejectsSelfAddressedEnvelopes() throws {
         #expect(throws: ValidationError.self) {
             try Fixtures.proposalEnvelope(from: Fixtures.alice, to: Fixtures.alice)
@@ -74,7 +86,7 @@ import Testing
         case .accept: return .accept(Acceptance(proposal: Fixtures.messageID, terms: try Fixtures.terms()))
         case .reject: return .reject(Rejection(proposal: Fixtures.messageID, reason: .noOverlap))
         case .query: return .query(try Query(issue: .activity, candidates: .keywords([try Keyword("boba"), try Keyword("tacos")])))
-        case .answer: return .answer(try Answer(query: Fixtures.messageID, status: .answered, acceptable: .keywords([try Keyword("boba")])))
+        case .answer: return .answer(try Answer(query: Fixtures.messageID, issue: .activity, status: .answered, acceptable: .keywords([try Keyword("boba")])))
         case .psi: return .psi(try PSIFrame(session: Fixtures.conversation.rawValue, step: 1, payload: Data([1, 2, 3])))
         }
     }

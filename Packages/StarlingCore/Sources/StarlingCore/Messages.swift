@@ -216,25 +216,30 @@ public struct Answer: Hashable, Sendable, Codable {
     }
 
     public let query: MessageID
+    /// The issue the query asked about, repeated so the policy can judge what
+    /// an answer discloses from the envelope alone (v1.1).
+    public let issue: IssueKey
     public let status: Status
     /// Present only when `status == .answered`.
     public let acceptable: IssueValue?
 
-    public init(query: MessageID, status: Status, acceptable: IssueValue? = nil) throws {
+    public init(query: MessageID, issue: IssueKey, status: Status, acceptable: IssueValue? = nil) throws {
         guard (status == .answered) == (acceptable != nil) else {
             throw ValidationError("Answer", "acceptable must be present exactly when status is answered")
         }
         self.query = query
+        self.issue = issue
         self.status = status
         self.acceptable = try acceptable?.validated()
     }
 
-    private enum CodingKeys: String, CodingKey { case query, status, acceptable }
+    private enum CodingKeys: String, CodingKey { case query, issue, status, acceptable }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             query: c.decode(MessageID.self, forKey: .query),
+            issue: c.decode(IssueKey.self, forKey: .issue),
             status: c.decode(Status.self, forKey: .status),
             acceptable: c.decodeIfPresent(IssueValue.self, forKey: .acceptable)
         )
