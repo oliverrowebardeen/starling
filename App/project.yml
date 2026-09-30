@@ -24,6 +24,11 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      # Icon Composer bundle (ADR 0170). Explicit type and phase because
+      # XcodeGen only recognizes .icon on its own from 2.45.1.
+      - path: Resources/Starling.icon
+        type: file
+        buildPhase: resources
     configFiles:
       Debug: Config/Starling.xcconfig
       Release: Config/Starling.xcconfig
@@ -34,6 +39,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Sources/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Starling
+        ASSETCATALOG_COMPILER_APPICON_NAME: Starling
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.0.1"
