@@ -118,12 +118,15 @@ public actor Inbox {
             replay[key] = ReplayState(highest: sequence, seen: [sequence], lastUsed: time)
             return true
         }
-        if sequence + Self.replayWindow <= state.highest { return false }
+        // Written as subtractions of a smaller value from a larger one, so
+        // no peer-chosen sequence (including UInt64.max) can overflow.
+        if sequence < state.highest, state.highest - sequence >= Self.replayWindow { return false }
         if state.seen.contains(sequence) { return false }
         state.seen.insert(sequence)
         if sequence > state.highest {
             state.highest = sequence
-            state.seen = state.seen.filter { $0 + Self.replayWindow > sequence }
+            // Every element of `seen` is now at most `sequence`.
+            state.seen = state.seen.filter { sequence - $0 < Self.replayWindow }
         }
         state.lastUsed = time
         replay[key] = state

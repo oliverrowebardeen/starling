@@ -55,6 +55,21 @@ import Testing
         #expect(await inbox.accept(try frame(old), from: Fixtures.alice) == .failure(.replay))
     }
 
+    /// A hostile peer picks extreme sequence numbers. Window arithmetic must
+    /// not overflow (which would crash the receiver) and must still drop replays.
+    @Test func survivesExtremeSequenceNumbers() async throws {
+        let inbox = inbox()
+        func send(_ sequence: UInt64) async throws -> Result<Envelope, InboxDrop> {
+            await inbox.accept(try frame(Fixtures.proposalEnvelope(sequence: sequence, id: MessageID())), from: Fixtures.alice)
+        }
+        #expect(try await send(0).isSuccess)
+        #expect(try await send(.max).isSuccess)
+        #expect(try await send(.max) == .failure(.replay))
+        #expect(try await send(0) == .failure(.replay))
+        #expect(try await send(.max - 1).isSuccess)
+        #expect(try await send(.max - Inbox.replayWindow) == .failure(.replay))
+    }
+
     @Test func dropsStaleAndFutureMessages() async throws {
         let stale = try Fixtures.proposalEnvelope(sentAt: Fixtures.now.addingTimeInterval(-601))
         let future = try Fixtures.proposalEnvelope(sentAt: Fixtures.now.addingTimeInterval(121))
