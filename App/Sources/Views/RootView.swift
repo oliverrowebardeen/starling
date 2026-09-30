@@ -27,8 +27,12 @@ struct RootView<Developer: View>: View {
             }
             Tab("Friends", systemImage: "person.2") {
                 NavigationStack {
-                    NotInBuildView(feature: "Friends", detail: "Pairing arrives when the identity and Wi-Fi Aware lanes merge.")
-                        .navigationTitle("Friends")
+                    if let friends = app.friends {
+                        FriendsView(model: friends, makePairing: app.makePairing)
+                    } else {
+                        NotInBuildView(feature: "Friends", detail: "Pairing arrives when the identity and Wi-Fi Aware lanes merge.")
+                            .navigationTitle("Friends")
+                    }
                 }
             }
             Tab("Rules", systemImage: "list.bullet.rectangle") {
