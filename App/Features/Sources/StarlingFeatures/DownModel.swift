@@ -173,7 +173,7 @@ public final class DownModel {
             interpretedFrom = nil
             phase = .active
         } catch {
-            notice = "Starling couldn't start checking. Try again."
+            notice = SendFailureMessage.text(for: error) ?? "Starling couldn't start checking. Try again."
             phase = .reviewing
         }
     }
