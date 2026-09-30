@@ -20,7 +20,7 @@ Four schema and prompt variants were measured. They helped the day and budget fi
 1. **Schema:** a day enum with `none` first plus `tonight`; a part-of-day enum (`morning`, `lunch`, `afternoon`, `evening`) that fills hours only when none were stated; non-optional hours and budget with sentinels; no clock in the prompt.
 2. **Grounding in code** (`Grounding.check`), applied to every interpretation before mapping. A value survives only if the owner's message supports it:
    - an activity must share a word with the message and must not be a rule fragment (negations, prices, times, sharing words, pronouns); an avoid loses a leading "no" instead of being dropped
-   - a budget, day, part of day, or clock hour must be stated (digits, number words, "noon", "midnight", or the day's name)
+   - a budget, day, part of day, or clock hour must be stated (digits, grouped digits such as "$1,000", "2k", number words up to the thousands, "noon", "midnight", or the day's name); an amount with cents counts as its whole dollars, and a budget one dollar above it ("$12.99" answered as 13) is kept at the stated whole dollars so a cap is never raised
    - a never-share flag needs both a privacy word (share, tell, private, secret, know, hide, reveal, disclose) and a word naming that field
    - stated hours go on a 24-hour clock: an hour follows its own "am" or "pm" ("9am to 1pm"); otherwise a stated morning keeps 5 to 11 in the morning ("tomorrow morning after 6"), a stated afternoon, evening, tonight, or pm moves 1 to 11 later, and with neither, 1 to 7 means the afternoon or evening ("at 7" is 19); midnight as an end is 24
 3. Grounding never adds a value. The owner still reviews every interpretation (brief 2.5).

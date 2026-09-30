@@ -72,4 +72,57 @@ import Testing
         #expect(checked.earliestHour == row.expectedFrom, "start")
         #expect(checked.latestHour == row.expectedTo, "end")
     }
+
+    /// A correct budget from the model must survive grounding.
+    @Test(arguments: [
+        // Digits, grouped and not.
+        ("budget $1,000", 1_000),
+        ("under 1,200 dollars", 1_200),
+        ("$1,000,000 tops", 1_000_000),
+        ("max $15", 15),
+        ("$15.50 max", 15),
+        ("under 12.99", 12),
+        // Currency symbols and words.
+        ("15 dollars", 15),
+        ("15 bucks", 15),
+        ("20$ max", 20),
+        ("€20 max", 20),
+        ("USD 30", 30),
+        ("$1k", 1_000),
+        ("2k budget", 2_000),
+        // Number words.
+        ("twenty five dollars", 25),
+        ("budget two hundred dollars", 200),
+        ("two hundred and fifty", 250),
+        ("a hundred bucks", 100),
+        ("fifteen hundred", 1_500),
+        ("a thousand dollars", 1_000),
+        ("two thousand", 2_000),
+        ("one thousand five hundred", 1_500),
+        ("three thousand and fifty", 3_050),
+    ])
+    func budgets(_ text: String, _ dollars: Int) {
+        #expect(Grounding.check(RawRules(maxDollars: dollars), against: text).maxDollars == dollars)
+    }
+
+    /// The exact numbers read, where grouping could go wrong.
+    @Test(arguments: [
+        ("budget $1,000", Set([1_000])),
+        ("3, 4 or 5 people", Set([3, 4, 5])),
+        ("1,5", Set([1, 5])),
+        ("$15.50", Set([15])),
+        ("10pm, 9:30", Set([10, 9, 30])),
+        ("two thousand", Set([2_000])),
+    ])
+    func numbersRead(_ text: String, _ expected: Set<Int>) {
+        #expect(Grounding.numbers(in: Grounding.words(text)) == expected)
+    }
+
+    /// A model that rounds "$12.99" up to 13 keeps a cap, at the stated
+    /// whole dollars, instead of losing it as ungrounded.
+    @Test func centsRoundedUpKeepTheStatedCap() {
+        #expect(Grounding.check(RawRules(maxDollars: 13), against: "under 12.99").maxDollars == 12)
+        #expect(Grounding.check(RawRules(maxDollars: 16), against: "$15.50 max").maxDollars == 15)
+        #expect(Grounding.check(RawRules(maxDollars: 16), against: "$15 max").maxDollars == nil)
+    }
 }

@@ -19,7 +19,9 @@ package enum Grounding {
         checked.wants = raw.wants.filter { isActivity($0, stems: stems) }
         checked.avoids = raw.avoids.map(dropLeadingNegation).filter { isActivity($0, stems: stems) }
         if let dollars = raw.maxDollars, !numbers(in: words).contains(dollars) {
-            checked.maxDollars = nil
+            // "$12.99" rounded up to 13 is kept at the stated 12, so the cap
+            // is never raised; anything else unstated is dropped.
+            checked.maxDollars = roundedUpAmounts(in: words)[dollars]
         }
         let asksPrivacy = !stems.isDisjoint(with: privacyStems)
         checked.neverShare = raw.neverShare.filter { field in
@@ -185,8 +187,60 @@ package enum Grounding {
         .budget: Set(["budget", "spend", "money", "price", "cost", "afford", "much"].map(stem)),
     ]
 
+    /// Lowercased words and numbers. A comma followed by exactly three
+    /// digits ("1,000") and a decimal point between digits ("15.50") stay
+    /// inside the number, so an amount is one token, not "1" and "000".
     static func words(_ text: String) -> [String] {
-        text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let characters = Array(text.lowercased())
+        var tokens: [String] = []
+        var current = ""
+        for (index, character) in characters.enumerated() {
+            if character.isLetter || character.isNumber {
+                current.append(character)
+                continue
+            }
+            let numeric = !current.isEmpty && current.allSatisfy { $0.isNumber || $0 == "," || $0 == "." }
+            func digit(_ offset: Int) -> Bool {
+                index + offset < characters.count && characters[index + offset].isNumber
+            }
+            let grouping = character == "," && numeric && !current.contains(".") && digit(1) && digit(2) && digit(3) && !digit(4)
+            let decimal = character == "." && numeric && !current.contains(".") && digit(1)
+            if grouping || decimal {
+                current.append(character)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    /// For each amount stated with cents ("12.99"), its whole dollars keyed
+    /// by the next dollar up (13: 12).
+    static func roundedUpAmounts(in words: [String]) -> [Int: Int] {
+        var result: [Int: Int] = [:]
+        for word in words where word.contains(".") {
+            guard let whole = amount(word), !word.hasSuffix("k"),
+                  let value = Double(word.replacingOccurrences(of: ",", with: "")), value > Double(whole) else { continue }
+            result[whole + 1] = whole
+        }
+        return result
+    }
+
+    /// The whole-dollar amount a number token states: "1,000" is 1000,
+    /// "15.50" is 15 (cents dropped, so a cap is never raised), "2k" is 2000.
+    static func amount(_ token: String) -> Int? {
+        var digits = Substring(token)
+        var multiplier = 1.0
+        if digits.count > 1, digits.hasSuffix("k") {
+            digits = digits.dropLast()
+            multiplier = 1_000
+        }
+        guard digits.first?.isNumber == true, digits.allSatisfy({ $0.isNumber || $0 == "," || $0 == "." }),
+              let value = Double(digits.replacingOccurrences(of: ",", with: "")) else { return nil }
+        let whole = (value * multiplier).rounded(.down)
+        return whole < 1e12 ? Int(whole) : nil
     }
 
     /// A crude suffix strip, enough to equate "hiking" with "hike" and
@@ -206,7 +260,7 @@ package enum Grounding {
         var index = 0
         while index < words.count {
             let word = words[index]
-            if let value = Int(word) {
+            if let value = amount(word) {
                 found.insert(value)
                 index += 1
             } else if meridiem(word) != nil, let value = Int(word.dropLast(2)) {
@@ -222,12 +276,39 @@ package enum Grounding {
         return found
     }
 
-    /// Reads a number spelled in words starting at `start`, up to 9,999:
-    /// an optional part below 100, an optional "hundred" (after "a", "one",
-    /// or a number below 100), then an optional "and" and a part below 100.
+    /// Reads a number spelled in words starting at `start`, up to the
+    /// thousands: an optional part below 1,000, an optional "thousand" (after
+    /// "a" or that part), then an optional "and" and a part below 1,000.
     /// Returns the value and the index after it, or nil if no number starts
     /// there.
     static func spelledNumber(in words: [String], from start: Int) -> (Int, Int)? {
+        var index = start
+        var value = 0
+        var matched = false
+        if let (group, next) = belowThousand(in: words, from: index) {
+            value = group
+            index = next
+            matched = true
+        }
+        if !matched, index + 1 < words.count, words[index] == "a", words[index + 1] == "thousand" { index += 1 }
+        if index < words.count, words[index] == "thousand", !matched || value >= 1 {
+            value = (matched ? value : 1) * 1_000
+            index += 1
+            matched = true
+            var rest = index
+            if rest < words.count, words[rest] == "and" { rest += 1 }
+            if let (group, next) = belowThousand(in: words, from: rest) {
+                value += group
+                index = next
+            }
+        }
+        return matched ? (value, index) : nil
+    }
+
+    /// A spelled number below 1,000 (up to 9,999 as "ninety nine hundred"):
+    /// an optional part below 100, an optional "hundred" (after "a" or that
+    /// part), then an optional "and" and a part below 100.
+    static func belowThousand(in words: [String], from start: Int) -> (Int, Int)? {
         func belowHundred(at index: Int) -> (Int, Int)? {
             guard index < words.count else { return nil }
             if let tens = tensWords[words[index]] {
@@ -238,6 +319,7 @@ package enum Grounding {
             }
             return unitWords[words[index]].map { ($0, index + 1) }
         }
+        guard start < words.count else { return nil }
         var index = start
         var value = 0
         var matched = false
@@ -246,8 +328,7 @@ package enum Grounding {
             index = next
             matched = true
         }
-        let leadsHundred = !matched && words[index] == "a" && index + 1 < words.count && words[index + 1] == "hundred"
-        if leadsHundred { index += 1 }
+        if !matched, index + 1 < words.count, words[index] == "a", words[index + 1] == "hundred" { index += 1 }
         if index < words.count, words[index] == "hundred", !matched || value >= 1 {
             value = (matched ? value : 1) * 100
             index += 1
