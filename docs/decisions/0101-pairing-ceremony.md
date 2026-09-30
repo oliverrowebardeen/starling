@@ -1,7 +1,7 @@
 # ADR 0101: Pairing ceremony: Noise XX plus a committed 6-digit code
 
 - Status: Proposed
-- Date: 2026-09-30 (revised the same day after the Codex review of PR #16; see decision 2)
+- Date: 2026-09-30 (revised the same day after two Codex reviews of PR #16; see decision 2)
 - Owner: Lane E1 (Identity and secure channel)
 
 ## Context
@@ -39,6 +39,7 @@ Usability: in comparative studies, compare-and-confirm had 0 to 20% security fai
    - After that point the ceremony is committed: a late cancel or link loss no longer changes the outcome.
    - A rejection on either side yields `.failed(.codeMismatch)` on both. Cancel, timeout (30 s to reach the code, 120 s to answer), and link loss each fail the ceremony, and nothing is stored on that side.
    - Every local ending (reject, cancel, timeout, abandon) is final before anything is awaited. The notice to the peer is sealed while the keys still exist, the ceremony finishes, and only then is the notice sent, best effort. An `accept` that arrives while the notice is in flight finds the ceremony finished and cannot pin the peer. (Review finding HIGH 2: before this fix, a cancel or timeout that was still sending its notice could be overtaken by the peer's accept and commit the pairing.)
+   - **Unpairing wins** (second review, finding 1). A ceremony running over `SecureTransport.pairingLink`, or given a `PairingRevocations` source, is cancelled when its peer is revoked. It also commits only if the peer's revocation generation is unchanged since the ceremony started, checked before and after the save. If an unpair lands during the save, the ceremony unpairs again and ends `.failed(.cancelled)` (ADR 0100 decision 11).
 3. **Checks on the remote key.**
    - It must hash to the `PeerID` the link claimed, so `SecureTransport` can find it later.
    - It must not be our own key. Either failure abandons the ceremony.
