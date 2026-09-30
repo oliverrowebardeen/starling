@@ -138,4 +138,19 @@ import Testing
         await mallory.stop()
         await world.stop()
     }
+
+    /// P2: when both phones start their last allowed run at once, the
+    /// tie-break must win over the run cap. With one run allowed, that is
+    /// the very first simultaneous start.
+    @Test func aSimultaneousStartOnTheLastAllowedRunStillMatches() async throws {
+        var configuration = fastConfiguration
+        configuration.maxRunsPerPeer = 1
+        let world = DownWorld(["ana", "ben"], configuration: configuration)
+        try await world.start()
+        let (ana, ben) = (world["ana"], world["ben"])
+        try await ana.want(time: [T.slot(19, 22)])
+        try await ben.want(time: [T.slot(19, 22)])
+        try await eventually("both matched") { await matchCounts(ana, ben) == [1, 1] }
+        await world.stop()
+    }
 }

@@ -271,14 +271,17 @@ public actor DownNegotiator: DownService {
     /// A peer started a run with us.
     func respond(to envelope: Envelope, frame: PSIFrame) async {
         let peer = envelope.sender
-        guard frame.step == 0, let current = intent?.generation, canRun(with: peer, generation: current) else { return }
+        guard frame.step == 0, let current = intent?.generation, !settled.contains(peer) else { return }
         if let existing = activeByPeer[peer], let mine = conversations[existing] {
-            // Both started at once. The lower peer ID's run goes ahead.
+            // Both started at once. The lower peer ID's run goes ahead. This
+            // comes before the run cap: our own run is already counted, so
+            // on the last allowed run the cap would otherwise refuse both.
             let simultaneous = mine.role == .initiator && mine.phase == .psi && mine.nextInboundPSIStep == 1
             guard simultaneous, peer < localPeer else { return }
             end(existing, .yielded)
             runs[peer, default: 1] -= 1
         }
+        guard canRun(with: peer, generation: current) else { return }
         guard let profile = runProfile(),
               let session = try? psi.makeSession(role: .responder, localSet: profile.tokens.elements, configuration: DownTokenSet.psiConfiguration())
         else { return }
