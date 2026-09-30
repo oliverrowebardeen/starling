@@ -24,6 +24,12 @@ import Testing
         try PairedPeer(publicKey: IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })), nickname: name, pairedAt: Timestamp(T.now))
     }
 
+    @Test func theAppCanTellWhetherPSIHidesFreeTime() {
+        let (down, _) = negotiator()
+        #expect(down.psiProvider == InsecurePSIStub().descriptor)
+        #expect(!down.psiProvider.isPrivate)
+    }
+
     @Test func anIntentMustBeInTheFutureAndLeaveSomeTime() async throws {
         let (down, _) = negotiator()
         await #expect(throws: DownError.expired) { try await down.setIntent(try intent(expiresAt: T.now)) }

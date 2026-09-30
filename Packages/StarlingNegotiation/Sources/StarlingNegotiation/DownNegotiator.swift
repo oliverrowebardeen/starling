@@ -69,6 +69,9 @@ public actor DownNegotiator: DownService {
 
     private(set) var diagnostics = Diagnostics()
 
+    /// The app builds the `Outbox` (it owns the policy and the consent
+    /// sheet) and passes it here, then feeds `handle(_:)` from its Inbox loop.
+    ///
     /// - Parameters:
     ///   - localPeer: This device's ID (the Outbox's transport's `localPeer`),
     ///     used to break ties when two friends start at once.
@@ -94,6 +97,10 @@ public actor DownNegotiator: DownService {
         self.configuration = configuration
         (events, continuation) = AsyncStream.makeStream(of: DownEvent.self)
     }
+
+    /// The PSI provider in use. While `isPrivate` is false, the consent
+    /// sheet should say that matching does not hide the owner's free times.
+    public nonisolated var psiProvider: PSIProviderDescriptor { psi.descriptor }
 
     // MARK: - DownService
 
@@ -128,7 +135,7 @@ public actor DownNegotiator: DownService {
         continuation.yield(.ended(.withdrawn))
     }
 
-    /// Feed every event from the app's Inbox loop here. Returns at once;
+    /// Every event from the app's Inbox loop (`DownService`). Returns at once;
     /// work for each friend runs in order on its own task, so a consent sheet
     /// or a slow model call never holds up the loop.
     public func handle(_ event: InboxEvent) {
