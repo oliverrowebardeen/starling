@@ -35,4 +35,47 @@ import Testing
         #expect(conversations.count == (withdrawal == .clear ? 0 : 1))
         await world.stop()
     }
+
+    /// Two phones where the lower peer ID starts (and so makes the offer).
+    static func roles(_ world: DownWorld) -> (offerer: DownNode, acceptor: DownNode) {
+        world["ana"].id < world["ben"].id ? (world["ana"], world["ben"]) : (world["ben"], world["ana"])
+    }
+
+    /// P1: a lost acceptance must not be replayed after its sender withdrew.
+    /// Otherwise the offerer's retry gets the cached accept and it reports a
+    /// match while this phone is no longer down.
+    @Test func aWithdrawnPhoneDoesNotReplayItsAcceptance() async throws {
+        let world = DownWorld(["ana", "ben"])
+        let (offerer, acceptor) = Self.roles(world)
+        await acceptor.transport.lose { $0.body.kind == .accept }
+        try await world.start()
+        try await offerer.want(time: [T.slot(19, 22)])
+        try await acceptor.want(time: [T.slot(19, 22)])
+
+        try await eventually("the acceptance was lost") { await !acceptor.transport.lost.isEmpty }
+        await acceptor.negotiator.clearIntent()
+        await acceptor.transport.clearRules()
+        try await world.settle()
+
+        #expect(await offerer.log.matches.isEmpty)
+        #expect(await !world.wire.sent(by: acceptor.id).contains { $0.body.kind == .accept })
+        await world.stop()
+    }
+
+    /// P1: after the owner declines consent, a peer's retries must not raise
+    /// the consent sheet again.
+    @Test func aDeclinedSheetIsNotShownAgainForPeerRetries() async throws {
+        let consent = ScriptedConsentProvider(.declined)
+        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.accept]), consent: consent)
+        let (offerer, acceptor) = Self.roles(world)
+        try await world.start()
+        try await offerer.want(time: [T.slot(19, 22)])
+        try await acceptor.want(time: [T.slot(19, 22)])
+
+        try await eventually("the owner was asked") { await !consent.requests.isEmpty }
+        try await world.settle()
+        #expect(await consent.requests.count == 1)
+        #expect(await matchCounts(offerer, acceptor) == [0, 0])
+        await world.stop()
+    }
 }

@@ -60,7 +60,17 @@ public actor DownNegotiator: DownService {
     }
     var conversations: [ConversationID: DownConversation] = [:]
     private var activeByPeer: [PeerID: ConversationID] = [:]
-    private var finished: [ConversationID: (peer: PeerID, replies: [DownSignature: DownReply], psiContext: OutboundContext)] = [:]
+    private var finished: [ConversationID: Finished] = [:]
+
+    /// What stays of an ended conversation, so a late retry of the peer's
+    /// last message can still be answered, but only when that is safe.
+    private struct Finished {
+        let peer: PeerID
+        let replies: [DownSignature: DownReply]
+        let psiContext: OutboundContext
+        let outcome: DownOutcome
+        let generation: Int
+    }
     private var finishedOrder: [ConversationID] = []
 
     /// Per intent: PSI runs with each peer, and peers we are done with.
@@ -312,7 +322,13 @@ public actor DownNegotiator: DownService {
             }
             await dispatch(envelope, in: conversation.id)
         } else if let record = finished[envelope.conversation] {
-            guard record.peer == envelope.sender, let signature, let reply = record.replies[signature] else { return }
+            // Only a match under the intent that is still current is worth
+            // repeating: the peer lost our confirmation (ADR 0120). After a
+            // withdrawal, expiry, refusal, or failure, a replay would undo
+            // the ending (or raise a declined consent sheet again).
+            guard record.peer == envelope.sender, record.outcome == .matched, record.generation == intent?.generation,
+                  let signature, let reply = record.replies[signature]
+            else { return }
             await replay(reply, to: envelope)
         } else if case .psi(let frame) = envelope.body {
             await respond(to: envelope, frame: frame)
@@ -480,7 +496,7 @@ public actor DownNegotiator: DownService {
     // MARK: - Ending
 
     /// Ends a conversation without telling the owner anything. Its replies
-    /// stay cached so late duplicates still get answers.
+    /// are kept, but only a match replays them (see `receive`).
     func end(_ id: ConversationID, _ outcome: DownOutcome) {
         guard let conversation = conversations.removeValue(forKey: id) else { return }
         timers.removeValue(forKey: id)?.cancel()
@@ -494,7 +510,10 @@ public actor DownNegotiator: DownService {
         }
         record(outcome)
 
-        finished[id] = (conversation.peer, conversation.replies, conversation.psiContext)
+        finished[id] = Finished(
+            peer: conversation.peer, replies: conversation.replies, psiContext: conversation.psiContext,
+            outcome: outcome, generation: conversation.generation
+        )
         finishedOrder.append(id)
         while finishedOrder.count > configuration.maxFinishedConversations {
             finished[finishedOrder.removeFirst()] = nil
