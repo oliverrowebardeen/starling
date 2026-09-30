@@ -1,6 +1,7 @@
 // swift-tools-version: 6.2
-// StarlingTransport: Transport implementations. Owned by the Transport lane.
-// Wi-Fi Aware (Phase 1, Identity lane) and Relay (Phase 2) arrive as more targets.
+// StarlingTransport: Transport implementations. Loopback and LocalP2P are the
+// Orchestrator's; the StarlingWiFiAware target is lane E2's. Relay (Phase 2)
+// arrives as another target.
 
 import PackageDescription
 
