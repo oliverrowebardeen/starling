@@ -29,6 +29,21 @@ public enum DownDuration: String, Hashable, Sendable, CaseIterable, Identifiable
     }
 }
 
+/// What the Down screen's status mark shows (lane BR's `MarkState`, mapped
+/// in the app). There is deliberately no "negotiating" case: every step that
+/// could drive it happens only when a friend's intent overlaps, so showing it
+/// would reveal one-sided interest (docs/requests/BR.md, ARCHITECTURE s7).
+public enum DownStatus: Hashable, Sendable {
+    /// No intent out.
+    case idle
+    /// The intent is out and Starling is checking with friends.
+    case searching
+    /// A mutual match in the current intent.
+    case match
+    /// The intent ended without a match; shown briefly, then `idle`.
+    case noMatch
+}
+
 /// The Down? screen: say what you're up for, review it, choose down or maybe
 /// and an expiry, then see mutual matches. Notifies only on `.matched`.
 @MainActor
@@ -65,6 +80,7 @@ public final class DownModel {
     /// The saved rules' sharing, loaded when a review opens. The review shows
     /// it as a floor the intent can tighten but not loosen (ADR 0141).
     public private(set) var standingSharing: [DisclosureRule] = []
+    public private(set) var status = DownStatus.idle
 
     private let service: any DownService
     private let interpreter: RulesInterpreter
@@ -77,8 +93,10 @@ public final class DownModel {
     /// service hears about it. The app clears remembered consent here so an
     /// approval never carries over to another intent (ADR 0142).
     private let intentChanged: @MainActor () -> Void
+    private let noMatchHold: Duration
     public let formatter: ValueFormatter
     private var listener: Task<Void, Never>?
+    private var settle: Task<Void, Never>?
 
     public init(
         service: any DownService,
@@ -89,9 +107,11 @@ public final class DownModel {
         formatter: ValueFormatter = ValueFormatter(),
         timeZone: TimeZone = .current,
         now: @escaping @Sendable () -> Date = { Date() },
-        intentChanged: @escaping @MainActor () -> Void = {}
+        intentChanged: @escaping @MainActor () -> Void = {},
+        noMatchHold: Duration = .seconds(3)
     ) {
         self.intentChanged = intentChanged
+        self.noMatchHold = noMatchHold
         self.service = service
         self.interpreter = interpreter
         self.rules = rules
@@ -153,6 +173,12 @@ public final class DownModel {
         draft.sharingRows(standing: standingSharing)
     }
 
+    private func setStatus(_ new: DownStatus) {
+        settle?.cancel()
+        settle = nil
+        status = new
+    }
+
     private func openEmptyReview() {
         draft = .empty
         interpretedFrom = nil
@@ -191,6 +217,7 @@ public final class DownModel {
             intentChanged()
             try await service.setIntent(DownIntent(rules: merged, level: level, expiresAt: Timestamp(expiresAt)))
             active = Active(level: level, expiresAt: expiresAt)
+            setStatus(.searching)
             matches = []
             text = ""
             interpretedFrom = nil
@@ -206,6 +233,8 @@ public final class DownModel {
         guard phase == .active else { return }
         intentChanged()
         await service.clearIntent()
+        // The owner's own choice, not a "no match": straight back to idle.
+        setStatus(.idle)
         active = nil
         draft = .empty
         phase = .composing
@@ -215,15 +244,30 @@ public final class DownModel {
         switch event {
         case .checking(let friends):
             active?.checkingFriends = friends
+            if phase == .active && status != .match { setStatus(.searching) }
         case .matched(let match):
             let name = (try? await peers.peer(for: match.peer))?.nickname ?? "A paired friend"
             let row = MatchRow(id: match.peer, friendName: name, lines: formatter.terms(match.terms), bothDown: match.bothDown, matchedAt: now())
             matches.removeAll { $0.id == row.id }
             matches.insert(row, at: 0)
+            if phase == .active { setStatus(.match) }
             await notifier.post(MatchNotice(match: match, friendName: name, formatter: formatter))
         case .ended(let reason):
             guard phase == .active || phase == .starting else { return }
             intentChanged()
+            // After a match the intent simply ends; without one, the mark
+            // shows "no match" briefly. Either way nothing names a friend.
+            if status == .match {
+                setStatus(.idle)
+            } else {
+                setStatus(.noMatch)
+                let hold = noMatchHold
+                settle = Task { [weak self] in
+                    try? await Task.sleep(for: hold)
+                    guard !Task.isCancelled else { return }
+                    self?.setStatus(.idle)
+                }
+            }
             active = nil
             draft = .empty
             phase = .composing
