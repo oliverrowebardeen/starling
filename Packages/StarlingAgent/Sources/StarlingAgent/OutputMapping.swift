@@ -27,7 +27,23 @@ package struct RawRules: Hashable, Sendable {
         /// Gregorian weekday, 1 = Sunday. Resolves to the next such day, today included.
         case weekday(Int)
     }
+    /// A named part of the day ("tonight", "morning"), used for hours the
+    /// owner did not state as clock times.
+    package enum PartOfDay: Hashable, Sendable {
+        case morning, lunch, afternoon, evening
+
+        /// Start and end hours in the local wall clock.
+        package var hours: (from: Int, to: Int) {
+            switch self {
+            case .morning: (8, 12)
+            case .lunch: (11, 14)
+            case .afternoon: (12, 17)
+            case .evening: (18, 24)
+            }
+        }
+    }
     package var day: Day?
+    package var partOfDay: PartOfDay?
     package var earliestHour: Int?
     package var latestHour: Int?
     package var wants: [String]
@@ -35,8 +51,9 @@ package struct RawRules: Hashable, Sendable {
     package var maxDollars: Int?
     package var neverShare: [Shareable]
 
-    package init(day: Day? = nil, earliestHour: Int? = nil, latestHour: Int? = nil, wants: [String] = [], avoids: [String] = [], maxDollars: Int? = nil, neverShare: [Shareable] = []) {
+    package init(day: Day? = nil, partOfDay: PartOfDay? = nil, earliestHour: Int? = nil, latestHour: Int? = nil, wants: [String] = [], avoids: [String] = [], maxDollars: Int? = nil, neverShare: [Shareable] = []) {
         self.day = day
+        self.partOfDay = partOfDay
         self.earliestHour = earliestHour
         self.latestHour = latestHour
         self.wants = wants
@@ -96,17 +113,23 @@ package enum OutputMapping {
     package static func rules(_ raw: RawRules, context: InterpretationContext) throws -> OwnerRules {
         var constraints: [IssueKey: [Constraint]] = [:]
 
-        // Clamping first keeps every later computation in range, whatever
-        // the model produced.
-        let earliest = raw.earliestHour.map { min(max($0, 0), 23) }
-        let latest = raw.latestHour.map { min(max($0, 1), 24) }
+        // Stated clock hours win over a named part of the day, and a stated
+        // start with no end is open-ended ("free after 3"). Clamping first
+        // keeps every later computation in range, whatever the model produced.
+        let stated = raw.earliestHour != nil || raw.latestHour != nil
+        let earliest = (stated ? raw.earliestHour : raw.partOfDay?.hours.from).map { min(max($0, 0), 23) }
+        let latest = (stated ? raw.latestHour : raw.partOfDay?.hours.to).map { min(max($0, 1), 24) }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = context.timeZone
         if let day = raw.day.flatMap({ Self.dayOffset($0, now: context.now, calendar: calendar) }) {
             let midnight = calendar.startOfDay(for: context.now)
+            // A window that ends before it starts keeps the start and runs
+            // to midnight, so the day the owner named is not lost with it.
+            let startHour = earliest ?? 0
+            let endHour = latest.flatMap { $0 > startHour ? $0 : nil } ?? 24
             if let dayStart = calendar.date(byAdding: .day, value: day, to: midnight),
-               let from = wallClock(hour: earliest ?? 0, on: dayStart, calendar: calendar),
-               let to = wallClock(hour: latest ?? 24, on: dayStart, calendar: calendar),
+               let from = wallClock(hour: startHour, on: dayStart, calendar: calendar),
+               let to = wallClock(hour: endHour, on: dayStart, calendar: calendar),
                to > from, let slot = try? TimeSlot(start: from, end: to) {
                 constraints[.time, default: []].append(try Constraint(.within([slot])))
             }
@@ -122,7 +145,9 @@ package enum OutputMapping {
             constraints[.activity] = [try Constraint(.prefers(liked: liked, avoided: avoided), strength: .soft)]
         }
 
-        if let dollars = raw.maxDollars, let amount = money(dollars: dollars) {
+        // Zero means "no limit" to the model ("no budget limit" came back as
+        // $0 in the labeled set), so it is dropped rather than enforced.
+        if let dollars = raw.maxDollars, dollars > 0, let amount = money(dollars: dollars) {
             constraints[.budget] = [try Constraint(.atMost(amount))]
         }
 

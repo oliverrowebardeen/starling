@@ -145,6 +145,30 @@ enum AgentFixtures {
         #expect(rules.disclosure == [DisclosureRule(issue: .place, action: .never)])
     }
 
+    @Test func partOfDayFillsHoursOnlyWhenNoneWereStated() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        let tonight = try OutputMapping.rules(RawRules(day: .relative(0), partOfDay: .evening), context: context)
+        #expect(tonight.constraints[.time] == [try Constraint(.within([try AgentFixtures.slot(18, 24)]))])
+        // "free after 3 this afternoon": the stated start wins, and the end is open.
+        let afterThree = try OutputMapping.rules(RawRules(day: .relative(0), partOfDay: .afternoon, earliestHour: 15), context: context)
+        #expect(afterThree.constraints[.time] == [try Constraint(.within([try AgentFixtures.slot(15, 24)]))])
+        let morning = try OutputMapping.rules(RawRules(partOfDay: .morning), context: context)
+        #expect(morning.constraints[.time] == [try Constraint(.dailyWindow(from: 480, to: 720))])
+    }
+
+    /// An end before the start used to drop the whole time constraint,
+    /// losing the day the owner named.
+    @Test func backwardsWindowKeepsTheDay() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        let rules = try OutputMapping.rules(RawRules(day: .relative(0), earliestHour: 15, latestHour: 15), context: context)
+        #expect(rules.constraints[.time] == [try Constraint(.within([try AgentFixtures.slot(15, 24)]))])
+    }
+
+    @Test func zeroBudgetMeansNoLimit() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        #expect(try OutputMapping.rules(RawRules(maxDollars: 0), context: context).constraints[.budget].isEmpty)
+    }
+
     @Test func hoursWithoutADayBecomeADailyWindow() throws {
         let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
         let rules = try OutputMapping.rules(RawRules(earliestHour: 10), context: context)
