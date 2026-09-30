@@ -96,6 +96,7 @@ Additive changes (a new `IssueKey` constant, a new `Capability`) are cheap. Chan
 | Negotiation, policy, availability | Against `StarlingFakes` and `LoopbackTransport` |
 | Multi-party and adversarial | `Tools/Simulator` over Loopback: N agents, scripted peers, a malicious peer |
 | LocalP2P | Framing and connection-dedup logic unit-tested; radio behavior on devices only |
+| Wi-Fi Aware | Link table, dial race, reconnect, and backoff unit-tested against an in-memory radio; radio behavior on devices only |
 | Model | `ScriptedAgentModel` for logic; `StarlingAgent` harness runs the real model on macOS 26.7+ hosts and on devices |
 
 `Tools/test-all.sh` runs every package's tests with warnings as errors. CI runs it on the `xcode-27` runner (ADR 0007).
