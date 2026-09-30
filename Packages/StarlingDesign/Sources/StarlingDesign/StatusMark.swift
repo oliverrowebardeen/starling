@@ -65,9 +65,9 @@ public struct StatusMark: View {
     }
 }
 
-/// Steps through the states, for previews.
+/// Steps through the states, for previews. A nil `reduceMotion` follows the system setting.
 private struct StatusMarkDemo: View {
-    let reduceMotion: Bool
+    let reduceMotion: Bool?
     @State private var state = MarkState.idle
 
     var body: some View {
@@ -84,16 +84,16 @@ private struct StatusMarkDemo: View {
 }
 
 #Preview("States") {
-    StatusMarkDemo(reduceMotion: false)
+    StatusMarkDemo(reduceMotion: nil)
 }
 
 #Preview("States, dark") {
-    StatusMarkDemo(reduceMotion: false)
+    StatusMarkDemo(reduceMotion: nil)
         .background(MarkPalette.dark.background.color)
         .environment(\.colorScheme, .dark)
 }
 
-#Preview("Reduce Motion") {
+#Preview("Reduce Motion forced on") {
     StatusMarkDemo(reduceMotion: true)
 }
 
