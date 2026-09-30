@@ -21,35 +21,11 @@ struct StarlingApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
-                .task { await app.start() }
-        }
-    }
-}
-
-struct HomeView: View {
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    #if DEBUG
-                    NavigationLink("Nearby", destination: NearbyView())
-                    #endif
-                    NavigationLink("Model Bench", destination: ModelBenchView())
-                } header: {
-                    Text("Phase 0 spike")
-                } footer: {
-                    Text("Development build. Links are not encrypted yet, so don't send anything personal.")
-                }
-
-                Section("Coming in Phase 1") {
-                    Label("Down?", systemImage: "hand.wave")
-                    Label("Pair a friend", systemImage: "person.2")
-                    Label("Your rules", systemImage: "list.bullet.rectangle")
-                }
-                .foregroundStyle(.secondary)
-            }
-            .navigationTitle("Starling")
+            #if DEBUG
+            RootView(app: app, developer: { DeveloperView(app: app, harness: harness) })
+            #else
+            RootView(app: app, developer: { DeveloperView(app: app) })
+            #endif
         }
     }
 }
