@@ -5,6 +5,12 @@ public enum OutboxError: Error, Hashable, Sendable {
     case consentDeclined
 }
 
+/// Told about every envelope the transport accepted, for example to keep an
+/// audit log. Never told about denied, declined, cancelled, or failed sends.
+public protocol OutboxObserver: Sendable {
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async
+}
+
 /// The only sanctioned way to send a message.
 ///
 /// Every envelope passes the `PolicyEngine`, and the owner's consent when the
@@ -15,6 +21,7 @@ public actor Outbox {
     private let policy: any PolicyEngine
     private let consent: any ConsentProvider
     private let codec: EnvelopeCodec
+    private let observer: (any OutboxObserver)?
     private let now: @Sendable () -> Date
     private var nextSequence: [ConversationID: UInt64] = [:]
 
@@ -23,12 +30,14 @@ public actor Outbox {
         policy: any PolicyEngine,
         consent: any ConsentProvider,
         codec: EnvelopeCodec = EnvelopeCodec(),
+        observer: (any OutboxObserver)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.policy = policy
         self.consent = consent
         self.codec = codec
+        self.observer = observer
         self.now = now
     }
 
@@ -68,6 +77,7 @@ public actor Outbox {
         }
 
         try await transport.send(Frame(codec.encode(envelope)), to: recipient)
+        await observer?.outbox(didSend: envelope, context: context, decision: decision)
         return envelope
     }
 }

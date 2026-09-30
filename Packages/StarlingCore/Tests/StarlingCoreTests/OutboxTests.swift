@@ -96,4 +96,23 @@ import Testing
         let wire = String(decoding: try #require(await transport.sent.first).frame.bytes, as: UTF8.self)
         #expect(!wire.contains("boba"))
     }
+
+    @Test func observerHearsOnlySuccessfulSends() async throws {
+        let violation = PolicyViolation(rule: "deny")
+        for (decision, consent, fails, expected) in [
+            (PolicyDecision.allow, ConsentOutcome.declined, false, 1),
+            (.deny(violation), .approved, false, 0),
+            (.needsConsent(try disclosure(100)), .declined, false, 0),
+            (.allow, .approved, true, 0),
+        ] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            if fails { await transport.failSends(with: .peerUnreachable(Fixtures.bob)) }
+            let observer = RecordingOutboxObserver()
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(decision), consent: ScriptedConsentProvider(consent), observer: observer)
+            _ = try? await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            let records = await observer.records
+            #expect(records.count == expected)
+            if expected == 1 { #expect(records.first?.decision == decision) }
+        }
+    }
 }

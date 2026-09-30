@@ -48,3 +48,20 @@ public struct StaticAvailabilitySource: AvailabilitySource {
         return .known(free: free.compactMap { $0.overlap(with: query.window) })
     }
 }
+
+/// Records every successful send the Outbox reports.
+public actor RecordingOutboxObserver: OutboxObserver {
+    public struct Record: Hashable, Sendable {
+        public let envelope: Envelope
+        public let context: OutboundContext
+        public let decision: PolicyDecision
+    }
+
+    public private(set) var records: [Record] = []
+
+    public init() {}
+
+    public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {
+        records.append(Record(envelope: envelope, context: context, decision: decision))
+    }
+}
