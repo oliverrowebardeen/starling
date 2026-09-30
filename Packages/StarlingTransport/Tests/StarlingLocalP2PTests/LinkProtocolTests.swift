@@ -38,6 +38,19 @@ import Testing
     }
 }
 
+@Suite struct DiscoveryTests {
+    /// A browser update lists every advertised service. Only services absent
+    /// from the previous update may start a dial; one whose retries ran out
+    /// must not be redialed just because another phone appeared.
+    @Test func onlyNewlyDiscoveredServicesStartADial() {
+        #expect(Discovery.newlyDiscovered(previous: [], current: ["a", "b"]) == ["a", "b"])
+        #expect(Discovery.newlyDiscovered(previous: ["a"], current: ["a", "c"]) == ["c"])
+        #expect(Discovery.newlyDiscovered(previous: ["a", "b"], current: ["b"]).isEmpty)
+        // A service that disappeared and came back counts as new again.
+        #expect(Discovery.newlyDiscovered(previous: ["b"], current: ["a", "b"]) == ["a"])
+    }
+}
+
 @Suite struct RetryPolicyTests {
     @Test func backsOffThenGivesUp() {
         let delays = (1...RetryPolicy.maxAttempts).map { RetryPolicy.delay(forAttempt: $0) }

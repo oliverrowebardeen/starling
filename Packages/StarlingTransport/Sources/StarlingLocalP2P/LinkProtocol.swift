@@ -76,6 +76,17 @@ package enum RetryPolicy {
     }
 }
 
+/// Which services a browser update should start dialing.
+package enum Discovery {
+    /// Services absent from the previous update. A browser update lists every
+    /// advertised service, so dialing all of them would redial peers whose
+    /// retries are exhausted each time an unrelated phone appears. A service
+    /// that disappears and returns counts as new, which resets its budget.
+    package static func newlyDiscovered(previous: Set<String>, current: Set<String>) -> [String] {
+        current.subtracting(previous).sorted()
+    }
+}
+
 package enum LinkDirection: Hashable, Sendable {
     case outgoing, incoming
 }
