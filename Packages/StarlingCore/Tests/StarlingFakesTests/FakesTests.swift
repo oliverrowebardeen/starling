@@ -58,6 +58,46 @@ import Testing
         await #expect(throws: PSIError.malformedMessage) { _ = try await a.handle(forged) }
     }
 
+    /// Issue #6: the initiator must enforce the peer bound on replies too,
+    /// counting raw entries before any deduplication.
+    @Test func initiatorEnforcesThePeerBoundOnReplies() async throws {
+        let config = try PSIConfiguration(output: .intersection, maxPeerSetSize: 1, maxLocalSetSize: 2)
+        let a = try stub.makeSession(role: .initiator, localSet: elements(["a", "b"]), configuration: config)
+        guard case .send(let request) = try await a.start() else { Issue.record("no request"); return }
+        let hashes = try #require(try JSONSerialization.jsonObject(with: request) as? [String: Any])["hashes"] as! [String]
+        let both = Data(try JSONSerialization.data(withJSONObject: ["hashes": hashes]))
+        await #expect(throws: PSIError.peerSetTooLarge(2)) { _ = try await a.handle(both) }
+
+        let b = try stub.makeSession(role: .initiator, localSet: elements(["a"]), configuration: config)
+        guard case .send(let request2) = try await b.start() else { Issue.record("no request"); return }
+        let one = (try JSONSerialization.jsonObject(with: request2) as! [String: Any])["hashes"] as! [String]
+        let repeated = Data(try JSONSerialization.data(withJSONObject: ["hashes": Array(repeating: one[0], count: 336)]))
+        await #expect(throws: PSIError.peerSetTooLarge(336)) { _ = try await b.handle(repeated) }
+    }
+
+    @Test func initiatorBoundsCardinalityReplies() async throws {
+        let config = try PSIConfiguration(output: .cardinality, maxPeerSetSize: 1, maxLocalSetSize: 2)
+        let a = try stub.makeSession(role: .initiator, localSet: elements(["a", "b"]), configuration: config)
+        _ = try await a.start()
+        await #expect(throws: PSIError.peerSetTooLarge(2)) { _ = try await a.handle(Data(#"{"count":2}"#.utf8)) }
+    }
+
+    /// Issue #7: this stub uses 32-byte SHA-256 digests; anything else is
+    /// malformed, not "no overlap".
+    @Test(arguments: [0, 1, 31, 33, 64])
+    func responderRejectsMalformedDigestLengths(length: Int) async throws {
+        let config = try PSIConfiguration(output: .intersection, maxPeerSetSize: 2, maxLocalSetSize: 2)
+        let responder = try stub.makeSession(role: .responder, localSet: elements(["a"]), configuration: config)
+        let request: [String: Any] = [
+            "salt": Data(repeating: 1, count: 16).base64EncodedString(),
+            "hashes": [Data(repeating: 7, count: length).base64EncodedString()],
+            "output": "intersection",
+        ]
+        await #expect(throws: PSIError.malformedMessage) {
+            _ = try await responder.handle(try JSONSerialization.data(withJSONObject: request))
+        }
+    }
+
     @Test func isLabeledAsNotPrivate() {
         #expect(stub.descriptor.isPrivate == false)
     }

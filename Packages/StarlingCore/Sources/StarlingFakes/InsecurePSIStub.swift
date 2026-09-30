@@ -26,6 +26,9 @@ actor InsecurePSISession: PSISession {
     private struct Request: Codable { let salt: Data; let hashes: [Data]; let output: PSIOutput }
     private struct Reply: Codable { let hashes: [Data]?; let count: Int? }
 
+    /// SHA-256 digest length; any other length is malformed, not "no overlap".
+    static let digestLength = 32
+
     private let role: PSIRole
     private let localSet: Set<PSIElement>
     private let configuration: PSIConfiguration
@@ -59,6 +62,7 @@ actor InsecurePSISession: PSISession {
             throw PSIError.malformedMessage
         }
         guard request.hashes.count <= configuration.maxPeerSetSize else { throw PSIError.peerSetTooLarge(request.hashes.count) }
+        guard request.hashes.allSatisfy({ $0.count == Self.digestLength }) else { throw PSIError.malformedMessage }
         guard request.output == configuration.output else { throw PSIError.unsupportedOutput(request.output) }
         let peerHashes = Set(request.hashes)
         let shared = localSet.filter { peerHashes.contains(Self.hash($0, salt: request.salt)) }
@@ -80,6 +84,12 @@ actor InsecurePSISession: PSISession {
         switch configuration.output {
         case .intersection:
             guard let hashes = reply.hashes else { throw PSIError.malformedMessage }
+            // Count raw entries before deduplication: the intersection can
+            // never be larger than the peer's permitted set.
+            guard hashes.count <= configuration.maxPeerSetSize else { throw PSIError.peerSetTooLarge(hashes.count) }
+            guard hashes.allSatisfy({ $0.count == Self.digestLength }), Set(hashes).count == hashes.count else {
+                throw PSIError.malformedMessage
+            }
             let byHash = Dictionary(uniqueKeysWithValues: localSet.map { (Self.hash($0, salt: salt), $0) })
             var shared = Set<PSIElement>()
             for hash in hashes {
@@ -89,7 +99,9 @@ actor InsecurePSISession: PSISession {
             }
             return .finish(payload: nil, result: .intersection(shared))
         case .cardinality:
-            guard let count = reply.count, (0...localSet.count).contains(count) else { throw PSIError.malformedMessage }
+            guard let count = reply.count, count >= 0 else { throw PSIError.malformedMessage }
+            guard count <= configuration.maxPeerSetSize else { throw PSIError.peerSetTooLarge(count) }
+            guard count <= localSet.count else { throw PSIError.malformedMessage }
             return .finish(payload: nil, result: .cardinality(count))
         }
     }
