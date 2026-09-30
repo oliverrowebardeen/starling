@@ -91,14 +91,18 @@ final class DownNode: Sendable {
 
     var id: PeerID { key.peerID }
 
-    init(name: String, hub: LoopbackHub, model: any AgentModel, policy: any PolicyEngine, psi: any PSIProvider) {
+    init(
+        name: String, hub: LoopbackHub, model: any AgentModel, policy: any PolicyEngine, psi: any PSIProvider,
+        consent: any ConsentProvider = ScriptedConsentProvider(.approved),
+        clock: DownClock = pinnedClock, configuration: DownConfiguration = fastConfiguration
+    ) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
-        let outbox = Outbox(transport: transport, policy: policy, consent: ScriptedConsentProvider(.approved))
+        let outbox = Outbox(transport: transport, policy: policy, consent: consent)
         negotiator = DownNegotiator(
             localPeer: key.peerID, outbox: outbox, pairedPeers: store, model: model, psi: psi,
-            clock: pinnedClock, timeZone: TimeZone(identifier: "UTC")!, configuration: fastConfiguration
+            clock: clock, timeZone: TimeZone(identifier: "UTC")!, configuration: configuration
         )
     }
 
@@ -152,11 +156,16 @@ final class DownWorld: Sendable {
         _ names: [String],
         model: any AgentModel = ScriptedAgentModel(),
         policy: any PolicyEngine = FixedPolicyEngine(.allow),
-        psi: any PSIProvider = InsecurePSIStub()
+        psi: any PSIProvider = InsecurePSIStub(),
+        consent: any ConsentProvider = ScriptedConsentProvider(.approved),
+        clock: DownClock = pinnedClock,
+        configuration: DownConfiguration = fastConfiguration
     ) {
         let hub = LoopbackHub()
         self.hub = hub
-        nodes = names.map { DownNode(name: $0, hub: hub, model: model, policy: policy, psi: psi) }
+        nodes = names.map {
+            DownNode(name: $0, hub: hub, model: model, policy: policy, psi: psi, consent: consent, clock: clock, configuration: configuration)
+        }
     }
 
     subscript(name: String) -> DownNode { nodes.first { $0.name == name }! }
@@ -299,5 +308,42 @@ final class RawPeer: Sendable {
     func next(_ kind: MessageBody.Kind, skipping: Int = 0) async throws -> Envelope {
         try await eventually("a \(kind.rawValue)") { await self.inbox.envelopes.filter { $0.body.kind == kind }.count > skipping }
         return try #require(await inbox.envelopes.filter { $0.body.kind == kind }.dropFirst(skipping).first)
+    }
+}
+
+/// A consent sheet the test answers when it chooses, like an owner who
+/// looks at the phone later. Counts requests.
+actor GatedConsentProvider: ConsentProvider {
+    private var waiting: [CheckedContinuation<ConsentOutcome, Never>] = []
+    private(set) var requests = 0
+
+    func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        requests += 1
+        return await withCheckedContinuation { waiting.append($0) }
+    }
+
+    var pending: Int { waiting.count }
+
+    func answerAll(_ outcome: ConsentOutcome) {
+        for continuation in waiting { continuation.resume(returning: outcome) }
+        waiting = []
+    }
+}
+
+/// Wall time a test can move forward. Timers stay real.
+final class MovableClock: Sendable {
+    private let current = Mutex(T.now)
+    func set(_ date: Date) { current.withLock { $0 = date } }
+    var clock: DownClock {
+        DownClock(now: { [self] in self.current.withLock { $0 } }, sleep: { try await Task.sleep(for: $0) })
+    }
+}
+
+/// Asks for consent on every message, with a disclosure that stays the same
+/// when the Outbox re-checks after the owner answers.
+func consentForEverything(_ kinds: Set<MessageBody.Kind> = Set(MessageBody.Kind.allCases)) -> FixedPolicyEngine {
+    FixedPolicyEngine { message in
+        guard kinds.contains(message.envelope.body.kind) else { return .allow }
+        return .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: []))
     }
 }
