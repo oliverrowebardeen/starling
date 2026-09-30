@@ -21,7 +21,7 @@ Static `@Generable` schemas cannot know what a call offers:
    - `accept` is not offered when the proposal breaks a limit. A counter must set every broken issue, because it keeps the proposal's value for anything it leaves out.
    - When only one move remains, code returns it without a model call: `reject` when no counter can fix a broken issue, `accept` when nothing is broken and the owner has no soft preference on any issue in play (every compliant term is as good as another). These report 0 tokens.
    - The Phase 0 `brokenItems` field is removed. Code knows the broken items. Also, an array whose items are a one-choice `anyOf` (a time-only proposal) made the macOS 26.7 model service fail with `ModelManagerError 1032`; other shapes worked.
-2. **match: `MatchSchema`**, built per call. One property per want, whose value is `none` or one of this call's offers, then a same-meaning Bool. The offer choice is defined once and referenced, so a 6-by-10 call stays near 1,400 tokens instead of about 3,000. Property names contain a colon, which no `Keyword` can, so a peer's keyword cannot collide with a field name.
+2. **match: `MatchSchema`**, built per call. One property per want, whose value is `none` or one of this call's offers, then a same-meaning Bool. The offer choice is defined once and referenced, so a 6-by-10 call stays near 1,500 tokens instead of about 3,000. Property names contain a colon (`want:<keyword>`, `same:<keyword>`), which no `Keyword` can, so no keyword, the owner's or a peer's, can make two properties share a name.
 3. Output is still validated after generation (`OutputMapping`), not trusted because the schema was constrained.
 
 ## Consequences
@@ -29,10 +29,10 @@ Static `@Generable` schemas cannot know what a call offers:
 Measured with the real model on this Mac (see `Packages/StarlingAgent/Reports/phase-1-quality.md`):
 
 - **decide:** errors 3 to 0, limit violations 6 to 0, worst call within the ADR 0002 budget of 2048 tokens. Convergence changed: `down-2p` used to "agree" by accepting terms that broke a limit and now ends in reject after 6 rounds, because no listed option fits both sides. `parent-student` went from failing every run to agreeing every run.
-- **match:** negative controls with a false match 18/18 to 5/18, and food/movie alone now returns no match. Satisfiable wants found 17/17 to 15/17: the old matcher found them all because it matched everything.
-- **Issue #9 is only partly fixed.** With a second offer (lane I's benign "quiet evening", or an injection phrase), food still matches movie or the injected label. Four other match designs were measured and rejected: a model-labeled kind gate (false matches 3/18, but wants found fell to 6/17, 3,015 tokens), per-offer choices (4/18, but food/movie in every two-offer case, 1,955 tokens), pair verdicts (4/18, 5,248 tokens), and dropping the same-meaning Bool (5/18). The remaining defense is structural: match results only propose, and Down notifies only after both sides accept (ARCHITECTURE section 7).
+- **match:** negative controls with a false match 18/18 to 4/18, and food/movie alone now returns no match. Satisfiable wants found stayed at 17/17 (the old matcher found them all only because it matched everything).
+- **Issue #9 is only partly fixed.** With a second offer (lane I's benign "quiet evening", or an injection phrase), food still matches movie or the injected label. Four other match designs were measured and rejected: a model-labeled kind gate (false matches 3/18, but wants found fell to 6/17, 3,015 tokens), per-offer choices (4/18, but food/movie in every two-offer case, 1,955 tokens), pair verdicts (4/18, 5,248 tokens), and dropping the same-meaning Bool (5/18). These comparisons were measured before the property names gained their colon prefixes; the chosen design went from 5/18 to 4/18 with the new names. The remaining defense is structural: match results only propose, and Down notifies only after both sides accept (ARCHITECTURE section 7).
 - Offering only compliant options means a negotiation can only converge on an option one side listed. When the sides' windows overlap only partially, no listed option fits both (`down-2p`). Offering intersections of the two sides' windows is a negotiation design question for lane F, not a model fix.
-- Match latency and tokens rose (worst call 566 to 1,428 tokens), still well within budget.
+- Match latency and tokens rose (worst call 566 to 1,519 tokens), still well within budget.
 
 ## Sources
 
