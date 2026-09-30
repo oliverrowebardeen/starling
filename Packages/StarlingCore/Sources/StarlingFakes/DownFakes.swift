@@ -8,6 +8,7 @@ public actor ScriptedDownService: DownService {
     private let continuation: AsyncStream<DownEvent>.Continuation
     public private(set) var intents: [DownIntent] = []
     public private(set) var cleared = 0
+    public private(set) var handled: [InboxEvent] = []
 
     public init() {
         (events, continuation) = AsyncStream.makeStream(of: DownEvent.self)
@@ -16,6 +17,8 @@ public actor ScriptedDownService: DownService {
     public func setIntent(_ intent: DownIntent) async throws { intents.append(intent) }
 
     public func clearIntent() async { cleared += 1 }
+
+    public func handle(_ event: InboxEvent) async { handled.append(event) }
 
     public nonisolated func emit(_ event: DownEvent) { continuation.yield(event) }
 }
