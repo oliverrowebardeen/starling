@@ -104,6 +104,30 @@ actor GatedConsent: ConsentProvider {
     }
 }
 
+/// Answers the first evaluation at once and holds the second until released.
+actor GatedSecondEvaluationPolicy: PolicyEngine {
+    private let decision: PolicyDecision
+    private var calls = 0
+    private var pending: CheckedContinuation<Void, Never>?
+    private(set) var secondStarted = false
+
+    init(_ decision: PolicyDecision) { self.decision = decision }
+
+    func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
+        calls += 1
+        if calls == 2 {
+            secondStarted = true
+            await withCheckedContinuation { pending = $0 }
+        }
+        return decision
+    }
+
+    func release() {
+        pending?.resume()
+        pending = nil
+    }
+}
+
 @Suite struct OutboxV11Tests {
     let body = MessageBody.reject(Rejection(proposal: Fixtures.messageID, reason: .declinedByOwner))
 
@@ -164,6 +188,24 @@ actor GatedConsent: ConsentProvider {
                 #expect(await transport.sent.count == 1)
             }
         }
+    }
+
+    /// Cancelled while the post-consent policy check is still running: the
+    /// check passes, but nothing may be sent.
+    @Test(.timeLimit(.minutes(1)))
+    func cancellationDuringThePolicyRecheckSendsNothing() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let policy = GatedSecondEvaluationPolicy(.needsConsent(try disclosure(500)))
+        let outbox = Outbox(transport: transport, policy: policy, consent: ScriptedConsentProvider(.approved))
+        let body = body
+        let send = Task { try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        while !(await policy.secondStarted) { await Task.yield() }
+
+        send.cancel()
+        await policy.release()
+
+        await #expect(throws: CancellationError.self) { try await send.value }
+        #expect(await transport.sent.isEmpty)
     }
 
     @Test(.timeLimit(.minutes(1)))

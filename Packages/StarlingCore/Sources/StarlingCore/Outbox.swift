@@ -92,6 +92,9 @@ public actor Outbox {
             }
         }
 
+        // Last point before anything leaves: a cancelled send never goes out,
+        // including one cancelled while the re-check above was running.
+        try Task.checkCancellation()
         try await transport.send(Frame(codec.encode(envelope)), to: recipient)
         await observer?.outbox(didSend: envelope, context: context, decision: decision)
         return envelope
