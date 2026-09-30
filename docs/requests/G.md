@@ -1,0 +1,12 @@
+# Lane G integration requests
+
+## Frozen v1 context gaps
+
+Owner: Orchestrator. Consumers: F and H.
+
+1. `Answer` carries a query ID and value, but no issue. G will provide `registerReceivedQuery(_:)` for queries delivered through Inbox. It binds the issue to both peers, the conversation, and query ID. Answers with a value and no registered query are denied. F must register incoming queries before replying and clear context when the conversation ends. A future Core context field could remove this integration obligation.
+2. `PSIFrame` carries opaque bytes, but no provider descriptor or semantic inputs. G will provide `registerPSIStep(_:to:conversation:provider:inputs:)`, binding the exact frame to its recipient and conversation. F must register each outgoing step with the actual local provider descriptor and the complete typed input set. Unregistered or changed frames are denied. Non-private providers disclose all registered inputs and force consent; `never` still wins. Core could eventually carry trusted local disclosure context on `OutboundMessage` rather than expanding the wire format.
+3. `Outbox` exposes no successful-send observer. G will provide `AuditedOutbox`, a wrapper that only calls Core Outbox and records a summary after its send succeeds. F currently accepts concrete `Outbox`, so the Orchestrator should add a completion observer to Core or authorize F to accept the wrapper before claiming all app sends are audited. Direct Core Outbox use remains policy protected but is not audited. No record is made during policy evaluation or consent approval.
+4. `Disclosure` cannot carry the exact outgoing agent card, control metadata, PSI provider descriptor, or consent reason. Its items can accurately represent issue values and category markers; G's plain consent model labels the markers honestly. Please consider a future additive local metadata field so H can show exact protocol details and provider identity without guessing from `IssueValue`. This does not require changing wire messages.
+
+G does not edit Core or the other lanes. Regression tests cover missing answer context, altered PSI steps, never-rule enforcement through Outbox, and audit behavior on denial, decline, and transport failure. The current Outbox also does not re-evaluate policy after suspended consent. H must resolve pending consent as declined when replacing rules or removing peer trust. Task cancellation alone does not guarantee that Core will stop a send. A future Core change should revalidate this state before sending.
