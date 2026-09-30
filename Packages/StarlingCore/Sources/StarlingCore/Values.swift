@@ -85,6 +85,9 @@ public struct IssueKey: Hashable, Comparable, Sendable, CustomStringConvertible 
     public static let place = IssueKey(known: "place")
     public static let diet = IssueKey(known: "diet")
     public static let partySize = IssueKey(known: "party_size")
+    /// "down" or "maybe" as a keyword, exchanged only in an acceptance so a
+    /// "maybe" is revealed only when interest is mutual (ADR 0120, v1.1).
+    public static let downLevel = IssueKey(known: "down_level")
 
     public var description: String { rawValue }
     public static func < (lhs: IssueKey, rhs: IssueKey) -> Bool { lhs.rawValue < rhs.rawValue }
