@@ -62,6 +62,18 @@ public struct RulesDraft: Hashable, Sendable {
             self.strength = strength
         }
 
+        /// `amountMinorUnits` in major units ("15.50" for 1550 cents), for a
+        /// currency text field. Rounds to the currency's minor unit.
+        public var amount: Decimal {
+            get { Decimal(amountMinorUnits) / pow(10, ValueFormatter.fractionDigits(for: currency)) }
+            set {
+                var scaled = newValue * pow(10, ValueFormatter.fractionDigits(for: currency))
+                var rounded = Decimal()
+                NSDecimalRound(&rounded, &scaled, 0, .plain)
+                amountMinorUnits = NSDecimalNumber(decimal: rounded).int64Value
+            }
+        }
+
         /// Comma-separated editing for keyword lists.
         public var likedText: String {
             get { liked.joined(separator: ", ") }

@@ -47,6 +47,17 @@ import Testing
         #expect(built.constraints[.activity] == [try Constraint(.prefers(liked: [try Keyword("boba run"), try Keyword("tacos")], avoided: []))])
     }
 
+    @Test func amountsAreEditedInMajorUnits() throws {
+        var draft = RulesDraft.empty
+        draft.add(.atMost, issue: .budget)
+        draft.items[0].amount = Decimal(string: "15.505")!
+        #expect(draft.items[0].amountMinorUnits == 1551)
+        #expect(draft.items[0].amount == Decimal(string: "15.51")!)
+        draft.items[0].currency = "JPY"
+        draft.items[0].amount = 1200
+        #expect(draft.items[0].amountMinorUnits == 1200)
+    }
+
     @Test func reportsProblemsPerItemInsteadOfBuilding() throws {
         var draft = RulesDraft.empty
         draft.add(.dailyWindow, issue: .time)
