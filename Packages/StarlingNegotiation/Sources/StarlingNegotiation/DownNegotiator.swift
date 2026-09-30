@@ -180,8 +180,14 @@ public actor DownNegotiator: DownService {
 
     // MARK: - Work queues
 
+    /// Bounds the per-peer queues, since `handle` runs before the paired
+    /// check. Once the secure channel drops unknown keys below the Inbox
+    /// (ADR 0003), only paired friends get this far anyway.
+    static let maxWorkers = 256
+
     private func enqueue(_ work: Work, for peer: PeerID) {
         if workers[peer] == nil {
+            guard workers.count < Self.maxWorkers else { return }
             let (stream, queue) = AsyncStream.makeStream(of: Work.self)
             let task = Task { [weak self] in
                 for await work in stream {
@@ -206,6 +212,9 @@ public actor DownNegotiator: DownService {
 
     private func initiate(with peer: PeerID, generation current: Int) async {
         guard canRun(with: peer, generation: current), activeByPeer[peer] == nil, reachable.contains(peer) else { return }
+        // A friend whose card says it cannot do Down is not asked. No card
+        // yet (the hello may still be in flight) is not a reason to skip.
+        if let card = cards[peer], !card.capabilities.contains(.down) { return }
         guard await isPaired(peer), let profile = intent?.profile, canRun(with: peer, generation: current), activeByPeer[peer] == nil else { return }
 
         let session: any PSISession

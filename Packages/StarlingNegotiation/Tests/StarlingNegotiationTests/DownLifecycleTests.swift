@@ -45,6 +45,24 @@ import Testing
         await down.shutdown()
     }
 
+    @Test func friendsWhoseAgentLacksDownAreNotAsked() async throws {
+        let (ana, ben) = (try friend("ana"), try friend("ben"))
+        let (down, transport) = negotiator(friends: [ana, ben])
+        for (peer, capabilities) in [(ana.id, [Capability.scheduling]), (ben.id, [.down])] {
+            let hello = try Envelope(
+                conversation: ConversationID(), sender: peer, recipient: transport.localPeer, sequence: 0,
+                sentAt: Timestamp(T.now), body: .hello(try AgentCard(model: .onDevice, capabilities: capabilities))
+            )
+            await down.handle(.peerAvailable(peer))
+            await down.handle(.message(hello))
+        }
+        try await down.setIntent(try intent())
+        try await eventually("a PSI run with ben") { await transport.sent.contains { $0.peer == ben.id } }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await !transport.sent.contains { $0.peer == ana.id })
+        await down.shutdown()
+    }
+
     @Test func clearingTheIntentEndsQuietlyForFriends() async throws {
         let ana = try friend("ana")
         let (down, transport) = negotiator(friends: [ana])
