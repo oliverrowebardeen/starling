@@ -32,6 +32,9 @@ public final class PairingModel {
     private let store: any PairedPeerStore
     private var session: (any PairingSession)?
     private var events: Task<Void, Never>?
+    /// Set when the pairing screen went away, so a session that is still
+    /// being created is cancelled as soon as it exists.
+    private var isEnded = false
 
     public init(makeSession: @escaping PairingSessionFactory, store: any PairedPeerStore) {
         self.makeSession = makeSession
@@ -47,6 +50,11 @@ public final class PairingModel {
         notice = nil
         do {
             let session = try await makeSession()
+            if isEnded {
+                await session.cancel()
+                phase = .failed(.cancelled)
+                return
+            }
             self.session = session
             events = Task { [weak self] in
                 for await event in session.events {
@@ -74,6 +82,19 @@ public final class PairingModel {
         await session.cancel()
     }
 
+    /// The pairing screen went away, for example swiped down. Cancels a
+    /// ceremony in progress so it does not keep running with no screen;
+    /// a finished pairing is left alone.
+    public func end() async {
+        isEnded = true
+        switch phase {
+        case .starting, .comparing, .confirming:
+            await session?.cancel()
+        case .idle, .naming, .paired, .failed:
+            break
+        }
+    }
+
     /// Saves the friend under the chosen nickname. The store replaces any
     /// record with the same key, so saving after the session pinned the peer
     /// only updates the name.
@@ -92,6 +113,7 @@ public final class PairingModel {
     }
 
     public func reset() {
+        isEnded = false
         events?.cancel()
         events = nil
         session = nil

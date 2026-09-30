@@ -94,6 +94,76 @@ import Testing
     }
 }
 
+/// Review finding 5 on PR #15: when the pairing sheet goes away, the
+/// ceremony stops instead of running on with no screen.
+@MainActor
+@Suite struct PairingEndTests {
+    /// Counts cancels and otherwise behaves like ScriptedPairingSession.
+    actor CountingSession: PairingSession {
+        nonisolated let events: AsyncStream<PairingEvent>
+        private let continuation: AsyncStream<PairingEvent>.Continuation
+        private(set) var cancels = 0
+
+        init() {
+            (events, continuation) = AsyncStream.makeStream(of: PairingEvent.self)
+            continuation.yield(.confirmCode("123 456"))
+        }
+
+        func confirm(codesMatch: Bool) async {}
+
+        func cancel() async {
+            cancels += 1
+            continuation.yield(.failed(.cancelled))
+            continuation.finish()
+        }
+    }
+
+    @Test func endingWhileComparingCancelsTheCeremony() async {
+        let session = CountingSession()
+        let model = PairingModel(makeSession: { session }, store: InMemoryPairedPeerStore())
+        await model.start()
+        await eventually { model.phase == .comparing(code: "123 456") }
+
+        await model.end()
+
+        #expect(await session.cancels == 1)
+        await eventually { model.phase == .failed(.cancelled) }
+        #expect(model.phase == .failed(.cancelled))
+    }
+
+    @Test func endingWhileTheSessionIsStillStartingCancelsItOnArrival() async {
+        let session = CountingSession()
+        let model = PairingModel(makeSession: {
+            try await Task.sleep(for: .milliseconds(50))
+            return session
+        }, store: InMemoryPairedPeerStore())
+        let starting = Task { await model.start() }
+        await eventually { model.phase == .starting }
+
+        await model.end()
+        await starting.value
+
+        #expect(await session.cancels == 1)
+        #expect(model.phase == .failed(.cancelled))
+    }
+
+    @Test func endingAfterPairingChangesNothing() async throws {
+        let store = InMemoryPairedPeerStore()
+        let peer = Fixtures.peer("Maya")
+        let model = PairingModel(makeSession: { ScriptedPairingSession(code: "1", peer: peer) }, store: store)
+        await model.start()
+        await eventually { model.phase == .comparing(code: "1") }
+        await model.confirm(codesMatch: true)
+        await eventually { if case .naming = model.phase { true } else { false } }
+        await model.saveNickname()
+        let paired = model.phase
+
+        await model.end()
+        #expect(model.phase == paired)
+        #expect(try await store.all().count == 1)
+    }
+}
+
 @MainActor
 @Suite struct FriendsModelTests {
     @Test func listsRenamesAndRemovesFriends() async throws {

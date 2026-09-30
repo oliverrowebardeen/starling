@@ -56,6 +56,8 @@ struct PairingView: View {
             }
         }
         .navigationTitle("Pair a friend")
+        // Covers a swipe down on the sheet as well as Close.
+        .onDisappear { Task { await model.end() } }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Close") {
