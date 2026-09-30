@@ -86,7 +86,7 @@ public struct FoundationModelsAgent: AgentModel {
         let start = clock.now
         let response: LanguageModelSession.Response<Output>
         do {
-            response = try await session.respond(to: prompt, generating: type, options: GenerationOptions(sampling: .greedy))
+            response = try await session.respond(to: prompt, generating: type, options: Self.greedy)
         } catch {
             throw Self.map(error)
         }
@@ -118,6 +118,16 @@ public struct FoundationModelsAgent: AgentModel {
             inputTokens: Self.estimate(instructions) + Self.estimate(prompt) + Self.estimate(schemaText),
             outputTokens: Self.estimate(response)
         )
+    }
+
+    /// Greedy sampling, so repeated bench runs are comparable. The Xcode 27
+    /// SDK renamed the initializer's first argument.
+    static var greedy: GenerationOptions {
+        #if compiler(>=6.4)
+        GenerationOptions(samplingMode: .greedy)
+        #else
+        GenerationOptions(sampling: .greedy)
+        #endif
     }
 
     /// TN3193: roughly three to four characters per token for English.
