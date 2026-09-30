@@ -11,7 +11,7 @@ Lanes work in parallel worktrees and must only touch directories they own. A sin
 ## Decision
 
 1. Each directory under `Packages/` is its own SwiftPM package with its own `Package.swift`, owned by one lane. Dependencies between packages are local path dependencies (`.package(path: "../StarlingCore")`).
-2. `StarlingCore` depends on nothing but Foundation. Every other package may depend on `StarlingCore`. Dependencies between non-core packages go through the Orchestrator.
+2. `StarlingCore` depends only on Apple system frameworks: Foundation, plus CryptoKit for SHA-256 key fingerprints (added in v1, 2026-09-30). No third-party dependencies. Every other package may depend on `StarlingCore`. Dependencies between non-core packages go through the Orchestrator.
 3. Manifests use `swift-tools-version: 6.2`, which defaults to the Swift 6 language mode and complete strict concurrency checking. Platforms: `.iOS("27.0")` and `.macOS(.v26)` (ADR 0001).
 4. `StarlingCore` ships a second library product, `StarlingFakes`, with deterministic fakes (scripted `AgentModel`, static availability, the insecure PSI stub). Every lane tests against it.
 5. Warnings fail CI through `-Xswiftc -warnings-as-errors` on the command line, not in manifests, so local iteration stays quick.
