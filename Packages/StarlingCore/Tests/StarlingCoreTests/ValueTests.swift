@@ -17,13 +17,17 @@ import Testing
 
     /// 62 ASCII zeros plus "é" is 64 UTF-8 bytes but 63 characters. Parsing
     /// must throw, not index past the end of the string.
-    @Test(arguments: [
+    // An explicitly typed static list: as an inline array of `+`
+    // expressions inside @Test, Swift 6.4 timed out type-checking it.
+    static let hostileHex: [String] = [
         String(repeating: "0", count: 62) + "é",
         String(repeating: "0", count: 60) + "😀",
         String(repeating: "０", count: 21) + "0",
         String(repeating: "0", count: 63) + "g",
         "+" + String(repeating: "0", count: 63),
-    ])
+    ]
+
+    @Test(arguments: hostileHex)
     func rejectsNonHexWithoutCrashing(hex: String) {
         #expect(throws: ValidationError.self) { try PeerID(hex: hex) }
     }
