@@ -44,6 +44,10 @@ package enum Grounding {
         return words.contains { named.contains($0) }
     }
 
+    /// Words that put unmarked hours in the morning, or later in the day.
+    static let morningWords: Set<String> = ["morning", "breakfast", "am"]
+    static let laterWords: Set<String> = ["afternoon", "evening", "tonight", "night", "pm"]
+
     /// Words that name each part of the day. "Dinner" is left out on
     /// purpose: "want dinner" names an activity, not a time.
     static let partWords: [RawRules.PartOfDay: Set<String>] = [
@@ -55,8 +59,10 @@ package enum Grounding {
 
     /// Keeps only hours the message states, then puts them on a 24-hour
     /// clock. The small model fills hours nobody said (23 as "no end") and
-    /// copies "7" from "at 7"; people making plans with friends mean the
-    /// afternoon or evening unless they say "am" or "morning".
+    /// copies "7" from "at 7". An hour follows its own "am" or "pm", then
+    /// the half of the day the message states ("morning", "tonight"), and
+    /// otherwise the plans-with-friends default: 1 to 7 is afternoon or
+    /// evening.
     static func hours(_ raw: RawRules, words: [String]) -> (Int?, Int?) {
         let stated = numbers(in: words)
         let saysNoon = words.contains("noon")
@@ -77,7 +83,11 @@ package enum Grounding {
         var latest = grounded(raw.latestHour)
         // A single point in time ("at 3", "after 9") is a start, not a window.
         if let from = earliest, from == latest { latest = nil }
-        let later = (saysPM && !saysAM) || raw.partOfDay == .afternoon || raw.partOfDay == .evening
+        // Midnight as an end is the end of the day, not its start.
+        if latest == 0 { latest = 24 }
+        // Which half of the day the message states, apart from any one hour.
+        let morning = raw.partOfDay == .morning || saysAM || words.contains { morningWords.contains($0) }
+        let later = raw.partOfDay == .afternoon || raw.partOfDay == .evening || saysPM || words.contains { laterWords.contains($0) }
         func clock(_ hour: Int?) -> Int? {
             guard let hour, (1...11).contains(hour) else { return hour }
             // An hour with its own "am" or "pm" ("9am to 1pm") follows it,
@@ -87,9 +97,15 @@ package enum Grounding {
             case ["pm"]?: return hour + 12
             default: break
             }
-            if saysAM && !saysPM { return hour }
-            if hour <= 6 || later { return hour + 12 }
-            return hour
+            switch (morning, later) {
+            // "tomorrow morning after 6" is 6; "morning until 1" is 13.
+            case (true, false): return hour >= 5 ? hour : hour + 12
+            case (false, true): return hour + 12
+            // Neither or both: plans with friends at 1 to 7 mean the
+            // afternoon or evening ("at 7" is 19); 8 to 11 keep the model's
+            // reading.
+            default: return hour <= 7 ? hour + 12 : hour
+            }
         }
         let unmarkedStart = earliest.map { marked[$0] == nil } ?? false
         let unmarkedEnd = latest.map { marked[$0] == nil } ?? false

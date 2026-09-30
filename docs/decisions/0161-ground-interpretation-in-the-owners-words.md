@@ -22,7 +22,7 @@ Four schema and prompt variants were measured. They helped the day and budget fi
    - an activity must share a word with the message and must not be a rule fragment (negations, prices, times, sharing words, pronouns); an avoid loses a leading "no" instead of being dropped
    - a budget, day, part of day, or clock hour must be stated (digits, number words, "noon", "midnight", or the day's name)
    - a never-share flag needs both a privacy word (share, tell, private, secret, know, hide, reveal, disclose) and a word naming that field
-   - stated hours go on a 24-hour clock: "at 7" means 19 unless the message says "am" or "morning"
+   - stated hours go on a 24-hour clock: an hour follows its own "am" or "pm" ("9am to 1pm"); otherwise a stated morning keeps 5 to 11 in the morning ("tomorrow morning after 6"), a stated afternoon, evening, tonight, or pm moves 1 to 11 later, and with neither, 1 to 7 means the afternoon or evening ("at 7" is 19); midnight as an end is 24
 3. Grounding never adds a value. The owner still reviews every interpretation (brief 2.5).
 
 ## Consequences

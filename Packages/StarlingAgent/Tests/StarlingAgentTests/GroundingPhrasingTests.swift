@@ -1,0 +1,75 @@
+@testable import StarlingAgent
+import Testing
+
+/// Phrasing families the grounder must preserve. Each row is a correct
+/// model output for the phrase (the 24-hour value, and where the model
+/// tends to copy it, the 12-hour copy too) and what must survive grounding.
+/// Written after two review rounds found edge cases one at a time.
+@Suite struct GroundingPhrasingTests {
+    struct Hours: Sendable, CustomTestStringConvertible {
+        let text: String
+        let part: RawRules.PartOfDay?
+        let from: Int?, to: Int?
+        let expectedFrom: Int?, expectedTo: Int?
+        init(_ text: String, _ part: RawRules.PartOfDay?, _ from: Int?, _ to: Int?, _ expectedFrom: Int?, _ expectedTo: Int?) {
+            self.text = text
+            self.part = part
+            self.from = from
+            self.to = to
+            self.expectedFrom = expectedFrom
+            self.expectedTo = expectedTo
+        }
+        var testDescription: String { "\(text) [\(from.map(String.init) ?? "nil")-\(to.map(String.init) ?? "nil")]" }
+    }
+
+    @Test(arguments: [
+        // A stated morning keeps small hours in the morning.
+        Hours("tomorrow morning after 6", .morning, 6, nil, 6, nil),
+        Hours("morning run at 5", .morning, 5, nil, 5, nil),
+        Hours("coffee at 8 in the morning", .morning, 8, nil, 8, nil),
+        Hours("saturday morning 9 to 11", .morning, 9, 11, 9, 11),
+        Hours("breakfast at 7", .morning, 7, nil, 7, nil),
+        Hours("free in the am from 6", nil, 6, nil, 6, nil),
+        Hours("morning until noon", .morning, nil, 12, nil, 12),
+        // Hours with their own am or pm.
+        Hours("after 6pm", nil, 6, nil, 18, nil),
+        Hours("after 6pm", nil, 18, nil, 18, nil),
+        Hours("at 7am", nil, 7, nil, 7, nil),
+        Hours("9am to 1pm", nil, 9, 13, 9, 13),
+        Hours("9 am to 1 pm", nil, 9, 1, 9, 13),
+        Hours("12pm to 2pm", nil, 12, 2, 12, 14),
+        // No am or pm: plans with friends default to the afternoon or evening.
+        Hours("at 7", nil, 7, nil, 19, nil),
+        Hours("free after 3", nil, 3, nil, 15, nil),
+        Hours("between 5 and 7", nil, 5, 7, 17, 19),
+        Hours("from 9 to 1pm", nil, 9, 1, 9, 13),
+        // Named afternoon, evening, tonight.
+        Hours("this afternoon at 2", .afternoon, 2, nil, 14, nil),
+        Hours("this afternoon at 2", .afternoon, 14, nil, 14, nil),
+        Hours("this afternoon until 4", .afternoon, nil, 4, nil, 16),
+        Hours("tonight after 8", .evening, 8, nil, 20, nil),
+        Hours("tonight after 8", .evening, 20, nil, 20, nil),
+        Hours("tonight until 11", .evening, nil, 11, nil, 23),
+        Hours("tonight until 11", .evening, nil, 23, nil, 23),
+        Hours("evening from 6 to 9", .evening, 6, 9, 18, 21),
+        // Noon and midnight.
+        Hours("from noon to 3", nil, 12, 3, 12, 15),
+        Hours("from noon to 3", nil, 12, 15, 12, 15),
+        Hours("until midnight tonight", .evening, nil, 24, nil, 24),
+        Hours("until midnight tonight", .evening, nil, 0, nil, 24),
+        // Ranges that cross noon.
+        Hours("from 10 to 2", nil, 10, 2, 10, 14),
+        Hours("from 10 to 2", nil, 10, 14, 10, 14),
+        Hours("11 to 1 tomorrow", nil, 11, 1, 11, 13),
+        Hours("from 11am to 2", nil, 11, 2, 11, 14),
+        Hours("8 to 12", nil, 8, 12, 8, 12),
+        // Already on a 24-hour clock.
+        Hours("from 14:00 to 16:00", nil, 14, 16, 14, 16),
+        Hours("at 19:30", nil, 19, nil, 19, nil),
+    ])
+    func hours(_ row: Hours) {
+        let checked = Grounding.check(RawRules(partOfDay: row.part, earliestHour: row.from, latestHour: row.to), against: row.text)
+        #expect(checked.earliestHour == row.expectedFrom, "start")
+        #expect(checked.latestHour == row.expectedTo, "end")
+    }
+}
