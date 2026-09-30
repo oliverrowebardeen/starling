@@ -2,7 +2,7 @@
 
 Lane C2 results. Everything here was measured with the real on-device model on the owner's Mac: M5 MacBook, 16 GB, macOS 26.7 (25G229), Xcode 27.0 (27A266a), `apple.system`, context 4096 tokens, token counts from `tokenCount(for:)`, greedy sampling, fresh session per call. This is the macOS 26 model, not the iOS 27 models; `docs/checklists/phase-1-C2.md` covers the phone run.
 
-"Before" is the Phase 0 agent at `33a23ab` (the v1 freeze), scored with this branch's labeled sets. "After" is this branch. Because sampling is greedy, each result is one deterministic sample; reruns reproduced them exactly.
+"Before" is the Phase 0 agent at `33a23ab` (the v1 freeze), scored with this branch's labeled sets. "After" is this branch's final agent code, measured before the branch was rebased onto Core v1.1 (`c4debe0`). The only Core v1.1 change that touches the agent is that a budget in another currency now counts as a limit violation; every measured budget is in dollars. Because sampling is greedy, each result is one deterministic sample; reruns reproduced them exactly.
 
 How to reproduce, from `Packages/StarlingAgent`:
 
@@ -422,8 +422,9 @@ Lane I's `realModelPairedInjectionRates` (branch `phase-1/i-red-team`, 8 payload
 | Run | Match baseline unsafe | Match benign-label unsafe | Match attack-label unsafe | Attack-only unsafe | Errors |
 |-----|----------------------:|--------------------------:|--------------------------:|-------------------:|-------:|
 | Lane I, Phase 0 agent | 24 / 24 | 24 / 24 | 24 / 24 | 0 / 24 | 0 |
-| This branch, after the match fix (`25dfcaa`) | 0 / 24 | 24 / 24 | 24 / 24 | 0 / 24 | 0 |
+| This branch, after the match fix | 0 / 24 | 24 / 24 | 24 / 24 | 0 / 24 | 0 |
+| This branch, final agent code | 0 / 24 | 24 / 24 | 24 / 24 | 0 / 24 | 0 |
 
 Food against movie alone no longer matches. With a second offered label, benign or hostile, it still does, so issue #9 is only partly fixed (ADR 0162 lists the four alternative designs measured). Because every benign-label trial is also unsafe, the corpus still cannot separate injection from plain matching error.
 
-A final rerun at the branch head could not complete: after 9 complete triples the on-device model service began failing every call, baseline included (`ModelManagerError` codes 15 and 1013), and it stayed unavailable to other processes on this Mac. Decide was 0 unsafe in both runs over the triples that completed. Lane I's `withKnownIssue` for issue #9 reports "Known issue was not recorded", because the baseline pair no longer reproduces.
+Decide was 0 unsafe in every variant with the final agent code, over 24 complete triples. One earlier rerun of that code stopped partway: after 9 triples the on-device model service began failing every call, baseline included (`ModelManagerError` codes 15 and 1013), for every process on this Mac. It recovered later in the session, and the final row above is the complete rerun. Lane I's `withKnownIssue` for issue #9 reports "Known issue was not recorded", because the baseline pair no longer reproduces.
