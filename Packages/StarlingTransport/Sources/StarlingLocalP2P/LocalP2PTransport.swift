@@ -44,8 +44,12 @@ public actor LocalP2PTransport: Transport {
     private var links: [PeerID: Link] = [:]
     /// In-flight outgoing connection attempts, by service name.
     private var dialTasks: [String: Task<Void, Never>] = [:]
-    /// Fallback dials waiting out `DialRule.fallbackDelay`, by service name.
+    /// Scheduled dials (fallback waits and retries), by service name.
     private var waitTasks: [String: Task<Void, Never>] = [:]
+    /// Services currently advertised, from the browser's latest results.
+    private var advertised: [String: Bonjour.Endpoint] = [:]
+    /// Consecutive failed attempts per service; reset when a link comes up.
+    private var retryAttempts: [String: Int] = [:]
     private var listenerTask: Task<Void, Never>?
     private var browserTask: Task<Void, Never>?
 
@@ -114,6 +118,7 @@ public actor LocalP2PTransport: Transport {
         for task in waitTasks.values { task.cancel() }
         dialTasks.removeAll()
         waitTasks.removeAll()
+        advertised.removeAll()
         let open = links
         links.removeAll()
         for (peer, link) in open {
@@ -123,28 +128,54 @@ public actor LocalP2PTransport: Transport {
         continuation.finish()
     }
 
-    // MARK: - Discovery
+    // MARK: - Discovery and redial
 
     private func discovered(_ endpoints: [Bonjour.Endpoint]) {
         guard state == .started else { return }
-        for endpoint in endpoints where endpoint.name != serviceName {
-            if DialRule.shouldDialImmediately(ownServiceName: serviceName, discovered: endpoint.name) {
-                dial(endpoint)
-            } else if !isLinked(serviceName: endpoint.name), waitTasks[endpoint.name] == nil {
-                // The other side should dial us. Dial anyway if it has not
-                // after a short wait, in case it cannot see our service.
-                waitTasks[endpoint.name] = Task { [weak self] in
-                    try? await Task.sleep(for: DialRule.fallbackDelay)
-                    guard !Task.isCancelled else { return }
-                    await self?.fallbackDial(endpoint)
-                }
-            }
+        advertised = Dictionary(
+            endpoints.filter { $0.name != serviceName }.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Stop waiting on services that disappeared.
+        for (name, task) in waitTasks where advertised[name] == nil {
+            task.cancel()
+            waitTasks[name] = nil
+        }
+        retryAttempts = retryAttempts.filter { advertised[$0.key] != nil }
+        for name in advertised.keys.sorted() { connect(to: name, after: .zero) }
+    }
+
+    /// Connects to an advertised service unless already linked or trying.
+    /// The side whose service name sorts higher dials after `delay`; the other
+    /// waits at least `DialRule.fallbackDelay`, in case discovery was one-sided.
+    private func connect(to name: String, after delay: Duration) {
+        guard canConnect(to: name) else { return }
+        let wait = DialRule.shouldDialImmediately(ownServiceName: serviceName, discovered: name)
+            ? delay
+            : max(delay, DialRule.fallbackDelay)
+        guard wait > .zero else {
+            dial(name)
+            return
+        }
+        waitTasks[name] = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled else { return }
+            await self?.waitFinished(name)
         }
     }
 
-    private func dial(_ endpoint: Bonjour.Endpoint) {
-        let name = endpoint.name
-        guard state == .started, dialTasks[name] == nil, !isLinked(serviceName: name) else { return }
+    private func canConnect(to name: String) -> Bool {
+        state == .started && advertised[name] != nil && !isLinked(serviceName: name)
+            && dialTasks[name] == nil && waitTasks[name] == nil
+    }
+
+    private func waitFinished(_ name: String) {
+        waitTasks[name] = nil
+        dial(name)
+    }
+
+    private func dial(_ name: String) {
+        guard state == .started, let endpoint = advertised[name], dialTasks[name] == nil, !isLinked(serviceName: name) else { return }
         let connection = Connection(to: endpoint.nwEndpoint, using: parameters())
         dialTasks[name] = Task { [weak self] in
             await self?.runLink(connection, direction: .outgoing)
@@ -152,18 +183,34 @@ public actor LocalP2PTransport: Transport {
         }
     }
 
-    private func fallbackDial(_ endpoint: Bonjour.Endpoint) {
-        waitTasks[endpoint.name] = nil
-        dial(endpoint)
+    private func finishedDialing(_ name: String) {
+        dialTasks[name] = nil
+        // Covers both a dial that never linked and an outgoing link that
+        // dropped (its `unregister` ran while this dial task still existed).
+        retry(name)
+    }
+
+    /// Schedules a bounded, backed-off redial if the service is still
+    /// advertised and nothing is linked or in flight. Only counts an attempt
+    /// when it actually schedules one.
+    private func retry(_ name: String) {
+        guard canConnect(to: name) else { return }
+        let attempt = retryAttempts[name, default: 0] + 1
+        guard let delay = RetryPolicy.delay(forAttempt: attempt) else {
+            log("giving up on \(name) after \(RetryPolicy.maxAttempts) attempts")
+            return
+        }
+        retryAttempts[name] = attempt
+        connect(to: name, after: delay)
     }
 
     private func isLinked(serviceName name: String) -> Bool {
         links.values.contains { $0.serviceName == name }
     }
 
-    private func finishedDialing(_ name: String) {
-        // Allow a redial if the service is still advertised later.
-        dialTasks[name] = nil
+    /// Simulates every link failing (without stopping), for tests of redial.
+    package func dropLinksForTesting() {
+        for link in links.values { link.task.cancel() }
     }
 
     /// Dials and fallback waits still pending. Zero after `stop()`.
@@ -260,14 +307,19 @@ public actor LocalP2PTransport: Transport {
             return true
         }
         links[remote] = link
+        retryAttempts[link.serviceName] = nil
         continuation.yield(.peerAvailable(remote))
         return true
     }
 
     private func unregister(id: UUID, for remote: PeerID) {
-        guard links[remote]?.id == id else { return }
+        guard let link = links[remote], link.id == id else { return }
         links.removeValue(forKey: remote)
-        if state == .started { continuation.yield(.peerUnavailable(remote)) }
+        guard state == .started else { return }
+        continuation.yield(.peerUnavailable(remote))
+        // An incoming link has no dial task to retry for it; do it here. For
+        // an outgoing link this is a no-op and `finishedDialing` retries.
+        retry(link.serviceName)
     }
 
     private func parameters() -> NWParametersBuilder<TLV> {

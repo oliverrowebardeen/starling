@@ -38,6 +38,15 @@ import Testing
     }
 }
 
+@Suite struct RetryPolicyTests {
+    @Test func backsOffThenGivesUp() {
+        let delays = (1...RetryPolicy.maxAttempts).map { RetryPolicy.delay(forAttempt: $0) }
+        #expect(delays == [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16)])
+        #expect(RetryPolicy.delay(forAttempt: 0) == nil)
+        #expect(RetryPolicy.delay(forAttempt: RetryPolicy.maxAttempts + 1) == nil)
+    }
+}
+
 @Suite struct LinkArbiterTests {
     /// The connection A dials to B is outgoing for A and incoming for B. Both
     /// sides must keep that same connection, or they each drop the other's

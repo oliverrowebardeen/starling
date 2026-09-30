@@ -83,6 +83,30 @@ struct LocalP2PIntegrationTests {
         #expect(trailing.contains(.peerUnavailable(b.localPeer)))
     }
 
+    /// A link that fails while both services stay advertised must be redialed;
+    /// the browser reports no change, so nothing else would reconnect it.
+    @Test(.timeLimit(.minutes(1)))
+    func droppedLinksAreRedialedWhileThePeerIsAdvertised() async throws {
+        let a = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        let b = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        try await a.start()
+        try await b.start()
+        defer { Task { await a.stop(); await b.stop() } }
+        try await waitForPeer(b.localPeer, on: a)
+
+        await a.dropLinksForTesting()
+        var sawDrop = false
+        for await event in a.events {
+            if event == .peerUnavailable(b.localPeer) { sawDrop = true }
+            if sawDrop, event == .peerAvailable(b.localPeer) { break }
+        }
+        #expect(sawDrop)
+
+        let payload = try Frame(Data("after redial".utf8))
+        try await a.send(payload, to: b.localPeer)
+        for await event in b.events where event == .received(payload, from: a.localPeer) { break }
+    }
+
     private func waitForPeer(_ peer: PeerID, on transport: LocalP2PTransport) async throws {
         for await event in transport.events {
             if event == .peerAvailable(peer) { return }

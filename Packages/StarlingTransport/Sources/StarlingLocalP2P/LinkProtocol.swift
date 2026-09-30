@@ -63,6 +63,19 @@ package enum DialRule {
     }
 }
 
+/// Backoff for redialing an advertised peer whose link dropped or whose dial
+/// failed. The browser only reports discovery changes, so without retries a
+/// pair can stay disconnected while both services remain advertised.
+package enum RetryPolicy {
+    package static let maxAttempts = 5
+
+    /// 1, 2, 4, 8, then 16 seconds; nil once attempts are exhausted.
+    package static func delay(forAttempt attempt: Int) -> Duration? {
+        guard (1...maxAttempts).contains(attempt) else { return nil }
+        return .seconds(1 << (attempt - 1))
+    }
+}
+
 package enum LinkDirection: Hashable, Sendable {
     case outgoing, incoming
 }
