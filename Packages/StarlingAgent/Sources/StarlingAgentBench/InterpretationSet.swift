@@ -65,4 +65,31 @@ public enum InterpretationSet {
         .init("keep my schedule and budget secret", neverShare: [.time, .budget]),
         .init("tell them my budget if needed, want sushi tomorrow at 1", day: .tomorrow, from: 13...13, to: 14...24, wants: ["sushi"]),
     ]
+
+    /// Written after the grounding checks were tuned on `labels`, and never
+    /// used to tune them, so its score shows how the fixes generalize. Do
+    /// not change the agent to fix a failure here without adding fresh
+    /// held-out items.
+    public static let heldOut: [InterpretationLabel] = [
+        .init("wanna grab pho thursday around 6, nothing pricey, under 18", day: .thursday, from: 18...18, to: lateEnd, wants: ["pho"], budget: 18),
+        .init("keep my location to myself please, free this afternoon", day: .today, from: 12...13, to: 17...18, neverShare: [.place]),
+        .init("sunday brunch at 11, ten bucks max", day: .sunday, from: 11...11, to: 12...24, wants: ["brunch"], budget: 10),
+        .init("not into karaoke or clubs, would love a board game night friday", day: .friday, from: evening, to: lateEnd, wants: ["board games|board game|game night"], avoids: ["karaoke", "clubs|club"]),
+        .init("I can hang out from 4 to 6 tomorrow", day: .tomorrow, from: 16...16, to: 18...18),
+        .init("cheap food only, nothing above $8, and don't tell anyone where I live", wants: ["food|cheap food"], budget: 8, neverShare: [.place]),
+        .init("saturday, basketball or a run, not before 9am", day: .saturday, from: 9...9, wants: ["basketball", "run|running"]),
+        .init("no alcohol, want bubble tea", wants: ["bubble tea|boba"], avoids: ["alcohol"]),
+        .init("I'd rather nobody knows my schedule. coffee wednesday morning", day: .wednesday, from: 6...9, to: 11...12, wants: ["coffee"], neverShare: [.time]),
+        .init("free after 5 on friday, $30 budget, bowling", day: .friday, from: 17...17, to: lateEnd, wants: ["bowling"], budget: 30),
+        .init("tonight but only until 11", day: .today, from: evening, to: 23...23),
+        .init("it's fine if people see my budget. want tacos tuesday", day: .tuesday, wants: ["tacos"]),
+        .init("lunch tomorrow, sandwiches, fifteen dollars max", day: .tomorrow, from: 11...12, to: 13...14, wants: ["sandwiches|sandwich"], budget: 15),
+        .init("avoid anything with peanuts, want dessert tonight", day: .today, from: evening, to: lateEnd, wants: ["dessert"], avoids: ["peanuts|peanut"]),
+        .init("don't share how much I spend or where I am", neverShare: [.budget, .place]),
+        .init("movie on saturday evening, max 20", day: .saturday, from: evening, to: lateEnd, wants: ["movie"], budget: 20),
+        .init("study session at the library tomorrow from 2 to 5", day: .tomorrow, from: 14...14, to: 17...17, wants: ["study|library|study session"]),
+        .init("pizza or burgers, under twenty five dollars", wants: ["pizza", "burgers|burger"], budget: 25),
+        .init("free all evening thursday, keep my plans private", day: .thursday, from: evening, to: lateEnd, neverShare: [.time]),
+        .init("want to go climbing, no later than 8pm, today", day: .today, from: 0...12, to: 20...20, wants: ["climbing|climb"]),
+    ]
 }
