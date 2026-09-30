@@ -96,7 +96,7 @@ public struct NegotiationBench: Sendable {
                 switch result.value {
                 case .accept:
                     outcome = "accept"
-                    violations = HardLimits.violations(of: terms, against: constraints, timeZone: timeZone)
+                    violations = constraints.violations(of: terms, timeZone: timeZone).map(\.description)
                     detail = Self.describe(terms, timeZone: timeZone)
                 case .reject(let reason):
                     outcome = "reject"
@@ -104,7 +104,7 @@ public struct NegotiationBench: Sendable {
                     detail = reason.rawValue
                 case .counter(let counter):
                     outcome = "counter"
-                    violations = HardLimits.violations(of: counter, against: constraints, timeZone: timeZone)
+                    violations = constraints.violations(of: counter, timeZone: timeZone).map(\.description)
                     detail = Self.describe(counter, timeZone: timeZone)
                     terms = counter
                 }
