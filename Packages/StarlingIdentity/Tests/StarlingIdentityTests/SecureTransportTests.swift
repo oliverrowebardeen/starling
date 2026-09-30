@@ -469,6 +469,53 @@ import Testing
         try await bob.waitForMessages(1)
     }
 
+    /// Review 2 finding 3: every confirm (or every acknowledgement) is lost,
+    /// so no rolled-over session is ever confirmed, and Alice keeps sending,
+    /// so each session soon hits the cap. Replacing an unconfirmed session
+    /// must count against the restart budget, so handshakes stop instead of
+    /// growing without bound.
+    @Test(arguments: [(UInt64(2), false), (2, true), (3, false), (3, true), (4, false), (4, true)])
+    func capRolloversOfUnconfirmedSessionsAreBounded(cap: UInt64, loseAcks: Bool) async throws {
+        let hub = LoopbackHub()
+        let wire = await recordDeliveries(hub)
+        let configuration = SecureTransportConfiguration(maxMessagesPerSession: cap, handshakeTimeout: .milliseconds(200), handshakeAttempts: 3)
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true, configuration: configuration)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey], faulty: true, configuration: configuration)
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        try await eventually("S0 confirmed") {
+            let aliceBusy = await alice.secure.status(of: bob.id).handshakeInProgress
+            let bobBusy = await bob.secure.status(of: alice.id).handshakeInProgress
+            return !aliceBusy && !bobBusy
+        }
+
+        let lossy = try #require((loseAcks ? bob.link : alice.link) as? FaultyLink)
+        await lossy.drop(nextTransportFrames: .max, controlOnly: true)
+        let before = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count
+        let sender = Task {
+            let deadline = ContinuousClock.now + .milliseconds(1_500)
+            var index = 0
+            while ContinuousClock.now < deadline {
+                try? await alice.secure.send(Frame(Data("m\(index)".utf8)), to: bob.id)
+                index += 1
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        try await Task.sleep(for: .milliseconds(1_000))
+        let atOneSecond = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count - before
+        await sender.value
+        let atEnd = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count - before
+
+        // One replacement of the confirmed S0, then at most
+        // maxUnconfirmedRestarts replacements of unconfirmed sessions.
+        let budget = 1 + SecureTransport.maxUnconfirmedRestarts
+        #expect(atOneSecond >= 2, "the cap should force at least one unconfirmed replacement")
+        #expect(atOneSecond <= budget, "\(atOneSecond) handshakes after 1 s")
+        #expect(atEnd == atOneSecond, "handshakes kept growing: \(atOneSecond) then \(atEnd)")
+    }
+
     @Test func stopFinishesEvents() async throws {
         let (alice, _) = try await pair()
         await alice.secure.stop()

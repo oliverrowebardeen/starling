@@ -193,6 +193,8 @@ public actor SecureTransport: Transport {
     /// pairing. The current session, if any, keeps working until it succeeds.
     public func reconnect(_ peer: PeerID) async {
         guard state == .started else { return }
+        if let current = peers[peer]?.current, !current.confirmed,
+           !spendRestart(peer, replacingUnconfirmed: true) { return }
         await initiate(with: peer)
     }
 
@@ -378,10 +380,8 @@ public actor SecureTransport: Transport {
             await sendControl(.confirm, to: peer)
             return
         }
-        let restarts = (peers[peer]?.unconfirmedRestarts ?? 0) + 1
         rollOver(peer)
-        peers[peer]?.unconfirmedRestarts = restarts
-        if restarts <= Self.maxUnconfirmedRestarts { await initiate(with: peer) }
+        if spendRestart(peer, replacingUnconfirmed: true) { await initiate(with: peer) }
     }
 
     /// Sends a confirm or acknowledgement under the current session. Best
@@ -483,8 +483,11 @@ public actor SecureTransport: Transport {
         guard nonce < configuration.maxMessagesPerSession else {
             // We may not send on it again, but the peer may still send on it
             // until our new session reaches it: rollOver keeps it for receiving.
+            let unconfirmed = !channel.confirmed
             rollOver(peer)
-            Task { await self.initiate(with: peer) }
+            if spendRestart(peer, replacingUnconfirmed: unconfirmed) {
+                Task { await self.initiate(with: peer) }
+            }
             throw TransportError.peerUnreachable(peer)
         }
         var plaintext = Data(capacity: payload.count + 1)
@@ -548,6 +551,18 @@ public actor SecureTransport: Transport {
         guard peers[peer]?.current != nil, peers[peer]?.announced == false else { return }
         peers[peer]?.announced = true
         continuation.yield(.peerAvailable(peer))
+    }
+
+    /// Whether a new handshake may replace the current session. Replacing an
+    /// unconfirmed one (confirm timeout, nonce cap, reconnect) spends from a
+    /// budget of `maxUnconfirmedRestarts`, refilled only when a session is
+    /// confirmed or the link comes back. So a link that loses every confirm
+    /// or acknowledgement ends in silence, not in endless handshakes.
+    private func spendRestart(_ peer: PeerID, replacingUnconfirmed: Bool) -> Bool {
+        guard replacingUnconfirmed else { return true }
+        let restarts = (peers[peer]?.unconfirmedRestarts ?? 0) + 1
+        peers[peer]?.unconfirmedRestarts = restarts
+        return restarts <= Self.maxUnconfirmedRestarts
     }
 
     /// Moves the current session aside for receiving only, before a newer
