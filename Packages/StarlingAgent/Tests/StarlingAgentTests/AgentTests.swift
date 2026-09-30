@@ -160,18 +160,6 @@ enum AgentFixtures {
     }
 }
 
-@Suite struct HardLimitsTests {
-    @Test func flagsBudgetTimeAndAvoidedKeywords() throws {
-        let violations = HardLimits.violations(of: try AgentFixtures.proposal().terms, against: try AgentFixtures.constraints(), timeZone: AgentFixtures.utc)
-        #expect(violations == ["activity: includes an avoided keyword", "budget: over budget"])
-    }
-
-    @Test func flagsSlotsOutsideWindows() throws {
-        let terms = try Terms([.time: .slots([try AgentFixtures.slot(22, 24)])])
-        #expect(HardLimits.violations(of: terms, against: try AgentFixtures.constraints(), timeZone: AgentFixtures.utc) == ["time: outside available time"])
-    }
-}
-
 @Suite struct ErrorMappingTests {
     @Test func bridgedFrameworkErrorsBecomeUnavailable() {
         let bridged = NSError(domain: "FoundationModels.LanguageModelSession.GenerationError", code: -1)

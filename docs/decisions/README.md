@@ -6,7 +6,7 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 |-----|-------|--------|
 | [0001](0001-minimum-ios-27-and-xcode-27.md) | Minimum iOS 27, built with Xcode 27 | Accepted |
 | [0002](0002-context-budget-is-device-dependent.md) | Budget model context at runtime, design for 4096 | Accepted |
-| [0003](0003-message-layer-security.md) | Authenticate and encrypt at the message layer | Proposed |
+| [0003](0003-message-layer-security.md) | Authenticate and encrypt at the message layer | Accepted |
 | [0004](0004-localp2p-on-network-framework.md) | LocalP2P on the Network framework Swift API | Accepted |
 | [0005](0005-xcodegen-for-the-app-project.md) | Generate the app project with XcodeGen | Accepted |
 | [0006](0006-one-swiftpm-package-per-lane.md) | One SwiftPM package per lane | Accepted |

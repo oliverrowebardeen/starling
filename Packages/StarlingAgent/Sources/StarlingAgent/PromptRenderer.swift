@@ -44,9 +44,9 @@ package enum PromptRenderer {
         }
 
         lines.append("Proposal (round \(context.proposal.round + 1)):")
-        let conflicts = Set(HardLimits.violations(of: proposal, against: context.constraints, timeZone: timeZone).compactMap { $0.split(separator: ":").first.map(String.init) })
+        let conflicts = Set(context.constraints.violations(of: proposal, timeZone: timeZone).map(\.issue))
         for key in proposal.values.keys.sorted() {
-            let mark = conflicts.contains(key.rawValue) ? " BREAKS LIMIT" : ""
+            let mark = conflicts.contains(key) ? " BREAKS LIMIT" : ""
             lines.append("- \(key): \(describe(proposal.values[key]!, timeZone: timeZone))\(mark)")
         }
 
