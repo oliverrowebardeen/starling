@@ -21,7 +21,7 @@ struct RootView<Developer: View>: View {
         // The consent sheet can appear over any screen. Only the owner's
         // answer dismisses it (ConsentSheet), so the setter never declines.
         .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in
-            ConsentSheet(request: request, psiIsPrivate: app.services.psiIsPrivate) { app.consent.answer($0) }
+            ConsentSheet(request: request, psiIsPrivate: app.services.psiIsPrivate) { app.consent.answer($0, to: request.id) }
         }
     }
 

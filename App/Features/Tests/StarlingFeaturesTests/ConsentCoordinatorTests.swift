@@ -27,7 +27,7 @@ import Testing
             DisplayLine(title: "Matching step over your free times", detail: nil),
         ])
 
-        coordinator.answer(.approved)
+        coordinator.answerCurrent(.approved)
         #expect(await answer.value == .approved)
         #expect(coordinator.current == nil)
     }
@@ -51,11 +51,11 @@ import Testing
         try await Task.sleep(for: .milliseconds(20))
 
         #expect(coordinator.current?.recipientName == "A")
-        coordinator.answer(.declined)
+        coordinator.answerCurrent(.declined)
         #expect(await first.value == .declined)
 
         await eventually { coordinator.current?.recipientName == "B" }
-        coordinator.answer(.approved)
+        coordinator.answerCurrent(.approved)
         #expect(await second.value == .approved)
     }
 
@@ -86,7 +86,7 @@ import Testing
 
         let send = Task { try await outbox.send(body, to: maya.id, conversation: ConversationID()) }
         await eventually { coordinator.current != nil }
-        coordinator.answer(.declined)
+        coordinator.answerCurrent(.declined)
         await #expect(throws: OutboxError.consentDeclined) { try await send.value }
         #expect(await transport.sent.isEmpty)
     }
@@ -117,7 +117,7 @@ final class TestClock: @unchecked Sendable {
         let request = Task { await coordinator.requestConsent(for: disclosure) }
         for _ in 0..<50 where coordinator.current == nil { try? await Task.sleep(for: .milliseconds(1)) }
         let shown = coordinator.current != nil
-        if shown { coordinator.answer(answer) }
+        if shown { coordinator.answerCurrent(answer) }
         return (await request.value, shown)
     }
 
@@ -186,12 +186,79 @@ final class TestClock: @unchecked Sendable {
         let unrelated = Task { await consent.requestConsent(for: other) }
         try await Task.sleep(for: .milliseconds(20))
 
-        consent.answer(.declined)
+        consent.answerCurrent(.declined)
         #expect(await first.value == .declined)
         #expect(await retry.value == .declined)
         await eventually { consent.current?.disclosure == other }
         #expect(consent.current?.disclosure == other, "an unrelated request still gets its own sheet")
-        consent.answer(.approved)
+        consent.answerCurrent(.approved)
         #expect(await unrelated.value == .approved)
+    }
+}
+
+extension ConsentCoordinator {
+    /// Answers the request on screen, as the sheet does with its own id.
+    func answerCurrent(_ outcome: ConsentOutcome) {
+        guard let current else { return }
+        answer(outcome, to: current.id)
+    }
+}
+
+/// Review finding 2 on PR #15: an answer applies only to the request the
+/// sheet displayed.
+@MainActor
+@Suite struct ConsentAnswerBindingTests {
+    /// Lane F cancels the task running Outbox.send when Down ends a
+    /// conversation. A cancelled request leaves the queue whether or not its
+    /// sheet was showing, and is never shown afterwards.
+    @Test func aCancelledRequestLeavesTheQueueBeforeItsSheetShows() async throws {
+        let a = Fixtures.peer("A")
+        let b = Fixtures.peer("B")
+        let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([a, b]))
+        let first = Task { await consent.requestConsent(for: try! ConsentCoordinatorTests.disclosure(to: a.id)) }
+        await eventually { consent.current != nil }
+        let queued = Task { await consent.requestConsent(for: try! ConsentCoordinatorTests.disclosure(to: b.id)) }
+        try await Task.sleep(for: .milliseconds(20))
+
+        queued.cancel()
+        #expect(await queued.value == .declined)
+
+        consent.answerCurrent(.declined)
+        #expect(await first.value == .declined)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(consent.current == nil, "B's sheet never appears")
+    }
+
+    @Test func anAnswerForARequestThatIsGoneDoesNotApplyToTheNextOne() async throws {
+        let a = Fixtures.peer("A")
+        let b = Fixtures.peer("B")
+        let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([a, b]))
+        let first = Task { await consent.requestConsent(for: try! ConsentCoordinatorTests.disclosure(to: a.id)) }
+        await eventually { consent.current != nil }
+        let shownA = try #require(consent.current)
+        let second = Task { await consent.requestConsent(for: try! ConsentCoordinatorTests.disclosure(to: b.id)) }
+        try await Task.sleep(for: .milliseconds(20))
+
+        // A's send is cancelled while its sheet is still on screen (a
+        // timeout takes the same path); B becomes current.
+        first.cancel()
+        #expect(await first.value == .declined)
+        await eventually { consent.current?.recipientName == "B" }
+        let shownB = try #require(consent.current)
+
+        // The owner taps Send on A's sheet as it goes away.
+        consent.answer(.approved, to: shownA.id)
+        #expect(consent.current == shownB, "B is still waiting for its own answer")
+
+        // Nothing was remembered for A: asking again shows a sheet.
+        let again = Task { await consent.requestConsent(for: try! ConsentCoordinatorTests.disclosure(to: a.id)) }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(consent.current == shownB, "A's repeat waits behind B instead of being approved")
+
+        consent.answer(.declined, to: shownB.id)
+        #expect(await second.value == .declined)
+        await eventually { consent.current?.recipientName == "A" }
+        consent.answerCurrent(.declined)
+        #expect(await again.value == .declined)
     }
 }

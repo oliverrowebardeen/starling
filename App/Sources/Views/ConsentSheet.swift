@@ -66,7 +66,7 @@ struct ConsentSheet: View {
     @Previewable @State var app = PreviewSupport.app()
     Color.clear
         .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in
-            ConsentSheet(request: request, psiIsPrivate: false) { app.consent.answer($0) }
+            ConsentSheet(request: request, psiIsPrivate: false) { app.consent.answer($0, to: request.id) }
         }
         .task {
             let friend = try? await app.services.peers?.all().first

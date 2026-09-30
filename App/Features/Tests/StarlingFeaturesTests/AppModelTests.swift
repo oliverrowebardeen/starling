@@ -46,7 +46,7 @@ import Testing
         let disclosure = try ConsentCoordinatorTests.disclosure(to: maya.id)
         let first = Task { await app.consent.requestConsent(for: disclosure) }
         await eventually { app.consent.current != nil }
-        app.consent.answer(.approved)
+        app.consent.answerCurrent(.approved)
         #expect(await first.value == .approved)
         #expect(await app.consent.requestConsent(for: disclosure) == .approved, "remembered")
 
@@ -58,7 +58,7 @@ import Testing
         let second = Task { await app.consent.requestConsent(for: disclosure) }
         await eventually { app.consent.current != nil }
         #expect(app.consent.current != nil, "a new intent asks again")
-        app.consent.answer(.declined)
+        app.consent.answerCurrent(.declined)
         #expect(await second.value == .declined)
     }
 

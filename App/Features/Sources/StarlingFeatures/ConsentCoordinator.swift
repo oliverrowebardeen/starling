@@ -99,11 +99,14 @@ public final class ConsentCoordinator: ConsentProvider {
         }
     }
 
-    /// The owner's answer to the request on screen. It also answers any
-    /// queued request for the identical disclosure (a retry that arrived
-    /// while the sheet was open); only an approval is kept for later.
-    public func answer(_ outcome: ConsentOutcome) {
-        guard let current else { return }
+    /// The owner's answer on the sheet that showed request `id`. Ignored
+    /// unless that request is still the current one: a sheet on its way out
+    /// (timed out or cancelled) must not answer the request queued behind it.
+    /// It also answers any queued request for the identical disclosure (a
+    /// retry that arrived while the sheet was open); only an approval is
+    /// kept for later.
+    public func answer(_ outcome: ConsentOutcome, to id: Request.ID) {
+        guard let current, current.id == id else { return }
         if outcome == .approved { approvals[current.disclosure] = now() }
         for pending in queue where pending.request.disclosure == current.disclosure {
             resolve(pending.request.id, outcome)
