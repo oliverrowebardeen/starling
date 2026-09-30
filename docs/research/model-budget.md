@@ -39,6 +39,8 @@ Three runs, changing only the prompt and schema:
 
 Other tasks (run 3): `interpret` 434 in / 61 out max, p50 1411 ms; `match` 260 in / 71 out max, p50 1123 ms.
 
+Note (after the Codex review): run 3 had one failed call (an invalid option, not a context overflow), so it has no token count. The corrected bench now reports such a run as "incomplete" rather than "fits". The finding below still stands because the failure was not about size, but device runs should aim for zero unmeasured calls.
+
 ## 3. Findings
 
 1. **Budget: comfortable.** The worst single call was about 494 tokens (estimated), 12% of a 4096 window and a quarter of ADR 0002's 2048-token per-round budget. Per-round cost is flat because each round is a fresh session. Unless device counts come in several times higher than these estimates, **4096 fits realistic two-party and four-party rounds.**
