@@ -22,3 +22,12 @@ actor Recorder<Value: Sendable> {
     private(set) var values: [Value] = []
     func record(_ value: Value) { values.append(value) }
 }
+
+/// Polls until `condition` holds or two seconds pass. Models consume event
+/// streams on their own tasks, so tests wait for those tasks to catch up.
+@MainActor
+func eventually(_ condition: () -> Bool) async {
+    for _ in 0..<2000 where !condition() {
+        try? await Task.sleep(for: .milliseconds(1))
+    }
+}
