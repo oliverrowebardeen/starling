@@ -104,6 +104,8 @@ The app's side of the contract:
 
 For the "does matching hide free time" note, `downService.psiProvider.isPrivate` is `nonisolated` and needs no `await`. The app can also read `descriptor.isPrivate` from the provider it passed in.
 
+For the consent coordinator: when Down ends a conversation (the owner clears Down, the intent expires, or a friend's run ends), it cancels the task running that `Outbox.send`. The Outbox then sends nothing, whatever the owner answers. A sheet still on screen for a cancelled send should be dismissed; `ConsentProvider.requestConsent` can observe this with `withTaskCancellationHandler`.
+
 ### 2. One merged `OwnerRules` per intent
 
 Yes. One merged `OwnerRules` per intent (ADR 0141: constraints accumulate, the most restrictive sharing wins) is what `DownIntent.rules` expects. What Down reads from it:
@@ -117,3 +119,11 @@ Down does not read `disclosure`; the policy enforces it. Two consequences to sho
 
 - A `never` rule on `time` makes the policy refuse every PSI step, so Down cannot run at all.
 - A `never` rule on `activity` or `budget` makes the policy refuse that query, and the run with that friend ends without a match. Leaving withheld issues out of the exchange instead is a candidate Phase 2 change (ADR 0121).
+
+## Phase 2 candidates
+
+### Offer window intersections as options (from lane C2)
+
+Lane C2 found that two agents converge only on an option one of them listed. In the `down-2p` bench scenario the windows overlap (20:00 to 23:00), but neither side lists that overlap, and they reject after 6 rounds.
+
+Down v1 does not hit this: the time in the opening offer is the PSI intersection, computed in code, and the model never proposes a time (ADR 0121). It matters for Phase 2 negotiations where `decide` weighs times, such as scheduling and group decision. I agree with building in code the intersections of both sides' known windows and offering them to `decide` as options, the same "code lists compliant options, the model picks" pattern as ADR 0121. That is a design for the Phase 2 negotiation lane, not a Phase 1 change.
