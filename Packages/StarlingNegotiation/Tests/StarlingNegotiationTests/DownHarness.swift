@@ -105,11 +105,12 @@ final class DownNode: Sendable {
     func start() async throws {
         let inbox = Inbox(localPeer: id)
         let events = inbox.events(from: transport)
-        let negotiator = negotiator
+        // The app sees only the protocol.
+        let service: any DownService = negotiator
         let log = log
         tasks.withLock {
-            $0.append(Task { for await event in events { await negotiator.handle(event) } })
-            $0.append(Task { for await event in negotiator.events { await log.append(event) } })
+            $0.append(Task { for await event in events { await service.handle(event) } })
+            $0.append(Task { for await event in service.events { await log.append(event) } })
         }
         try await transport.start()
     }
