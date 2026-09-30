@@ -4,8 +4,10 @@ import DeviceDiscoveryUI
 import WiFiAware
 #endif
 
-/// The paired devices as rows. Embed it in a `List` or `Form` section; the
-/// default row is the device name. Tracks the system list while visible.
+/// A list of the paired devices, tracking the system list while visible. The
+/// default row is the device name. To embed rows in another list instead,
+/// use `ForEach(model.devices)` and call `model.track()` from that screen's
+/// `.task`.
 public struct WiFiAwarePairedDevicesList<Row: View>: View {
     private let model: WiFiAwarePairedDevices
     private let row: (WiFiAwarePairedDevice) -> Row
@@ -16,7 +18,9 @@ public struct WiFiAwarePairedDevicesList<Row: View>: View {
     }
 
     public var body: some View {
-        ForEach(model.devices) { device in
+        // The task hangs off the List, which always exists. On a ForEach it
+        // would run once per row, and never with no devices yet.
+        List(model.devices) { device in
             row(device)
         }
         .task { await model.track() }
