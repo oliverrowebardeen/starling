@@ -1,0 +1,54 @@
+# XcodeGen spec (ADR 0005). Generate with: xcodegen generate --spec App/project.yml
+# The generated App/Starling.xcodeproj is gitignored; never edit it by hand.
+name: Starling
+options:
+  bundleIdPrefix: com.oliverrowebardeen
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  StarlingCore:
+    path: ../Packages/StarlingCore
+  StarlingTransport:
+    path: ../Packages/StarlingTransport
+  StarlingAgent:
+    path: ../Packages/StarlingAgent
+targets:
+  Starling:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    configFiles:
+      Debug: Config/Starling.xcconfig
+      Release: Config/Starling.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.oliverrowebardeen.starling
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Sources/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Starling
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        MARKETING_VERSION: "0.0.1"
+        CURRENT_PROJECT_VERSION: "1"
+    dependencies:
+      - package: StarlingCore
+        product: StarlingCore
+      # Phase 0 only: allow-all policy and scripted doubles. Remove before TestFlight.
+      - package: StarlingCore
+        product: StarlingFakes
+      - package: StarlingTransport
+        product: StarlingTransport
+      - package: StarlingTransport
+        product: StarlingLocalP2P
+      - package: StarlingAgent
+        product: StarlingAgent
+      - package: StarlingAgent
+        product: StarlingAgentBench
