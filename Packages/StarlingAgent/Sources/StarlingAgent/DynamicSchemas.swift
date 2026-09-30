@@ -105,7 +105,7 @@ package struct DecisionSchema {
     package let schema: GenerationSchema
     /// Property names in generation order, for tests and debugging.
     package let properties: [String]
-    /// The moves offered. `["reject"]` alone means no model call is needed.
+    /// The moves offered. A single move means no model call is needed.
     package let moves: [String]
 
     package init(prompt: DecisionPrompt, proposal: Proposal) throws {
@@ -123,12 +123,15 @@ package struct DecisionSchema {
         // so it must change every broken issue, and needs a field to do it.
         let fixable: [IssueKey: Bool] = [.time: hasTime, .activity: hasActivity, .budget: budget != nil]
         let canCounter = prompt.brokenIssues.allSatisfy { fixable[$0] ?? false }
+        // Compliant terms with no preference to improve leave nothing to
+        // decide: accept is the only move.
+        let settled = prompt.brokenIssues.isEmpty && !prompt.hasPreferences
         moves = Self.moves.filter { move in
             switch move {
             // Accepting terms that break a limit is never offered.
             case "accept": prompt.brokenIssues.isEmpty
-            case "counter": canCounter
-            default: true
+            case "counter": canCounter && !settled
+            default: !settled
             }
         }
         add("move", DynamicGenerationSchema.Property(

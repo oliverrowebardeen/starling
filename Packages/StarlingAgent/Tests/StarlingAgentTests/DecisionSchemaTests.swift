@@ -62,6 +62,18 @@ import Testing
         #expect(schema.moves == DecisionSchema.moves)
     }
 
+    /// Hard limits only, all met: every compliant term is as good as any
+    /// other, so the bench saw the model counter forever. Accept, no call.
+    @Test func compliantProposalWithoutPreferencesIsAcceptedWithoutTheModel() async throws {
+        let constraints = try ConstraintSet([.time: [try Constraint(.within([try AgentFixtures.slot(8, 20)]))]])
+        let proposal = try Proposal(round: 0, terms: Terms([.time: .slots([try AgentFixtures.slot(9, 11)])]))
+        let context = NegotiationContext(proposal: proposal, constraints: constraints, history: [], now: AgentFixtures.now)
+        let schema = try DecisionSchema(prompt: PromptRenderer.decide(context, timeZone: AgentFixtures.utc), proposal: proposal)
+        #expect(schema.moves == ["accept"])
+        let result = try await FoundationModelsAgent(timeZone: AgentFixtures.utc).decide(context)
+        #expect(result.value == .accept)
+    }
+
     /// A broken issue no counter field can fix leaves only reject, which
     /// needs no model call at all.
     @Test func unfixableProposalIsRejectedWithoutTheModel() async throws {

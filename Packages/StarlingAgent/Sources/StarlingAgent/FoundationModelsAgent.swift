@@ -70,10 +70,12 @@ public struct FoundationModelsAgent: AgentModel {
     public func decide(_ context: NegotiationContext) async throws -> ModelResult<NegotiationMove> {
         let prompt = PromptRenderer.decide(context, timeZone: timeZone)
         let schema = try DecisionSchema(prompt: prompt, proposal: context.proposal)
-        // Nothing can be accepted or countered within the owner's limits, so
-        // the answer is known without a model call.
-        if schema.moves == ["reject"] {
-            return ModelResult(value: .reject(.noOverlap), usage: TokenUsage(inputTokens: 0, outputTokens: 0), latency: .zero)
+        // Only one move is possible within the owner's limits, so the answer
+        // is known without a model call.
+        switch schema.moves {
+        case ["reject"]: return ModelResult(value: .reject(.noOverlap), usage: TokenUsage(inputTokens: 0, outputTokens: 0), latency: .zero)
+        case ["accept"]: return ModelResult(value: .accept, usage: TokenUsage(inputTokens: 0, outputTokens: 0), latency: .zero)
+        default: break
         }
         let (content, usage, latency) = try await generate(schema.schema, instructions: PromptRenderer.decideInstructions, prompt: prompt.text)
         return ModelResult(value: try OutputMapping.move(try schema.move(from: content), prompt: prompt, proposal: context.proposal), usage: usage, latency: latency)

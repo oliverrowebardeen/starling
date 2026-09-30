@@ -10,6 +10,9 @@ package struct DecisionPrompt: Hashable, Sendable {
     package var brokenIssues: Set<IssueKey> = []
     /// Whole-dollar budgets within the owner's limits, or nil if none is.
     package var budgetRange: ClosedRange<Int>? = nil
+    /// True when the owner has a soft preference on an issue in the proposal,
+    /// so a counter could improve compliant terms.
+    package var hasPreferences = true
 }
 
 /// Turns Core values into short prompts (TN3193: fewer tokens, clearer
@@ -21,10 +24,9 @@ package enum PromptRenderer {
 
     package static let decideInstructions = """
         You negotiate a plan for your owner with a friend's agent. Choose one move. \
-        accept: only if no proposal item is marked BREAKS LIMIT. \
-        counter: pick option numbers that fit the owner's limits and stay close to the proposal. \
-        reject: no option can fit the owner's limits. \
-        Use only listed options. Never exceed the owner's budget.
+        accept: no proposal item is marked BREAKS LIMIT. Agreeing is the goal. \
+        counter: an item BREAKS LIMIT; pick option numbers close to the proposal. \
+        reject: no option can fix it. Use only listed options.
         """
 
     package static let interpretInstructions = """
@@ -82,7 +84,8 @@ package enum PromptRenderer {
             timeOptions: Array(timeOptions),
             activityOptions: Array(activityOptions),
             brokenIssues: conflicts,
-            budgetRange: budgetRange(context.constraints)
+            budgetRange: budgetRange(context.constraints),
+            hasPreferences: proposal.values.keys.contains { key in context.constraints[key].contains { $0.strength == .soft } }
         )
     }
 
