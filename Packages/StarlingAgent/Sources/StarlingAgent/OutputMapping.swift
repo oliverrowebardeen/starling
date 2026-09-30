@@ -63,18 +63,6 @@ package struct RawRules: Hashable, Sendable {
     }
 }
 
-package struct RawMatch: Hashable, Sendable {
-    package var want: Int
-    package var offer: Int
-    package var same: Bool
-
-    package init(want: Int, offer: Int, same: Bool) {
-        self.want = want
-        self.offer = offer
-        self.same = same
-    }
-}
-
 package enum OutputMapping {
     /// Maps a move. Option numbers are 1-based, as rendered in the prompt.
     package static func move(_ raw: RawMove, prompt: DecisionPrompt, proposal: Proposal) throws -> NegotiationMove {
@@ -167,16 +155,6 @@ package enum OutputMapping {
         case .weekday(let weekday):
             guard (1...7).contains(weekday) else { return nil }
             return (weekday - calendar.component(.weekday, from: now) + 7) % 7
-        }
-    }
-
-    package static func matches(_ raw: [RawMatch], wanted: [Keyword], offered: [Keyword]) throws -> [KeywordMatch] {
-        var seen = Set<[Int]>()
-        return try raw.compactMap { match in
-            let want = try pick(match.want, from: wanted, what: "want")
-            let offer = try pick(match.offer, from: offered, what: "offer")
-            guard seen.insert([match.want, match.offer]).inserted else { return nil }
-            return KeywordMatch(wanted: want, offered: offer, strength: match.same ? .equivalent : .satisfies)
         }
     }
 

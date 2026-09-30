@@ -29,9 +29,9 @@ package enum PromptRenderer {
         """
 
     package static let matchInstructions = """
-        Match what the owner wants to what a friend offers. \
-        A match means the offer satisfies the want, like "food" and "boba run". \
-        Mark same when both mean the same thing.
+        For each thing the owner wants, choose the offer that gives it to them, or none. \
+        An offer counts only if doing it satisfies the want, like "boba run" for "food". \
+        If no offer does, choose none.
         """
 
     package static func decide(_ context: NegotiationContext, timeZone: TimeZone) -> DecisionPrompt {

@@ -114,13 +114,6 @@ enum AgentFixtures {
         #expect(rules.constraints[.time] == [try Constraint(.dailyWindow(from: 0, to: 1440))])
     }
 
-    @Test func extremeIntegersInMatchesThrow() throws {
-        let wanted = [try Keyword("food")]
-        let offered = [try Keyword("boba")]
-        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: Int.min, offer: 1, same: true)], wanted: wanted, offered: offered) }
-        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: 1, offer: Int.min, same: true)], wanted: wanted, offered: offered) }
-    }
-
     /// 2026-11-01 is the US fall-back day: midnight is PDT, the evening is PST.
     /// "18:00 to 20:00" must mean the wall clock, not 18 hours after midnight.
     @Test func interpretedHoursFollowTheWallClockAcrossDaylightSaving() throws {
@@ -173,14 +166,6 @@ enum AgentFixtures {
         let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
         let rules = try OutputMapping.rules(RawRules(earliestHour: 10), context: context)
         #expect(rules.constraints[.time] == [try Constraint(.dailyWindow(from: 600, to: 1440))])
-    }
-
-    @Test func matchesValidateIndicesAndDeduplicate() throws {
-        let wanted = [try Keyword("food")]
-        let offered = [try Keyword("boba run"), try Keyword("movie")]
-        let matches = try OutputMapping.matches([RawMatch(want: 1, offer: 1, same: false), RawMatch(want: 1, offer: 1, same: false)], wanted: wanted, offered: offered)
-        #expect(matches == [KeywordMatch(wanted: wanted[0], offered: offered[0], strength: .satisfies)])
-        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: 2, offer: 1, same: true)], wanted: wanted, offered: offered) }
     }
 }
 

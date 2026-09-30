@@ -100,21 +100,3 @@ struct RulesOutput {
         )
     }
 }
-
-@Generable
-struct MatchPair {
-    @Guide(description: "Want number")
-    var want: Int
-    @Guide(description: "Offer number")
-    var offer: Int
-    @Guide(description: "True if they mean the same thing")
-    var same: Bool
-}
-
-@Generable
-struct MatchOutput {
-    @Guide(.maximumCount(16))
-    var matches: [MatchPair]
-
-    var raw: [RawMatch] { matches.map { RawMatch(want: $0.want, offer: $0.offer, same: $0.same) } }
-}
