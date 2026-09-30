@@ -6,7 +6,10 @@ import Testing
 /// Two real transports in one process, over Bonjour on this Mac. Opt in with
 /// STARLING_NETWORK_TESTS=1: CI runners and sandboxes may block multicast DNS,
 /// and macOS may ask for Local Network permission the first time.
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["STARLING_NETWORK_TESTS"] == "1"))
+///
+/// Serialized: every transport on this Mac advertises the same service type,
+/// so tests running in parallel would discover each other's transports.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["STARLING_NETWORK_TESTS"] == "1"))
 struct LocalP2PIntegrationTests {
     @Test(.timeLimit(.minutes(1)))
     func twoTransportsDiscoverEachOtherAndExchangeFrames() async throws {
@@ -59,6 +62,25 @@ struct LocalP2PIntegrationTests {
             if event == .received(try Frame(Data("to a".utf8)), from: b.localPeer) { break }
             if event == .peerUnavailable(b.localPeer) { Issue.record("link dropped during arbitration") }
         }
+    }
+
+    /// Stop must cancel dials, fallback waits, and links, and finish events.
+    @Test(.timeLimit(.minutes(1)))
+    func stopCancelsPendingWorkAndFinishesEvents() async throws {
+        let a = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        let b = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        try await a.start()
+        try await b.start()
+        try await waitForPeer(b.localPeer, on: a)
+
+        await a.stop()
+        await b.stop()
+        #expect(await a.pendingTaskCount == 0)
+        #expect(await b.pendingTaskCount == 0)
+        // The loop ending proves the stream finished.
+        var trailing: [TransportEvent] = []
+        for await event in a.events { trailing.append(event) }
+        #expect(trailing.contains(.peerUnavailable(b.localPeer)))
     }
 
     private func waitForPeer(_ peer: PeerID, on transport: LocalP2PTransport) async throws {

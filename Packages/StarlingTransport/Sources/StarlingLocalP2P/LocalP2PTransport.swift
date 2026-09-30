@@ -42,8 +42,10 @@ public actor LocalP2PTransport: Transport {
 
     private var state = State.idle
     private var links: [PeerID: Link] = [:]
-    private var dialing: Set<String> = []
-    private var pendingFallbacks: Set<String> = []
+    /// In-flight outgoing connection attempts, by service name.
+    private var dialTasks: [String: Task<Void, Never>] = [:]
+    /// Fallback dials waiting out `DialRule.fallbackDelay`, by service name.
+    private var waitTasks: [String: Task<Void, Never>] = [:]
     private var listenerTask: Task<Void, Never>?
     private var browserTask: Task<Void, Never>?
 
@@ -106,6 +108,12 @@ public actor LocalP2PTransport: Transport {
         state = .stopped
         listenerTask?.cancel()
         browserTask?.cancel()
+        // Pending dials and waits must not outlive the transport: a dial in
+        // its hello exchange would otherwise keep connecting after Stop.
+        for task in dialTasks.values { task.cancel() }
+        for task in waitTasks.values { task.cancel() }
+        dialTasks.removeAll()
+        waitTasks.removeAll()
         let open = links
         links.removeAll()
         for (peer, link) in open {
@@ -122,11 +130,12 @@ public actor LocalP2PTransport: Transport {
         for endpoint in endpoints where endpoint.name != serviceName {
             if DialRule.shouldDialImmediately(ownServiceName: serviceName, discovered: endpoint.name) {
                 dial(endpoint)
-            } else if !isLinked(serviceName: endpoint.name), pendingFallbacks.insert(endpoint.name).inserted {
+            } else if !isLinked(serviceName: endpoint.name), waitTasks[endpoint.name] == nil {
                 // The other side should dial us. Dial anyway if it has not
                 // after a short wait, in case it cannot see our service.
-                Task { [weak self] in
+                waitTasks[endpoint.name] = Task { [weak self] in
                     try? await Task.sleep(for: DialRule.fallbackDelay)
+                    guard !Task.isCancelled else { return }
                     await self?.fallbackDial(endpoint)
                 }
             }
@@ -135,17 +144,16 @@ public actor LocalP2PTransport: Transport {
 
     private func dial(_ endpoint: Bonjour.Endpoint) {
         let name = endpoint.name
-        guard state == .started, !dialing.contains(name), !isLinked(serviceName: name) else { return }
-        dialing.insert(name)
+        guard state == .started, dialTasks[name] == nil, !isLinked(serviceName: name) else { return }
         let connection = Connection(to: endpoint.nwEndpoint, using: parameters())
-        Task { [weak self] in
+        dialTasks[name] = Task { [weak self] in
             await self?.runLink(connection, direction: .outgoing)
             await self?.finishedDialing(name)
         }
     }
 
     private func fallbackDial(_ endpoint: Bonjour.Endpoint) {
-        pendingFallbacks.remove(endpoint.name)
+        waitTasks[endpoint.name] = nil
         dial(endpoint)
     }
 
@@ -155,8 +163,11 @@ public actor LocalP2PTransport: Transport {
 
     private func finishedDialing(_ name: String) {
         // Allow a redial if the service is still advertised later.
-        dialing.remove(name)
+        dialTasks[name] = nil
     }
+
+    /// Dials and fallback waits still pending. Zero after `stop()`.
+    package var pendingTaskCount: Int { dialTasks.count + waitTasks.count }
 
     // MARK: - Links
 
@@ -164,10 +175,9 @@ public actor LocalP2PTransport: Transport {
     /// then the receive loop.
     private func runLink(_ connection: Connection, direction: LinkDirection) async {
         do {
-            try await connection.send(LinkHello(peer: localPeer, serviceName: serviceName).encoded, type: LinkMessageType.hello.rawValue)
-            let hello = try await receiveHello(on: connection)
+            let hello = try await exchangeHello(on: connection)
             let remote = hello.peer
-            guard remote != localPeer else { return }
+            guard remote != localPeer, !Task.isCancelled else { return }
 
             let id = UUID()
             // The receive loop runs in its own task so a duplicate link can be
@@ -181,16 +191,27 @@ public actor LocalP2PTransport: Transport {
                 task.cancel()
                 return
             }
-            await task.value
+            // The receive loop is its own task; cancelling this one (Stop,
+            // or a cancelled dial) must reach it.
+            await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
             unregister(id: id, for: remote)
         } catch {
             log("link \(direction) failed: \(error)")
         }
     }
 
-    private func receiveHello(on connection: Connection) async throws -> LinkHello {
-        try await withThrowingTaskGroup(of: LinkHello.self) { group in
+    /// Sends our hello and reads the peer's under one timeout. The send is
+    /// inside it because a dial to a stale endpoint can wait indefinitely for
+    /// the connection to open.
+    private func exchangeHello(on connection: Connection) async throws -> LinkHello {
+        let ours = try LinkHello(peer: localPeer, serviceName: serviceName).encoded
+        return try await withThrowingTaskGroup(of: LinkHello.self) { group in
             group.addTask {
+                try await connection.send(ours, type: LinkMessageType.hello.rawValue)
                 let message = try await connection.receive()
                 guard message.metadata.type == LinkMessageType.hello.rawValue else {
                     throw ValidationError("LocalP2P", "expected hello")
