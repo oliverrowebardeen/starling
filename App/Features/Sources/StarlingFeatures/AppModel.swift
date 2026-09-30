@@ -17,6 +17,9 @@ public struct AppServices: Sendable {
     public var makePairingSession: PairingSessionFactory?
     public var notifier: any MatchNotifier
     public var localNetwork: any LocalNetworkPrompter
+    /// Whether the PSI provider behind Down hides the owner's set. False
+    /// while `InsecurePSIStub` is in use; the consent sheet says so.
+    public var psiIsPrivate: Bool
     public var timeZone: TimeZone
     public var formatter: ValueFormatter
 
@@ -28,6 +31,7 @@ public struct AppServices: Sendable {
         makePairingSession: PairingSessionFactory?,
         notifier: any MatchNotifier,
         localNetwork: any LocalNetworkPrompter,
+        psiIsPrivate: Bool = false,
         timeZone: TimeZone = .current,
         formatter: ValueFormatter = ValueFormatter()
     ) {
@@ -38,6 +42,7 @@ public struct AppServices: Sendable {
         self.makePairingSession = makePairingSession
         self.notifier = notifier
         self.localNetwork = localNetwork
+        self.psiIsPrivate = psiIsPrivate
         self.timeZone = timeZone
         self.formatter = formatter
     }

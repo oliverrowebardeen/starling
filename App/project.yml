@@ -18,6 +18,9 @@ packages:
     path: ../Packages/StarlingTransport
   StarlingAgent:
     path: ../Packages/StarlingAgent
+  # Lane H's view models and presentation logic, tested with `swift test`.
+  StarlingFeatures:
+    path: Features
 targets:
   Starling:
     type: application
@@ -44,12 +47,22 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.0.1"
         CURRENT_PROJECT_VERSION: "1"
+      configs:
+        Release:
+          # Keeps StarlingFakes (scripted doubles, the insecure PSI stub) out
+          # of the Release link. `#if DEBUG` alone is not enough: the linker
+          # keeps unreferenced Swift conformance records. A Release reference
+          # to a fake now fails to link (ADR 0140).
+          EXCLUDED_SOURCE_FILE_NAMES: StarlingFakes.o
     dependencies:
       - package: StarlingCore
         product: StarlingCore
-      # Phase 0 only: allow-all policy and scripted doubles. Remove before TestFlight.
+      # Fakes for lanes that have not merged. Every import sits inside
+      # `#if DEBUG`, so Release builds do not link them (ADR 0140).
       - package: StarlingCore
         product: StarlingFakes
+      - package: StarlingFeatures
+        product: StarlingFeatures
       - package: StarlingTransport
         product: StarlingTransport
       - package: StarlingTransport
