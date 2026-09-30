@@ -13,6 +13,7 @@ let package = Package(
     products: [
         .library(name: "StarlingTransport", targets: ["StarlingTransport"]),
         .library(name: "StarlingLocalP2P", targets: ["StarlingLocalP2P"]),
+        .library(name: "StarlingWiFiAware", targets: ["StarlingWiFiAware"]),
     ],
     dependencies: [
         .package(path: "../StarlingCore"),
@@ -20,9 +21,17 @@ let package = Package(
     targets: [
         .target(name: "StarlingTransport", dependencies: [.product(name: "StarlingCore", package: "StarlingCore")]),
         .target(name: "StarlingLocalP2P", dependencies: [.product(name: "StarlingCore", package: "StarlingCore")]),
+        .target(
+            name: "StarlingWiFiAware",
+            dependencies: ["StarlingLocalP2P", .product(name: "StarlingCore", package: "StarlingCore")]
+        ),
         .testTarget(
             name: "StarlingLocalP2PTests",
             dependencies: ["StarlingLocalP2P", .product(name: "StarlingCore", package: "StarlingCore")]
+        ),
+        .testTarget(
+            name: "StarlingWiFiAwareTests",
+            dependencies: ["StarlingWiFiAware", "StarlingLocalP2P", .product(name: "StarlingCore", package: "StarlingCore")]
         ),
         .testTarget(
             name: "StarlingTransportTests",
