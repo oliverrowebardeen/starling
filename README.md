@@ -1,5 +1,7 @@
 # Starling
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/brand/starling-logo-knockout-dark.svg"><img src="docs/brand/starling-logo-knockout.svg" width="64" alt="Starling logo: two overlapping rounded rectangles with the overlap cut out"></picture>
+
 Local-first agent-to-agent coordination for iPhone. Each person's phone runs an on-device agent that knows their availability, intent, and preferences. When friends want to coordinate, their agents negotiate directly and share only what their owners allow.
 
 **Status: Phase 0 (foundations).** Nothing here is private or secure yet. See `docs/ARCHITECTURE.md`, section 6.
