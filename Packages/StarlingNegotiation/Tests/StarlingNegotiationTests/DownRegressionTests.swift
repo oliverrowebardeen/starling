@@ -96,4 +96,46 @@ import Testing
         #expect(await ana.log.matches.first?.terms[.time] == .slots([T.slot(21, 22)]))
         await world.stop()
     }
+
+    /// P2: a stream of distinct queries must not buy model calls or keep a
+    /// conversation alive past its details deadline.
+    @Test func aFloodOfQueriesCostsOneModelCallAndEndsOnTime() async throws {
+        let calls = Counter()
+        let model = ScriptedAgentModel(onMatch: { wanted, offered in
+            await calls.increment()
+            return ScriptedAgentModel.exactMatches(wanted: wanted, offered: offered)
+        })
+        let world = DownWorld(["ben"], model: model)
+        let mallory = RawPeer(hub: world.hub)
+        try await world.start()
+        try await mallory.start()
+        let ben = world["ben"]
+        try await eventually("ben sees mallory") { await ben.negotiator.isReachable(mallory.id) }
+        try await ben.want(time: [T.slot(19, 22)], liked: ["food"], maxBudget: 15)
+        try await ben.store.save(PairedPeer(publicKey: mallory.key, nickname: "mallory", pairedAt: Timestamp(T.now)))
+
+        let conversation = try await DownAdversarialTests().openRun(from: mallory, to: ben)
+        _ = try await mallory.next(.psi)
+        let clock = ContinuousClock()
+        let start = clock.now
+        var index = 0
+        // 25 distinct activity queries and 25 distinct budget queries over
+        // more than twice the details deadline (2 x 5 x 20 ms).
+        while clock.now - start < .milliseconds(500) {
+            let query = index.isMultiple(of: 2)
+                ? try Query(issue: .activity, candidates: .keywords([T.keyword("food"), T.keyword("item \(index)")]))
+                : try Query(issue: .budget, candidates: .amount(T.usd(Int64(index + 1))))
+            try await mallory.send(.query(query), to: ben.id, in: conversation)
+            index += 1
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(await calls.value == 1)
+        #expect(await ben.negotiator.conversations.isEmpty)
+        #expect(await ben.negotiator.diagnostics.outcomes[.timedOut] == 1)
+        let answers = await world.wire.sent(by: ben.id).filter { $0.body.kind == .answer }
+        #expect(answers.count == 2)
+        await mallory.stop()
+        await world.stop()
+    }
 }

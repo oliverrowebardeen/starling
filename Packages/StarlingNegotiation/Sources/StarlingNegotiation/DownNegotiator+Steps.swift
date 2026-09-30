@@ -85,7 +85,9 @@ extension DownNegotiator {
         } else {
             conversation.phase = .awaitingOffer
             conversations[id] = conversation
-            await transmit([], in: id, awaitingReply: false)
+            // One fixed deadline for the whole details phase: the peer's
+            // query retries, our model call, and its offer (ADR 0121).
+            await transmit([], in: id, awaitingReply: false, attemptLimit: 2 * configuration.maxAttempts)
         }
     }
 
@@ -114,7 +116,13 @@ extension DownNegotiator {
     }
 
     private func handleQuery(_ query: Query, envelope: Envelope, in id: ConversationID) async {
-        guard let conversation = conversations[id], conversation.role == .responder, conversation.phase == .awaitingOffer else { return }
+        // A starter asks about activity and budget, once each. Anything else,
+        // or a second query on the same issue, gets no answer and no model call.
+        guard var conversation = conversations[id], conversation.role == .responder, conversation.phase == .awaitingOffer,
+              [IssueKey.activity, .budget].contains(query.issue), !conversation.answeredIssues.contains(query.issue)
+        else { return }
+        conversation.answeredIssues.insert(query.issue)
+        conversations[id] = conversation
         let profile = conversation.profile
 
         let value: IssueValue?
@@ -140,7 +148,7 @@ extension DownNegotiator {
         guard var current = conversations[id], let body = try? reply.body(answering: envelope) else { return }
         current.replies[.query(query)] = reply
         conversations[id] = current
-        await transmit([body], in: id, awaitingReply: false)
+        await transmit([body], in: id, awaitingReply: false, keepDeadline: true)
     }
 
     private func handleAnswer(_ answer: Answer, in id: ConversationID) async {

@@ -352,16 +352,25 @@ public actor DownNegotiator: DownService {
 
     /// Sends `bodies` in order, then arms the retry timer. With
     /// `awaitingReply`, the timer resends them; otherwise it only bounds how
-    /// long we wait for the peer's next move.
-    func transmit(_ bodies: [MessageBody], in id: ConversationID, awaitingReply: Bool) async {
+    /// long we wait for the peer's next move. A new step starts a fresh
+    /// deadline of `attemptLimit` ticks (default `maxAttempts`); with
+    /// `keepDeadline`, the current one keeps running.
+    func transmit(
+        _ bodies: [MessageBody], in id: ConversationID, awaitingReply: Bool,
+        attemptLimit: Int? = nil, keepDeadline: Bool = false
+    ) async {
         guard let conversation = conversations[id] else { return }
         for body in bodies {
             if await send(body, to: conversation.peer, in: id, profile: conversation.profile) == .ended { return }
         }
         guard var conversation = conversations[id] else { return }
         conversation.outstanding = awaitingReply ? bodies : []
-        conversation.attempts = 1
+        if !keepDeadline {
+            conversation.attempts = 1
+            conversation.attemptLimit = attemptLimit ?? configuration.maxAttempts
+        }
         conversations[id] = conversation
+        guard !keepDeadline else { return }
         armTimer(id)
     }
 
@@ -488,7 +497,7 @@ public actor DownNegotiator: DownService {
             end(id, .withdrawn)
             return
         }
-        guard conversation.attempts < configuration.maxAttempts else {
+        guard conversation.attempts < conversation.attemptLimit else {
             end(id, .timedOut)
             return
         }

@@ -54,6 +54,12 @@ struct DownConversation: Sendable {
     /// Resent on each timer tick until the peer replies.
     var outstanding: [MessageBody] = []
     var attempts = 0
+    /// Timer ticks allowed before the conversation times out. Most steps get
+    /// `maxAttempts`; the responder's details phase gets a fixed, longer
+    /// budget that answering queries does not reset.
+    var attemptLimit = 0
+    /// Issues this responder has answered. Each is answered once.
+    var answeredIssues: Set<IssueKey> = []
     var timerToken = 0
 
     /// Replies already sent, so a duplicate gets the same reply without new
