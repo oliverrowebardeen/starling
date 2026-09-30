@@ -93,6 +93,14 @@ struct LiveModelTests {
         #expect(result.latency > .zero)
     }
 
+    /// Scores the labeled set with the real model and prints the report.
+    @Test(.timeLimit(.minutes(5)))
+    func interpretationSetScores() async throws {
+        let report = await InterpretationEval(model: FoundationModelsAgent(timeZone: InterpretationSet.timeZone)).run()
+        print(report.markdown(title: "Interpretation accuracy (live)"))
+        #expect(report.errors == 0)
+    }
+
     @Test(.timeLimit(.minutes(2)))
     func matchFindsTheObviousPair() async throws {
         let agent = FoundationModelsAgent()
