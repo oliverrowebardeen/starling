@@ -69,6 +69,7 @@ public final class AppModel {
             formatter: services.formatter
         )
         if let makeDown = services.makeDownService, let peers = services.peers {
+            let consent = consent
             down = DownModel(
                 service: makeDown(consent),
                 interpreter: RulesInterpreter(agent: services.agent, issues: RulesInterpreter.intentIssues, timeZone: services.timeZone),
@@ -76,7 +77,8 @@ public final class AppModel {
                 peers: peers,
                 notifier: services.notifier,
                 formatter: services.formatter,
-                timeZone: services.timeZone
+                timeZone: services.timeZone,
+                intentChanged: { consent.forgetApprovals() }
             )
         } else {
             down = nil

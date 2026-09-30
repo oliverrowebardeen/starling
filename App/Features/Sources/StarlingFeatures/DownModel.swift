@@ -70,6 +70,10 @@ public final class DownModel {
     private let notifier: any MatchNotifier
     private let timeZone: TimeZone
     private let now: @Sendable () -> Date
+    /// Called whenever the intent starts, is withdrawn, or ends, before the
+    /// service hears about it. The app clears remembered consent here so an
+    /// approval never carries over to another intent (ADR 0142).
+    private let intentChanged: @MainActor () -> Void
     public let formatter: ValueFormatter
     private var listener: Task<Void, Never>?
 
@@ -81,8 +85,10 @@ public final class DownModel {
         notifier: any MatchNotifier,
         formatter: ValueFormatter = ValueFormatter(),
         timeZone: TimeZone = .current,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        intentChanged: @escaping @MainActor () -> Void = {}
     ) {
+        self.intentChanged = intentChanged
         self.service = service
         self.interpreter = interpreter
         self.rules = rules
@@ -159,6 +165,7 @@ public final class DownModel {
                 return
             }
             let expiresAt = duration.expiry(from: now(), timeZone: timeZone)
+            intentChanged()
             try await service.setIntent(DownIntent(rules: merged, level: level, expiresAt: Timestamp(expiresAt)))
             active = Active(level: level, expiresAt: expiresAt)
             matches = []
@@ -174,6 +181,7 @@ public final class DownModel {
     /// Friends learn nothing beyond "no match".
     public func withdraw() async {
         guard phase == .active else { return }
+        intentChanged()
         await service.clearIntent()
         active = nil
         draft = .empty
@@ -192,6 +200,7 @@ public final class DownModel {
             await notifier.post(MatchNotice(match: match, friendName: name, formatter: formatter))
         case .ended(let reason):
             guard phase == .active || phase == .starting else { return }
+            intentChanged()
             active = nil
             draft = .empty
             phase = .composing

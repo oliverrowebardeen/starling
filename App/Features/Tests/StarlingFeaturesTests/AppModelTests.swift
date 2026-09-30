@@ -39,6 +39,28 @@ import Testing
         #expect((capture.get() as? ConsentCoordinator) === app.consent)
     }
 
+    @Test func aNewIntentForgetsConsentApprovals() async throws {
+        let maya = Fixtures.peer("Maya")
+        let app = AppModel(services: Self.services(down: ScriptedDownService(), peers: InMemoryPairedPeerStore([maya])))
+        let disclosure = try ConsentCoordinatorTests.disclosure(to: maya.id)
+        let first = Task { await app.consent.requestConsent(for: disclosure) }
+        await eventually { app.consent.current != nil }
+        app.consent.answer(.approved)
+        #expect(await first.value == .approved)
+        #expect(await app.consent.requestConsent(for: disclosure) == .approved, "remembered")
+
+        let down = try #require(app.down)
+        down.editByHand()
+        await down.goDown()
+        #expect(down.phase == .active)
+
+        let second = Task { await app.consent.requestConsent(for: disclosure) }
+        await eventually { app.consent.current != nil }
+        #expect(app.consent.current != nil, "a new intent asks again")
+        app.consent.answer(.declined)
+        #expect(await second.value == .declined)
+    }
+
     @Test func featuresMissingFromTheBuildAreNil() {
         let app = AppModel(services: Self.services(down: nil, peers: nil))
         #expect(app.down == nil)

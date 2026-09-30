@@ -20,6 +20,11 @@ actor RecordingNotifier: MatchNotifier {
 }
 
 @MainActor
+final class Counter {
+    var count = 0
+}
+
+@MainActor
 @Suite struct DownModelTests {
     static let tonight = try! TimeSlot(start: Fixtures.noon.addingTimeInterval(7 * 3600), end: Fixtures.noon.addingTimeInterval(11 * 3600))
     static let intentRules = OwnerRules(constraints: try! ConstraintSet([
@@ -34,6 +39,7 @@ actor RecordingNotifier: MatchNotifier {
         let peers: InMemoryPairedPeerStore
         let rules: InMemoryRulesStore
         let model: DownModel
+        let intentChanges = Counter()
 
         @MainActor
         init(standing: OwnerRules? = nil, interpretation: OwnerRules = DownModelTests.intentRules) {
@@ -48,7 +54,8 @@ actor RecordingNotifier: MatchNotifier {
                 notifier: notifier,
                 formatter: ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US")),
                 timeZone: Fixtures.utc,
-                now: { Fixtures.noon }
+                now: { Fixtures.noon },
+                intentChanged: { [intentChanges] in intentChanges.count += 1 }
             )
             model.listen()
         }
@@ -167,6 +174,18 @@ actor RecordingNotifier: MatchNotifier {
         #expect(h.model.phase == .reviewing)
         #expect(h.model.notice != nil)
         #expect(await h.service.intents.isEmpty)
+    }
+
+    @Test func reportsEveryIntentChange() async {
+        let h = Harness()
+        await h.goDown()
+        #expect(h.intentChanges.count == 1)
+        await h.model.withdraw()
+        #expect(h.intentChanges.count == 2)
+        await h.goDown()
+        h.service.emit(.ended(.expired))
+        await eventually { h.model.phase == .composing }
+        #expect(h.intentChanges.count == 4)
     }
 
     @Test func untilMidnightEndsAtTheNextLocalMidnight() {
