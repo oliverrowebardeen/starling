@@ -24,8 +24,8 @@ package enum PromptRenderer {
         """
 
     package static let interpretInstructions = """
-        Turn the owner's message into plan rules. Use 24-hour clock hours. \
-        Include only what the owner said. Activities are short lowercase phrases.
+        Turn the owner's message into plan rules. Fill a field only from the owner's own words. \
+        Activities are short lowercase things to do or eat, never times, prices, or rules about sharing.
         """
 
     package static let matchInstructions = """
@@ -68,8 +68,7 @@ package enum PromptRenderer {
     }
 
     package static func interpret(_ utterance: OwnerUtterance, context: InterpretationContext) -> String {
-        let weekday = weekdayName(context.now, timeZone: context.timeZone)
-        return "Now: \(weekday) \(clock(context.now, timeZone: context.timeZone)).\nOwner: \(utterance.text)"
+        "Owner: \(utterance.text)"
     }
 
     package static func match(wanted: [Keyword], offered: [Keyword]) -> String {

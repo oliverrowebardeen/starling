@@ -55,7 +55,8 @@ public struct FoundationModelsAgent: AgentModel {
     public func interpret(_ utterance: OwnerUtterance, context: InterpretationContext) async throws -> ModelResult<OwnerRules> {
         let prompt = PromptRenderer.interpret(utterance, context: context)
         let (output, usage, latency) = try await generate(RulesOutput.self, instructions: PromptRenderer.interpretInstructions, prompt: prompt)
-        return ModelResult(value: try OutputMapping.rules(output.raw, context: context), usage: usage, latency: latency)
+        let checked = Grounding.check(output.raw, against: utterance.text)
+        return ModelResult(value: try OutputMapping.rules(checked, context: context), usage: usage, latency: latency)
     }
 
     public func match(wanted: [Keyword], offered: [Keyword]) async throws -> ModelResult<[KeywordMatch]> {
