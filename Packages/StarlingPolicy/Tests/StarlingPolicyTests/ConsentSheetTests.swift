@@ -46,8 +46,7 @@ import Testing
 
     @Test func nonPrivatePSIShowsFullInputsAndWarning() async throws {
         let engine = Fixtures.engine()
-        try await Fixtures.registerContext(engine)
-        let sheet = ConsentSheetModel(disclosure: try await engine.disclosure(for: Fixtures.outbound(Fixtures.body(.psi))))
+        let sheet = ConsentSheetModel(disclosure: try engine.disclosure(for: Fixtures.outbound(Fixtures.body(.psi), context: Fixtures.psiContext())))
         #expect(sheet.rows[0].detail == "Full input set: boba")
         #expect(sheet.psiNotice?.contains("not private") == true)
     }

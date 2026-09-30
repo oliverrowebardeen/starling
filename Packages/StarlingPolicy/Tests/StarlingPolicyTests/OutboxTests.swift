@@ -10,7 +10,7 @@ import Testing
         let transport = RecordingTransport(localPeer: Fixtures.alice)
         let consent = ScriptedConsentProvider(.approved)
         let log = try InMemoryAuditLog()
-        let outbox = AuditedOutbox(outbox: Outbox(transport: transport, policy: Fixtures.engine(action: .never), consent: consent), auditLog: log)
+        let outbox = Outbox(transport: transport, policy: Fixtures.engine(action: .never), consent: consent, observer: log)
         await #expect(throws: OutboxError.denied(PolicyViolation(rule: PolicyRuleID.never, issue: .activity))) {
             try await outbox.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
         }
@@ -23,7 +23,7 @@ import Testing
         let transport = RecordingTransport(localPeer: Fixtures.alice)
         let consent = PendingConsent()
         let log = try InMemoryAuditLog()
-        let outbox = AuditedOutbox(outbox: Outbox(transport: transport, policy: Fixtures.engine(action: .askEachTime), consent: consent), auditLog: log)
+        let outbox = Outbox(transport: transport, policy: Fixtures.engine(action: .askEachTime), consent: consent, observer: log)
         var requests = consent.requests.makeAsyncIterator()
         for index in 0..<2 {
             let send = Task {
@@ -61,7 +61,7 @@ import Testing
             try await denied.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
         }
         let log = try InMemoryAuditLog()
-        let allowed = AuditedOutbox(outbox: Outbox(transport: alice, policy: Fixtures.engine(action: .askEachTime), consent: consent), auditLog: log)
+        let allowed = Outbox(transport: alice, policy: Fixtures.engine(action: .askEachTime), consent: consent, observer: log)
         let send = Task {
             try await allowed.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
         }
@@ -79,12 +79,12 @@ import Testing
     @Test func declinedAndFailedSendsAreNotAudited() async throws {
         let transport = RecordingTransport(localPeer: Fixtures.alice)
         let log = try InMemoryAuditLog()
-        let declined = AuditedOutbox(outbox: Outbox(transport: transport, policy: Fixtures.engine(), consent: ScriptedConsentProvider(.declined)), auditLog: log)
+        let declined = Outbox(transport: transport, policy: Fixtures.engine(), consent: ScriptedConsentProvider(.declined), observer: log)
         await #expect(throws: OutboxError.consentDeclined) {
             try await declined.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
         }
         #expect(await transport.sent.isEmpty)
-        let accepted = AuditedOutbox(outbox: Outbox(transport: transport, policy: Fixtures.engine(), consent: ScriptedConsentProvider(.approved)), auditLog: log)
+        let accepted = Outbox(transport: transport, policy: Fixtures.engine(), consent: ScriptedConsentProvider(.approved), observer: log)
         await transport.failSends(with: .peerUnreachable(Fixtures.bob.id))
         await #expect(throws: TransportError.peerUnreachable(Fixtures.bob.id)) {
             try await accepted.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
@@ -107,19 +107,90 @@ import Testing
     @Test func nonPrivatePSIStepCannotSkipConsentOrNeverRules() async throws {
         for action in [DisclosureRule.Action.never, .allowOnDevicePeers] {
             let engine = Fixtures.engine(action: action)
-            try await Fixtures.registerContext(engine)
             let transport = RecordingTransport(localPeer: Fixtures.alice)
             let consent = ScriptedConsentProvider(.declined)
             let outbox = Outbox(transport: transport, policy: engine, consent: consent)
             let expected: OutboxError = action == .never
                 ? .denied(PolicyViolation(rule: PolicyRuleID.never, issue: .activity)) : .consentDeclined
             await #expect(throws: expected) {
-                try await outbox.send(Fixtures.body(.psi), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
+                try await outbox.send(Fixtures.body(.psi), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card, context: Fixtures.psiContext())
             }
             #expect(await consent.requests.count == (action == .never ? 0 : 1))
             #expect(await transport.sent.isEmpty)
         }
     }
+
+    @Test func missingPSIContextIsDeniedThroughOutbox() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let consent = ScriptedConsentProvider(.approved)
+        let log = try InMemoryAuditLog()
+        let outbox = Outbox(transport: transport, policy: Fixtures.engine(), consent: consent, observer: log)
+        await #expect(throws: OutboxError.denied(PolicyViolation(rule: PolicyRuleID.missingPSIContext))) {
+            try await outbox.send(Fixtures.body(.psi), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
+        }
+        #expect(await transport.sent.isEmpty)
+        #expect(await consent.requests.isEmpty)
+        #expect(await log.entries().isEmpty)
+    }
+
+    @Test func approvedPSIContextReachesAuditObserverButNotWire() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let consent = ScriptedConsentProvider(.approved)
+        let log = try InMemoryAuditLog()
+        let outbox = Outbox(transport: transport, policy: Fixtures.engine(action: .allowOnDevicePeers), consent: consent, observer: log)
+        let envelope = try await outbox.send(Fixtures.body(.psi), to: Fixtures.bob.id, conversation: Fixtures.conversation,
+                                             recipientCard: Fixtures.card, context: Fixtures.psiContext())
+        #expect(await consent.requests.count == 1)
+        let sent = try #require(await transport.sent.first)
+        #expect(try EnvelopeCodec().decode(sent.frame.bytes) == envelope)
+        #expect(!String(decoding: sent.frame.bytes, as: UTF8.self).contains("boba"))
+        let entry = try #require(await log.entries().first)
+        #expect(entry.message == envelope.id)
+        #expect(entry.items[0].issue == .activity)
+        #expect(entry.items[0].valueKind == .keywords)
+    }
+
+    @Test func cancelledConsentWaitDoesNotSendOrAudit() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let consent = PendingConsent()
+        let log = try InMemoryAuditLog()
+        let outbox = Outbox(transport: transport, policy: Fixtures.engine(), consent: consent, observer: log)
+        let send = Task {
+            try await outbox.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
+        }
+        var requests = consent.requests.makeAsyncIterator()
+        _ = try #require(await requests.next())
+        send.cancel()
+        await consent.resolve(.approved)
+        await #expect(throws: CancellationError.self) { try await send.value }
+        #expect(await transport.sent.isEmpty)
+        #expect(await log.entries().isEmpty)
+    }
+
+    @Test func ruleChangeDuringConsentIsDeniedAndNotAudited() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let consent = PendingConsent()
+        let policy = ReplaceablePolicy(Fixtures.engine(action: .askEachTime))
+        let log = try InMemoryAuditLog()
+        let outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: log)
+        let send = Task {
+            try await outbox.send(Fixtures.body(.query), to: Fixtures.bob.id, conversation: Fixtures.conversation, recipientCard: Fixtures.card)
+        }
+        var requests = consent.requests.makeAsyncIterator()
+        _ = try #require(await requests.next())
+        await policy.replace(with: Fixtures.engine(action: .never))
+        await consent.resolve(.approved)
+        await #expect(throws: OutboxError.denied(PolicyViolation(rule: PolicyRuleID.never, issue: .activity))) { try await send.value }
+        #expect(await transport.sent.isEmpty)
+        #expect(await log.entries().isEmpty)
+    }
+}
+
+private actor ReplaceablePolicy: PolicyEngine {
+    private var current: any PolicyEngine
+    init(_ policy: any PolicyEngine) { current = policy }
+    func replace(with policy: any PolicyEngine) { current = policy }
+    func evaluate(_ message: OutboundMessage) async -> PolicyDecision { await current.evaluate(message) }
 }
 
 /// A deterministic gate: request arrival proves the send is suspended, with

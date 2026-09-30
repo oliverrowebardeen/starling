@@ -9,9 +9,8 @@ import Testing
           [DisclosureRule.Action.never, .askEachTime, .allowOnDevicePeers])
     func everyBodyAndRule(kind: MessageBody.Kind, action: DisclosureRule.Action) async throws {
         let engine = Fixtures.engine(action: action)
-        try await Fixtures.registerContext(engine)
-        let message = try Fixtures.outbound(Fixtures.body(kind))
-        let disclosure = try await engine.disclosure(for: message)
+        let message = try Fixtures.outbound(Fixtures.body(kind), context: kind == .psi ? Fixtures.psiContext() : .empty)
+        let disclosure = try engine.disclosure(for: message)
         let decision = await engine.evaluate(message)
         if kind == .hello || kind == .reject {
             #expect(decision == .allow)
@@ -27,8 +26,7 @@ import Testing
     @Test(arguments: MessageBody.Kind.allCases)
     func everyBodyDisclosure(kind: MessageBody.Kind) async throws {
         let engine = Fixtures.engine()
-        try await Fixtures.registerContext(engine)
-        let disclosure = try await engine.disclosure(for: Fixtures.outbound(Fixtures.body(kind)))
+        let disclosure = try engine.disclosure(for: Fixtures.outbound(Fixtures.body(kind), context: kind == .psi ? Fixtures.psiContext() : .empty))
         let expected: [DisclosedItem]
         switch kind {
         case .hello: expected = [DisclosedItem(category: .agentCard, issue: nil, value: nil)]
@@ -44,14 +42,13 @@ import Testing
           MessageBody.Kind.allCases)
     func strictLocality(locality: ModelLocality, kind: MessageBody.Kind) async throws {
         let engine = Fixtures.engine(action: .allowOnDevicePeers, onlyOnDevice: true)
-        try await Fixtures.registerContext(engine)
         let card = try AgentCard(model: locality, capabilities: [])
-        let message = try Fixtures.outbound(Fixtures.body(kind), card: card)
+        let message = try Fixtures.outbound(Fixtures.body(kind), card: card, context: kind == .psi ? Fixtures.psiContext() : .empty)
         let decision = await engine.evaluate(message)
         if kind != .hello && locality != .onDevice && locality != .none {
             #expect(decision == .deny(PolicyViolation(rule: PolicyRuleID.onDeviceOnly)))
         } else if kind == .psi {
-            #expect(decision == .needsConsent(try await engine.disclosure(for: message)))
+            #expect(decision == .needsConsent(try engine.disclosure(for: message)))
         } else {
             #expect(decision == .allow)
         }
@@ -60,15 +57,14 @@ import Testing
     @Test(arguments: MessageBody.Kind.allCases, [false, true])
     func missingCard(kind: MessageBody.Kind, strict: Bool) async throws {
         let engine = Fixtures.engine(action: .allowOnDevicePeers, onlyOnDevice: strict)
-        try await Fixtures.registerContext(engine)
-        let message = try Fixtures.outbound(Fixtures.body(kind), card: nil)
+        let message = try Fixtures.outbound(Fixtures.body(kind), card: nil, context: kind == .psi ? Fixtures.psiContext() : .empty)
         let decision = await engine.evaluate(message)
         if kind == .hello {
             #expect(decision == .allow)
         } else if strict {
             #expect(decision == .deny(PolicyViolation(rule: PolicyRuleID.onDeviceOnly)))
         } else {
-            #expect(decision == .needsConsent(try await engine.disclosure(for: message)))
+            #expect(decision == .needsConsent(try engine.disclosure(for: message)))
         }
     }
 
@@ -76,13 +72,13 @@ import Testing
     func cloudRequiresConsentWithoutStrictSetting(locality: ModelLocality) async throws {
         let engine = Fixtures.engine(action: .allowOnDevicePeers)
         let message = try Fixtures.outbound(Fixtures.body(.query), card: AgentCard(model: locality, capabilities: []))
-        #expect(await engine.evaluate(message) == .needsConsent(try await engine.disclosure(for: message)))
+        #expect(await engine.evaluate(message) == .needsConsent(try engine.disclosure(for: message)))
     }
 
     @Test func unspecifiedRuleAndUnpairedPeerRequireConsent() async throws {
         for engine in [Fixtures.engine(), Fixtures.engine(action: .allowOnDevicePeers, paired: false)] {
             let message = try Fixtures.outbound(Fixtures.body(.query))
-            #expect(await engine.evaluate(message) == .needsConsent(try await engine.disclosure(for: message)))
+            #expect(await engine.evaluate(message) == .needsConsent(try engine.disclosure(for: message)))
         }
     }
 
@@ -99,7 +95,7 @@ import Testing
             DisclosureRule(issue: .activity, action: .askEachTime),
         ]), pairedPeers: InMemoryPairedPeerStore([Fixtures.bob]))
         let message = try Fixtures.outbound(Fixtures.body(.query))
-        #expect(await engine.evaluate(message) == .needsConsent(try await engine.disclosure(for: message)))
+        #expect(await engine.evaluate(message) == .needsConsent(try engine.disclosure(for: message)))
     }
 
     @Test func allValuesArePreservedAndIssuesSorted() async throws {
@@ -110,7 +106,7 @@ import Testing
             .partySize: .count(3), custom: .flag(false), .place: .keywords([]),
         ]
         let body = MessageBody.propose(try Proposal(round: 0, terms: Terms(values)))
-        let disclosure = try await Fixtures.engine().disclosure(for: Fixtures.outbound(body))
+        let disclosure = try Fixtures.engine().disclosure(for: Fixtures.outbound(body))
         #expect(disclosure.items.compactMap(\.issue) == values.keys.sorted())
         #expect(Dictionary(uniqueKeysWithValues: disclosure.items.map { ($0.issue!, $0.value!) }) == values)
         #expect(disclosure.items.first(where: { $0.issue == .time })?.category == .availability)
@@ -120,11 +116,11 @@ import Testing
     @Test func valueFreeAnswersAndEmptyTermsDiscloseNoOwnerValues() async throws {
         let engine = Fixtures.engine(action: .never)
         for status in [Answer.Status.declined, .pendingOwner] {
-            let body = MessageBody.answer(try Answer(query: MessageID(), status: status))
-            #expect(try await engine.disclosure(for: Fixtures.outbound(body)).items.isEmpty)
+            let body = MessageBody.answer(try Answer(query: MessageID(), issue: .activity, status: status))
+            #expect(try engine.disclosure(for: Fixtures.outbound(body)).items.isEmpty)
             #expect(await engine.evaluate(try Fixtures.outbound(body)) == .allow)
         }
-        #expect(try await engine.disclosure(for: Fixtures.outbound(.propose(Proposal(round: 0, terms: .empty)))).items.isEmpty)
+        #expect(try engine.disclosure(for: Fixtures.outbound(.propose(Proposal(round: 0, terms: .empty)))).items.isEmpty)
     }
 
     @Test func neverWinsOverConsentForOtherIssues() async throws {
@@ -134,5 +130,26 @@ import Testing
         ])))
         #expect(await engine.evaluate(try Fixtures.outbound(body)) ==
                 .deny(PolicyViolation(rule: PolicyRuleID.never, issue: .activity)))
+    }
+
+    @Test(arguments: ["down", "maybe"], [DisclosureRule.Action.never, .askEachTime, .allowOnDevicePeers])
+    func acceptedDownLevelUsesOwnerRuleAndClearConsent(level: String, action: DisclosureRule.Action) async throws {
+        let value = IssueValue.keywords([try Keyword(level)])
+        let engine = DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: [
+            DisclosureRule(issue: .downLevel, action: action),
+        ]), pairedPeers: InMemoryPairedPeerStore([Fixtures.bob]))
+        let message = try Fixtures.outbound(.accept(Acceptance(proposal: MessageID(), terms: Terms([.downLevel: value]))))
+        let disclosure = try engine.disclosure(for: message)
+        #expect(disclosure.items == [DisclosedItem(category: .interest, issue: .downLevel, value: value)])
+        let row = try #require(ConsentSheetModel(disclosure: disclosure).rows.first)
+        #expect(row.title == "Your interest")
+        #expect(row.detail == "You said \"\(level)\".")
+        let expected: PolicyDecision = switch action {
+        case .never: .deny(PolicyViolation(rule: PolicyRuleID.never, issue: .downLevel))
+        case .askEachTime: .needsConsent(disclosure)
+        case .allowOnDevicePeers: .allow
+        }
+        #expect(await engine.evaluate(message) == expected)
+        #expect(await Fixtures.engine().evaluate(message) == .needsConsent(disclosure))
     }
 }

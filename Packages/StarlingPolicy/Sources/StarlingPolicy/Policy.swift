@@ -1,51 +1,20 @@
-import Foundation
 import StarlingCore
 
 /// Stable identifiers for denial UI, tests, and diagnostic summaries.
 public enum PolicyRuleID {
     public static let never = "disclosure.never"
     public static let onDeviceOnly = "recipient.on_device_only"
-    public static let missingQueryContext = "disclosure.missing_query_context"
     public static let missingPSIContext = "disclosure.missing_psi_context"
+    public static let invalidPSIContext = "disclosure.invalid_psi_context"
     public static let pairedStoreUnavailable = "recipient.paired_store_unavailable"
 }
 
-public enum PolicyContextError: Error, Hashable, Sendable {
-    case notAQuery
-    case conflictingRegistration
-    case capacityExceeded
-}
-
-/// Deterministic egress policy. Create one per local identity and rule snapshot.
-/// Register context from Inbox and the local PSI provider, never from peer claims.
-public actor DeterministicPolicyEngine: PolicyEngine {
-    public static let maxContextEntries = 256
-
-    private struct QueryKey: Hashable {
-        let local: PeerID
-        let peer: PeerID
-        let conversation: ConversationID
-        let query: MessageID
-    }
-
-    private struct PSIKey: Hashable {
-        let peer: PeerID
-        let conversation: ConversationID
-        let session: UUID
-        let step: UInt8
-    }
-
-    private struct PSIContext: Hashable {
-        let frame: PSIFrame
-        let provider: PSIProviderDescriptor
-        let inputs: Terms
-    }
-
+/// Deterministic egress policy for an immutable owner-rule snapshot.
+/// PSI provenance comes from trusted local OutboundContext, never peer claims.
+public struct DeterministicPolicyEngine: PolicyEngine {
     private let rules: [IssueKey: DisclosureRule.Action]
     private let onlyOnDeviceAgents: Bool
     private let pairedPeers: (any PairedPeerStore)?
-    private var queries: [QueryKey: IssueKey] = [:]
-    private var psiSteps: [PSIKey: PSIContext] = [:]
 
     public init(
         ownerRules: OwnerRules = .empty,
@@ -59,44 +28,6 @@ public actor DeterministicPolicyEngine: PolicyEngine {
         })
         self.onlyOnDeviceAgents = onlyOnDeviceAgents
         self.pairedPeers = pairedPeers
-    }
-
-    /// Call only for a query accepted by Inbox over the authenticated channel.
-    /// Keep the issue, not the peer's candidate values. Re-registration is idempotent.
-    public func registerReceivedQuery(_ envelope: Envelope) throws {
-        guard case .query(let query) = envelope.body else { throw PolicyContextError.notAQuery }
-        let key = QueryKey(local: envelope.recipient, peer: envelope.sender,
-                           conversation: envelope.conversation, query: envelope.id)
-        if let existing = queries[key] {
-            guard existing == query.issue else { throw PolicyContextError.conflictingRegistration }
-            return
-        }
-        try checkCapacity()
-        queries[key] = query.issue
-    }
-
-    /// Register every outgoing step with the actual local provider's descriptor.
-    /// `inputs` must describe the complete semantic input set, including issues
-    /// protected by owner rules. A private provider hides values, not the issue.
-    /// Exact frame binding prevents changed payloads from reusing registration.
-    public func registerPSIStep(
-        _ frame: PSIFrame, to recipient: PeerID, conversation: ConversationID,
-        provider: PSIProviderDescriptor, inputs: Terms
-    ) throws {
-        let key = PSIKey(peer: recipient, conversation: conversation, session: frame.session, step: frame.step)
-        let context = PSIContext(frame: frame, provider: provider, inputs: inputs)
-        if let existing = psiSteps[key] {
-            guard existing == context else { throw PolicyContextError.conflictingRegistration }
-            return
-        }
-        try checkCapacity()
-        psiSteps[key] = context
-    }
-
-    /// Release bounded context when a negotiation ends or is abandoned.
-    public func forgetConversation(_ conversation: ConversationID, with peer: PeerID) {
-        queries = queries.filter { $0.key.conversation != conversation || $0.key.peer != peer }
-        psiSteps = psiSteps.filter { $0.key.conversation != conversation || $0.key.peer != peer }
     }
 
     /// Computes every semantic issue and value leaving the device. Protocol
@@ -118,20 +49,15 @@ public actor DeterministicPolicyEngine: PolicyEngine {
             items = [Self.item(issue: query.issue, value: query.candidates)]
         case .answer(let answer):
             if let value = answer.acceptable {
-                let key = QueryKey(local: envelope.sender, peer: envelope.recipient,
-                                   conversation: envelope.conversation, query: answer.query)
-                guard let issue = queries[key] else {
-                    throw PolicyViolation(rule: PolicyRuleID.missingQueryContext)
-                }
-                items = [Self.item(issue: issue, value: value)]
+                items = [Self.item(issue: answer.issue, value: value)]
             } else {
                 items = []
             }
-        case .psi(let frame):
-            let context = try psiContext(frame, envelope: envelope)
-            items = context.inputs.values.isEmpty
+        case .psi:
+            let context = try psiInputs(in: message)
+            items = context.inputs.isEmpty
                 ? [DisclosedItem(category: .psi, issue: nil, value: nil)]
-                : context.inputs.values.keys.sorted().map { issue in
+                : context.inputs.keys.sorted().map { issue in
                     DisclosedItem(category: .psi, issue: issue,
                                   value: context.provider.isPrivate ? nil : context.inputs[issue])
                 }
@@ -164,15 +90,12 @@ public actor DeterministicPolicyEngine: PolicyEngine {
         }
 
         var needsConsent = !onDevice
-        if case .psi(let frame) = message.envelope.body {
-            // Already checked by disclosure; no suspension or mutation in between.
-            guard let context = try? psiContext(frame, envelope: message.envelope) else {
-                return .deny(PolicyViolation(rule: PolicyRuleID.missingPSIContext))
-            }
-            needsConsent = needsConsent || !context.provider.isPrivate || context.inputs.values.isEmpty
+        if case .psi = message.envelope.body, let context = message.context.psi {
+            // Disclosure already rejected missing or invalid PSI provenance.
+            needsConsent = needsConsent || !context.provider.isPrivate || context.inputs.isEmpty
         }
-        for item in disclosure.items where item.issue != nil {
-            if rules[item.issue!] != .allowOnDevicePeers { needsConsent = true }
+        for item in disclosure.items {
+            if let issue = item.issue, rules[issue] != .allowOnDevicePeers { needsConsent = true }
         }
         if needsConsent { return .needsConsent(disclosure) }
 
@@ -189,19 +112,16 @@ public actor DeterministicPolicyEngine: PolicyEngine {
         return .allow
     }
 
-    private func psiContext(_ frame: PSIFrame, envelope: Envelope) throws -> PSIContext {
-        let key = PSIKey(peer: envelope.recipient, conversation: envelope.conversation,
-                         session: frame.session, step: frame.step)
-        guard let context = psiSteps[key], context.frame == frame else {
+    private func psiInputs(in message: OutboundMessage) throws -> OutboundContext.PSIInputs {
+        guard let context = message.context.psi else {
             throw PolicyViolation(rule: PolicyRuleID.missingPSIContext)
         }
-        return context
-    }
-
-    private func checkCapacity() throws {
-        guard queries.count + psiSteps.count < Self.maxContextEntries else {
-            throw PolicyContextError.capacityExceeded
+        // Unlike Terms, the local context dictionary has no validating initializer.
+        for issue in context.inputs.keys.sorted() {
+            do { _ = try context.inputs[issue]!.validated() }
+            catch { throw PolicyViolation(rule: PolicyRuleID.invalidPSIContext, issue: issue) }
         }
+        return context
     }
 
     private static func isOnDevice(_ locality: ModelLocality?) -> Bool {
@@ -216,7 +136,7 @@ public actor DeterministicPolicyEngine: PolicyEngine {
     }
 
     private static func item(issue: IssueKey, value: IssueValue) -> DisclosedItem {
-        let category: DisclosedItem.Category = issue == .time ? .availability : issue == .activity ? .interest : .terms
+        let category: DisclosedItem.Category = issue == .time ? .availability : (issue == .activity || issue == .downLevel) ? .interest : .terms
         return DisclosedItem(category: category, issue: issue, value: value)
     }
 }

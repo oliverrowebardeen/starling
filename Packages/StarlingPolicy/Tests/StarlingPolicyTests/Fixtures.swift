@@ -27,10 +27,11 @@ enum Fixtures {
 
     static func outbound(
         _ body: MessageBody, card: AgentCard? = card,
-        recipient: PeerID = bob.id, conversation: ConversationID = conversation
+        recipient: PeerID = bob.id, conversation: ConversationID = conversation,
+        context: OutboundContext = .empty
     ) throws -> OutboundMessage {
         OutboundMessage(envelope: try envelope(body, recipient: recipient, conversation: conversation),
-                        recipientCard: card, transport: .loopback)
+                        recipientCard: card, transport: .loopback, context: context)
     }
 
     static func engine(
@@ -45,16 +46,11 @@ enum Fixtures {
         )
     }
 
-    static func registerContext(_ engine: DeterministicPolicyEngine, privatePSI: Bool = false) async throws {
-        try await engine.registerReceivedQuery(envelope(
-            .query(Query(issue: .activity, candidates: value)),
-            sender: bob.id, recipient: alice, id: queryID
-        ))
-        try await engine.registerPSIStep(
-            frame, to: bob.id, conversation: conversation,
+    static func psiContext(privatePSI: Bool = false, inputs: [IssueKey: IssueValue] = terms.values) -> OutboundContext {
+        OutboundContext(psi: .init(
             provider: privatePSI ? PSIProviderDescriptor(name: "test-private", isPrivate: true) : stub,
-            inputs: terms
-        )
+            inputs: inputs
+        ))
     }
 
     static func body(_ kind: MessageBody.Kind) throws -> MessageBody {
@@ -65,7 +61,7 @@ enum Fixtures {
         case .accept: .accept(Acceptance(proposal: queryID, terms: terms))
         case .reject: .reject(Rejection(proposal: queryID, reason: .noOverlap))
         case .query: .query(try Query(issue: .activity, candidates: value))
-        case .answer: .answer(try Answer(query: queryID, status: .answered, acceptable: value))
+        case .answer: .answer(try Answer(query: queryID, issue: .activity, status: .answered, acceptable: value))
         case .psi: .psi(frame)
         }
     }

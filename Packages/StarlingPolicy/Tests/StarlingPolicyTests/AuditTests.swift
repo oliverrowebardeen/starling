@@ -21,7 +21,7 @@ import Testing
         case .reject: #expect(entry.items.isEmpty)
         case .answer:
             #expect(entry.items.count == 1)
-            #expect(entry.items[0].issue == nil)
+            #expect(entry.items[0].issue == .activity)
             #expect(entry.items[0].valueKind == .keywords)
         default:
             #expect(entry.items.count == 1)
@@ -56,5 +56,32 @@ import Testing
         #expect(await log.entries() == Array(entries.suffix(2)))
         await log.removeAll()
         #expect(await log.entries().isEmpty)
+    }
+
+    @Test func observerSummarizesPSIWithoutKeepingContextOrConsentValues() async throws {
+        let completedAt = Date(timeIntervalSince1970: 123)
+        let log = try InMemoryAuditLog(now: { completedAt })
+        let envelope = try Fixtures.envelope(Fixtures.body(.psi))
+        let contexts = [
+            Fixtures.psiContext(inputs: [.activity: Fixtures.value, .downLevel: .keywords([try Keyword("maybe")])]),
+            OutboundContext(psi: .init(provider: PSIProviderDescriptor(name: "different-provider", isPrivate: false), inputs: [
+                .activity: .keywords([try Keyword("private activity")]), .downLevel: .keywords([try Keyword("down")]),
+            ])),
+        ]
+        for context in contexts {
+            let disclosure = try Fixtures.engine().disclosure(for: OutboundMessage(
+                envelope: envelope, recipientCard: Fixtures.card, transport: .loopback, context: context
+            ))
+            await log.outbox(didSend: envelope, context: context, decision: .needsConsent(disclosure))
+        }
+        let entries = await log.entries()
+        #expect(entries.count == 2)
+        #expect(entries[0] == entries[1])
+        #expect(entries[0].items.compactMap(\.issue) == [.activity, .downLevel])
+        #expect(entries[0].items.compactMap(\.valueKind) == [.keywords, .keywords])
+        #expect(entries[0].sentAt == Timestamp(completedAt))
+        let privateEntry = AuditEntry(sent: envelope, context: Fixtures.psiContext(privatePSI: true), completedAt: Timestamp(completedAt))
+        #expect(privateEntry.items[0].issue == .activity)
+        #expect(privateEntry.items[0].valueKind == nil)
     }
 }

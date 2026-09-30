@@ -54,6 +54,7 @@ public struct ConsentSheetModel: Hashable, Sendable {
             case .place: return "Place"
             case .diet: return "Diet"
             case .partySize: return "Group size"
+            case .downLevel: return "Your interest"
             default: return issue.rawValue.replacingOccurrences(of: "_", with: " ").capitalized
             }
         }
@@ -68,6 +69,11 @@ public struct ConsentSheetModel: Hashable, Sendable {
 
     private static func detail(for item: DisclosedItem) -> String {
         if let value = item.value {
+            if item.issue == .downLevel, case .keywords(let keywords) = value,
+               keywords.count == 1, ["down", "maybe"].contains(keywords[0].value) {
+                let text = "You said \"\(keywords[0].value)\"."
+                return item.category == .psi ? "Full input set: \(text)" : text
+            }
             let text = describe(value)
             return item.category == .psi ? "Full input set: \(text)" : text
         }
