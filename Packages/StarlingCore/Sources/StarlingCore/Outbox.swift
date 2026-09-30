@@ -38,7 +38,8 @@ public actor Outbox {
         _ body: MessageBody,
         to recipient: PeerID,
         conversation: ConversationID,
-        recipientCard: AgentCard? = nil
+        recipientCard: AgentCard? = nil,
+        context: OutboundContext = .empty
     ) async throws -> Envelope {
         // Reserve the sequence number before any suspension point so two
         // concurrent sends never share one. Gaps are fine; Inbox only
@@ -55,7 +56,9 @@ public actor Outbox {
             body: body
         )
 
-        switch await policy.evaluate(OutboundMessage(envelope: envelope, recipientCard: recipientCard, transport: transport.kind)) {
+        let message = OutboundMessage(envelope: envelope, recipientCard: recipientCard, transport: transport.kind, context: context)
+        let decision = await policy.evaluate(message)
+        switch decision {
         case .allow:
             break
         case .deny(let violation):

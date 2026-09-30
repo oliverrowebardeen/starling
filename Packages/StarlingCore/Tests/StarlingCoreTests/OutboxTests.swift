@@ -74,3 +74,26 @@ import Testing
         }
     }
 }
+
+@Suite struct OutboxV11Tests {
+    let body = MessageBody.reject(Rejection(proposal: Fixtures.messageID, reason: .declinedByOwner))
+
+    func disclosure(_ cents: Int64) throws -> Disclosure {
+        Disclosure(recipient: Fixtures.bob, recipientModel: .onDevice, items: [
+            DisclosedItem(category: .terms, issue: .budget, value: .amount(try MoneyAmount(minorUnits: cents))),
+        ])
+    }
+
+    @Test func localContextReachesThePolicyButNotTheWire() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let policy = FixedPolicyEngine(.allow)
+        let outbox = Outbox(transport: transport, policy: policy, consent: ScriptedConsentProvider(.declined))
+        let context = OutboundContext(psi: .init(provider: InsecurePSIStub().descriptor, inputs: [.activity: .keywords([try Keyword("boba")])]))
+
+        try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation, context: context)
+
+        #expect(await policy.evaluated.first?.context == context)
+        let wire = String(decoding: try #require(await transport.sent.first).frame.bytes, as: UTF8.self)
+        #expect(!wire.contains("boba"))
+    }
+}
