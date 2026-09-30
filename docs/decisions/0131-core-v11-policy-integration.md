@@ -1,6 +1,6 @@
 # ADR 0131: Use Core v1.1 egress context and audit callbacks
 
-- Status: Implemented per the Orchestrator's Core v1.1 migration request
+- Status: Proposed. Implemented in PR #10.
 - Date: 2026-09-30
 - Owner: G, Policy and consent
 - Supersedes the registration, audit-wrapper, and consent-lifecycle workarounds in ADR 0130
