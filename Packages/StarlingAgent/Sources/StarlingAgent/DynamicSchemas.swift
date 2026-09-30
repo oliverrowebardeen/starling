@@ -53,8 +53,10 @@ package struct MatchSchema {
         return try OutputMapping.bestOffers(choices, wanted: wanted, offered: offered)
     }
 
-    static func choiceName(_ want: Keyword) -> String { want.value }
-    static func sameName(_ want: Keyword) -> String { "\(want.value) same" }
+    // A colon cannot appear in a Keyword, so these names never collide with
+    // each other, whatever the wants are ("food" and "food same" included).
+    static func choiceName(_ want: Keyword) -> String { "want:\(want.value)" }
+    static func sameName(_ want: Keyword) -> String { "same:\(want.value)" }
 
     private static func unique(_ keywords: [Keyword]) -> [Keyword] {
         var seen = Set<Keyword>()

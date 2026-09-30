@@ -36,9 +36,26 @@ import Testing
         #expect(schema.wanted == [food, study])
         #expect(schema.offered == [movie, boba])
         let content = GeneratedContent(properties: [
-            "food": "boba run", "food same": false,
-            "study": "none", "study same": false,
+            "want:food": "boba run", "same:food": false,
+            "want:study": "none", "same:study": false,
         ])
         #expect(try schema.matches(from: content) == [KeywordMatch(wanted: food, offered: boba, strength: .satisfies)])
+    }
+
+    /// Codex review of PR #19: with names "food" and "food same", the wants
+    /// [food, "food same"] made two properties called "food same", and
+    /// GenerationSchema rejected the schema. A colon, which no Keyword can
+    /// contain, keeps every name distinct (ADR 0162).
+    @Test func wantEndingInSameDoesNotCollide() throws {
+        let foodSame = try Keyword("food same")
+        let schema = try MatchSchema(wanted: [food, foodSame], offered: [movie, boba])
+        let content = GeneratedContent(properties: [
+            "want:food": "boba run", "same:food": false,
+            "want:food same": "movie", "same:food same": true,
+        ])
+        #expect(try schema.matches(from: content) == [
+            KeywordMatch(wanted: food, offered: boba, strength: .satisfies),
+            KeywordMatch(wanted: foodSame, offered: movie, strength: .equivalent),
+        ])
     }
 }
