@@ -87,10 +87,8 @@ public struct FoundationModelsAgent: AgentModel {
         let response: LanguageModelSession.Response<Output>
         do {
             response = try await session.respond(to: prompt, generating: type, options: GenerationOptions(sampling: .greedy))
-        } catch let error as LanguageModelSession.GenerationError {
+        } catch {
             throw Self.map(error)
-        } catch is CancellationError {
-            throw AgentModelError.interrupted
         }
         let latency = start.duration(to: clock.now)
         let usage = await measure(session: session, schema: Output.generationSchema, instructions: instructions, prompt: prompt, response: response.rawContent.jsonString)
@@ -127,14 +125,25 @@ public struct FoundationModelsAgent: AgentModel {
         Int((Double(text.count) / 3.5).rounded(.up))
     }
 
-    static func map(_ error: LanguageModelSession.GenerationError) -> AgentModelError {
+    /// Maps any error from the framework to `AgentModelError`, so callers
+    /// never see framework types. Some failures arrive as a bridged `NSError`
+    /// rather than `GenerationError` (seen in the iOS 26.1 Simulator when model
+    /// assets are missing); those count as the model being unavailable.
+    static func map(_ error: any Error) -> AgentModelError {
         switch error {
-        case .exceededContextWindowSize: .contextWindowExceeded
-        case .guardrailViolation: .guardrailViolation
-        case .rateLimited, .concurrentRequests: .interrupted
-        case .assetsUnavailable: .unavailable(reason: "model assets unavailable")
-        case .unsupportedLanguageOrLocale: .unsupported
-        default: .invalidOutput(String(describing: error))
+        case let error as AgentModelError: return error
+        case is CancellationError: return .interrupted
+        case let error as LanguageModelSession.GenerationError:
+            switch error {
+            case .exceededContextWindowSize: return .contextWindowExceeded
+            case .guardrailViolation: return .guardrailViolation
+            case .rateLimited, .concurrentRequests: return .interrupted
+            case .assetsUnavailable: return .unavailable(reason: "model assets unavailable")
+            case .unsupportedLanguageOrLocale: return .unsupported
+            default: return .invalidOutput(String(describing: error))
+            }
+        default:
+            return .unavailable(reason: String(describing: error))
         }
     }
 }

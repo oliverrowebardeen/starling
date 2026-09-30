@@ -130,3 +130,18 @@ enum AgentFixtures {
         #expect(HardLimits.violations(of: terms, against: try AgentFixtures.constraints(), timeZone: AgentFixtures.utc) == ["time: outside available time"])
     }
 }
+
+@Suite struct ErrorMappingTests {
+    @Test func bridgedFrameworkErrorsBecomeUnavailable() {
+        let bridged = NSError(domain: "FoundationModels.LanguageModelSession.GenerationError", code: -1)
+        guard case .unavailable = FoundationModelsAgent.map(bridged) else {
+            Issue.record("expected unavailable")
+            return
+        }
+    }
+
+    @Test func passesThroughAndMapsKnownErrors() {
+        #expect(FoundationModelsAgent.map(AgentModelError.guardrailViolation) == .guardrailViolation)
+        #expect(FoundationModelsAgent.map(CancellationError()) == .interrupted)
+    }
+}
