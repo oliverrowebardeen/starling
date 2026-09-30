@@ -102,3 +102,43 @@ import Testing
         #expect(sent.contains(DisclosureRule(issue: .place, action: .never)))
     }
 }
+
+/// Review finding 1 on PR #15: what a row shows must be what the merged
+/// intent publishes, for every saved rule and every owner choice.
+@Suite struct SharingRowAgreementTests {
+    static let actions: [DisclosureRule.Action] = [.never, .askEachTime, .allowOnDevicePeers]
+
+    /// The action the policy applies to `issue` under `rules`: no rule asks.
+    static func effective(_ rules: OwnerRules, _ issue: IssueKey) -> DisclosureRule.Action {
+        rules.disclosure.first { $0.issue == issue }?.action ?? .askEachTime
+    }
+
+    static func published(_ draft: RulesDraft, standing: [DisclosureRule]) throws -> OwnerRules {
+        try RulesMerge.intent(try draft.build(), standing: OwnerRules(constraints: .empty, disclosure: standing))
+    }
+
+    @Test func aSavedAllowanceIsShownAsTheEffectiveAction() throws {
+        let standing = [DisclosureRule(issue: .time, action: .allowOnDevicePeers)]
+        var draft = RulesDraft.empty
+        let row = try #require(draft.sharingRows(standing: standing).first { $0.issue == .time })
+        #expect(row.action == .allowOnDevicePeers)
+        #expect(row.action == Self.effective(try Self.published(draft, standing: standing), .time))
+
+        draft.setSharing(.askEachTime, for: .time, standing: standing)
+        #expect(Self.effective(try Self.published(draft, standing: standing), .time) == .askEachTime)
+        #expect(draft.sharingRows(standing: standing).first { $0.issue == .time }?.action == .askEachTime)
+    }
+
+    @Test func everyRowAgreesWithThePublishedIntent() throws {
+        for saved in [nil] + Self.actions.map(Optional.some) {
+            let standing = saved.map { [DisclosureRule(issue: .place, action: $0)] } ?? []
+            for choice in [nil] + Self.actions.map(Optional.some) {
+                var draft = RulesDraft.empty
+                if let choice { draft.setSharing(choice, for: .place, standing: standing) }
+                let shown = try #require(draft.sharingRows(standing: standing).first { $0.issue == .place }).action
+                let sent = Self.effective(try Self.published(draft, standing: standing), .place)
+                #expect(shown == sent, "saved \(String(describing: saved)), chose \(String(describing: choice))")
+            }
+        }
+    }
+}

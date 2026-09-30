@@ -309,9 +309,10 @@ extension RulesDraft {
         let extra = mentioned.subtracting(Self.disclosableIssues).sorted()
         return (Self.disclosableIssues + extra).map { issue in
             let rule = sharing.first { $0.issue == issue }
-            let own = rule?.action ?? .askEachTime
             let saved = floor[issue]
-            let action = saved.map { RulesMerge.restrictive($0, own) } ?? own
+            // Exactly what RulesMerge publishes: with no draft rule the saved
+            // rule applies as is, and with neither the policy asks.
+            let action = Self.merged(rule?.action, saved)
             let choices = Self.actions.filter { choice in saved.map { RulesMerge.restrictive($0, choice) == choice } ?? true }
             return SharingRow(issue: issue, action: action, choices: choices, fromSavedRules: saved != nil && saved == action && rule?.action != action, ruleID: rule?.id)
         }
@@ -321,11 +322,27 @@ extension RulesDraft {
     /// rule writes nothing, since no rule already means ask (lane G's policy).
     /// A choice looser than a saved rule is ignored.
     public mutating func setSharing(_ action: DisclosureRule.Action, for issue: IssueKey, standing: [DisclosureRule] = []) {
-        for rule in standing where rule.issue == issue && RulesMerge.restrictive(rule.action, action) != action { return }
+        let saved = standing.filter { $0.issue == issue }.map(\.action).reduce(nil) { floor, next in
+            floor.map { RulesMerge.restrictive($0, next) } ?? next
+        }
+        if let saved, RulesMerge.restrictive(saved, action) != action { return }
         if let index = sharing.firstIndex(where: { $0.issue == issue }) {
             sharing[index].action = action
-        } else if action != .askEachTime {
+        } else if action != Self.merged(nil, saved) {
+            // Only write a rule when it changes what is published. Choosing
+            // "ask" over a saved allowance needs an explicit tightening rule.
             sharing.append(Sharing(id: UUID(), origin: .owner, issue: issue, action: action))
+        }
+    }
+
+    /// The action RulesMerge publishes for one issue, from the draft's rule
+    /// and the saved rule. No rule at all means the policy asks.
+    static func merged(_ own: DisclosureRule.Action?, _ saved: DisclosureRule.Action?) -> DisclosureRule.Action {
+        switch (own, saved) {
+        case let (own?, saved?): RulesMerge.restrictive(saved, own)
+        case let (own?, nil): own
+        case let (nil, saved?): saved
+        case (nil, nil): .askEachTime
         }
     }
 
