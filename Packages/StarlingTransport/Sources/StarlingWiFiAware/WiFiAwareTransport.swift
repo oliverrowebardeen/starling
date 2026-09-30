@@ -167,6 +167,7 @@ public actor WiFiAwareTransport: Transport {
 
     private func discoveryChanged(_ devices: Set<AwareDeviceID>) {
         guard state == .started else { return }
+        let appeared = devices.subtracting(discovered)
         discovered = devices
         // Stop waiting on devices that disappeared, and give them a fresh
         // retry budget for when they come back.
@@ -175,7 +176,11 @@ public actor WiFiAwareTransport: Transport {
             waitTasks[device] = nil
         }
         retryAttempts = retryAttempts.filter { devices.contains($0.key) }
-        for device in devices.sorted() { connect(to: device, after: .zero) }
+        // Every update lists the whole set. Only newly discovered devices get
+        // a discovery dial; devices already listed are handled by `retry`,
+        // so an update about some other device cannot restart a device whose
+        // retries ran out.
+        for device in appeared.sorted() { connect(to: device, after: .zero) }
     }
 
     /// Connects to a discovered device unless already linked or trying.

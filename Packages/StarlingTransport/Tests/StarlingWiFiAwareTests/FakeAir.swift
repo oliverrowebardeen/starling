@@ -81,6 +81,8 @@ actor FakeAir {
     private var listeners: [String: [UUID: AsyncStream<FakeChannel>.Continuation]] = [:]
     private var channels: [(pair: Pair, channel: FakeChannel)] = []
     private(set) var dialCount: [String: Int] = [:]
+    /// `dialsTo[phone][target]` counts dial attempts from `phone` to `target`.
+    private var dialsTo: [String: [String: Int]] = [:]
     /// Phones whose dials fail even though the target is discovered.
     private var failingDials: Set<String> = []
 
@@ -122,6 +124,10 @@ actor FakeAir {
         let dropped = channels.filter { $0.pair == Pair(a, b) }
         channels.removeAll { $0.pair == Pair(a, b) }
         for entry in dropped { await entry.channel.close() }
+    }
+
+    func dials(from phone: String, to target: String) -> Int {
+        dialsTo[phone]?[target] ?? 0
     }
 
     func setDialsFail(_ phone: String, _ fail: Bool) {
@@ -168,6 +174,9 @@ actor FakeAir {
 
     func connect(from phone: String, to device: AwareDeviceID) throws -> FakeChannel {
         dialCount[phone, default: 0] += 1
+        if let named = deviceIDs[phone]?.first(where: { $0.value == device })?.key {
+            dialsTo[phone, default: [:]][named, default: 0] += 1
+        }
         guard !failingDials.contains(phone) else { throw FakeRadioError(reason: "dial failed") }
         guard let target = deviceIDs[phone]?.first(where: { $0.value == device })?.key,
               visibleDevices(for: phone).contains(device),

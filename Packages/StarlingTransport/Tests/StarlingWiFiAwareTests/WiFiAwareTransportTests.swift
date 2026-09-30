@@ -304,6 +304,37 @@ private func frame(_ index: Int) throws -> Frame {
         await b.transport.stop()
     }
 
+    /// Browser updates carry the whole discovered set. An update about some
+    /// other device must not hand an exhausted device a fresh dial, or the
+    /// backoff is unbounded in any busy room.
+    @Test func updatesAboutOtherDevicesDoNotRedialAnExhaustedDevice() async throws {
+        let air = FakeAir()
+        await air.pair("a", "b")
+        await air.pair("a", "c")
+        await air.setDialsFail("a", true)
+        await air.setDialsFail("b", true)
+        let a = await Phone("a", air: air)
+        let b = await Phone("b", air: air)
+        let c = await Phone("c", air: air)
+        try await a.transport.start()
+        try await b.transport.start()
+
+        // One dial on discovery plus five retries, then the budget is spent.
+        await eventually("a exhausts its budget for b") { await air.dials(from: "a", to: "b") == 6 }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await air.dials(from: "a", to: "b") == 6)
+
+        // C appears, then flickers: three browser updates on A, all still listing B.
+        try await c.transport.start()
+        await eventually("c links to a") { await c.available(a) == 1 }
+        await air.setHidden("c", from: "a", true)
+        await air.setHidden("c", from: "a", false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await air.dials(from: "a", to: "b") == 6)
+
+        for phone in [a, b, c] { await phone.transport.stop() }
+    }
+
     @Test func keepsOneLinkPerPairedDevice() async throws {
         let air = FakeAir()
         let names = ["a", "b", "c", "d"]
@@ -322,10 +353,12 @@ private func frame(_ index: Int) throws -> Frame {
                 await eventually("one link \(x)-\(y)") { await air.openConnectionCount(x, y) == 1 }
             }
         }
+        // Check every table before stopping anyone: a stopped phone's links
+        // drop on the others, correctly.
         for phone in phones {
             #expect(await phone.transport.linkTable.links.count == 3)
-            await phone.transport.stop()
         }
+        for phone in phones { await phone.transport.stop() }
     }
 
     @Test func stopAnnouncesUnavailabilityFinishesEventsAndCancelsWork() async throws {
