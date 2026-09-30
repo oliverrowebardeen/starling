@@ -346,6 +346,19 @@ extension RulesDraft {
         }
     }
 
+    /// Adds sharing rules from another draft (a new interpretation) keeping
+    /// one entry per issue. Where both have a rule, the more restrictive
+    /// action wins (ADR 0141), in the existing entry.
+    public mutating func mergeSharing(_ incoming: [Sharing]) {
+        for rule in incoming {
+            if let index = sharing.firstIndex(where: { $0.issue == rule.issue }) {
+                sharing[index].action = RulesMerge.restrictive(sharing[index].action, rule.action)
+            } else {
+                sharing.append(rule)
+            }
+        }
+    }
+
     static let actions: [DisclosureRule.Action] = [.never, .askEachTime, .allowOnDevicePeers]
 }
 

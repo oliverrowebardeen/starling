@@ -73,7 +73,7 @@ public final class RulesEditorModel {
         case .draft(let interpreted):
             var draft = RulesDraft(saved?.rules ?? .empty)
             draft.items += interpreted.items
-            draft.sharing += interpreted.sharing
+            draft.mergeSharing(interpreted.sharing)
             self.draft = draft
             interpretedFrom = text
             phase = .reviewing

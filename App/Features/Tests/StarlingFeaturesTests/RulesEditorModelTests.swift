@@ -143,4 +143,33 @@ import Testing
         #expect(model.phase == .writing)
         #expect(await store.saved == nil)
     }
+
+    /// Review finding 3 on PR #15: a new interpretation that names an issue
+    /// the saved rules already cover must not leave two entries for it.
+    @Test func interpretedSharingMergesIntoSavedSharingPerIssue() async throws {
+        let saved = SavedRules(rules: OwnerRules(constraints: .empty, disclosure: [
+            DisclosureRule(issue: .place, action: .never),
+            DisclosureRule(issue: .time, action: .allowOnDevicePeers),
+        ]), savedAt: Fixtures.noon)
+        let interpreted = OwnerRules(constraints: .empty, disclosure: [
+            DisclosureRule(issue: .place, action: .allowOnDevicePeers),
+            DisclosureRule(issue: .time, action: .never),
+            DisclosureRule(issue: .budget, action: .askEachTime),
+        ])
+        let model = RulesEditorModel(interpreter: Self.interpreter(Self.agent(returning: interpreted)), store: InMemoryRulesStore(saved))
+        await model.load()
+        model.text = "share where I am, keep my times private"
+        await model.interpret()
+
+        #expect(model.problems.isEmpty, "Save must not be blocked by an invisible duplicate")
+        #expect(Set(model.draft.sharing.map(\.issue)) == [.place, .time, .budget])
+        #expect(model.draft.sharing.count == 3)
+        let built = try model.draft.build()
+        #expect(Set(built.disclosure) == [
+            DisclosureRule(issue: .place, action: .never),
+            DisclosureRule(issue: .time, action: .never),
+            DisclosureRule(issue: .budget, action: .askEachTime),
+        ])
+        #expect(await model.save())
+    }
 }
