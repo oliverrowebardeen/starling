@@ -18,21 +18,31 @@ public struct PeerID: Hashable, Comparable, Sendable, CustomStringConvertible {
         self.bytes = Data(bytes)
     }
 
+    /// Parses 64 ASCII hex digits. Works on UTF-8 bytes, never on
+    /// `Character` indices, so hostile input (multi-byte characters, full-width
+    /// digits) throws instead of indexing out of bounds.
     public init(hex: String) throws {
-        guard hex.utf8.count == Self.byteCount * 2 else {
+        let digits = Array(hex.utf8)
+        guard digits.count == Self.byteCount * 2 else {
             throw ValidationError("PeerID", "expected \(Self.byteCount * 2) hex characters")
         }
         var result = Data(capacity: Self.byteCount)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else {
+        for pair in stride(from: 0, to: digits.count, by: 2) {
+            guard let high = Self.hexValue(digits[pair]), let low = Self.hexValue(digits[pair + 1]) else {
                 throw ValidationError("PeerID", "invalid hex")
             }
-            result.append(byte)
-            index = next
+            result.append(high << 4 | low)
         }
         try self.init(bytes: result)
+    }
+
+    private static func hexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): byte - UInt8(ascii: "0")
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): byte - UInt8(ascii: "a") + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "F"): byte - UInt8(ascii: "A") + 10
+        default: nil
+        }
     }
 
     public static func random() -> PeerID {

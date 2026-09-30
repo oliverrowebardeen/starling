@@ -15,6 +15,24 @@ import Testing
         #expect(throws: ValidationError.self) { try PeerID(hex: String(repeating: "zz", count: 32)) }
     }
 
+    /// 62 ASCII zeros plus "é" is 64 UTF-8 bytes but 63 characters. Parsing
+    /// must throw, not index past the end of the string.
+    @Test(arguments: [
+        String(repeating: "0", count: 62) + "é",
+        String(repeating: "0", count: 60) + "😀",
+        String(repeating: "０", count: 21) + "0",
+        String(repeating: "0", count: 63) + "g",
+        "+" + String(repeating: "0", count: 63),
+    ])
+    func rejectsNonHexWithoutCrashing(hex: String) {
+        #expect(throws: ValidationError.self) { try PeerID(hex: hex) }
+    }
+
+    @Test func acceptsUppercaseHex() throws {
+        let id = PeerID.random()
+        #expect(try PeerID(hex: id.hex.uppercased()) == id)
+    }
+
     @Test func ordersLexicographically() throws {
         let low = try PeerID(bytes: Data(repeating: 0x01, count: 32))
         let high = try PeerID(bytes: Data(repeating: 0x02, count: 32))
