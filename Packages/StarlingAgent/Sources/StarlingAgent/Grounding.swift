@@ -61,13 +61,14 @@ package enum Grounding {
         let stated = numbers(in: words)
         let saysNoon = words.contains("noon")
         let saysMidnight = words.contains("midnight")
-        let saysAM = words.contains { $0 == "am" || meridiem($0) == "am" }
-        let saysPM = words.contains { $0 == "pm" || meridiem($0) == "pm" }
+        let marked = meridiems(in: words)
+        let saysAM = marked.values.contains { $0.contains("am") }
+        let saysPM = marked.values.contains { $0.contains("pm") }
         func grounded(_ hour: Int?) -> Int? {
             guard let hour else { return nil }
             if stated.contains(hour) { return hour }
             // 21 is stated as "9" or "9pm", but not by "9am" alone.
-            if hour > 12, stated.contains(hour - 12), !(saysAM && !saysPM) { return hour }
+            if hour > 12, stated.contains(hour - 12), marked[hour - 12] != ["am"] { return hour }
             if hour == 12 && saysNoon { return hour }
             if (hour == 0 || hour == 24) && saysMidnight { return hour }
             return nil
@@ -76,18 +77,50 @@ package enum Grounding {
         var latest = grounded(raw.latestHour)
         // A single point in time ("at 3", "after 9") is a start, not a window.
         if let from = earliest, from == latest { latest = nil }
-        let later = saysPM || raw.partOfDay == .afternoon || raw.partOfDay == .evening
+        let later = (saysPM && !saysAM) || raw.partOfDay == .afternoon || raw.partOfDay == .evening
         func clock(_ hour: Int?) -> Int? {
             guard let hour, (1...11).contains(hour) else { return hour }
+            // An hour with its own "am" or "pm" ("9am to 1pm") follows it,
+            // whatever the rest of the message says.
+            switch marked[hour] {
+            case ["am"]?: return hour
+            case ["pm"]?: return hour + 12
+            default: break
+            }
             if saysAM && !saysPM { return hour }
             if hour <= 6 || later { return hour + 12 }
             return hour
         }
+        let unmarkedStart = earliest.map { marked[$0] == nil } ?? false
+        let unmarkedEnd = latest.map { marked[$0] == nil } ?? false
+        let morningStart = earliest
         earliest = clock(earliest)
         latest = clock(latest)
-        // "between 5 and 7": the end is the same half of the day as the start.
-        if let from = earliest, let to = latest, to <= from, to + 12 > from, to + 12 <= 24 { latest = to + 12 }
+        // A window that ends before it starts moves whichever end the owner
+        // did not mark. "between 5 and 7": the end joins the start's half of
+        // the day. "from 9 to 1pm": the start stays in the morning.
+        if let from = earliest, let to = latest, to <= from {
+            if unmarkedEnd, to + 12 > from, to + 12 <= 24 {
+                latest = to + 12
+            } else if unmarkedStart, let start = morningStart, start < to {
+                earliest = start
+            }
+        }
         return (earliest, latest)
+    }
+
+    /// For each number the message marks with "am" or "pm", glued ("9am")
+    /// or as the next word ("9 am"), which markers it carries.
+    static func meridiems(in words: [String]) -> [Int: Set<String>] {
+        var marked: [Int: Set<String>] = [:]
+        for (index, word) in words.enumerated() {
+            if let suffix = meridiem(word), let hour = Int(word.dropLast(2)) {
+                marked[hour, default: []].insert(suffix)
+            } else if word == "am" || word == "pm", index > 0, let hour = Int(words[index - 1]) {
+                marked[hour, default: []].insert(word)
+            }
+        }
+        return marked
     }
 
     /// "am" or "pm" when `word` is a number glued to one, like "10pm".

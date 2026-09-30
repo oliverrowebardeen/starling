@@ -68,6 +68,12 @@ import Testing
         HourCase(12, 17, .afternoon, "saturday afternoon works", nil, nil),
         HourCase(12, nil, nil, "nothing before noon", 12, nil),
         HourCase(0, 23, nil, "no seafood, no bars", nil, nil),
+        // Codex review of PR #19: "am" and "pm" belong to the hour they are
+        // attached to, not to the whole message.
+        HourCase(9, 13, nil, "today from 9am to 1pm", 9, 13),
+        HourCase(9, 1, nil, "today from 9 am to 1 pm", 9, 13),
+        HourCase(9, 1, nil, "from 9 to 1pm", 9, 13),
+        HourCase(21, nil, nil, "9am to 9pm", 21, nil),
     ])
     func hoursAreStatedAndOnATwentyFourHourClock(_ test: HourCase) {
         let raw = RawRules(partOfDay: test.part, earliestHour: test.from, latestHour: test.to)
