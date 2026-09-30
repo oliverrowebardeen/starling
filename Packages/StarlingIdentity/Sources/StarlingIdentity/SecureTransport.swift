@@ -64,7 +64,14 @@ public actor SecureTransport: Transport {
     private(set) var droppedFrames = 0
 
     private struct Channel {
+        let id: UInt64
         var session: NoiseSession
+        /// Whether we sent KK message 1 for this session.
+        let initiator: Bool
+        /// Whether the other side is known to use this session. A responder's
+        /// session is confirmed when it is promoted; an initiator's when any
+        /// frame from the responder decrypts under it.
+        var confirmed: Bool
         /// The lowest nonce still acceptable: nonces must strictly increase.
         var nextReceiveNonce: UInt64 = 0
     }
@@ -79,6 +86,14 @@ public actor SecureTransport: Transport {
         var linkUp = false
         var announced = false
         var current: Channel?
+        /// The initiator's previous session, kept for receiving only until the
+        /// new `current` is confirmed: the responder may not have switched yet.
+        var previous: Channel?
+        /// The timer resending our confirm until the responder acknowledges it.
+        var confirmTimer: UInt64?
+        /// Sessions abandoned for lack of an acknowledgement since the last
+        /// confirmed one. Bounds re-handshakes on a link that loses them all.
+        var unconfirmedRestarts = 0
         /// Responder sessions awaiting their first frame, newest last.
         var pending: [Channel] = []
         var initiation: Initiation?
@@ -88,6 +103,7 @@ public actor SecureTransport: Transport {
     }
 
     static let maxPendingPerPeer = 4
+    static let maxUnconfirmedRestarts = 2
     static let maxRememberedEphemerals = 64
 
     public init(
@@ -190,7 +206,7 @@ public actor SecureTransport: Transport {
             claimedPeer: peer,
             linkUp: entry?.linkUp ?? false,
             provenKey: entry?.current.flatMap { try? IdentityPublicKey(bytes: $0.session.remoteStatic.rawRepresentation) },
-            handshakeInProgress: entry?.initiation != nil || entry?.pending.isEmpty == false,
+            handshakeInProgress: entry?.initiation != nil || entry?.pending.isEmpty == false || entry?.current?.confirmed == false,
             droppedFrames: entry?.droppedFrames ?? 0
         )
     }
@@ -261,7 +277,8 @@ public actor SecureTransport: Transport {
             let session = try handshake.session()
             guard Self.proves(session, peer) else { return drop(from: peer) }
             var entry = peers[peer] ?? PeerState()
-            entry.pending.append(Channel(session: session))
+            nextHandshakeID += 1
+            entry.pending.append(Channel(id: nextHandshakeID, session: session, initiator: false, confirmed: false))
             if entry.pending.count > Self.maxPendingPerPeer { entry.pending.removeFirst() }
             entry.answeredEphemerals.append(ephemeral)
             if entry.answeredEphemerals.count > Self.maxRememberedEphemerals { entry.answeredEphemerals.removeFirst() }
@@ -288,45 +305,106 @@ public actor SecureTransport: Transport {
         // KK authenticated the responder against the key pinned at initiation.
         guard Self.proves(session, peer) else { return drop(from: peer) }
         timers.removeValue(forKey: initiation.id)?.cancel()
-        peers[peer]?.initiation = nil
-        peers[peer]?.pending = []
-        peers[peer]?.current = Channel(session: session)
+        guard var entry = peers[peer] else { return }
+        entry.initiation = nil
+        entry.pending = []
+        // The responder switches only when our confirm (or data) reaches it,
+        // so keep accepting its frames under the old session until then.
+        if let old = entry.current { entry.previous = old }
+        entry.current = Channel(id: initiation.id, session: session, initiator: true, confirmed: false)
+        peers[peer] = entry
+        armConfirmRetry(peer, channel: initiation.id, attemptsLeft: configuration.handshakeAttempts)
+        await sendControl(.confirm, to: peer)
+        announce(peer)
+    }
+
+    /// Resends our confirm until the responder acknowledges the new session.
+    /// If it never does, the session may be unusable on its side: start over,
+    /// a bounded number of times.
+    private func armConfirmRetry(_ peer: PeerID, channel: UInt64, attemptsLeft: Int) {
+        if let old = peers[peer]?.confirmTimer { timers.removeValue(forKey: old)?.cancel() }
+        nextHandshakeID += 1
+        let id = nextHandshakeID
+        peers[peer]?.confirmTimer = id
+        let timeout = configuration.handshakeTimeout
+        timers[id] = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await self?.confirmTimedOut(peer, channel: channel, timer: id, attemptsLeft: attemptsLeft)
+        }
+    }
+
+    private func confirmTimedOut(_ peer: PeerID, channel: UInt64, timer: UInt64, attemptsLeft: Int) async {
+        timers[timer] = nil
+        guard state == .started, let current = peers[peer]?.current, current.id == channel, !current.confirmed else { return }
+        if attemptsLeft > 0 {
+            armConfirmRetry(peer, channel: channel, attemptsLeft: attemptsLeft - 1)
+            await sendControl(.confirm, to: peer)
+            return
+        }
+        let restarts = (peers[peer]?.unconfirmedRestarts ?? 0) + 1
+        tearDown(peer, announce: true)
+        peers[peer]?.unconfirmedRestarts = restarts
+        if restarts <= Self.maxUnconfirmedRestarts { await initiate(with: peer) }
+    }
+
+    /// Sends a confirm or acknowledgement under the current session. Best
+    /// effort: a lost one is covered by the confirm retry.
+    private func sendControl(_ kind: SecureWire.PayloadKind, to peer: PeerID) async {
         try? await serialized { transport in
-            let sealed = try transport.seal(.confirm, Data(), to: peer)
+            let sealed = try transport.seal(kind, Data(), to: peer)
             try await transport.inner.send(sealed, to: peer)
         }
-        announce(peer)
     }
 
     private func receiveTransport(_ body: Data, from peer: PeerID) {
         guard let (nonce, ciphertext) = SecureWire.parseTransport(body),
               nonce < configuration.maxMessagesPerSession,
-              var state = peers[peer]
+              var entry = peers[peer]
         else { return drop(from: peer) }
 
         var plaintext: Data?
-        if var channel = state.current, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
-            state.current = channel
-            plaintext = opened
+        var channelUsed: Channel?
+        if var channel = entry.current, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+            if !channel.confirmed {
+                // The responder sent under our new session, so it switched.
+                channel.confirmed = true
+                entry.previous = nil
+                entry.unconfirmedRestarts = 0
+                if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+                entry.confirmTimer = nil
+            }
+            entry.current = channel
+            (plaintext, channelUsed) = (opened, channel)
+        } else if var channel = entry.previous, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+            entry.previous = channel
+            (plaintext, channelUsed) = (opened, channel)
         } else {
-            for index in state.pending.indices.reversed() {
-                var channel = state.pending[index]
+            for index in entry.pending.indices.reversed() {
+                var channel = entry.pending[index]
                 if let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
                     // The initiator used this session, so it is live: promote it.
-                    state.current = channel
-                    state.pending = []
-                    plaintext = opened
+                    channel.confirmed = true
+                    entry.current = channel
+                    entry.previous = nil
+                    entry.pending = []
+                    (plaintext, channelUsed) = (opened, channel)
                     break
                 }
             }
         }
-        guard let plaintext, let first = plaintext.first, let kind = SecureWire.PayloadKind(rawValue: first) else {
-            return drop(from: peer)
-        }
-        peers[peer] = state
+        guard let plaintext, let channelUsed, let first = plaintext.first,
+              let kind = SecureWire.PayloadKind(rawValue: first)
+        else { return drop(from: peer) }
+        peers[peer] = entry
         announce(peer)
         switch kind {
         case .confirm:
+            // Acknowledge every confirm on a session we answered, including a
+            // retry whose earlier acknowledgement was lost.
+            guard !channelUsed.initiator, channelUsed.id == entry.current?.id else { return }
+            Task { await self.sendControl(.confirmAck, to: peer) }
+        case .confirmAck:
             return
         case .data:
             let payload = Data(plaintext.dropFirst())
@@ -355,7 +433,11 @@ public actor SecureTransport: Transport {
         guard var channel = peers[peer]?.current else { throw TransportError.peerUnreachable(peer) }
         let nonce = channel.session.send.nonce
         guard nonce < configuration.maxMessagesPerSession else {
+            // We may not send on it again, but the peer may still send on it
+            // until our new session reaches it: keep it for receiving only.
+            let exhausted = channel
             tearDown(peer, announce: true)
+            peers[peer]?.previous = exhausted
             Task { await self.initiate(with: peer) }
             throw TransportError.peerUnreachable(peer)
         }
@@ -426,7 +508,10 @@ public actor SecureTransport: Transport {
         guard var state = peers[peer] else { return }
         generations[peer, default: 0] += 1
         if let initiation = state.initiation { timers.removeValue(forKey: initiation.id)?.cancel() }
+        if let timer = state.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
         let wasAnnounced = state.announced
+        state.confirmTimer = nil
+        state.previous = nil
         state.current = nil
         state.pending = []
         state.initiation = nil

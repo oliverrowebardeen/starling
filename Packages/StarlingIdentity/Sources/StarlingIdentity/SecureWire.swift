@@ -21,6 +21,9 @@ enum SecureWire {
         /// knows the session is live and not a replayed message 1.
         case confirm = 0x00
         case data = 0x01
+        /// Sent by the KK responder for every confirm it receives, so the
+        /// initiator can stop resending and drop its previous session.
+        case confirmAck = 0x02
     }
 
     /// Noise prologue for paired-peer sessions. Mismatched versions fail the handshake.

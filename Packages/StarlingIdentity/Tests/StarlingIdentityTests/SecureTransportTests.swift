@@ -19,6 +19,12 @@ import Testing
         try await bob.secure.start()
         try await alice.waitForPeer(bob.id)
         try await bob.waitForPeer(alice.id)
+        // Let the confirm and its acknowledgement land, so tests start quiet.
+        try await eventually("both sessions confirmed") {
+            let aliceBusy = await alice.secure.status(of: bob.id).handshakeInProgress
+            let bobBusy = await bob.secure.status(of: alice.id).handshakeInProgress
+            return !aliceBusy && !bobBusy
+        }
         return (alice, bob)
     }
 
@@ -335,6 +341,96 @@ import Testing
         try? await alice.secure.send(Frame(Data("still friends?".utf8)), to: bob.id)
         try await settle()
         #expect(await bob.events.received.isEmpty)
+    }
+
+    /// Review finding MEDIUM 3, first connection: each side loses its first
+    /// transport frame (the initiator's confirm and, once it is sent, the
+    /// responder's acknowledgement). Both sides still come up, and traffic
+    /// flows both ways without the initiator sending data first.
+    @Test(arguments: [false, true]) func aLostConfirmationOnFirstConnectionRecovers(sendFails: Bool) async throws {
+        let hub = LoopbackHub()
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey], faulty: true)
+        for node in [alice, bob] {
+            let link = try #require(node.link as? FaultyLink)
+            if sendFails { await link.fail(nextTransportFrames: 1) } else { await link.drop(nextTransportFrames: 1) }
+        }
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+
+        let responder = alice.id < bob.id ? bob : alice
+        let initiator = alice.id < bob.id ? alice : bob
+        try await responder.secure.send(Frame(Data("from responder".utf8)), to: initiator.id)
+        try await initiator.waitForMessages(1)
+        try await initiator.secure.send(Frame(Data("from initiator".utf8)), to: responder.id)
+        try await responder.waitForMessages(1)
+    }
+
+    /// Review finding MEDIUM 3, rekey: Alice starts a new session and her
+    /// confirm is lost or fails. Bob, still on the old session, keeps
+    /// talking; Alice must still hear him, and both converge on the new one.
+    @Test(arguments: [false, true]) func aLostConfirmationDuringRekeyLosesNothing(sendFails: Bool) async throws {
+        let hub = LoopbackHub()
+        let wire = await recordDeliveries(hub)
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey])
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+
+        let link = try #require(alice.link as? FaultyLink)
+        if sendFails { await link.fail(nextTransportFrames: 1) } else { await link.drop(nextTransportFrames: 1) }
+        let answers = await wire.frames(from: bob.id, to: alice.id, type: .handshake2).count
+        await alice.secure.reconnect(bob.id)
+        try await eventually("alice's confirm is lost") { await link.dropped + link.failed == 1 }
+        #expect(await wire.frames(from: bob.id, to: alice.id, type: .handshake2).count == answers + 1)
+
+        for index in 0..<3 { try await bob.secure.send(Frame(Data("bob \(index)".utf8)), to: alice.id) }
+        try await alice.waitForMessages(3)
+        // Once the retried confirm lands, both sides use the new session.
+        try await eventually("alice's new session is confirmed") { await alice.secure.status(of: bob.id).handshakeInProgress == false }
+        try await bob.secure.send(Frame(Data("bob 3".utf8)), to: alice.id)
+        try await alice.secure.send(Frame(Data("alice".utf8)), to: bob.id)
+        try await alice.waitForMessages(4)
+        try await bob.waitForMessages(1)
+        #expect(await alice.events.count(.peerAvailable(bob.id)) == 1)
+        #expect(await bob.events.count(.peerAvailable(alice.id)) == 1)
+    }
+
+    /// Review finding MEDIUM 3, rollover at the message cap: Alice's session
+    /// runs out, she starts a new one, and its confirm is lost or fails.
+    /// Bob, still on the old session, keeps talking and Alice hears him.
+    @Test(arguments: [false, true]) func aLostConfirmationDuringCapRolloverLosesNothing(sendFails: Bool) async throws {
+        let hub = LoopbackHub()
+        let configuration = SecureTransportConfiguration(maxMessagesPerSession: 4, handshakeTimeout: .milliseconds(200))
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true, configuration: configuration)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey], configuration: configuration)
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        try await settle()
+
+        let link = try #require(alice.link as? FaultyLink)
+        if sendFails { await link.fail(nextTransportFrames: 1, controlOnly: true) } else { await link.drop(nextTransportFrames: 1, controlOnly: true) }
+        var refused = false
+        for index in 0..<8 where !refused {
+            do { try await alice.secure.send(Frame(Data("alice \(index)".utf8)), to: bob.id) } catch { refused = true }
+        }
+        #expect(refused)
+        try await eventually("alice's rollover confirm is lost") { await link.dropped + link.failed == 1 }
+
+        for index in 0..<2 { try await bob.secure.send(Frame(Data("bob \(index)".utf8)), to: alice.id) }
+        try await alice.waitForMessages(2)
+        try await eventually("alice's new session is confirmed") {
+            let status = await alice.secure.status(of: bob.id)
+            return status.provenKey != nil && !status.handshakeInProgress
+        }
+        try await alice.secure.send(Frame(Data("after".utf8)), to: bob.id)
+        try await eventually("bob hears alice on the new session") { await bob.events.received.contains { $0.0 == Data("after".utf8) } }
     }
 
     @Test func stopFinishesEvents() async throws {

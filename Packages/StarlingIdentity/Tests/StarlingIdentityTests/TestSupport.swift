@@ -148,6 +148,40 @@ actor GatedLink: Transport {
     }
 }
 
+/// A Loopback link that loses (drops silently) or fails (throws on send)
+/// its next few secure-channel transport frames, and passes everything else.
+actor FaultyLink: Transport {
+    nonisolated let inner: LoopbackTransport
+    nonisolated var kind: TransportKind { inner.kind }
+    nonisolated var localPeer: PeerID { inner.localPeer }
+    nonisolated var events: AsyncStream<TransportEvent> { inner.events }
+
+    private var toDrop = 0
+    private var toFail = 0
+    private var controlOnly = false
+    private(set) var dropped = 0
+    private(set) var failed = 0
+
+    init(_ inner: LoopbackTransport) { self.inner = inner }
+
+    /// `controlOnly` limits the fault to confirm and acknowledgement frames,
+    /// which carry no payload, so data frames still pass.
+    func drop(nextTransportFrames count: Int, controlOnly: Bool = false) { (toDrop, self.controlOnly) = (count, controlOnly) }
+    func fail(nextTransportFrames count: Int, controlOnly: Bool = false) { (toFail, self.controlOnly) = (count, controlOnly) }
+
+    func start() async throws { try await inner.start() }
+    func stop() async { await inner.stop() }
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        if frame.bytes.first == SecureWire.FrameType.transport.rawValue,
+           !controlOnly || frame.bytes.count == SecureWire.transportOverhead {
+            if toDrop > 0 { toDrop -= 1; dropped += 1; return }
+            if toFail > 0 { toFail -= 1; failed += 1; throw TransportError.peerUnreachable(peer) }
+        }
+        try await inner.send(frame, to: peer)
+    }
+}
+
 /// One device: identity, pinned peers, a Loopback link, and the secure channel.
 struct Node {
     let name: String
@@ -161,12 +195,12 @@ struct Node {
 
     static func make(
         _ name: String, hub: LoopbackHub, identity: IdentityKeyPair = .generate(),
-        pins: [IdentityKeyPair] = [], intercept: Bool = false,
+        pins: [IdentityKeyPair] = [], intercept: Bool = false, faulty: Bool = false,
         configuration: SecureTransportConfiguration = SecureTransportConfiguration(handshakeTimeout: .milliseconds(200))
     ) async throws -> Node {
         let store = GatedPairedPeerStore(try pins.map { try PairedPeer(publicKey: $0.publicKey, nickname: "friend", pairedAt: Timestamp(Date())) })
         let loopback = LoopbackTransport(localPeer: identity.peerID, hub: hub)
-        let link: any Transport = intercept ? InterceptingLink(loopback) : loopback
+        let link: any Transport = if intercept { InterceptingLink(loopback) } else if faulty { FaultyLink(loopback) } else { loopback }
         let secure = SecureTransport(wrapping: link, identity: identity, pairedPeers: store, configuration: configuration)
         let events = await Recorder.recording(secure.events)
         return Node(name: name, identity: identity, store: store, link: link, secure: secure, events: events)
