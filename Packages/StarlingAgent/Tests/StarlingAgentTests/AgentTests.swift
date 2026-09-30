@@ -47,10 +47,13 @@ enum AgentFixtures {
             - budget: $15 BREAKS LIMIT
             - time: Tue 19:00-21:00
             Time options: 1) Tue 18:00-23:00 2) Tue 19:00-21:00
-            Activity options: 1) boba 2) sushi
+            Activity options: 1) boba
             """)
         #expect(prompt.timeOptions.count == 2)
-        #expect(prompt.activityOptions.map(\.value) == ["boba", "sushi"])
+        // sushi is avoided, so it is not an option to counter with.
+        #expect(prompt.activityOptions.map(\.value) == ["boba"])
+        #expect(prompt.brokenIssues == [.activity, .budget])
+        #expect(prompt.budgetRange == 0...12)
     }
 
     @Test func capsOptionLists() throws {

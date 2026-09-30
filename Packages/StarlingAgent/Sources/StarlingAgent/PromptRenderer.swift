@@ -6,6 +6,10 @@ package struct DecisionPrompt: Hashable, Sendable {
     package let text: String
     package let timeOptions: [TimeSlot]
     package let activityOptions: [Keyword]
+    /// Issues where the proposal breaks one of the owner's limits.
+    package var brokenIssues: Set<IssueKey> = []
+    /// Whole-dollar budgets within the owner's limits, or nil if none is.
+    package var budgetRange: ClosedRange<Int>? = nil
 }
 
 /// Turns Core values into short prompts (TN3193: fewer tokens, clearer
@@ -55,8 +59,17 @@ package enum PromptRenderer {
             lines.append("Earlier: \(history)")
         }
 
-        let timeOptions = unique(ownerSlots(context.constraints) + slots(in: proposal)).prefix(maxTimeOptions)
-        let activityOptions = unique(likedKeywords(context.constraints) + keywords(in: proposal)).prefix(maxActivityOptions)
+        // Only options that meet the owner's limits are listed: the model
+        // chooses among compliant options, code decides which those are
+        // (ARCHITECTURE rule 6).
+        func complies(_ key: IssueKey, _ value: IssueValue) -> Bool {
+            guard let terms = try? Terms([key: value]) else { return false }
+            return context.constraints.violations(of: terms, timeZone: timeZone).isEmpty
+        }
+        let timeOptions = unique(ownerSlots(context.constraints) + slots(in: proposal))
+            .filter { complies(.time, .slots([$0])) }.prefix(maxTimeOptions)
+        let activityOptions = unique(likedKeywords(context.constraints) + keywords(in: proposal))
+            .filter { complies(.activity, .keywords([$0])) }.prefix(maxActivityOptions)
         if !timeOptions.isEmpty {
             lines.append("Time options: " + timeOptions.enumerated().map { "\($0.offset + 1)) \(format($0.element, timeZone: timeZone))" }.joined(separator: " "))
         }
@@ -64,7 +77,13 @@ package enum PromptRenderer {
             lines.append("Activity options: " + activityOptions.enumerated().map { "\($0.offset + 1)) \($0.element)" }.joined(separator: " "))
         }
 
-        return DecisionPrompt(text: lines.joined(separator: "\n"), timeOptions: Array(timeOptions), activityOptions: Array(activityOptions))
+        return DecisionPrompt(
+            text: lines.joined(separator: "\n"),
+            timeOptions: Array(timeOptions),
+            activityOptions: Array(activityOptions),
+            brokenIssues: conflicts,
+            budgetRange: budgetRange(context.constraints)
+        )
     }
 
     package static func interpret(_ utterance: OwnerUtterance, context: InterpretationContext) -> String {
@@ -137,6 +156,21 @@ package enum PromptRenderer {
     }
 
     // MARK: - Options
+
+    /// Whole dollars between the owner's hard budget limits, rounding
+    /// inward so a counter can never cross one.
+    static func budgetRange(_ constraints: ConstraintSet) -> ClosedRange<Int>? {
+        var low = 0
+        var high = DecisionSchema.maxDollars
+        for constraint in constraints[.budget] where constraint.strength == .hard {
+            switch constraint.rule {
+            case .atMost(let amount): high = min(high, Int(amount.minorUnits / 100))
+            case .atLeast(let amount): low = max(low, Int((amount.minorUnits + 99) / 100))
+            default: break
+            }
+        }
+        return low <= high ? low...high : nil
+    }
 
     private static func ownerSlots(_ constraints: ConstraintSet) -> [TimeSlot] {
         constraints[.time].flatMap { constraint -> [TimeSlot] in

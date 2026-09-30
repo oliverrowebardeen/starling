@@ -92,12 +92,21 @@ extension OutputMapping {
 /// the proposal is about. The Phase 0 bench saw a time-only negotiation
 /// answer with "activity option 2" because the static schema always had an
 /// activity field; here that field does not exist unless activity is in play.
+///
+/// Hard limits are enforced by the schema, not asked of the model: accept
+/// is not offered when the proposal breaks a limit, a counter must set every
+/// broken issue, and option lists hold only compliant options. The Phase 0
+/// `brokenItems` field, which asked the model to name conflicts first, is
+/// gone: code knows them, and as an array of a one-choice enum it made the
+/// macOS 26.7 model service fail (ModelManagerError 1032).
 package struct DecisionSchema {
     package static let moves = ["accept", "counter", "reject"]
 
     package let schema: GenerationSchema
     /// Property names in generation order, for tests and debugging.
     package let properties: [String]
+    /// The moves offered. `["reject"]` alone means no model call is needed.
+    package let moves: [String]
 
     package init(prompt: DecisionPrompt, proposal: Proposal) throws {
         var properties: [DynamicGenerationSchema.Property] = []
@@ -106,37 +115,38 @@ package struct DecisionSchema {
             names.append(name)
             properties.append(property)
         }
-        let issues = proposal.terms.values.keys.sorted().map(\.rawValue)
-        if !issues.isEmpty {
-            // Generated first on purpose: naming the conflicts before choosing
-            // a move stops the model committing to "accept" first (Phase 0
-            // bench, docs/research/model-budget.md).
-            add("brokenItems", DynamicGenerationSchema.Property(
-                name: "brokenItems",
-                description: "Proposal items marked BREAKS LIMIT",
-                schema: DynamicGenerationSchema(
-                    arrayOf: DynamicGenerationSchema(name: "Issue", anyOf: issues),
-                    minimumElements: 0,
-                    maximumElements: issues.count
-                )
-            ))
+        let hasTime = proposal.terms[.time] != nil && !prompt.timeOptions.isEmpty
+        let hasActivity = proposal.terms[.activity] != nil && !prompt.activityOptions.isEmpty
+        var budget: ClosedRange<Int>?
+        if case .amount = proposal.terms[.budget] { budget = prompt.budgetRange }
+        // A counter keeps the proposal's value for any issue it leaves out,
+        // so it must change every broken issue, and needs a field to do it.
+        let fixable: [IssueKey: Bool] = [.time: hasTime, .activity: hasActivity, .budget: budget != nil]
+        let canCounter = prompt.brokenIssues.allSatisfy { fixable[$0] ?? false }
+        moves = Self.moves.filter { move in
+            switch move {
+            // Accepting terms that break a limit is never offered.
+            case "accept": prompt.brokenIssues.isEmpty
+            case "counter": canCounter
+            default: true
+            }
         }
         add("move", DynamicGenerationSchema.Property(
             name: "move",
-            schema: DynamicGenerationSchema(name: "Move", anyOf: Self.moves)
+            schema: DynamicGenerationSchema(name: "Move", anyOf: moves)
         ))
-        if proposal.terms[.time] != nil, !prompt.timeOptions.isEmpty {
-            add("timeOption", Self.option("timeOption", "Counter only: time option number", count: prompt.timeOptions.count))
+        if hasTime {
+            add("timeOption", Self.option("timeOption", "Counter only: time option number", count: prompt.timeOptions.count, required: prompt.brokenIssues.contains(.time)))
         }
-        if proposal.terms[.activity] != nil, !prompt.activityOptions.isEmpty {
-            add("activityOption", Self.option("activityOption", "Counter only: activity option number", count: prompt.activityOptions.count))
+        if hasActivity {
+            add("activityOption", Self.option("activityOption", "Counter only: activity option number", count: prompt.activityOptions.count, required: prompt.brokenIssues.contains(.activity)))
         }
-        if case .amount = proposal.terms[.budget] {
+        if let budget {
             add("budgetDollars", DynamicGenerationSchema.Property(
                 name: "budgetDollars",
                 description: "Counter only: budget in whole dollars",
-                schema: DynamicGenerationSchema(type: Int.self, guides: [.range(0...Self.maxDollars)]),
-                isOptional: true
+                schema: DynamicGenerationSchema(type: Int.self, guides: [.range(budget)]),
+                isOptional: !prompt.brokenIssues.contains(.budget)
             ))
         }
         self.properties = names
@@ -152,6 +162,9 @@ package struct DecisionSchema {
         case "reject": .reject
         case let other: throw AgentModelError.invalidOutput("move \(other) not offered")
         }
+        guard moves.contains(String(describing: kind)) else {
+            throw AgentModelError.invalidOutput("move \(kind) not offered")
+        }
         func number(_ name: String) throws -> Int? {
             properties.contains(name) ? try content.value(Int?.self, forProperty: name) : nil
         }
@@ -161,12 +174,12 @@ package struct DecisionSchema {
     /// Whole dollars the model may name; matches the Core money limit.
     static let maxDollars = Int(ProtocolLimits.maxMoneyMinorUnits / 100)
 
-    private static func option(_ name: String, _ description: String, count: Int) -> DynamicGenerationSchema.Property {
+    private static func option(_ name: String, _ description: String, count: Int, required: Bool) -> DynamicGenerationSchema.Property {
         DynamicGenerationSchema.Property(
             name: name,
             description: description,
             schema: DynamicGenerationSchema(type: Int.self, guides: [.range(1...count)]),
-            isOptional: true
+            isOptional: !required
         )
     }
 }
