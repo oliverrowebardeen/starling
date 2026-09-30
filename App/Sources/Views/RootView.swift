@@ -7,15 +7,22 @@ struct RootView<Developer: View>: View {
 
     let app: AppModel
     @ViewBuilder let developer: () -> Developer
+    @AppStorage(RootView.onboardingKey) private var onboardingFinished = false
 
     var body: some View {
-        tabs
-            .task { await app.start() }
-            // The consent sheet can appear over any screen. Only the owner's
-            // answer dismisses it (ConsentSheet), so the setter never declines.
-            .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in
-                ConsentSheet(request: request, psiIsPrivate: app.services.psiIsPrivate) { app.consent.answer($0) }
+        Group {
+            if onboardingFinished {
+                tabs
+            } else {
+                OnboardingView(model: app.makeOnboarding(), rules: app.rulesEditor) { onboardingFinished = true }
             }
+        }
+        .task { await app.start() }
+        // The consent sheet can appear over any screen. Only the owner's
+        // answer dismisses it (ConsentSheet), so the setter never declines.
+        .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in
+            ConsentSheet(request: request, psiIsPrivate: app.services.psiIsPrivate) { app.consent.answer($0) }
+        }
     }
 
     private var tabs: some View {

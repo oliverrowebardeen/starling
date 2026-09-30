@@ -8,6 +8,7 @@ struct DeveloperView: View {
     #if DEBUG
     let harness: DebugHarness
     #endif
+    @AppStorage(RootView<EmptyView>.onboardingKey) private var onboardingFinished = false
 
     var body: some View {
         List {
@@ -26,6 +27,7 @@ struct DeveloperView: View {
 
             Section("Build") {
                 LabeledContent("Services", value: buildKind)
+                Button("Show onboarding again") { onboardingFinished = false }
             }
         }
         .navigationTitle("Developer")
