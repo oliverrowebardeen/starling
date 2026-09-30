@@ -15,6 +15,10 @@ public struct AppServices: Sendable {
     public var makeDownService: (@Sendable (any ConsentProvider) -> any DownService)?
     /// Lanes E1 and E2's pairing ceremony.
     public var makePairingSession: PairingSessionFactory?
+    /// The app's one `Inbox` stream (v1.1: `Inbox.events(from:)` over the
+    /// secure channel). `AppModel` is its single consumer and routes every
+    /// event to the features; nil until a transport is in the build.
+    public var inboxEvents: AsyncStream<InboxEvent>?
     public var notifier: any MatchNotifier
     public var localNetwork: any LocalNetworkPrompter
     /// Whether the PSI provider behind Down hides the owner's set. False
@@ -29,6 +33,7 @@ public struct AppServices: Sendable {
         peers: (any PairedPeerStore)?,
         makeDownService: (@Sendable (any ConsentProvider) -> any DownService)?,
         makePairingSession: PairingSessionFactory?,
+        inboxEvents: AsyncStream<InboxEvent>? = nil,
         notifier: any MatchNotifier,
         localNetwork: any LocalNetworkPrompter,
         psiIsPrivate: Bool = false,
@@ -40,6 +45,7 @@ public struct AppServices: Sendable {
         self.peers = peers
         self.makeDownService = makeDownService
         self.makePairingSession = makePairingSession
+        self.inboxEvents = inboxEvents
         self.notifier = notifier
         self.localNetwork = localNetwork
         self.psiIsPrivate = psiIsPrivate
@@ -58,6 +64,8 @@ public final class AppModel {
     /// Nil until a `DownService` and a paired-peer store are in the build.
     public let down: DownModel?
     public let friends: FriendsModel?
+    private let downService: (any DownService)?
+    private var inboxLoop: Task<Void, Never>?
     private var started = false
 
     public init(services: AppServices) {
@@ -70,8 +78,10 @@ public final class AppModel {
         )
         if let makeDown = services.makeDownService, let peers = services.peers {
             let consent = consent
+            let service = makeDown(consent)
+            downService = service
             down = DownModel(
-                service: makeDown(consent),
+                service: service,
                 interpreter: RulesInterpreter(agent: services.agent, issues: RulesInterpreter.intentIssues, timeZone: services.timeZone),
                 rules: services.rules,
                 peers: peers,
@@ -81,6 +91,7 @@ public final class AppModel {
                 intentChanged: { consent.forgetApprovals() }
             )
         } else {
+            downService = nil
             down = nil
         }
         friends = services.peers.map(FriendsModel.init(store:))
@@ -91,8 +102,22 @@ public final class AppModel {
         guard !started else { return }
         started = true
         down?.listen()
+        routeInbox()
         await rulesEditor.load()
         await friends?.load()
+    }
+
+    /// The single Inbox loop: every event goes to the Down service, in
+    /// arrival order, which ignores what is not part of Down. In Phase 1
+    /// every conversation is Down's (F request 4); later features get their
+    /// events here too.
+    private func routeInbox() {
+        guard inboxLoop == nil, let events = services.inboxEvents, let downService else { return }
+        inboxLoop = Task {
+            for await event in events {
+                await downService.handle(event)
+            }
+        }
     }
 
     public func makeOnboarding() -> OnboardingModel {

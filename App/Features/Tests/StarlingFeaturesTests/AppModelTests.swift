@@ -6,7 +6,7 @@ import Testing
 
 @MainActor
 @Suite struct AppModelTests {
-    static func services(down: ScriptedDownService?, peers: InMemoryPairedPeerStore?, captured: ConsentCapture? = nil) -> AppServices {
+    static func services(down: ScriptedDownService?, peers: InMemoryPairedPeerStore?, captured: ConsentCapture? = nil, inbox: AsyncStream<InboxEvent>? = nil) -> AppServices {
         var makeDown: (@Sendable (any ConsentProvider) -> any DownService)?
         if let down {
             makeDown = { consent in
@@ -20,6 +20,7 @@ import Testing
             peers: peers,
             makeDownService: makeDown,
             makePairingSession: { ScriptedPairingSession(code: "123 456", peer: Fixtures.peer("Test")) },
+            inboxEvents: inbox,
             notifier: RecordingNotifier(),
             localNetwork: CountingPrompter()
         )
@@ -59,6 +60,26 @@ import Testing
         #expect(app.consent.current != nil, "a new intent asks again")
         app.consent.answer(.declined)
         #expect(await second.value == .declined)
+    }
+
+    @Test func routesEveryInboxEventToTheDownServiceInOrder() async throws {
+        let down = ScriptedDownService()
+        let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
+        let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), inbox: inbox))
+        await app.start()
+
+        let friend = PeerID.random()
+        let envelope = try Envelope(
+            conversation: ConversationID(), sender: friend, recipient: .random(), sequence: 0,
+            sentAt: Timestamp(Fixtures.noon), body: .propose(try Proposal(round: 0, terms: .empty))
+        )
+        let events: [InboxEvent] = [.peerAvailable(friend), .message(envelope), .dropped(from: friend, reason: .replay), .peerUnavailable(friend)]
+        events.forEach { continuation.yield($0) }
+
+        for _ in 0..<2000 where await down.handled.count < events.count {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await down.handled == events)
     }
 
     @Test func featuresMissingFromTheBuildAreNil() {
