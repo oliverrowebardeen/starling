@@ -1,7 +1,7 @@
 # ADR 0100: Noise secure channel implementation
 
 - Status: Proposed
-- Date: 2026-09-30
+- Date: 2026-09-30 (revised the same day after the Codex review of PR #16; see decisions 5, 7, and 11)
 - Owner: Lane E1 (Identity and secure channel)
 
 ## Context
@@ -31,7 +31,7 @@ Noise revision 34 facts this design relies on:
    - `0x03`: transport, laid out as an 8-byte big-endian nonce, then the Noise transport message.
    - `0x10`: pairing traffic (ADR 0101), unauthenticated at this layer.
 
-   The KK prologue is `Starling secure channel v1`, so a version mismatch fails the handshake instead of being negotiated. The transport plaintext starts with one kind byte: `confirm` (empty) or `data`.
+   The KK prologue is `Starling secure channel v1`, so a version mismatch fails the handshake instead of being negotiated. The transport plaintext starts with one kind byte: `confirm` (empty), `data`, or `confirmAck` (empty).
 4. **Explicit, strictly increasing nonces** (section 11.4). The receiver accepts a nonce only if it is higher than every nonce it has already accepted on that session, then calls `SetNonce` and decrypts with zero-length associated data. This drops replayed and reordered frames. A lost frame does not desynchronize the session (upper layers already tolerate loss, ARCHITECTURE rule 5). Sends are serialized so nonces reach the link in the order they were assigned.
 5. **Liveness before `peerAvailable`.** After KK message 2, the initiator immediately sends an encrypted `confirm`. The responder keeps a new session as pending until a frame decrypts under it. This has three effects:
    - A replayed message 1 never makes a peer look present.
@@ -39,8 +39,15 @@ Noise revision 34 facts this design relies on:
    - Every responder payload gets the section 7.7 "2, 5" properties.
 
    The responder also keeps a 64-entry cache of answered initiator ephemeral keys (kept across link loss), and at most 4 pending sessions per peer.
+
+   **Confirmation is acknowledged** (added after review finding MEDIUM 3). A single confirm can be lost or fail to send. On first connection the responder would then never announce the peer; on a rekey it would keep sending under a session the initiator had already dropped. So:
+   - The responder answers every `confirm` on its live session with an encrypted `confirmAck`, retries included.
+   - The initiator's new session counts as confirmed once any frame from the responder decrypts under it. Until then the initiator resends `confirm` every handshake timeout, up to the attempt count, and keeps its previous session for receiving only.
+   - If no acknowledgement ever arrives, the initiator starts a new handshake. It does this at most twice, then waits for the next trigger.
+
+   Each confirm has its own strictly increasing nonce, so a replayed confirm is dropped and cannot draw an acknowledgement.
 6. **Who initiates.** Either side may send message 1 when a link comes up, on `reconnect(_:)`, or when a session rolls over. If both do, the lower `PeerID`'s handshake wins: the higher side abandons its own and answers. An initiator retries after 5 seconds, up to 3 attempts. That covers the gap between one phone finishing pairing and the other pinning the key.
-7. **Session cap.** Each direction may send at most 2^20 messages per session. On reaching the cap, the sender tears the session down and starts a new handshake, and that one send fails with `peerUnreachable`. `CipherState` independently refuses the reserved nonce, so a nonce can neither repeat nor wrap (ADR 0003 care requirement 3). There is no time-based rekey; sessions end when the link drops or the app stops.
+7. **Session cap.** Each direction may send at most 2^20 messages per session. On reaching the cap, the sender tears the session down and starts a new handshake, and that one send fails with `peerUnreachable`. The exhausted session stays valid for receiving only until the new one is confirmed, because the peer may still be sending on it. `CipherState` independently refuses the reserved nonce, so a nonce can neither repeat nor wrap (ADR 0003 care requirement 3). There is no time-based rekey; sessions end when the link drops or the app stops.
 8. **Identity binding.** The wrapped transport's `localPeer` must equal the identity's key-derived `PeerID`, otherwise `start()` throws. Remote link IDs are treated as claims and looked up in `PairedPeerStore`. Frames from IDs with no pinned key are dropped. Transports must therefore report peers by key-derived ID (lane E2 note in `docs/requests/E1.md`).
    - Before any session is installed, the key it proves must hash to the claimed ID.
    - A session is installed in exactly two ways: the initiator completes a KK handshake, or a frame decrypts under a responder's pending session. A failed or unauthenticated handshake therefore never displaces or shadows the live session for that ID.
@@ -48,13 +55,20 @@ Noise revision 34 facts this design relies on:
    - `status(of:)` reports the claimed ID next to the proven key, plus per-claim drop counts.
 9. **Sizes.** Outgoing plaintext is capped at `ProtocolLimits.maxEnvelopeBytes` (56 KiB). Ciphertext adds 26 bytes (type, nonce, kind, tag), which stays under `maxFrameBytes` (60 KiB).
 10. **Silence.** Every rejected frame is dropped without a reply and without a distinguishing error. The only local trace is a drop counter (ADR 0003 care requirement 4).
-11. **Test-only dependency.** The test target depends on `StarlingTransport` for `LoopbackTransport`. The library target depends only on `StarlingCore` and Apple frameworks (CryptoKit, Security).
+11. **Revocation is immediate** (added after review finding HIGH 1). Pin lookups are `async`, and an owner can unpair while one is suspended.
+    - Each peer has a generation. `disconnect(_:)` bumps it, and so does every teardown (link loss, rollover).
+    - A lookup that resumes under a different generation returns nothing.
+    - Handshake state is created synchronously after that check.
+
+    So a pin read before an unpair can neither start nor answer a handshake after it. The order that unpairs is: remove from the store, then `disconnect`.
+12. **Test-only dependency.** The test target depends on `StarlingTransport` for `LoopbackTransport`. The library target depends only on `StarlingCore` and Apple frameworks (CryptoKit, Security). Approved by the Orchestrator on 2026-09-30.
 
 ## Consequences
 
 - One small, spec-shaped implementation to audit; the Codex review required by ADR 0003 care requirement 7 has a clear boundary: the `Noise/` directory, `SecureTransport.swift`, `SecureWire.swift`, and the pairing code (ADR 0101).
 - Message sizes are visible on the wire. Noise section 13 recommends padding; there is none yet. Revisit before the relay (Phase 2) makes traffic observable by a third party.
 - The session design assumes a live, in-order link. The Phase 2 relay needs a one-way pattern or HPKE (ADR 0003 decision 3) and its own replay rules.
+- Received frames on a session kept for receiving only (decisions 5 and 7) are delivered even while the peer is reported unavailable after a cap rollover. They are authenticated; only sending is paused.
 - A link-level attacker can still deny service: drop frames, or replay old message 1s to fill the pending slots during a real handshake. Retries recover from the second once the attacker stops.
 - Pairing can end up one-sided (ADR 0101). The paired side's handshakes then fail silently after 3 attempts, and it looks like the friend is offline.
 - Key material in memory is not zeroized. Swift `Data` gives no such guarantee. Private keys stay inside CryptoKit types except for the one Keychain write.
