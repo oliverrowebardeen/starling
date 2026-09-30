@@ -3,7 +3,7 @@ import Foundation
 /// One way a set of terms breaks the owner's limits.
 public struct LimitViolation: Hashable, Sendable, CustomStringConvertible {
     public enum Reason: String, Hashable, Sendable, Codable {
-        case overBudget, underMinimum, outsideAvailableTime, outsideDailyWindow, countOutOfRange, flagMismatch, avoidedKeyword
+        case overBudget, underMinimum, currencyMismatch, outsideAvailableTime, outsideDailyWindow, countOutOfRange, flagMismatch, avoidedKeyword
     }
 
     public let issue: IssueKey
@@ -18,6 +18,7 @@ public struct LimitViolation: Hashable, Sendable, CustomStringConvertible {
         let text = switch reason {
         case .overBudget: "over budget"
         case .underMinimum: "under minimum"
+        case .currencyMismatch: "currency does not match the limit"
         case .outsideAvailableTime: "outside available time"
         case .outsideDailyWindow: "outside daily window"
         case .countOutOfRange: "count out of range"
@@ -57,10 +58,13 @@ extension ConstraintSet {
 
     private static func check(_ value: IssueValue?, rule: Constraint.Rule, timeZone: TimeZone) -> LimitViolation.Reason? {
         switch (rule, value) {
+        // An amount in another currency cannot be compared, so it cannot pass.
         case (.atMost(let limit), .amount(let amount)?):
-            return amount.currency == limit.currency && amount.minorUnits > limit.minorUnits ? .overBudget : nil
+            guard amount.currency == limit.currency else { return .currencyMismatch }
+            return amount.minorUnits > limit.minorUnits ? .overBudget : nil
         case (.atLeast(let limit), .amount(let amount)?):
-            return amount.currency == limit.currency && amount.minorUnits < limit.minorUnits ? .underMinimum : nil
+            guard amount.currency == limit.currency else { return .currencyMismatch }
+            return amount.minorUnits < limit.minorUnits ? .underMinimum : nil
         case (.within(let windows), .slots(let slots)?):
             let fits = slots.allSatisfy { slot in
                 windows.contains { $0.startMinute <= slot.startMinute && slot.endMinute <= $0.endMinute }
