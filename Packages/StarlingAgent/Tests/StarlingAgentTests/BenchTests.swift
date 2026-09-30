@@ -101,6 +101,13 @@ struct LiveModelTests {
         #expect(report.errors == 0)
     }
 
+    /// Red-team issue #9: food matched movie in 24 of 24 greedy trials.
+    @Test(.timeLimit(.minutes(2)))
+    func matchRejectsAnUnrelatedOffer() async throws {
+        let result = try await FoundationModelsAgent().match(wanted: [try Keyword("food")], offered: [try Keyword("movie")])
+        #expect(result.value.isEmpty)
+    }
+
     @Test(.timeLimit(.minutes(2)))
     func matchFindsTheObviousPair() async throws {
         let agent = FoundationModelsAgent()
