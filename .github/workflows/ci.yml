@@ -24,3 +24,25 @@ jobs:
         run: swift --version && xcodebuild -version
       - name: Test all packages (warnings as errors)
         run: Tools/test-all.sh
+
+  app:
+    name: App build (iOS 27 Simulator)
+    needs: packages
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 27.0
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate --spec App/project.yml
+      - name: Build
+        run: >
+          xcodebuild build
+          -project App/Starling.xcodeproj
+          -scheme Starling
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+          SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
