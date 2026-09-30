@@ -1,6 +1,6 @@
 # Phase 0 device checklist
 
-Closes the Phase 0 exit criteria: two iPhones exchange typed messages over LocalP2P, and the model bench reports tokens and latency per round on real hardware. About 20 minutes with two phones.
+Closes the Phase 0 exit criteria: two iPhones exchange typed messages over LocalP2P, and the model bench reports tokens and latency per round on real hardware. About 20 minutes with two phones, or use the one-phone-plus-Mac variant of section A.
 
 Record results at the bottom and paste the model reports into `docs/research/model-budget.md` section 4 (or send them to the Orchestrator).
 
@@ -23,6 +23,17 @@ Record results at the bottom and paste the model reports into `docs/research/mod
 6. Both phones: Settings > Wi-Fi, stay on but tap the joined network's (i) and **Forget** it (or walk somewhere with no shared network). Return to Starling, Stop, then Start. Repeat step 3. Expect: it still works over peer-to-peer Wi-Fi.
 7. Phone B: tap **Stop**. Expect: Phone A logs "Lost <B>" within 2 seconds.
 8. Informational: Phone B, Start again, then swipe to the Home Screen for 30 seconds and come back. Note what Phone A's log shows.
+
+## A (variant). One iPhone plus this Mac
+
+Use this until a second iPhone is available. It proves the transport and message format between two devices, but not phone-to-phone radio behavior, so run section A with two phones later (for example with a friend) to close the exit criterion fully.
+
+1. Mac: `cd Tools/Peer && swift run starling-peer`. If macOS asks for Local Network access, allow it. Expect: "Listening as XXXXXXXX".
+2. Phone: tap **Nearby**, then **Start**. Expect within 5 seconds: the Mac prints "Found XXXXXXXX (1)" and the phone lists the Mac's ID.
+3. Phone: tap **Send proposal** next to the Mac's ID. Expect within 2 seconds: the Mac prints "<- propose from ..." and "-> accept to ..."; the phone logs "<- accept ..., round trip N ms".
+4. Mac: type `send 1` and press Return, ten times. Expect: the phone logs each proposal; the Mac prints each round trip. Then type `stats` and record the line.
+5. Peer-to-peer Wi-Fi: disconnect both devices from any Wi-Fi network while leaving Wi-Fi on (Mac: Option-click the Wi-Fi menu, then Disconnect). Restart both (Mac: `quit`, run again; phone: Stop, Start). Repeat step 3. Expect: it still works.
+6. Mac: type `quit`. Expect: the phone logs "Lost <Mac ID>" within 2 seconds.
 
 ## B. Model bench (each Apple Intelligence iPhone)
 
