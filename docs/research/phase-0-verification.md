@@ -84,7 +84,7 @@ No external claims to verify. The layer list is the basis for the package layout
 | Claim | Verdict | Evidence |
 |-------|---------|----------|
 | Does Foundation Models run on the host Mac? | Confirmed | On this Mac (M5, 16 GB, macOS 26.7), `SystemLanguageModel.default.availability` returns `available`. A macOS build of the model harness can therefore smoke-test prompts and schemas. macOS 26.7 does not ship the iOS 27 model, so these numbers are not device numbers. |
-| Does Foundation Models run in the iOS Simulator? | Unverified | Needs the iOS 27 Simulator runtime from Xcode 27. Tracked in the Phase 0 device checklist. |
+| Does Foundation Models run in the iOS Simulator? | **No, on this setup** | iOS 26.1 Simulator (Xcode 26.1.1) on the same Mac: `availability` reports `.available`, but every generation fails with a Model Catalog error ("no underlying assets ... for asset set com.apple.modelcatalog"). Model tests therefore run natively on macOS or on devices. Re-check with Xcode 27 and the iOS 27 Simulator. |
 
 ## Open questions answered in Phase 0
 
