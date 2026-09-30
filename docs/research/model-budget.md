@@ -4,6 +4,8 @@ Phase 0 spike report. Answers brief open question 5 ("does 4096 tokens suffice?"
 
 Status: **preliminary.** Mac numbers only. The Phase 0 exit criterion needs the device rows in section 4.
 
+> **Correction (2026-09-30):** the Phase 0 token numbers below were character-based estimates, and they were too low. With Xcode 27, `tokenCount(for:)` counts real tokens: the same Phase 0 workloads peak at **874 tokens, not about 494** (interpret 794 in / 80 out; decide 793 / 54; match 454 / 112), so the estimate understated real size by roughly 1.8 times. After lane C2's Phase 1 changes, the worst call is **1,428 tokens** (a 6-by-10 keyword match): 35% of a 4,096-token window and about 70% of the ADR 0002 per-round budget of 2,048. The conclusion holds, but the margin is much smaller than section 3 says. Full before and after reports: `Packages/StarlingAgent/Reports/phase-1-quality.md` (lane C2, PR #19).
+
 ## 1. Method
 
 `Packages/StarlingAgent` implements `AgentModel` with FoundationModels. `StarlingAgentBench` runs fixed workloads through it:
@@ -43,7 +45,7 @@ Note (after the Codex review): run 3 had one failed call (an invalid option, not
 
 ## 3. Findings
 
-1. **Budget: comfortable.** The worst single call was about 494 tokens (estimated), 12% of a 4096 window and a quarter of ADR 0002's 2048-token per-round budget. Per-round cost is flat because each round is a fresh session. Unless device counts come in several times higher than these estimates, **4096 fits realistic two-party and four-party rounds.**
+1. **Budget: fits, with less margin than first estimated.** The worst single call was about 494 tokens by the Phase 0 estimate; real counting later showed 874 (see the correction above), and 1,428 after Phase 1's richer schemas. Per-round cost is flat because each round is a fresh session. Unless device counts come in several times higher than these estimates, **4096 fits realistic two-party and four-party rounds.**
 2. **Latency: about 1 to 3 s per call on a Mac.** A 3-round negotiation is 3 to 9 s of model time before network time. Phones will be slower; this is the number the device run most needs to pin down. It already argues for doing single-issue and hard-limit logic in code (zero model calls).
 3. **The model must not enforce hard limits.** Baseline: it accepted every proposal that broke a limit. Marking the conflicts in the prompt did not help (6 of 6). Generating the list of broken items before the move cut violations to 2 of 8 and produced real counters that converged in 2 to 5 rounds, but still not zero. **Rule for the Negotiation lane:** check hard limits in code before and after every model call; the model only chooses among options already known to be compliant. `HardLimits` is the Phase 0 version of that check.
 4. **Schema property order matters.** The model writes properties in order; a reasoning-style field first changed behavior more than any wording change. Worth an ADR once the Evaluations framework can measure it properly.
@@ -62,7 +64,7 @@ Run on each available phone after installing Xcode 27. The report header records
 
 ## 5. Answer to open question 5 (so far)
 
-- **Tokens:** yes, 4096 is enough for realistic rounds, with a wide margin, provided each round runs in a fresh session with a compact typed summary instead of a growing transcript.
+- **Tokens:** yes, 4096 is enough for realistic rounds, provided each round runs in a fresh session with a compact typed summary instead of a growing transcript. Real counts (1,428 worst after Phase 1) leave about 30% headroom under the 2,048 per-round budget, so option-list caps in the prompt renderer matter; larger group decisions in Phase 2 must be measured, not assumed.
 - **Multi-party:** four-party pooled options raised input by about 100 tokens over two-party. Size scales with option-list length, which the renderer caps (8 time, 10 activity options).
 - **Weaker iOS 27 model:** unknown until the device run. The Mac model already needs code-enforced limits, so plan as if the weaker model is no better.
 - **Not yet measured:** Evaluations framework runs (needs Xcode 27; Phase 1 Agent lane), PCC comparison, and background-task throttling (Phase 2).
