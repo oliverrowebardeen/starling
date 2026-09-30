@@ -92,6 +92,7 @@ import Testing
 @Suite struct IssueKeyTests {
     @Test func acceptsWellFormedKeys() throws {
         #expect(try IssueKey("party_size") == .partySize)
+        #expect(try IssueKey("down_level") == .downLevel)
         #expect(try IssueKey("a1").rawValue == "a1")
     }
 

@@ -63,4 +63,7 @@ public protocol DownService: Sendable {
     func setIntent(_ intent: DownIntent) async throws
     /// Withdraws the current intent; friends learn nothing beyond "no match".
     func clearIntent() async
+    /// Every event from the app's single Inbox loop (v1.1). The service
+    /// ignores what is not part of Down.
+    func handle(_ event: InboxEvent) async
 }

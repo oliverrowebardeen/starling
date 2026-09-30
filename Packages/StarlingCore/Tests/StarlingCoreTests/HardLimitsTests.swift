@@ -45,9 +45,18 @@ import Testing
         ])
     }
 
-    @Test func missingIssuesAndOtherCurrenciesAreNotViolations() throws {
-        let terms = try Terms([.budget: .amount(try MoneyAmount(minorUnits: 99_999, currency: "EUR"))])
+    @Test func missingIssuesAreNotViolations() throws {
+        let terms = try Terms([.time: .slots([try slot(19, 21)])])
         #expect(try constraints().violations(of: terms, timeZone: utc).isEmpty)
+    }
+
+    /// A limit in one currency cannot be checked against an amount in
+    /// another, so the amount must not pass (lane F request 3).
+    @Test func amountsInAnotherCurrencyViolateTheLimit() throws {
+        let terms = try Terms([.budget: .amount(try MoneyAmount(minorUnits: 99_999, currency: "EUR"))])
+        #expect(try constraints().violations(of: terms, timeZone: utc) == [LimitViolation(issue: .budget, reason: .currencyMismatch)])
+        let atLeast = try ConstraintSet([.budget: [try Constraint(.atLeast(try MoneyAmount(minorUnits: 100)))]])
+        #expect(atLeast.violations(of: terms, timeZone: utc) == [LimitViolation(issue: .budget, reason: .currencyMismatch)])
     }
 
     @Test func descriptionsAreStable() {

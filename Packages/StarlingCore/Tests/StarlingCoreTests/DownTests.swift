@@ -11,6 +11,8 @@ import Testing
         await service.clearIntent()
         #expect(await service.intents == [intent])
         #expect(await service.cleared == 1)
+        await service.handle(.peerAvailable(Fixtures.alice))
+        #expect(await service.handled == [.peerAvailable(Fixtures.alice)])
         let match = DownMatch(peer: .random(), terms: .empty, bothDown: false)
         service.emit(.matched(match))
         for await event in service.events {
