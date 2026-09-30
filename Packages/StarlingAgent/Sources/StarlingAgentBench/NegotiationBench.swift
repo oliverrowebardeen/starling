@@ -18,6 +18,9 @@ public struct Measurement: Codable, Hashable, Sendable {
     public let limitViolations: [String]
     /// What the model produced, briefly, for eyeballing quality.
     public let detail: String
+    /// The call failed because the prompt did not fit the context window.
+    /// Such calls have no token counts, so the verdict must see them here.
+    public var contextOverflow = false
 
     public var totalTokens: Int? {
         guard let inputTokens, let outputTokens else { return nil }
@@ -112,7 +115,7 @@ public struct NegotiationBench: Sendable {
                 history.append(NegotiationRound(actor: .peer, kind: .counter, terms: terms))
                 deciderIsB.toggle()
             } catch {
-                results.append(Measurement(task: .decide, scenario: scenario.name, round: round, inputTokens: nil, outputTokens: nil, latencyMilliseconds: 0, outcome: "error: \(error)", limitViolations: [], detail: ""))
+                results.append(Measurement(task: .decide, scenario: scenario.name, round: round, inputTokens: nil, outputTokens: nil, latencyMilliseconds: 0, outcome: "error: \(error)", limitViolations: [], detail: "", contextOverflow: (error as? AgentModelError) == .contextWindowExceeded))
                 break
             }
         }
@@ -126,7 +129,7 @@ public struct NegotiationBench: Sendable {
             let result = try await model.interpret(utterance, context: context)
             return measurement(.interpret, name, 0, result, outcome: "ok", violations: [], detail: Self.describe(result.value, timeZone: timeZone))
         } catch {
-            return Measurement(task: .interpret, scenario: name, round: 0, inputTokens: nil, outputTokens: nil, latencyMilliseconds: 0, outcome: "error: \(error)", limitViolations: [], detail: "")
+            return Measurement(task: .interpret, scenario: name, round: 0, inputTokens: nil, outputTokens: nil, latencyMilliseconds: 0, outcome: "error: \(error)", limitViolations: [], detail: "", contextOverflow: (error as? AgentModelError) == .contextWindowExceeded)
         }
     }
 
@@ -136,7 +139,7 @@ public struct NegotiationBench: Sendable {
             let pairs = result.value.map { "\($0.wanted)=\($0.offered)\($0.strength == .equivalent ? "" : "~")" }
             return measurement(.match, matchCase.name, 0, result, outcome: "ok", violations: [], detail: pairs.joined(separator: ", "))
         } catch {
-            return Measurement(task: .match, scenario: matchCase.name, round: 0, inputTokens: nil, outputTokens: nil, latencyMilliseconds: 0, outcome: "error: \(error)", limitViolations: [], detail: "")
+            return Measurement(task: .match, scenario: matchCase.name, round: 0, inputTokens: nil, outputTokens: nil, latencyMilliseconds: 0, outcome: "error: \(error)", limitViolations: [], detail: "", contextOverflow: (error as? AgentModelError) == .contextWindowExceeded)
         }
     }
 

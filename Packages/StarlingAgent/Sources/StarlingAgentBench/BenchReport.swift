@@ -54,9 +54,19 @@ public struct BenchReport: Codable, Sendable {
     /// Largest single call, in tokens.
     public var worstCaseTokens: Int? { measurements.compactMap(\.totalTokens).max() }
 
+    /// Calls that failed because they overflowed the context window.
+    public var contextOverflows: Int { measurements.filter(\.contextOverflow).count }
+
+    /// Calls with no token count (errors, or an SDK that cannot count).
+    public var unmeasuredCalls: Int { measurements.filter { $0.totalTokens == nil }.count }
+
     /// Whether every call fits in half of a 4096-token window (ADR 0002).
+    /// False if any call overflowed the context; nil if any call is
+    /// unmeasured, because a fit cannot be claimed from partial data.
     public var fitsFloorBudget: Bool? {
-        worstCaseTokens.map { Double($0) <= Double(Self.floorContextSize) * Self.roundBudgetShare }
+        if contextOverflows > 0 { return false }
+        guard !measurements.isEmpty, unmeasuredCalls == 0, let worst = worstCaseTokens else { return nil }
+        return Double(worst) <= Double(Self.floorContextSize) * Self.roundBudgetShare
     }
 
     /// Nearest-rank percentile.
@@ -86,11 +96,19 @@ public struct BenchReport: Codable, Sendable {
         }
 
         lines.append("")
-        if let worst = worstCaseTokens, let fits = fitsFloorBudget {
-            let share = Double(worst) / Double(Self.floorContextSize) * 100
-            lines.append("**Worst single call: \(worst) tokens, \(String(format: "%.0f", share))% of a 4096-token window. \(fits ? "Fits" : "Does not fit") the ADR 0002 budget of \(Int(Double(Self.floorContextSize) * Self.roundBudgetShare)) tokens per round.**")
-        } else {
-            lines.append("**No token counts available.**")
+        let budget = Int(Double(Self.floorContextSize) * Self.roundBudgetShare)
+        let worstLine = worstCaseTokens.map { worst in
+            "Worst measured call: \(worst) tokens, \(String(format: "%.0f", Double(worst) / Double(Self.floorContextSize) * 100))% of a 4096-token window."
+        } ?? "No token counts available."
+        switch fitsFloorBudget {
+        case true?:
+            lines.append("**\(worstLine) Fits the ADR 0002 budget of \(budget) tokens per round.**")
+        case false? where contextOverflows > 0:
+            lines.append("**Does not fit: \(contextOverflows) call(s) exceeded the context window.** \(worstLine)")
+        case false?:
+            lines.append("**\(worstLine) Does not fit the ADR 0002 budget of \(budget) tokens per round.**")
+        case nil:
+            lines.append("**Incomplete: \(unmeasuredCalls) of \(measurements.count) calls have no token count, so this run cannot claim a fit.** \(worstLine)")
         }
 
         lines += ["", "| Scenario | Round | Outcome | Tokens in / out | Latency (ms) | Violations | Output |", "|---|---:|---|---:|---:|---|---|"]

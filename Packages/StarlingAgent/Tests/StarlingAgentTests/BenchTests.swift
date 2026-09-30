@@ -41,6 +41,29 @@ import Testing
         #expect(report.markdown().contains("**estimated**"))
     }
 
+    /// A context overflow has no token count. It must not disappear from the
+    /// verdict and leave the report claiming the run fits.
+    @Test func contextOverflowMeansDoesNotFit() async throws {
+        let model = ScriptedAgentModel(
+            usage: TokenUsage(inputTokens: 300, outputTokens: 20),
+            onInterpret: { _, _ in .empty },
+            onDecide: { _ in throw AgentModelError.contextWindowExceeded }
+        )
+        let report = try await NegotiationBench(model: model, tokensAreEstimates: false, timeZone: AgentFixtures.utc, now: AgentFixtures.now).run()
+        #expect(report.worstCaseTokens == 320)
+        #expect(report.fitsFloorBudget == false)
+        #expect(report.markdown().contains("exceeded the context window"))
+    }
+
+    @Test func partialMeasurementsCannotClaimAFit() async throws {
+        // interpret is unscripted, so those calls fail without token counts.
+        let model = ScriptedAgentModel(usage: TokenUsage(inputTokens: 300, outputTokens: 20), onDecide: { _ in .accept })
+        let report = try await NegotiationBench(model: model, tokensAreEstimates: false, timeZone: AgentFixtures.utc, now: AgentFixtures.now).run()
+        #expect(report.worstCaseTokens == 320)
+        #expect(report.fitsFloorBudget == nil)
+        #expect(report.markdown().contains("cannot claim a fit"))
+    }
+
     @Test func percentilesUseNearestRank() {
         #expect(BenchReport.percentile([5, 1, 3, 2, 4], 0.5) == 3)
         #expect(BenchReport.percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.95) == 10)
