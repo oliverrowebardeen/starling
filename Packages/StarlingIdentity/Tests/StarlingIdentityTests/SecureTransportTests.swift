@@ -433,6 +433,42 @@ import Testing
         try await eventually("bob hears alice on the new session") { await bob.events.received.contains { $0.0 == Data("after".utf8) } }
     }
 
+    /// Review 2 finding 2: S0 is confirmed; Alice reconnects to S1 and its
+    /// confirm is lost; she reconnects to S2 before S1 is confirmed, and that
+    /// confirm is lost too. Bob has seen neither, so he still sends under S0,
+    /// and Alice must still hear him.
+    @Test func twoLostConfirmationsInARowLoseNothing() async throws {
+        let hub = LoopbackHub()
+        let configuration = SecureTransportConfiguration(handshakeTimeout: .seconds(1))
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true, configuration: configuration)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey], configuration: configuration)
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        try await eventually("S0 confirmed") {
+            let aliceBusy = await alice.secure.status(of: bob.id).handshakeInProgress
+            let bobBusy = await bob.secure.status(of: alice.id).handshakeInProgress
+            return !aliceBusy && !bobBusy
+        }
+
+        let link = try #require(alice.link as? FaultyLink)
+        await link.drop(nextTransportFrames: 2, controlOnly: true)
+        await alice.secure.reconnect(bob.id)
+        try await eventually("S1's confirm is lost") { await link.dropped == 1 }
+        await alice.secure.reconnect(bob.id)
+        try await eventually("S2's confirm is lost") { await link.dropped == 2 }
+
+        for index in 0..<3 { try await bob.secure.send(Frame(Data("bob \(index)".utf8)), to: alice.id) }
+        try await alice.waitForMessages(3)
+        // The retried S2 confirm then lands and both sides move to S2.
+        try await eventually("S2 confirmed") { await !alice.secure.status(of: bob.id).handshakeInProgress }
+        try await bob.secure.send(Frame(Data("bob 3".utf8)), to: alice.id)
+        try await alice.secure.send(Frame(Data("alice".utf8)), to: bob.id)
+        try await alice.waitForMessages(4)
+        try await bob.waitForMessages(1)
+    }
+
     @Test func stopFinishesEvents() async throws {
         let (alice, _) = try await pair()
         await alice.secure.stop()

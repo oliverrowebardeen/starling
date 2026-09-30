@@ -90,9 +90,13 @@ public actor SecureTransport: Transport {
         var linkUp = false
         var announced = false
         var current: Channel?
-        /// The initiator's previous session, kept for receiving only until the
-        /// new `current` is confirmed: the responder may not have switched yet.
-        var previous: Channel?
+        /// Receive only: the last confirmed session, kept while newer ones
+        /// await confirmation, because the peer keeps using it until one
+        /// reaches it. Survives any number of unconfirmed replacements.
+        var lastConfirmed: Channel?
+        /// Receive only: newer sessions replaced before they were confirmed
+        /// (newest last), in case the peer switched to one of them.
+        var superseded: [Channel] = []
         /// The timer resending our confirm until the responder acknowledges it.
         var confirmTimer: UInt64?
         /// Sessions abandoned for lack of an acknowledgement since the last
@@ -108,6 +112,7 @@ public actor SecureTransport: Transport {
 
     static let maxPendingPerPeer = 4
     static let maxUnconfirmedRestarts = 2
+    static let maxSupersededPerPeer = 2
     static let maxRememberedEphemerals = 64
 
     public init(
@@ -341,7 +346,7 @@ public actor SecureTransport: Transport {
         entry.pending = []
         // The responder switches only when our confirm (or data) reaches it,
         // so keep accepting its frames under the old session until then.
-        if let old = entry.current { entry.previous = old }
+        Self.retireCurrent(&entry)
         entry.current = Channel(id: initiation.id, session: session, initiator: true, confirmed: false)
         peers[peer] = entry
         armConfirmRetry(peer, channel: initiation.id, attemptsLeft: configuration.handshakeAttempts)
@@ -374,7 +379,7 @@ public actor SecureTransport: Transport {
             return
         }
         let restarts = (peers[peer]?.unconfirmedRestarts ?? 0) + 1
-        tearDown(peer, announce: true)
+        rollOver(peer)
         peers[peer]?.unconfirmedRestarts = restarts
         if restarts <= Self.maxUnconfirmedRestarts { await initiate(with: peer) }
     }
@@ -400,24 +405,36 @@ public actor SecureTransport: Transport {
             if !channel.confirmed {
                 // The responder sent under our new session, so it switched.
                 channel.confirmed = true
-                entry.previous = nil
+                entry.lastConfirmed = nil
+                entry.superseded = []
                 entry.unconfirmedRestarts = 0
                 if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
                 entry.confirmTimer = nil
             }
             entry.current = channel
             (plaintext, channelUsed) = (opened, channel)
-        } else if var channel = entry.previous, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
-            entry.previous = channel
+        } else if var channel = entry.lastConfirmed, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+            entry.lastConfirmed = channel
             (plaintext, channelUsed) = (opened, channel)
         } else {
+            for index in entry.superseded.indices.reversed() {
+                var channel = entry.superseded[index]
+                if let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+                    entry.superseded[index] = channel
+                    (plaintext, channelUsed) = (opened, channel)
+                    break
+                }
+            }
+        }
+        if plaintext == nil {
             for index in entry.pending.indices.reversed() {
                 var channel = entry.pending[index]
                 if let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
                     // The initiator used this session, so it is live: promote it.
                     channel.confirmed = true
                     entry.current = channel
-                    entry.previous = nil
+                    entry.lastConfirmed = nil
+                    entry.superseded = []
                     entry.pending = []
                     (plaintext, channelUsed) = (opened, channel)
                     break
@@ -465,10 +482,8 @@ public actor SecureTransport: Transport {
         let nonce = channel.session.send.nonce
         guard nonce < configuration.maxMessagesPerSession else {
             // We may not send on it again, but the peer may still send on it
-            // until our new session reaches it: keep it for receiving only.
-            let exhausted = channel
-            tearDown(peer, announce: true)
-            peers[peer]?.previous = exhausted
+            // until our new session reaches it: rollOver keeps it for receiving.
+            rollOver(peer)
             Task { await self.initiate(with: peer) }
             throw TransportError.peerUnreachable(peer)
         }
@@ -535,6 +550,38 @@ public actor SecureTransport: Transport {
         continuation.yield(.peerAvailable(peer))
     }
 
+    /// Moves the current session aside for receiving only, before a newer
+    /// one replaces it. A confirmed session becomes `lastConfirmed`; an
+    /// unconfirmed one joins `superseded` and never displaces `lastConfirmed`.
+    private static func retireCurrent(_ entry: inout PeerState) {
+        guard let old = entry.current else { return }
+        entry.current = nil
+        if old.confirmed {
+            entry.lastConfirmed = old
+            entry.superseded = []
+        } else {
+            entry.superseded.append(old)
+            if entry.superseded.count > maxSupersededPerPeer { entry.superseded.removeFirst() }
+        }
+    }
+
+    /// Stops sending on the current session before a new handshake replaces
+    /// it (nonce cap, unacknowledged confirm). Unlike `tearDown`, the
+    /// receive-only sessions stay, so frames the peer sends meanwhile arrive.
+    private func rollOver(_ peer: PeerID) {
+        guard var entry = peers[peer] else { return }
+        if let initiation = entry.initiation { timers.removeValue(forKey: initiation.id)?.cancel() }
+        if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+        entry.initiation = nil
+        entry.confirmTimer = nil
+        Self.retireCurrent(&entry)
+        let wasAnnounced = entry.announced
+        entry.announced = false
+        peers[peer] = entry
+        generations[peer, default: 0] += 1
+        if wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
+    }
+
     private func tearDown(_ peer: PeerID, announce: Bool) {
         guard var state = peers[peer] else { return }
         generations[peer, default: 0] += 1
@@ -542,7 +589,8 @@ public actor SecureTransport: Transport {
         if let timer = state.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
         let wasAnnounced = state.announced
         state.confirmTimer = nil
-        state.previous = nil
+        state.lastConfirmed = nil
+        state.superseded = []
         state.current = nil
         state.pending = []
         state.initiation = nil
