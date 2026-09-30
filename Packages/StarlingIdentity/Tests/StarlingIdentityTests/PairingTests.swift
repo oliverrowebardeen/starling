@@ -10,14 +10,14 @@ import Testing
 struct PairingDevice {
     let identity: IdentityKeyPair
     let store: InMemoryPairedPeerStore
-    let link: LoopbackTransport
+    let link: GatedLink
     let service: PairingService
 
     var id: PeerID { identity.peerID }
 
     static func make(hub: LoopbackHub, identity: IdentityKeyPair = .generate(), configuration: PairingConfiguration = .fast) async throws -> PairingDevice {
         let store = InMemoryPairedPeerStore()
-        let link = LoopbackTransport(localPeer: identity.peerID, hub: hub)
+        let link = GatedLink(LoopbackTransport(localPeer: identity.peerID, hub: hub))
         let service = PairingService(identity: identity, store: store, link: link, configuration: configuration)
         try await service.start()
         return PairingDevice(identity: identity, store: store, link: link, service: service)
@@ -108,6 +108,54 @@ extension Recorder where Element == PairingEvent {
         #expect(try await eb.waitForOutcome() == .failed(.cancelled))
         #expect(try await alice.store.all().isEmpty)
         #expect(try await bob.store.all().isEmpty)
+    }
+
+    /// Review finding HIGH 2: Alice confirms, then cancels. While her cancel
+    /// notice is still being sent, Bob confirms and his accept arrives. Her
+    /// cancel is final: she must not pin Bob. (Bob, who saw both accepts,
+    /// does pin Alice: the one-sided outcome ADR 0101 documents.)
+    @Test func anAcceptArrivingDuringACancelDoesNotPin() async throws {
+        let hub = LoopbackHub()
+        let alice = try await PairingDevice.make(hub: hub)
+        let bob = try await PairingDevice.make(hub: hub)
+        let (ea, eb, sa, sb) = try await start(alice, bob)
+        _ = try await ea.waitForCode()
+        _ = try await eb.waitForCode()
+        await sa.confirm(codesMatch: true)
+
+        await alice.link.armSendGate()
+        let cancelling = Task { await sa.cancel() }
+        try await eventually("alice's cancel notice is in flight") { await alice.link.suspendedSends == 1 }
+        await sb.confirm(codesMatch: true)
+        try await settle()
+
+        #expect(try await ea.waitForOutcome() == .failed(.cancelled))
+        #expect(try await alice.store.all().isEmpty)
+        await alice.link.releaseSends()
+        await cancelling.value
+        #expect(try await alice.store.all().isEmpty)
+    }
+
+    /// Review finding HIGH 2, timeout path: Alice confirmed, her answer timer
+    /// fires, and Bob's accept arrives while her notice is still being sent.
+    @Test func anAcceptArrivingDuringATimeoutDoesNotPin() async throws {
+        let hub = LoopbackHub()
+        let alice = try await PairingDevice.make(hub: hub, configuration: PairingConfiguration(handshakeTimeout: .seconds(2), confirmationTimeout: .milliseconds(300)))
+        let bob = try await PairingDevice.make(hub: hub)
+        let (ea, eb, sa, sb) = try await start(alice, bob)
+        _ = try await ea.waitForCode()
+        _ = try await eb.waitForCode()
+        await sa.confirm(codesMatch: true)
+        try await settle()
+
+        await alice.link.armSendGate()
+        try await eventually("alice's timeout notice is in flight") { await alice.link.suspendedSends == 1 }
+        await sb.confirm(codesMatch: true)
+        try await settle()
+
+        #expect(try await ea.waitForOutcome() == .failed(.timedOut))
+        #expect(try await alice.store.all().isEmpty)
+        await alice.link.releaseSends()
     }
 
     @Test func anUnansweredCodeTimesOutWithNothingStored() async throws {

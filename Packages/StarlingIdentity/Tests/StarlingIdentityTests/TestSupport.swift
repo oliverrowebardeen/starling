@@ -115,6 +115,39 @@ actor GatedPairedPeerStore: PairedPeerStore {
     }
 }
 
+/// A Loopback link whose sends can be held mid-flight, to reproduce races
+/// between an outgoing notice and incoming traffic.
+actor GatedLink: Transport {
+    nonisolated let inner: LoopbackTransport
+    nonisolated var kind: TransportKind { inner.kind }
+    nonisolated var localPeer: PeerID { inner.localPeer }
+    nonisolated var events: AsyncStream<TransportEvent> { inner.events }
+
+    private var armed = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(_ inner: LoopbackTransport) { self.inner = inner }
+
+    var suspendedSends: Int { waiting.count }
+
+    /// Every later `send` waits for `releaseSends()` before reaching the link.
+    func armSendGate() { armed = true }
+
+    func releaseSends() {
+        armed = false
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+
+    func start() async throws { try await inner.start() }
+    func stop() async { await inner.stop() }
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        if armed { await withCheckedContinuation { waiting.append($0) } }
+        try await inner.send(frame, to: peer)
+    }
+}
+
 /// One device: identity, pinned peers, a Loopback link, and the secure channel.
 struct Node {
     let name: String

@@ -184,19 +184,14 @@ actor PairingCeremony: PairingSession {
 
     func confirm(codesMatch: Bool) async {
         guard phase == .comparing, !localConfirmed else { return }
-        guard codesMatch else {
-            await sendSecure(.reject)
-            return fail(.codeMismatch)
-        }
+        guard codesMatch else { return await end(.codeMismatch, notice: .reject) }
         localConfirmed = true
         await sendSecure(.accept)
         await completeIfReady()
     }
 
     func cancel() async {
-        guard phase != .finished, phase != .saving else { return }
-        await notifyPeerOfCancel()
-        fail(.cancelled)
+        await end(.cancelled, notice: .cancel)
     }
 
     // MARK: Link events
@@ -338,12 +333,25 @@ actor PairingCeremony: PairingSession {
     // MARK: Plumbing
 
     private func abandon() async {
-        await notifyPeerOfCancel()
-        fail(.protocolError)
+        await end(.protocolError, notice: .cancel)
     }
 
-    private func notifyPeerOfCancel() async {
-        if session != nil { await sendSecure(.cancel) } else { await send(.abort, Data()) }
+    /// Ends the ceremony on this phone, then tells the peer. The ending is
+    /// final before anything is awaited: an accept that arrives while the
+    /// notice is in flight finds the ceremony finished and cannot pin the
+    /// peer. The notice is sealed first, while the session keys still exist.
+    private func end(_ failure: PairingFailure, notice: SecureKind) async {
+        guard phase != .finished, phase != .saving else { return }
+        let frame = sealedNotice(notice)
+        fail(failure)
+        if let frame { try? await link.send(frame, to: peer) }
+    }
+
+    private func sealedNotice(_ kind: SecureKind) -> Frame? {
+        guard var session else { return try? Frame(Data([MessageType.abort.rawValue])) }
+        guard let ciphertext = try? session.send.encrypt(ad: Data(), plaintext: Data([kind.rawValue])) else { return nil }
+        self.session = session
+        return try? Frame(Data([MessageType.secure.rawValue]) + ciphertext)
     }
 
     private func sendSecure(_ kind: SecureKind, _ content: Data = Data()) async {
@@ -373,9 +381,7 @@ actor PairingCeremony: PairingSession {
     }
 
     private func timedOut() async {
-        guard phase != .finished, phase != .saving else { return }
-        await notifyPeerOfCancel()
-        fail(.timedOut)
+        await end(.timedOut, notice: .cancel)
     }
 
     private func fail(_ failure: PairingFailure) {
