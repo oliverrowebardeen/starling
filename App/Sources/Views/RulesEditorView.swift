@@ -31,7 +31,9 @@ struct RulesEditorView: View {
                     flags: model.flags,
                     problems: model.problems,
                     formatter: model.formatter,
-                    fromModel: model.interpretedFrom != nil
+                    fromModel: model.interpretedFrom != nil,
+                    sharingRows: model.sharingRows,
+                    setSharing: model.setSharing
                 )
                 Section {
                     Button("Save rules") { Task { await model.save() } }

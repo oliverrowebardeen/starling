@@ -54,7 +54,7 @@ actor FailingDownService: DownService {
 
     @Test func policyChangeDuringConsentKeepsTheReviewOpenAndExplains() async {
         let model = model(failingWith: OutboxError.policyChangedDuringConsent)
-        model.editByHand()
+        await model.editByHand()
         await model.goDown()
         #expect(model.phase == .reviewing)
         #expect(model.notice == SendFailureMessage.text(for: OutboxError.policyChangedDuringConsent))
@@ -63,14 +63,14 @@ actor FailingDownService: DownService {
 
     @Test func declinedConsentIsNotReportedAsAnError() async {
         let model = model(failingWith: OutboxError.consentDeclined)
-        model.editByHand()
+        await model.editByHand()
         await model.goDown()
         #expect(model.notice == "It wasn't approved, so nothing left your phone.")
     }
 
     @Test func otherFailuresUseTheGenericMessage() async {
         let model = model(failingWith: TransportError.notStarted)
-        model.editByHand()
+        await model.editByHand()
         await model.goDown()
         #expect(model.notice == "Starling couldn't start checking. Try again.")
     }

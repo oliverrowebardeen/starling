@@ -45,6 +45,14 @@ public final class RulesEditorModel {
 
     public var problems: [RulesDraft.Problem] { draft.problems }
 
+    /// Every disclosable issue's sharing, shown whether or not the rules
+    /// mention it.
+    public var sharingRows: [RulesDraft.SharingRow] { draft.sharingRows() }
+
+    public func setSharing(_ action: DisclosureRule.Action, for issue: IssueKey) {
+        draft.setSharing(action, for: issue)
+    }
+
     public func load() async {
         do {
             saved = try await store.load()

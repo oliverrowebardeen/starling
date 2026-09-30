@@ -39,7 +39,7 @@ struct DownView: View {
                 .lineLimit(2...5)
             Button("Check with friends") { Task { await model.interpret() } }
                 .disabled(model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Write it by hand") { model.editByHand() }
+            Button("Write it by hand") { Task { await model.editByHand() } }
         } header: {
             Text("What are you up for?")
         } footer: {
@@ -53,7 +53,9 @@ struct DownView: View {
             flags: model.flags,
             problems: model.draft.problems,
             formatter: model.formatter,
-            fromModel: model.interpretedFrom != nil
+            fromModel: model.interpretedFrom != nil,
+            sharingRows: model.sharingRows,
+            setSharing: model.setSharing
         )
         Section {
             Picker("How keen", selection: $model.level) {

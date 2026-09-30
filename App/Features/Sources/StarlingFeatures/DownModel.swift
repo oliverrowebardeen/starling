@@ -62,6 +62,9 @@ public final class DownModel {
     public private(set) var matches: [MatchRow] = []
     public private(set) var notice: String?
     public private(set) var interpretedFrom: String?
+    /// The saved rules' sharing, loaded when a review opens. The review shows
+    /// it as a floor the intent can tighten but not loosen (ADR 0141).
+    public private(set) var standingSharing: [DisclosureRule] = []
 
     private let service: any DownService
     private let interpreter: RulesInterpreter
@@ -120,6 +123,7 @@ public final class DownModel {
         guard phase == .composing else { return }
         phase = .interpreting
         notice = nil
+        await loadStanding()
         switch await interpreter.interpret(text) {
         case .draft(let draft):
             self.draft = draft
@@ -127,17 +131,36 @@ public final class DownModel {
             phase = .reviewing
         case .handEdit(let notice):
             self.notice = notice
-            editByHand()
+            openEmptyReview()
         case .failed(let message):
             notice = message
             phase = .composing
         }
     }
 
-    public func editByHand() {
+    public func editByHand() async {
+        guard phase == .composing else { return }
+        await loadStanding()
+        openEmptyReview()
+    }
+
+    /// Sets one issue's sharing for this intent, never looser than the saved rules.
+    public func setSharing(_ action: DisclosureRule.Action, for issue: IssueKey) {
+        draft.setSharing(action, for: issue, standing: standingSharing)
+    }
+
+    public var sharingRows: [RulesDraft.SharingRow] {
+        draft.sharingRows(standing: standingSharing)
+    }
+
+    private func openEmptyReview() {
         draft = .empty
         interpretedFrom = nil
         phase = .reviewing
+    }
+
+    private func loadStanding() async {
+        standingSharing = (try? await rules.load())?.rules.disclosure ?? []
     }
 
     public func discard() {

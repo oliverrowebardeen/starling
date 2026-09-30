@@ -51,7 +51,7 @@ import Testing
         #expect(await app.consent.requestConsent(for: disclosure) == .approved, "remembered")
 
         let down = try #require(app.down)
-        down.editByHand()
+        await down.editByHand()
         await down.goDown()
         #expect(down.phase == .active)
 
