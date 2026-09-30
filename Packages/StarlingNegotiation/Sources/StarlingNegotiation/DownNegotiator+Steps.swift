@@ -200,7 +200,7 @@ extension DownNegotiator {
         let signature = DownSignature.offer(round: proposal.round, terms: proposal.terms)
         let canCounter = proposal.round + 1 < configuration.maxRounds
 
-        switch profile.assess(proposal.terms, overlap: conversation.overlap, canCounter: canCounter) {
+        switch profile.assess(proposal.terms, overlap: conversation.overlap, canCounter: canCounter, now: clock.now()) {
         case .reject(let reason):
             await rejectOffer(reason, signature: signature, envelope: envelope, in: id)
         case .repair(let terms):
@@ -263,7 +263,7 @@ extension DownNegotiator {
         switch conversation.phase {
         case .awaitingReply:
             guard let mine = conversation.myOffer, mine.envelopes.contains(acceptance.proposal),
-                  plan == mine.terms, profile.permits(plan)
+                  plan == mine.terms, profile.permits(plan), profile.hasNotStarted(plan, now: clock.now())
             else { return }
             let confirmation = profile.accepting(plan)
             // Notify only once the confirmation is really on its way. If the
@@ -278,7 +278,7 @@ extension DownNegotiator {
 
         case .awaitingConfirm:
             guard let theirs = conversation.theirOffer, theirs.envelopes.contains(acceptance.proposal),
-                  plan == theirs.terms, profile.permits(plan)
+                  plan == theirs.terms, profile.permits(plan), profile.hasNotStarted(plan, now: clock.now())
             else { return }
             conversation.outstanding = []
             conversations[id] = conversation

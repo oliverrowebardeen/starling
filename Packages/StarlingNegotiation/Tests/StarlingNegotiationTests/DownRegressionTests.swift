@@ -78,4 +78,22 @@ import Testing
         #expect(await matchCounts(offerer, acceptor) == [0, 0])
         await world.stop()
     }
+
+    /// P2: a run that starts late uses only slots still ahead. Both phones
+    /// set 19:00 to 22:00 at 19:00 and first reach each other at 21:00.
+    @Test func aLateRunOffersOnlyTimeStillAhead() async throws {
+        let time = MovableClock()
+        let world = DownWorld(["ana", "ben"], clock: time.clock)
+        try await world.start()
+        let (ana, ben) = (world["ana"], world["ben"])
+        await world.hub.partition(ana.id, ben.id)
+        try await ana.want(time: [T.slot(19, 22)])
+        try await ben.want(time: [T.slot(19, 22)])
+
+        time.set(T.at(21))
+        await world.hub.heal(ana.id, ben.id)
+        try await eventually("both matched") { await matchCounts(ana, ben) == [1, 1] }
+        #expect(await ana.log.matches.first?.terms[.time] == .slots([T.slot(21, 22)]))
+        await world.stop()
+    }
 }

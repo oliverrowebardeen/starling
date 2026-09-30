@@ -95,44 +95,54 @@ import Testing
 
     @Test func aCompliantOfferIsAcceptable() throws {
         let me = try profile(maxBudget: 15)
-        #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 10), overlap: nil, canCounter: true) == .acceptable(alternatives: []))
+        #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 10), overlap: nil, canCounter: true, now: T.now) == .acceptable(alternatives: []))
     }
 
     @Test func aMissingLikedActivityIsOfferedAsAnAlternative() throws {
         let me = try profile(liked: ["food"], avoided: ["sushi"])
         let offer = try T.plan(time: T.slot(19, 20))
-        #expect(me.assess(offer, overlap: nil, canCounter: true) == .acceptable(alternatives: [try T.plan(time: T.slot(19, 20), activity: ["food"])]))
-        #expect(me.assess(offer, overlap: nil, canCounter: false) == .acceptable(alternatives: []))
+        #expect(me.assess(offer, overlap: nil, canCounter: true, now: T.now) == .acceptable(alternatives: [try T.plan(time: T.slot(19, 20), activity: ["food"])]))
+        #expect(me.assess(offer, overlap: nil, canCounter: false, now: T.now) == .acceptable(alternatives: []))
     }
 
     @Test func overBudgetIsRepairedToTheCap() throws {
         let me = try profile(maxBudget: 15)
-        #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 30), overlap: nil, canCounter: true) == .repair(try T.plan(time: T.slot(19, 20), budget: 15)))
+        #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 30), overlap: nil, canCounter: true, now: T.now) == .repair(try T.plan(time: T.slot(19, 20), budget: 15)))
         let euros = try Terms([.time: .slots([T.slot(19, 20)]), .budget: .amount(try MoneyAmount(minorUnits: 500, currency: "EUR"))])
-        #expect(me.assess(euros, overlap: nil, canCounter: true) == .repair(try T.plan(time: T.slot(19, 20), budget: 15)))
+        #expect(me.assess(euros, overlap: nil, canCounter: true, now: T.now) == .repair(try T.plan(time: T.slot(19, 20), budget: 15)))
     }
 
     @Test func avoidedActivitiesAreDroppedOrTheOfferIsRejected() throws {
         let me = try profile(avoided: ["sushi"])
-        #expect(me.assess(try T.plan(time: T.slot(19, 20), activity: ["sushi", "tacos"]), overlap: nil, canCounter: true)
+        #expect(me.assess(try T.plan(time: T.slot(19, 20), activity: ["sushi", "tacos"]), overlap: nil, canCounter: true, now: T.now)
             == .repair(try T.plan(time: T.slot(19, 20), activity: ["tacos"])))
-        #expect(me.assess(try T.plan(time: T.slot(19, 20), activity: ["sushi"]), overlap: nil, canCounter: true) == .reject(.noOverlap))
+        #expect(me.assess(try T.plan(time: T.slot(19, 20), activity: ["sushi"]), overlap: nil, canCounter: true, now: T.now) == .reject(.noOverlap))
     }
 
     @Test func aTimeThatRunsPastAvailabilityIsShortened() throws {
         let me = try profile(time: [T.slot(19, 20)])
-        #expect(me.assess(try T.plan(time: T.slot(19, 21)), overlap: nil, canCounter: true) == .repair(try T.plan(time: T.slot(19, 20))))
-        #expect(me.assess(try T.plan(time: T.slot(21, 22)), overlap: nil, canCounter: true) == .reject(.noOverlap))
+        #expect(me.assess(try T.plan(time: T.slot(19, 21)), overlap: nil, canCounter: true, now: T.now) == .repair(try T.plan(time: T.slot(19, 20))))
+        #expect(me.assess(try T.plan(time: T.slot(21, 22)), overlap: nil, canCounter: true, now: T.now) == .reject(.noOverlap))
     }
 
     @Test func aViolatingOfferInTheLastRoundIsRejected() throws {
         let me = try profile(maxBudget: 15)
-        #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 30), overlap: nil, canCounter: false) == .reject(.tooManyRounds))
+        #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 30), overlap: nil, canCounter: false, now: T.now) == .reject(.tooManyRounds))
+    }
+
+    @Test func anOfferThatHasAlreadyStartedIsRejected() throws {
+        let me = try profile()
+        let offer = try T.plan(time: T.slot(19, 21))
+        #expect(me.assess(offer, overlap: nil, canCounter: true, now: T.at(19)) == .acceptable(alternatives: []))
+        #expect(me.assess(offer, overlap: nil, canCounter: true, now: T.at(19.5)) == .reject(.expired))
+        // Within the start minute still counts as ahead; the next minute does not.
+        #expect(me.hasNotStarted(offer, now: T.at(19).addingTimeInterval(59)))
+        #expect(!me.hasNotStarted(offer, now: T.at(19).addingTimeInterval(60)))
     }
 
     @Test func malformedOffersAreRejected() throws {
         let me = try profile()
-        #expect(me.assess(try Terms([.time: .slots([])]), overlap: nil, canCounter: true) == .reject(.unsupported))
+        #expect(me.assess(try Terms([.time: .slots([])]), overlap: nil, canCounter: true, now: T.now) == .reject(.unsupported))
     }
 
     // MARK: Level

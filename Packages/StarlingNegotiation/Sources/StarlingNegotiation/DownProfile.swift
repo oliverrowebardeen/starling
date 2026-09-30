@@ -153,8 +153,9 @@ struct DownProfile: Sendable {
     }
 
     /// Judges a peer's offer in code. `overlap` is the PSI result when known.
-    func assess(_ offer: Terms, overlap: [TimeSlot]?, canCounter: Bool) -> Assessment {
+    func assess(_ offer: Terms, overlap: [TimeSlot]?, canCounter: Bool, now: Date) -> Assessment {
         guard isWellFormed(offer) else { return .reject(.unsupported) }
+        guard hasNotStarted(offer, now: now) else { return .reject(.expired) }
         if violations(of: offer).isEmpty {
             guard canCounter, offer[.activity] == nil, let favorite = liked.first else { return .acceptable(alternatives: []) }
             var values = offer.values
@@ -202,6 +203,13 @@ struct DownProfile: Sendable {
             end -= min(DownTokenSet.slotMinutes, end - start)
         }
         return nil
+    }
+
+    /// True when the plan's time is still ahead: its start is no earlier
+    /// than the current minute. Offers made before a delay may have started.
+    func hasNotStarted(_ plan: Terms, now: Date) -> Bool {
+        guard case .slots(let slots)? = plan[.time], let slot = slots.first else { return false }
+        return slot.startMinute >= Int64((now.timeIntervalSince1970 / 60).rounded(.down))
     }
 
     // MARK: - Level

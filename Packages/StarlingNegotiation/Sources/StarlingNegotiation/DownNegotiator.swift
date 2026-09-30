@@ -31,7 +31,7 @@ public actor DownNegotiator: DownService {
     let configuration: DownConfiguration
 
     private struct ActiveIntent {
-        let profile: DownProfile
+        let intent: DownIntent
         let generation: Int
         let expiry: Task<Void, Never>
     }
@@ -137,7 +137,7 @@ public actor DownNegotiator: DownService {
             do { try await clock.sleep(.milliseconds(Int64(delay * 1000))) } catch { return }
             await self?.expire(generation: current)
         }
-        intent = ActiveIntent(profile: profile, generation: current, expiry: expiry)
+        intent = ActiveIntent(intent: newIntent, generation: current, expiry: expiry)
         runs = [:]
         settled = []
 
@@ -243,7 +243,7 @@ public actor DownNegotiator: DownService {
         // A friend whose card says it cannot do Down is not asked. No card
         // yet (the hello may still be in flight) is not a reason to skip.
         if let card = cards[peer], !card.capabilities.contains(.down) { return }
-        guard await isPaired(peer), let profile = intent?.profile, canRun(with: peer, generation: current), activeByPeer[peer] == nil else { return }
+        guard await isPaired(peer), let profile = runProfile(), canRun(with: peer, generation: current), activeByPeer[peer] == nil else { return }
 
         let session: any PSISession
         let firstStep: PSIStep
@@ -279,7 +279,7 @@ public actor DownNegotiator: DownService {
             end(existing, .yielded)
             runs[peer, default: 1] -= 1
         }
-        guard let profile = intent?.profile,
+        guard let profile = runProfile(),
               let session = try? psi.makeSession(role: .responder, localSet: profile.tokens.elements, configuration: DownTokenSet.psiConfiguration())
         else { return }
         let conversation = DownConversation(
@@ -288,6 +288,14 @@ public actor DownNegotiator: DownService {
         )
         register(conversation)
         await handlePSI(frame, in: conversation.id)
+    }
+
+    /// The intent as of now, so a run that starts late offers only slots
+    /// still ahead (ADR 0120). Nil when none are left.
+    private func runProfile() -> DownProfile? {
+        guard let intent else { return nil }
+        let profile = DownProfile(intent: intent.intent, now: clock.now(), timeZone: timeZone)
+        return profile.tokens.slots.isEmpty ? nil : profile
     }
 
     private func canRun(with peer: PeerID, generation current: Int) -> Bool {
