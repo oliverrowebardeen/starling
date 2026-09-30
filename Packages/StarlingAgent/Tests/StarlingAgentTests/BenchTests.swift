@@ -64,6 +64,17 @@ import Testing
         #expect(report.markdown().contains("cannot claim a fit"))
     }
 
+    /// Missing measurements block a pass, but must not hide a failure that
+    /// the measured calls already prove.
+    @Test func provenOverBudgetCallsFailEvenWhenOthersAreUnmeasured() async throws {
+        // interpret is unscripted, so those calls fail without token counts.
+        let model = ScriptedAgentModel(usage: TokenUsage(inputTokens: 3_000, outputTokens: 10), onDecide: { _ in .accept })
+        let report = try await NegotiationBench(model: model, tokensAreEstimates: false, timeZone: AgentFixtures.utc, now: AgentFixtures.now).run()
+        #expect(report.unmeasuredCalls > 0)
+        #expect(report.fitsFloorBudget == false)
+        #expect(report.markdown().contains("Does not fit the ADR 0002 budget"))
+    }
+
     @Test func percentilesUseNearestRank() {
         #expect(BenchReport.percentile([5, 1, 3, 2, 4], 0.5) == 3)
         #expect(BenchReport.percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.95) == 10)

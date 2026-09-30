@@ -61,12 +61,15 @@ public struct BenchReport: Codable, Sendable {
     public var unmeasuredCalls: Int { measurements.filter { $0.totalTokens == nil }.count }
 
     /// Whether every call fits in half of a 4096-token window (ADR 0002).
-    /// False if any call overflowed the context; nil if any call is
-    /// unmeasured, because a fit cannot be claimed from partial data.
+    /// False as soon as a failure is proven (a context overflow, or a measured
+    /// call over budget), even if other calls are unmeasured. Nil when nothing
+    /// failed but some call is unmeasured: partial data cannot prove a fit.
     public var fitsFloorBudget: Bool? {
         if contextOverflows > 0 { return false }
-        guard !measurements.isEmpty, unmeasuredCalls == 0, let worst = worstCaseTokens else { return nil }
-        return Double(worst) <= Double(Self.floorContextSize) * Self.roundBudgetShare
+        let budget = Double(Self.floorContextSize) * Self.roundBudgetShare
+        if let worst = worstCaseTokens, Double(worst) > budget { return false }
+        guard !measurements.isEmpty, unmeasuredCalls == 0, worstCaseTokens != nil else { return nil }
+        return true
     }
 
     /// Nearest-rank percentile.
