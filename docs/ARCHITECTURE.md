@@ -43,7 +43,8 @@ Rules that hold everywhere:
 3. **Transports do not authenticate.** A `PeerID` from a transport is a claim. The Phase 1 secure channel is a decorator that conforms to `Transport`, verifies peers against keys pinned at pairing, and encrypts frames; nothing above or below it changes.
 4. **The model never decides egress.** `PolicyEngine` is deterministic.
 5. **Delivery is best effort.** `Transport.send` succeeding means the frame reached the link, not the peer's app. Negotiation must survive lost messages with timeouts and idempotent retries.
-6. **No free text crosses the wire.** Peers send typed, bounded values (`Keyword`, `TimeSlot`, `MoneyAmount`, flags, counts). The only peer data a model may see is those values (ADR 0009).
+6. **The model proposes; code enforces.** Hard limits (budget, availability, avoided items) are checked in code before and after every model call. The Phase 0 bench measured the model accepting proposals that broke hard limits (`docs/research/model-budget.md`).
+7. **No free text crosses the wire.** Peers send typed, bounded values (`Keyword`, `TimeSlot`, `MoneyAmount`, flags, counts). The only peer data a model may see is those values (ADR 0009).
 
 ## 3. StarlingCore v0 surface
 
