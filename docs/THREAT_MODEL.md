@@ -40,7 +40,7 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
 |----------|-----------|----------|
 | **Only paired friends are heard.** A frame reaches `Inbox` only if it decrypts under a live KK session with a key pinned at pairing. Unknown keys, forged link identities, tampered, truncated, replayed, and reordered frames are dropped without a reply. | Noise KK (ADR 0100). Strictly increasing explicit nonces. | `SecureTransportTests`, `ImpersonationTests` |
 | **The sender is who the link claims.** `peerAvailable` and `received` carry the key-derived `PeerID` of the key the peer proved. `Inbox` then rejects an envelope whose `sender` differs from it. | The `PeerID` is SHA-256 of the static key. Each session is checked to prove a key that hashes to the claimed ID before it is installed. | `forgedSenderAndForgedLinkIdentityAreRejected`, `aPairedPeerCannotSpeakForAnother` |
-| **Unpairing takes effect immediately.** After `PairedPeerStore.remove` and `SecureTransport.disconnect`, the removed peer can neither complete a handshake nor be heard, even if a pin lookup that read its key was still in flight. | Per-peer generations, checked when a lookup resumes and before any session is created (ADR 0100 decision 11). | `unpairingDuringAnInitiatorPinLookupStopsTheHandshake`, `unpairingDuringAResponderPinLookupStopsTheHandshake` |
+| **Unpairing takes effect immediately.** After `SecureTransport.unpair` (or `PairedPeerStore.remove` followed by `SecureTransport.disconnect`), the removed peer can neither complete a handshake nor be heard. It also cannot be pinned again by a pairing ceremony that was already running, even if the owner had confirmed it or its save was in flight. | Per-peer session and revocation generations. Ceremonies are cancelled on revocation and commit only if the revocation generation is unchanged, checked before and after the save (ADR 0100 decision 11, ADR 0101 decision 2). | `unpairingDuringAnInitiatorPinLookupStopsTheHandshake`, `unpairingDuringAResponderPinLookupStopsTheHandshake`, `unpairingAfterConfirmingARepairWins`, `unpairingDuringAPendingSaveWins` |
 | **Link displacement does not become impersonation.** A link that claims a friend's ID but cannot prove the key never gets a session, and never displaces or shadows the friend's live one. | Sessions are installed only by a completed handshake or a successful decryption. `status(of:)` shows the claimed ID next to the proven key. | `aDisplacingLinkDoesNotShadowTheAuthenticatedSession`, `anImpostorLinkAfterLinkLossIsNeverAnnounced` |
 | **Confidentiality and integrity of content** against the network attacker. | ChaChaPoly under per-session keys. | `framesAreEncryptedOnTheWire`, the vector tests |
 | **Forward secrecy.** Stealing static keys later does not reveal past sessions. | Ephemeral keys per session. Noise section 7.7 rates KK transport payloads "2, 5". The responder's payloads get those properties because it sends nothing until the initiator's first frame arrives. | ADR 0100 decision 5 |
@@ -56,7 +56,7 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
    - Link-layer identifiers, the fact that two phones talk, timing, frequency, and message sizes are all visible to a nearby observer.
    - There is no padding (Noise section 13 recommends it).
    - `PeerID`s are stable and sent in the clear in link hellos, so a device can be tracked across sessions by anyone who hears its hello. On Wi-Fi Aware this is limited to OS-paired devices; on LocalP2P, to anyone on the local network.
-2. **Availability.** A network attacker or an OS-paired device can drop frames, displace links (ADR 0110), and replay old handshake messages to use up pending-session slots. Every one of these is denial of service, not impersonation. Losing a session confirmation is recovered by acknowledged retries, with the previous session kept for receiving until then (ADR 0100 decision 5). A link that loses every confirmation and acknowledgement ends in at most two fresh handshakes, then silence until the next trigger.
+2. **Availability.** A network attacker or an OS-paired device can drop frames, displace links (ADR 0110), and replay old handshake messages to use up pending-session slots. Every one of these is denial of service, not impersonation. Losing a session confirmation is recovered by acknowledged retries. The last confirmed session stays usable for receiving until a newer one is confirmed, however many unconfirmed attempts come in between (ADR 0100 decision 5). A link that loses every confirmation and acknowledgement ends in silence after a bounded number of handshakes, whatever triggered them (confirm timeout, nonce cap, or reconnect).
 3. **A stolen static key.**
    - A thief of Alice's key can impersonate Alice to her friends.
    - A thief of Bob's key can read nothing already sent (forward secrecy), but can pose as Bob to Bob's friends.
@@ -81,13 +81,21 @@ The first Codex adversarial review of PR #16 (2026-09-30) found no Noise conform
 | HIGH 2 | A cancellation race: a cancel or timeout still sending its notice could be overtaken by the peer's accept, and the pairing committed | "Nothing is pinned without both owners' consent" did not hold for cancel and timeout | Local endings are final before notifying (ADR 0101 decision 2) |
 | MEDIUM 3 | A lost session confirmation: the two sides were left on incompatible sessions and nobody retried | Availability only; no confidentiality or authentication impact | Acknowledged confirmations with bounded retries; the old session is kept for receiving until then (ADR 0100 decisions 5 and 7) |
 
-The re-review of these fixes is pending. The warning at the top of this document stands until it passes.
+The second Codex review (2026-09-30, at b78415c) found three more state-machine defects in the same family. Each was fixed with a regression test that reproduced the reported sequence first:
+
+| Finding | Class | Guarantee affected | Fix |
+|---------|-------|--------------------|-----|
+| 1 (high) | A revocation race, pairing side: unpairing did not reach a re-pair ceremony already running, so the peer's accept re-pinned the removed peer and restored its session | "Unpairing takes effect immediately" did not hold for running ceremonies | `unpair(_:)` as one entry point, ceremony cancellation on revocation, commits conditional on the revocation generation (ADR 0100 decision 11) |
+| 2 (medium) | Session replacement: a second unconfirmed session replaced the last confirmed one as the receive-only session while the peer still used it | Availability only | Keep the last confirmed session across unconfirmed replacements (ADR 0100 decision 5) |
+| 3 (medium) | An unbounded restart loop: rollover at the nonce cap bypassed the restart budget when confirmations were lost | Availability only (handshake storm) | One restart budget for every replacement of an unconfirmed session (ADR 0100 decision 5) |
+
+A third review of these fixes is pending. The warning at the top of this document stands until a review passes.
 
 ## 7. Assumptions
 
 - CryptoKit's X25519, ChaChaPoly, SHA-256, HMAC, and system random number generator are correct.
 - The Keychain enforces its accessibility classes.
-- The Noise implementation matches the spec. Two independent vector files pass, and the first Codex review found no conformance issues; the re-review of the state-machine fixes is pending.
+- The Noise implementation matches the spec. Two independent vector files pass, and the first Codex review found no conformance issues; a review of the state-machine fixes is pending.
 - Transports report peers by key-derived `PeerID` (ADR 0100 decision 8).
 - Both owners of a pairing are physically together and look at both screens.
 
@@ -95,7 +103,7 @@ The re-review of these fixes is pending. The warning at the top of this document
 
 | Item | Owner |
 |------|-------|
-| Codex re-review of the section 6 fixes (ADR 0003 care requirement 7) | Orchestrator |
+| Codex review of the second round of section 6 fixes (ADR 0003 care requirement 7) | Orchestrator |
 | Wi-Fi Aware pairing binding with `deriveSharedSecret` and XXpsk3 (ADR 0102) | Owner decision, then E1 and E2 |
 | Padding to hide message sizes, before the relay | Phase 2 |
 | Rotating link-visible `PeerID`s, or hiding them in hellos | Phase 2 or later |
