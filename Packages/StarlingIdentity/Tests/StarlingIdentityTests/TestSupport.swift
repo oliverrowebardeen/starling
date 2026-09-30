@@ -90,8 +90,21 @@ actor GatedPairedPeerStore: PairedPeerStore {
     private let inner: InMemoryPairedPeerStore
     private var armed = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var saveArmed = false
+    private var waitingSaves: [CheckedContinuation<Void, Never>] = []
 
     init(_ peers: [PairedPeer] = []) { inner = InMemoryPairedPeerStore(peers) }
+
+    var suspendedSaves: Int { waitingSaves.count }
+
+    /// Every later `save` waits for `releaseSaves()` before writing.
+    func armSaveGate() { saveArmed = true }
+
+    func releaseSaves() {
+        saveArmed = false
+        for continuation in waitingSaves { continuation.resume() }
+        waitingSaves = []
+    }
 
     var suspendedLookups: Int { waiting.count }
 
@@ -105,7 +118,10 @@ actor GatedPairedPeerStore: PairedPeerStore {
     }
 
     func all() async throws -> [PairedPeer] { try await inner.all() }
-    func save(_ peer: PairedPeer) async throws { try await inner.save(peer) }
+    func save(_ peer: PairedPeer) async throws {
+        if saveArmed { await withCheckedContinuation { waitingSaves.append($0) } }
+        try await inner.save(peer)
+    }
     func remove(_ id: PeerID) async throws { try await inner.remove(id) }
 
     func peer(for id: PeerID) async throws -> PairedPeer? {

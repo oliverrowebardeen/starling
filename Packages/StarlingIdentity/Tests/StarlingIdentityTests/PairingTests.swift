@@ -357,3 +357,84 @@ extension Recorder where Element == PairingEvent {
         #expect(await bob.events.received.map(\.0) == [Data("paired!".utf8)])
     }
 }
+
+/// Unpairing must win over a pairing ceremony that is still running.
+/// Unpairing must win over a pairing ceremony that is still running.
+@Suite struct UnpairDuringPairingTests {
+    let aliceKey = IdentityKeyPair.generate()
+    let bobKey = IdentityKeyPair.generate()
+
+    struct Repair {
+        let alice: Node
+        let bob: Node
+        /// Held so their event loops keep running for the whole test.
+        let services: [PairingService]
+        let aliceEvents: Recorder<PairingEvent>
+        let aliceSession: any PairingSession
+        let bobSession: any PairingSession
+    }
+
+    /// Alice and Bob are already paired and connected, and start a re-pair.
+    func repairing() async throws -> Repair {
+        let hub = LoopbackHub()
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey])
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey])
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        let alicePairing = PairingService(identity: alice.identity, store: alice.store, link: alice.secure.pairingLink, configuration: .fast)
+        let bobPairing = PairingService(identity: bob.identity, store: bob.store, link: bob.secure.pairingLink, configuration: .fast)
+        try await alicePairing.start()
+        try await bobPairing.start()
+        let sa = try await alicePairing.pair(with: bob.id, nickname: "Bob")
+        let sb = try await bobPairing.pair(with: alice.id, nickname: "Alice")
+        let ea = await Recorder.recording(sa.events)
+        let eb = await Recorder.recording(sb.events)
+        _ = try await ea.waitForCode()
+        _ = try await eb.waitForCode()
+        return Repair(alice: alice, bob: bob, services: [alicePairing, bobPairing], aliceEvents: ea, aliceSession: sa, bobSession: sb)
+    }
+
+    /// Review 2 finding 1: Alice confirms a re-pair, then unpairs Bob
+    /// (remove, then disconnect), then Bob accepts. Alice must not pin Bob
+    /// again or get an authenticated session back.
+    @Test func unpairingAfterConfirmingARepairWins() async throws {
+        let repair = try await repairing()
+        let (alice, bob) = (repair.alice, repair.bob)
+        await repair.aliceSession.confirm(codesMatch: true)
+        try await alice.store.remove(bob.id)
+        await alice.secure.disconnect(bob.id)
+        await repair.bobSession.confirm(codesMatch: true)
+        try await settle()
+
+        #expect(try await repair.aliceEvents.waitForOutcome() == .failed(.cancelled))
+        #expect(try await alice.store.peer(for: bob.id) == nil)
+        await alice.secure.reconnect(bob.id)
+        try await settle()
+        #expect(await alice.secure.status(of: bob.id).provenKey == nil)
+        withExtendedLifetime(repair.services) {}
+    }
+
+    /// Review 2 finding 1, pending save: both owners confirmed and Alice's
+    /// save is in flight when she unpairs Bob through `unpair(_:)`. The save
+    /// lands after the removal; unpairing must still win.
+    @Test func unpairingDuringAPendingSaveWins() async throws {
+        let repair = try await repairing()
+        let (alice, bob) = (repair.alice, repair.bob)
+        await alice.store.armSaveGate()
+        await repair.aliceSession.confirm(codesMatch: true)
+        await repair.bobSession.confirm(codesMatch: true)
+        try await eventually("alice's save is in flight") { await alice.store.suspendedSaves == 1 }
+
+        try await alice.secure.unpair(bob.id)
+        await alice.store.releaseSaves()
+
+        #expect(try await repair.aliceEvents.waitForOutcome() == .failed(.cancelled))
+        #expect(try await alice.store.peer(for: bob.id) == nil)
+        await alice.secure.reconnect(bob.id)
+        try await settle()
+        #expect(await alice.secure.status(of: bob.id).provenKey == nil)
+        withExtendedLifetime(repair.services) {}
+    }
+}

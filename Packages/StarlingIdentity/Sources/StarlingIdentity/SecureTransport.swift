@@ -59,6 +59,10 @@ public actor SecureTransport: Transport {
     /// link loss, rollover). A pin lookup that started under an older
     /// generation is stale and must not create or install a session.
     private var generations: [PeerID: UInt64] = [:]
+    /// Bumped only when a peer is revoked (`disconnect`, `unpair`). A pairing
+    /// ceremony commits only if this is unchanged since it started.
+    private var revocationGenerations: [PeerID: UInt64] = [:]
+    private var revocationObservers: [@Sendable (PeerID) async -> Void] = []
     private var sendTail: Task<Void, Never>?
     /// Frames dropped since start, for tests and diagnostics. No reasons are kept.
     private(set) var droppedFrames = 0
@@ -187,13 +191,40 @@ public actor SecureTransport: Transport {
         await initiate(with: peer)
     }
 
-    /// Ends the session with `peer` without starting a new one, for example
-    /// after unpairing. Remove the peer from the store first, or the next
-    /// link-up will pair the session again.
-    public func disconnect(_ peer: PeerID) {
+    /// Unpairs `peer`: the one call the app should use. Removes the pin, then
+    /// revokes (see `disconnect(_:)`), so no session, pending handshake,
+    /// pairing ceremony, or in-flight pairing save with the peer survives.
+    public func unpair(_ peer: PeerID) async throws {
+        do {
+            try await pairedPeers.remove(peer)
+        } catch {
+            await disconnect(peer)
+            throw error
+        }
+        await disconnect(peer)
+    }
+
+    /// Revokes `peer` without touching the store: ends its session, voids pin
+    /// lookups in flight, and tells every `PairingService` on this transport
+    /// to cancel its ceremony with the peer. Remove the pin first (or call
+    /// `unpair(_:)`), or the next link-up will start a session again.
+    public func disconnect(_ peer: PeerID) async {
+        revocationGenerations[peer, default: 0] += 1
         tearDown(peer, announce: true)
         // Also when there was no state yet: a first handshake may be mid-lookup.
         generations[peer, default: 0] += 1
+        for observer in revocationObservers { await observer(peer) }
+    }
+
+    /// How many times `peer` has been revoked. Pairing records it when a
+    /// ceremony starts and saves only if it has not changed.
+    public func revocationGeneration(of peer: PeerID) -> UInt64 {
+        revocationGenerations[peer, default: 0]
+    }
+
+    /// Registers a handler run on every revocation. Used by `PairingService`.
+    public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
+        revocationObservers.append(handler)
     }
 
     /// What this layer knows about one link: the `PeerID` the link claims,
@@ -591,3 +622,5 @@ public struct SecureLinkStatus: Hashable, Sendable {
     /// handshake, failed decryption, stale nonce). No reasons are kept.
     public let droppedFrames: Int
 }
+
+extension SecureTransport: PairingRevocations {}
