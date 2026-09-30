@@ -28,7 +28,8 @@ let package = Package(
                 .product(name: "StarlingCore", package: "StarlingCore"),
                 .product(name: "StarlingFakes", package: "StarlingCore"),
                 .product(name: "StarlingTransport", package: "StarlingTransport"),
-            ]
+            ],
+            resources: [.copy("Vectors")]
         ),
     ]
 )
