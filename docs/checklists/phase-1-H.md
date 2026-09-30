@@ -26,14 +26,17 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, on one iPhone wit
 
 12. Developer > Fakes: tap "Add a sample friend" twice.
 13. Down? tab: type "free tonight, want food, under $15", tap "Check with friends". Expect: a review with Time, Activity, and Budget rows. Pick Maybe and "1 hour", tap "I'm a maybe". Expect: "You're a maybe until" a time one hour from now.
-14. Developer > Fakes: tap "Show a consent sheet". Expect: "Send to <friend>?" listing your free times, food, and $15.00, a note that this build does not hide your free times, and "Says its model runs on their iPhone". Swipe down on the sheet. Expect: it does not close. Tap "Don't send". Expect: "Consent: declined."
-15. Tap "Show a consent sheet" again and wait 2 minutes. Expect: the sheet closes by itself and "Consent: declined."
-16. Tap "Simulate: checking with friends". Expect: no notification; the Down? tab says "Checking with 2 friends."
-17. Tap "Simulate: match (a maybe)". Expect: a banner within 2 seconds, even with Starling open: "You and <friend> are both interested" with the plan. The Down? tab lists the match.
-18. Tap "Simulate: match (both down)". Expect: a banner "are both down". Swipe down for Notification Center. Expect: one Starling notification for that friend, not two.
-19. Tap "Simulate: Down? expired". Expect: no notification; the Down? tab returns to "What are you up for?" with "Your Down? reached its end time."
-20. Start a Down? again, then tap Withdraw. Expect: back to the start with no notification.
+14. Developer > Fakes: tap "Send a sample through Outbox". Expect: "Send to <friend>?" listing your free times, food, and $15.00, a note that this build does not hide your free times, and "Says its model runs on their iPhone". Swipe down on the sheet. Expect: it does not close. Wait 2 minutes without answering. Expect: the sheet closes by itself and "It wasn't approved, so nothing left your phone."
+15. Tap "Send a sample through Outbox" again. Expect: the sheet again (a timeout is not remembered). Tap "Don't send". Expect: the same "It wasn't approved" message.
+16. Tap it again. Expect: the sheet again (a decline is not remembered). Tap Send. Expect: "Sent to <friend> (recorded, not delivered)." Tap it once more. Expect: no sheet, "Sent to <friend>" within 1 second.
+17. Tap "Send, with rules changing during consent". Expect: a sheet showing $18.00. Tap Send. Expect: "Your sharing rules changed while you were deciding, so nothing was sent."
+18. Tap "Simulate: message from a friend". Expect: "The Down service has received N Inbox events" with N at least 1.
+19. Tap "Simulate: checking with friends". Expect: no notification; the Down? tab says "Checking with 2 friends."
+20. Tap "Simulate: match (a maybe)". Expect: a banner within 2 seconds, even with Starling open: "You and <friend> are both interested" with the plan. The Down? tab lists the match.
+21. Tap "Simulate: match (both down)". Expect: a banner "are both down". Swipe down for Notification Center. Expect: one Starling notification for that friend, not two.
+22. Tap "Simulate: Down? expired". Expect: no notification; the Down? tab returns to "What are you up for?" with "Your Down? reached its end time."
+23. Start a Down? again, then tap Withdraw. Expect: back to the start with no notification.
 
 ## Release build
 
-21. In Xcode, Product > Scheme > Edit Scheme > Run > Build Configuration: Release. Run. Expect: Down? and Friends say "isn't in this build yet", Developer shows only Model Bench and "Release (no fakes)". Set it back to Debug.
+24. In Xcode, Product > Scheme > Edit Scheme > Run > Build Configuration: Release. Run. Expect: Down? and Friends say "isn't in this build yet", Developer shows only Model Bench and "Release (no fakes)". Set it back to Debug.

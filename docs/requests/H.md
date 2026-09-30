@@ -4,6 +4,8 @@ Open requests from lane H (App features). Nothing here blocks lane H: each has a
 
 ## 1. Run the app's feature tests in `Tools/test-all.sh` and CI (Orchestrator)
 
+**Status:** done in Core v1.1 (`Tools/test-all.sh` scans `App/*/Package.swift`).
+
 **What:** add `App/Features` to the packages `Tools/test-all.sh` runs by default, for example by also scanning `"$root"/App/*/Package.swift`.
 
 **Why:** lane H's view models and presentation logic live in the `StarlingFeatures` package under `App/Features` (ADR 0140). The script only scans `Packages/*` and `Tools/*`, so CI does not run its 66 tests today.
@@ -19,6 +21,8 @@ xcodebuild build -project App/Starling.xcodeproj -scheme Starling -configuration
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES -derivedDataPath build
 test "$(nm build/Build/Products/Release-iphonesimulator/Starling.app/Starling | grep -c StarlingFakes)" = 0
 ```
+
+**Status:** the Orchestrator will add it after PR #15 merges.
 
 **Why:** the exclusion depends on Xcode naming the linked object `StarlingFakes.o` (ADR 0140). CI only builds Debug today, so a Release regression would go unnoticed.
 
@@ -36,6 +40,7 @@ test "$(nm build/Build/Products/Release-iphonesimulator/Starling.app/Starling | 
 
 **What lane H needs:**
 
+0. Done on lane H's side for v1.1: the app's single Inbox loop forwards every `InboxEvent` to `DownService.handle(_:)` (`AppServices.inboxEvents`), and approved consent is remembered for 10 minutes within one intent (F request 5, ADR 0142).
 1. A way to build F's `DownService` given the app's `ConsentProvider`, because F's `Outbox` needs one and the consent sheet is the app's (`AppServices.makeDownService: (any ConsentProvider) -> any DownService`).
 2. Whether the PSI provider in use is private (`PSIProviderDescriptor.isPrivate`), so the consent sheet can drop its "this test build's matching step does not hide your free times" note once real PSI lands (`AppServices.psiIsPrivate`).
 3. Confirmation that one merged `OwnerRules` per intent (standing rules plus the intent, most restrictive sharing wins; ADR 0141) is what F wants in `DownIntent.rules`.
