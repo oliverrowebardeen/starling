@@ -2,7 +2,7 @@
 
 Owned by the Orchestrator. Lanes read this and `docs/BRIEF.md` before doing anything. Decisions and their sources live in `docs/decisions/`; this file describes the system as it stands.
 
-Status: **v1 interfaces frozen (Phase 1).** Last updated 2026-09-30. v1 adds identity, pairing, the shared hard-limit check, and the Down facade (section 7).
+Status: **v1.1 interfaces (Phase 1).** Last updated 2026-09-30. v1 added identity, pairing, the shared hard-limit check, and the Down facade (section 7). v1.1 (from lane G's requests) adds `Answer.issue`, local `OutboundContext` passed to the policy, `OutboxObserver`, and a policy re-check after consent.
 
 ## 1. Layers and packages
 
@@ -60,7 +60,7 @@ Rules that hold everywhere:
 | Policy | `PolicyEngine`, `ConsentProvider`, `OutboundMessage`, `PolicyDecision`, `Disclosure`, `DisclosedItem`, `PolicyViolation` | |
 | Availability | `AvailabilitySource`, `AvailabilityQuery`, `AvailabilityAnswer`, `OwnerQuestion` | Calendar and non-calendar sources both yield `[TimeSlot]`. |
 | PSI | `PSIProvider`, `PSISession`, `PSIConfiguration`, `PSIElement`, `PSIResult`, `PSIStep` | `maxPeerSetSize` is mandatory (brief 3.9). |
-| Choke points | `Outbox`, `Inbox`, `InboxEvent`, `InboxDrop` | |
+| Choke points | `Outbox`, `Inbox`, `InboxEvent`, `InboxDrop`, `OutboxObserver` (v1.1), `OutboundContext` (v1.1) | `Outbox.send(_:to:conversation:recipientCard:context:)`. Context is local only: the policy sees it, the wire never does. PSI senders must pass `context.psi`. After consent, Outbox re-evaluates the policy and honors cancellation. |
 | Identity (v1) | `IdentityPublicKey`, `PeerID(publicKey:)`, `PairedPeer`, `PairedPeerStore` | `PeerID` is SHA-256 of the X25519 static key (ADR 0003). Nicknames never leave the device. |
 | Pairing (v1) | `PairingSession`, `PairingEvent`, `PairingFailure` | UI-facing ceremony: show a code, both people confirm. Starting a session is lane E1's API. |
 | Hard limits (v1) | `ConstraintSet.violations(of:timeZone:)`, `LimitViolation` | The one implementation of rule 6; negotiation enforces with it, the agent marks prompts with it. |
@@ -117,8 +117,8 @@ Lane F owns the details and may request message changes through `docs/requests/F
 
 1. **Intent.** The owner types something like "free tonight, want food, under $15". `AgentModel.interpret` turns it into `OwnerRules`, the owner reviews and edits them, and the app calls `DownService.setIntent` with a `DownLevel` (`down` or `maybe`) and an expiry.
 2. **Who.** Only paired friends reachable over the secure channel, so every sender is authenticated. No unpaired peer ever receives Down traffic.
-3. **Mutual interest first (PSI).** Each side builds a small set of tokens from its time windows (for example 30-minute slots inside the intent, capped by `PSIConfiguration.maxPeerSetSize`). `down` and `maybe` produce the same tokens, so the PSI run does not reveal the level. An empty intersection ends the exchange silently on both phones.
-4. **Details, only after overlap.** `query`/`answer` over activity keywords and budget. The receiving agent fuzzy-matches with `AgentModel.match`. Every send goes through `Outbox`, so policy and consent apply (the PSI stub is not private, so policy requires consent while it is in use).
+3. **Mutual interest first (PSI).** Each PSI send passes `OutboundContext.psi` (provider and typed inputs) so the policy can judge it. Each side builds a small set of tokens from its time windows (for example 30-minute slots inside the intent, capped by `PSIConfiguration.maxPeerSetSize`). `down` and `maybe` produce the same tokens, so the PSI run does not reveal the level. An empty intersection ends the exchange silently on both phones.
+4. **Details, only after overlap.** `query`/`answer` over activity keywords and budget (every `Answer` names its issue, v1.1). The receiving agent fuzzy-matches with `AgentModel.match`. Every send goes through `Outbox`, so policy and consent apply (the PSI stub is not private, so policy requires consent while it is in use).
 5. **Agree.** `propose`/`counter`/`accept`, with hard limits checked in code before and after every model call (rule 6).
 6. **Notify.** Only after both sides have sent `accept` does `DownEvent.matched` fire, on both phones. Whether each side was `down` or `maybe` is exchanged only at this point, so a "maybe" is revealed only when interest is mutual.
 7. **Silence on failure.** Every step has a timeout (delivery is best effort, rule 5). Timeouts, rejections, and withdrawn intents end without an event, so one-sided interest never notifies anyone.
