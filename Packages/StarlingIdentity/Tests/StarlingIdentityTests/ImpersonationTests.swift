@@ -100,6 +100,77 @@ import Testing
         #expect(await inboxMessages(bob).isEmpty)
     }
 
+    /// Lane E2's link table keys links by the PeerID a link hello claims, so
+    /// an OS-paired device can claim Alice's ID and displace her link without
+    /// Bob seeing a disconnect. Bob's authenticated session is not replaced
+    /// or shadowed: the impostor's handshakes and frames drop, and Bob's
+    /// status still shows the key Alice proved.
+    @Test func aDisplacingLinkDoesNotShadowTheAuthenticatedSession() async throws {
+        let hub = LoopbackHub()
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey])
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey])
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await bob.waitForPeer(alice.id)
+
+        let impostor = LoopbackTransport(localPeer: alice.id, hub: hub)
+        try await impostor.start()
+        for _ in 0..<3 {
+            var handshake = try NoiseHandshakeState(
+                pattern: .kk, initiator: true, prologue: SecureWire.kkPrologue,
+                localStatic: malloryKey.privateKey, remoteStatic: bobKey.privateKey.publicKey
+            )
+            try await impostor.send(SecureWire.frame(.handshake1, handshake.writeMessage(payload: Data())), to: bob.id)
+            try await impostor.send(SecureWire.transportFrame(nonce: 1_000, ciphertext: Data(count: 40)), to: bob.id)
+        }
+        try await settle()
+
+        let status = await bob.secure.status(of: alice.id)
+        #expect(status.provenKey == aliceKey.publicKey)
+        #expect(status.provenKey?.peerID == status.claimedPeer)
+        #expect(status.droppedFrames >= 6)
+        #expect(await bob.events.count(.peerAvailable(alice.id)) == 1)
+        #expect(await !bob.events.contains(.peerUnavailable(alice.id)))
+        #expect(await bob.events.received.isEmpty)
+    }
+
+    /// The other displacement shape: the link reports Alice gone, then an
+    /// impostor's link appears under her ID. Bob drops the dead session (the
+    /// link says it cannot reach her), and the impostor never gets a new one.
+    @Test func anImpostorLinkAfterLinkLossIsNeverAnnounced() async throws {
+        let hub = LoopbackHub()
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey])
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey])
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await bob.waitForPeer(alice.id)
+
+        await hub.partition(alice.id, bob.id)
+        try await eventually("bob sees alice leave") { await bob.events.contains(.peerUnavailable(alice.id)) }
+        let impostor = LoopbackTransport(localPeer: alice.id, hub: hub)
+        let impostorInbound = await Recorder.recording(impostor.events)
+        try await impostor.start()
+        await hub.heal(alice.id, bob.id)
+        // Bob dials "Alice"; the impostor receives message 1 and cannot answer it.
+        try await eventually("bob dials the claimed ID") {
+            await impostorInbound.received.contains { $0.0.first == SecureWire.FrameType.handshake1.rawValue }
+        }
+        var handshake = try NoiseHandshakeState(
+            pattern: .kk, initiator: true, prologue: SecureWire.kkPrologue,
+            localStatic: malloryKey.privateKey, remoteStatic: bobKey.privateKey.publicKey
+        )
+        try await impostor.send(SecureWire.frame(.handshake1, handshake.writeMessage(payload: Data())), to: bob.id)
+        try await impostor.send(SecureWire.frame(.handshake2, Data(count: SecureWire.handshakeLength)), to: bob.id)
+        try await settle()
+
+        let status = await bob.secure.status(of: alice.id)
+        #expect(status.linkUp)
+        #expect(status.provenKey == nil)
+        #expect(status.droppedFrames >= 2)
+        #expect(await bob.events.count(.peerAvailable(alice.id)) == 1)
+        await #expect(throws: TransportError.peerUnreachable(alice.id)) { try await bob.secure.send(Frame(Data("x".utf8)), to: alice.id) }
+    }
+
     /// Key-compromise impersonation: Mallory has stolen Bob's private key and
     /// uses it to forge KK message 1 "from Alice" (KK message 1 alone cannot
     /// resist this; Noise rev 34 section 7.7 rates its sender authentication 1).

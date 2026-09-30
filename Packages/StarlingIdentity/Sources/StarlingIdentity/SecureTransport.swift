@@ -80,6 +80,7 @@ public actor SecureTransport: Transport {
         var initiation: Initiation?
         /// Initiator ephemeral keys already answered, to ignore replays of message 1.
         var answeredEphemerals: [Data] = []
+        var droppedFrames = 0
     }
 
     static let maxPendingPerPeer = 4
@@ -173,6 +174,21 @@ public actor SecureTransport: Transport {
         tearDown(peer, announce: true)
     }
 
+    /// What this layer knows about one link: the `PeerID` the link claims,
+    /// and the static key the peer proved in the live session, if any. A
+    /// proven key always hashes to the claimed ID; a link that claims a
+    /// friend's ID without their key never gets one (ADR 0100).
+    public func status(of peer: PeerID) -> SecureLinkStatus {
+        let entry = peers[peer]
+        return SecureLinkStatus(
+            claimedPeer: peer,
+            linkUp: entry?.linkUp ?? false,
+            provenKey: entry?.current.flatMap { try? IdentityPublicKey(bytes: $0.session.remoteStatic.rawRepresentation) },
+            handshakeInProgress: entry?.initiation != nil || entry?.pending.isEmpty == false,
+            droppedFrames: entry?.droppedFrames ?? 0
+        )
+    }
+
     // MARK: Inbound
 
     private func handle(_ event: TransportEvent) async {
@@ -191,11 +207,11 @@ public actor SecureTransport: Transport {
             // Keep the replay cache across link flaps; forget everything else.
             peers[peer] = PeerState(answeredEphemerals: peers[peer]?.answeredEphemerals ?? [])
         case .received(let frame, let peer):
-            guard let (type, body) = SecureWire.parse(frame) else { return drop() }
+            guard let (type, body) = SecureWire.parse(frame) else { return drop(from: peer) }
             switch type {
             case .pairing:
                 // Shorter than the frame it came in, so always a valid Frame.
-                guard let inner = try? Frame(body) else { return drop() }
+                guard let inner = try? Frame(body) else { return drop(from: peer) }
                 pairingContinuation.yield(.received(inner, from: peer))
             case .handshake1: await receiveHandshake1(body, from: peer)
             case .handshake2: await receiveHandshake2(body, from: peer)
@@ -212,9 +228,9 @@ public actor SecureTransport: Transport {
     private func receiveHandshake1(_ message: Data, from peer: PeerID) async {
         guard message.count == SecureWire.handshakeLength, peer != localPeer,
               let pinned = await pinnedKey(for: peer), state == .started
-        else { return drop() }
+        else { return drop(from: peer) }
         let ephemeral = Data(message.prefix(NoiseHandshakeState.dhLength))
-        if peers[peer]?.answeredEphemerals.contains(ephemeral) == true { return drop() }
+        if peers[peer]?.answeredEphemerals.contains(ephemeral) == true { return drop(from: peer) }
 
         var handshake: NoiseHandshakeState
         let reply: Data
@@ -223,9 +239,9 @@ public actor SecureTransport: Transport {
                 pattern: .kk, initiator: false, prologue: SecureWire.kkPrologue,
                 localStatic: identity.privateKey, remoteStatic: pinned
             )
-            guard try handshake.readMessage(message).isEmpty else { return drop() }
+            guard try handshake.readMessage(message).isEmpty else { return drop(from: peer) }
         } catch {
-            return drop()
+            return drop(from: peer)
         }
 
         // Both sides initiated at once: the lower PeerID's handshake wins.
@@ -237,6 +253,7 @@ public actor SecureTransport: Transport {
         do {
             reply = try handshake.writeMessage(payload: Data())
             let session = try handshake.session()
+            guard Self.proves(session, peer) else { return drop(from: peer) }
             var entry = peers[peer] ?? PeerState()
             entry.pending.append(Channel(session: session))
             if entry.pending.count > Self.maxPendingPerPeer { entry.pending.removeFirst() }
@@ -244,7 +261,7 @@ public actor SecureTransport: Transport {
             if entry.answeredEphemerals.count > Self.maxRememberedEphemerals { entry.answeredEphemerals.removeFirst() }
             peers[peer] = entry
         } catch {
-            return drop()
+            return drop(from: peer)
         }
         try? await serialized { transport in
             try await transport.inner.send(SecureWire.frame(.handshake2, reply), to: peer)
@@ -253,16 +270,17 @@ public actor SecureTransport: Transport {
 
     private func receiveHandshake2(_ message: Data, from peer: PeerID) async {
         guard message.count == SecureWire.handshakeLength, var initiation = peers[peer]?.initiation else {
-            return drop()
+            return drop(from: peer)
         }
         let session: NoiseSession
         do {
-            guard try initiation.handshake.readMessage(message).isEmpty else { return drop() }
+            guard try initiation.handshake.readMessage(message).isEmpty else { return drop(from: peer) }
             session = try initiation.handshake.session()
         } catch {
-            return drop()
+            return drop(from: peer)
         }
         // KK authenticated the responder against the key pinned at initiation.
+        guard Self.proves(session, peer) else { return drop(from: peer) }
         timers.removeValue(forKey: initiation.id)?.cancel()
         peers[peer]?.initiation = nil
         peers[peer]?.pending = []
@@ -278,7 +296,7 @@ public actor SecureTransport: Transport {
         guard let (nonce, ciphertext) = SecureWire.parseTransport(body),
               nonce < configuration.maxMessagesPerSession,
               var state = peers[peer]
-        else { return drop() }
+        else { return drop(from: peer) }
 
         var plaintext: Data?
         if var channel = state.current, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
@@ -297,7 +315,7 @@ public actor SecureTransport: Transport {
             }
         }
         guard let plaintext, let first = plaintext.first, let kind = SecureWire.PayloadKind(rawValue: first) else {
-            return drop()
+            return drop(from: peer)
         }
         peers[peer] = state
         announce(peer)
@@ -306,7 +324,7 @@ public actor SecureTransport: Transport {
             return
         case .data:
             let payload = Data(plaintext.dropFirst())
-            guard payload.count <= ProtocolLimits.maxEnvelopeBytes, let frame = try? Frame(payload) else { return drop() }
+            guard payload.count <= ProtocolLimits.maxEnvelopeBytes, let frame = try? Frame(payload) else { return drop(from: peer) }
             continuation.yield(.received(frame, from: peer))
         }
     }
@@ -410,13 +428,23 @@ public actor SecureTransport: Transport {
         if announce, wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
     }
 
+    /// The invariant behind every session this layer installs: the key the
+    /// peer proved hashes to the ID its link claims. Only sessions that pass
+    /// can become `current`, and only a completed handshake (initiator) or a
+    /// frame that decrypts (responder) installs one, so a failed or
+    /// unauthenticated handshake never displaces or shadows a live session.
+    private static func proves(_ session: NoiseSession, _ peer: PeerID) -> Bool {
+        (try? IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation))?.peerID == peer
+    }
+
     private func pinnedKey(for peer: PeerID) async -> X25519PublicKey? {
         guard let paired = try? await pairedPeers.peer(for: peer), paired.id == peer else { return nil }
         return try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
     }
 
-    private func drop() {
+    private func drop(from peer: PeerID) {
         droppedFrames += 1
+        peers[peer]?.droppedFrames += 1
     }
 
     /// Runs link sends one at a time, in call order, so explicit nonces reach
@@ -450,4 +478,18 @@ struct PairingLink: Transport {
 
     /// The secure transport owns the link; stopping pairing leaves it running.
     func stop() async {}
+}
+
+/// `SecureTransport.status(of:)`: the claimed link identity next to the proven one.
+public struct SecureLinkStatus: Hashable, Sendable {
+    /// The `PeerID` the wrapped transport reports for this link. A claim.
+    public let claimedPeer: PeerID
+    public let linkUp: Bool
+    /// The static key proven in the live session, or nil if there is none.
+    /// When present, `provenKey.peerID == claimedPeer`.
+    public let provenKey: IdentityPublicKey?
+    public let handshakeInProgress: Bool
+    /// Frames from this claimed ID that were dropped (bad type, failed
+    /// handshake, failed decryption, stale nonce). No reasons are kept.
+    public let droppedFrames: Int
 }
