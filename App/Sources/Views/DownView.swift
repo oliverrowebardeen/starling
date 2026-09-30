@@ -1,4 +1,5 @@
 import StarlingCore
+import StarlingDesign
 import StarlingFeatures
 import SwiftUI
 
@@ -9,6 +10,13 @@ struct DownView: View {
 
     var body: some View {
         Form {
+            Section {
+                StatusMark(state: MarkState(model.status))
+                    .frame(width: 120, height: 120)
+                    .frame(maxWidth: .infinity)
+            }
+            .listRowBackground(Color.clear)
+
             if let notice = model.notice { NoticeSection(text: notice) }
 
             switch model.phase {
@@ -90,6 +98,20 @@ struct DownView: View {
             Button("Withdraw", role: .destructive) { Task { await model.withdraw() } }
         } footer: {
             Text("Withdrawing tells friends nothing beyond \"no match\".")
+        }
+    }
+}
+
+extension MarkState {
+    /// DownEvent to mark, per docs/requests/BR.md. `.negotiating` is never
+    /// used: nothing in Down may show that a friend's intent overlaps before
+    /// a mutual match, and `DownStatus` has no case that could produce it.
+    init(_ status: DownStatus) {
+        switch status {
+        case .idle: self = .idle
+        case .searching: self = .searching
+        case .match: self = .match
+        case .noMatch: self = .noMatch
         }
     }
 }

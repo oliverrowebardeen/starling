@@ -21,6 +21,9 @@ packages:
   # Lane H's view models and presentation logic, tested with `swift test`.
   StarlingFeatures:
     path: Features
+  # Lane BR's status mark and palette (ADR 0172).
+  StarlingDesign:
+    path: ../Packages/StarlingDesign
 targets:
   Starling:
     type: application
@@ -63,6 +66,8 @@ targets:
         product: StarlingFakes
       - package: StarlingFeatures
         product: StarlingFeatures
+      - package: StarlingDesign
+        product: StarlingDesign
       - package: StarlingTransport
         product: StarlingTransport
       - package: StarlingTransport
