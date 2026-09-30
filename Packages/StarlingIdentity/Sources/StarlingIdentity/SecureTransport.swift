@@ -55,6 +55,10 @@ public actor SecureTransport: Transport {
     private var eventLoop: Task<Void, Never>?
     private var timers: [UInt64: Task<Void, Never>] = [:]
     private var nextHandshakeID: UInt64 = 0
+    /// Bumped whenever a peer's sessions are torn down (disconnect, unpair,
+    /// link loss, rollover). A pin lookup that started under an older
+    /// generation is stale and must not create or install a session.
+    private var generations: [PeerID: UInt64] = [:]
     private var sendTail: Task<Void, Never>?
     /// Frames dropped since start, for tests and diagnostics. No reasons are kept.
     private(set) var droppedFrames = 0
@@ -172,6 +176,8 @@ public actor SecureTransport: Transport {
     /// link-up will pair the session again.
     public func disconnect(_ peer: PeerID) {
         tearDown(peer, announce: true)
+        // Also when there was no state yet: a first handshake may be mid-lookup.
+        generations[peer, default: 0] += 1
     }
 
     /// What this layer knows about one link: the `PeerID` the link claims,
@@ -227,7 +233,7 @@ public actor SecureTransport: Transport {
 
     private func receiveHandshake1(_ message: Data, from peer: PeerID) async {
         guard message.count == SecureWire.handshakeLength, peer != localPeer,
-              let pinned = await pinnedKey(for: peer), state == .started
+              let pinned = await pinnedKey(for: peer)
         else { return drop(from: peer) }
         let ephemeral = Data(message.prefix(NoiseHandshakeState.dhLength))
         if peers[peer]?.answeredEphemerals.contains(ephemeral) == true { return drop(from: peer) }
@@ -372,7 +378,7 @@ public actor SecureTransport: Transport {
     }
 
     private func initiate(with peer: PeerID, attempts: Int? = nil) async {
-        guard state == .started, peer != localPeer, let pinned = await pinnedKey(for: peer), state == .started else { return }
+        guard state == .started, peer != localPeer, let pinned = await pinnedKey(for: peer) else { return }
         var handshake: NoiseHandshakeState
         let message: Data
         do {
@@ -418,6 +424,7 @@ public actor SecureTransport: Transport {
 
     private func tearDown(_ peer: PeerID, announce: Bool) {
         guard var state = peers[peer] else { return }
+        generations[peer, default: 0] += 1
         if let initiation = state.initiation { timers.removeValue(forKey: initiation.id)?.cancel() }
         let wasAnnounced = state.announced
         state.current = nil
@@ -437,8 +444,14 @@ public actor SecureTransport: Transport {
         (try? IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation))?.peerID == peer
     }
 
+    /// Looks up the key pinned for `peer`. Returns nil if the peer was torn
+    /// down or disconnected while the lookup was suspended, so a pin read
+    /// before an unpair can never start or answer a handshake after it.
     private func pinnedKey(for peer: PeerID) async -> X25519PublicKey? {
-        guard let paired = try? await pairedPeers.peer(for: peer), paired.id == peer else { return nil }
+        let generation = generations[peer, default: 0]
+        guard let paired = try? await pairedPeers.peer(for: peer), paired.id == peer,
+              state == .started, generations[peer, default: 0] == generation
+        else { return nil }
         return try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
     }
 

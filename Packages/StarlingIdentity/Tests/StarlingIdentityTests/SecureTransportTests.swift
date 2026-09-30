@@ -288,6 +288,55 @@ import Testing
         #expect(await bob.events.received.isEmpty)
     }
 
+    /// Review finding HIGH 1, initiator role: a pin lookup that read Bob's
+    /// key before he was unpaired must not start a handshake after
+    /// `disconnect`, or the removed peer could complete it and be heard.
+    @Test func unpairingDuringAnInitiatorPinLookupStopsTheHandshake() async throws {
+        let hub = LoopbackHub()
+        let wire = await recordDeliveries(hub)
+        let (alice, bob) = try await pair(hub: hub)
+        await alice.store.armLookupGate()
+        let reconnect = Task { await alice.secure.reconnect(bob.id) }
+        try await eventually("alice's lookup is suspended") { await alice.store.suspendedLookups == 1 }
+        let dials = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count
+
+        try await alice.store.remove(bob.id)
+        await alice.secure.disconnect(bob.id)
+        await alice.store.releaseLookups()
+        await reconnect.value
+        try await settle()
+
+        #expect(await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count == dials)
+        #expect(await alice.events.count(.peerAvailable(bob.id)) == 1)
+        try? await bob.secure.send(Frame(Data("still friends?".utf8)), to: alice.id)
+        try await settle()
+        #expect(await alice.events.received.isEmpty)
+    }
+
+    /// Review finding HIGH 1, responder role: the same race while answering
+    /// Alice's message 1.
+    @Test func unpairingDuringAResponderPinLookupStopsTheHandshake() async throws {
+        let hub = LoopbackHub()
+        let wire = await recordDeliveries(hub)
+        let (alice, bob) = try await pair(hub: hub)
+        await bob.store.armLookupGate()
+        let reconnect = Task { await alice.secure.reconnect(bob.id) }
+        try await eventually("bob's lookup is suspended") { await bob.store.suspendedLookups == 1 }
+        let answers = await wire.frames(from: bob.id, to: alice.id, type: .handshake2).count
+
+        try await bob.store.remove(alice.id)
+        await bob.secure.disconnect(alice.id)
+        await bob.store.releaseLookups()
+        await reconnect.value
+        try await settle()
+
+        #expect(await wire.frames(from: bob.id, to: alice.id, type: .handshake2).count == answers)
+        #expect(await bob.events.count(.peerAvailable(alice.id)) == 1)
+        try? await alice.secure.send(Frame(Data("still friends?".utf8)), to: bob.id)
+        try await settle()
+        #expect(await bob.events.received.isEmpty)
+    }
+
     @Test func stopFinishesEvents() async throws {
         let (alice, _) = try await pair()
         await alice.secure.stop()

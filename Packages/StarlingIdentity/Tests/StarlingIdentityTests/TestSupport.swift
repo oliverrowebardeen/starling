@@ -84,11 +84,42 @@ actor InterceptingLink: Transport {
     }
 }
 
+/// A pinned-peer store whose lookups can be held after they read the pin,
+/// to reproduce races between a handshake and unpairing.
+actor GatedPairedPeerStore: PairedPeerStore {
+    private let inner: InMemoryPairedPeerStore
+    private var armed = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(_ peers: [PairedPeer] = []) { inner = InMemoryPairedPeerStore(peers) }
+
+    var suspendedLookups: Int { waiting.count }
+
+    /// Every later `peer(for:)` reads the store, then waits for `releaseLookups()`.
+    func armLookupGate() { armed = true }
+
+    func releaseLookups() {
+        armed = false
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+
+    func all() async throws -> [PairedPeer] { try await inner.all() }
+    func save(_ peer: PairedPeer) async throws { try await inner.save(peer) }
+    func remove(_ id: PeerID) async throws { try await inner.remove(id) }
+
+    func peer(for id: PeerID) async throws -> PairedPeer? {
+        let snapshot = try await inner.peer(for: id)
+        if armed { await withCheckedContinuation { waiting.append($0) } }
+        return snapshot
+    }
+}
+
 /// One device: identity, pinned peers, a Loopback link, and the secure channel.
 struct Node {
     let name: String
     let identity: IdentityKeyPair
-    let store: InMemoryPairedPeerStore
+    let store: GatedPairedPeerStore
     let link: any Transport
     let secure: SecureTransport
     let events: Recorder<TransportEvent>
@@ -100,7 +131,7 @@ struct Node {
         pins: [IdentityKeyPair] = [], intercept: Bool = false,
         configuration: SecureTransportConfiguration = SecureTransportConfiguration(handshakeTimeout: .milliseconds(200))
     ) async throws -> Node {
-        let store = InMemoryPairedPeerStore(try pins.map { try PairedPeer(publicKey: $0.publicKey, nickname: "friend", pairedAt: Timestamp(Date())) })
+        let store = GatedPairedPeerStore(try pins.map { try PairedPeer(publicKey: $0.publicKey, nickname: "friend", pairedAt: Timestamp(Date())) })
         let loopback = LoopbackTransport(localPeer: identity.peerID, hub: hub)
         let link: any Transport = intercept ? InterceptingLink(loopback) : loopback
         let secure = SecureTransport(wrapping: link, identity: identity, pairedPeers: store, configuration: configuration)
