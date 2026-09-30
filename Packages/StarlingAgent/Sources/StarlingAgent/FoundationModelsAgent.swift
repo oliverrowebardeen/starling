@@ -136,24 +136,52 @@ public struct FoundationModelsAgent: AgentModel {
     }
 
     /// Maps any error from the framework to `AgentModelError`, so callers
-    /// never see framework types. Some failures arrive as a bridged `NSError`
-    /// rather than `GenerationError` (seen in the iOS 26.1 Simulator when model
-    /// assets are missing); those count as the model being unavailable.
+    /// never see framework types.
+    ///
+    /// Xcode 27 builds receive `LanguageModelError`, `SystemLanguageModel.Error`,
+    /// and `LanguageModelSession.Error`; `GenerationError` is deprecated and
+    /// only mapped on older toolchains. Anything unrecognized (for example a
+    /// bridged `NSError` from the iOS 26.1 Simulator when model assets are
+    /// missing) counts as the model being unavailable.
     static func map(_ error: any Error) -> AgentModelError {
+        if let error = error as? AgentModelError { return error }
+        if error is CancellationError { return .interrupted }
+        #if compiler(>=6.4)
+        if #available(iOS 27.0, macOS 27.0, *), let mapped = mapCurrent(error) { return mapped }
+        #else
+        if let mapped = mapLegacy(error) { return mapped }
+        #endif
+        return .unavailable(reason: String(describing: error))
+    }
+
+    #if compiler(>=6.4)
+    @available(iOS 27.0, macOS 27.0, *)
+    private static func mapCurrent(_ error: any Error) -> AgentModelError? {
         switch error {
-        case let error as AgentModelError: return error
-        case is CancellationError: return .interrupted
-        case let error as LanguageModelSession.GenerationError:
+        case let error as LanguageModelError:
             switch error {
-            case .exceededContextWindowSize: return .contextWindowExceeded
-            case .guardrailViolation: return .guardrailViolation
-            case .rateLimited, .concurrentRequests: return .interrupted
-            case .assetsUnavailable: return .unavailable(reason: "model assets unavailable")
-            case .unsupportedLanguageOrLocale: return .unsupported
+            case .contextSizeExceeded: return .contextWindowExceeded
+            case .guardrailViolation, .refusal: return .guardrailViolation
+            case .rateLimited, .timeout: return .interrupted
+            case .unsupportedLanguageOrLocale, .unsupportedCapability: return .unsupported
             default: return .invalidOutput(String(describing: error))
             }
-        default:
-            return .unavailable(reason: String(describing: error))
+        case is SystemLanguageModel.Error: return .unavailable(reason: String(describing: error))
+        case is LanguageModelSession.Error: return .interrupted
+        default: return nil
         }
     }
+    #else
+    private static func mapLegacy(_ error: any Error) -> AgentModelError? {
+        guard let error = error as? LanguageModelSession.GenerationError else { return nil }
+        switch error {
+        case .exceededContextWindowSize: return .contextWindowExceeded
+        case .guardrailViolation: return .guardrailViolation
+        case .rateLimited, .concurrentRequests: return .interrupted
+        case .assetsUnavailable: return .unavailable(reason: "model assets unavailable")
+        case .unsupportedLanguageOrLocale: return .unsupported
+        default: return .invalidOutput(String(describing: error))
+        }
+    }
+    #endif
 }
