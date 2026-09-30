@@ -132,6 +132,7 @@ public actor LocalP2PTransport: Transport {
 
     private func discovered(_ endpoints: [Bonjour.Endpoint]) {
         guard state == .started else { return }
+        let previous = Set(advertised.keys)
         advertised = Dictionary(
             endpoints.filter { $0.name != serviceName }.map { ($0.name, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -142,7 +143,12 @@ public actor LocalP2PTransport: Transport {
             waitTasks[name] = nil
         }
         retryAttempts = retryAttempts.filter { advertised[$0.key] != nil }
-        for name in advertised.keys.sorted() { connect(to: name, after: .zero) }
+        // Dropped links and failed dials retry on their own schedule; a
+        // browser update only starts dials for services it newly lists.
+        for name in Discovery.newlyDiscovered(previous: previous, current: Set(advertised.keys)) {
+            retryAttempts[name] = nil
+            connect(to: name, after: .zero)
+        }
     }
 
     /// Connects to an advertised service unless already linked or trying.
