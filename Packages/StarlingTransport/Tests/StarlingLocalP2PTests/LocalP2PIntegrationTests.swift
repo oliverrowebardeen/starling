@@ -1,0 +1,116 @@
+import Foundation
+import StarlingCore
+import StarlingLocalP2P
+import Testing
+
+/// Two real transports in one process, over Bonjour on this Mac. Opt in with
+/// STARLING_NETWORK_TESTS=1: CI runners and sandboxes may block multicast DNS,
+/// and macOS may ask for Local Network permission the first time.
+///
+/// Serialized: every transport on this Mac advertises the same service type,
+/// so tests running in parallel would discover each other's transports.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["STARLING_NETWORK_TESTS"] == "1"))
+struct LocalP2PIntegrationTests {
+    @Test(.timeLimit(.minutes(1)))
+    func twoTransportsDiscoverEachOtherAndExchangeFrames() async throws {
+        let a = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        let b = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        try await a.start()
+        try await b.start()
+        defer { Task { await a.stop(); await b.stop() } }
+
+        try await waitForPeer(b.localPeer, on: a)
+        let payloads = (0..<20).map { Data("frame \($0)".utf8) }
+        for payload in payloads { try await a.send(Frame(payload), to: b.localPeer) }
+
+        var received: [Data] = []
+        for await event in b.events {
+            if case .received(let frame, let sender) = event {
+                #expect(sender == a.localPeer)
+                received.append(frame.bytes)
+                if received.count == payloads.count { break }
+            }
+        }
+        #expect(received == payloads)
+    }
+
+    /// Both sides dial each other, so each has two connections until the
+    /// arbiter drops one. Traffic must still flow both ways, and each side
+    /// must report the other as available exactly once.
+    @Test(.timeLimit(.minutes(1)))
+    func duplicateConnectionsResolveAndTrafficFlowsBothWays() async throws {
+        let a = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        let b = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        try await a.start()
+        try await b.start()
+        defer { Task { await a.stop(); await b.stop() } }
+
+        try await waitForPeer(b.localPeer, on: a)
+        // Give the second connection time to arrive and be arbitrated.
+        try await Task.sleep(for: .seconds(2))
+        try await a.send(Frame(Data("to b".utf8)), to: b.localPeer)
+        try await b.send(Frame(Data("to a".utf8)), to: a.localPeer)
+
+        var availableOnB = 0
+        for await event in b.events {
+            if event == .peerAvailable(a.localPeer) { availableOnB += 1 }
+            if event == .received(try Frame(Data("to b".utf8)), from: a.localPeer) { break }
+            if event == .peerUnavailable(a.localPeer) { Issue.record("link dropped during arbitration") }
+        }
+        #expect(availableOnB == 1)
+        for await event in a.events {
+            if event == .received(try Frame(Data("to a".utf8)), from: b.localPeer) { break }
+            if event == .peerUnavailable(b.localPeer) { Issue.record("link dropped during arbitration") }
+        }
+    }
+
+    /// Stop must cancel dials, fallback waits, and links, and finish events.
+    @Test(.timeLimit(.minutes(1)))
+    func stopCancelsPendingWorkAndFinishesEvents() async throws {
+        let a = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        let b = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        try await a.start()
+        try await b.start()
+        try await waitForPeer(b.localPeer, on: a)
+
+        await a.stop()
+        await b.stop()
+        #expect(await a.pendingTaskCount == 0)
+        #expect(await b.pendingTaskCount == 0)
+        // The loop ending proves the stream finished.
+        var trailing: [TransportEvent] = []
+        for await event in a.events { trailing.append(event) }
+        #expect(trailing.contains(.peerUnavailable(b.localPeer)))
+    }
+
+    /// A link that fails while both services stay advertised must be redialed;
+    /// the browser reports no change, so nothing else would reconnect it.
+    @Test(.timeLimit(.minutes(1)))
+    func droppedLinksAreRedialedWhileThePeerIsAdvertised() async throws {
+        let a = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        let b = LocalP2PTransport(localPeer: .random(), includePeerToPeer: false)
+        try await a.start()
+        try await b.start()
+        defer { Task { await a.stop(); await b.stop() } }
+        try await waitForPeer(b.localPeer, on: a)
+
+        await a.dropLinksForTesting()
+        var sawDrop = false
+        for await event in a.events {
+            if event == .peerUnavailable(b.localPeer) { sawDrop = true }
+            if sawDrop, event == .peerAvailable(b.localPeer) { break }
+        }
+        #expect(sawDrop)
+
+        let payload = try Frame(Data("after redial".utf8))
+        try await a.send(payload, to: b.localPeer)
+        for await event in b.events where event == .received(payload, from: a.localPeer) { break }
+    }
+
+    private func waitForPeer(_ peer: PeerID, on transport: LocalP2PTransport) async throws {
+        for await event in transport.events {
+            if event == .peerAvailable(peer) { return }
+        }
+        throw TransportError.peerUnreachable(peer)
+    }
+}

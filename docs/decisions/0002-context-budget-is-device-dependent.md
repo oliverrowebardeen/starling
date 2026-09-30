@@ -18,7 +18,7 @@ The brief says the on-device context window "is 4096 tokens." That is no longer 
 1. `AgentModel` reports its context size at runtime (`ModelDescriptor.contextSize`), read from `contextSize`. Nothing in StarlingKit hard-codes 4096 or 8192.
 2. Every negotiation schema and prompt is designed to fit a **4096-token floor** with a safety margin: a single negotiation round (instructions + schema + history summary + response) targets at most 2048 tokens, so it works on the weakest model with room for a second attempt.
 3. Each negotiation round runs in a **fresh session** with a compact, typed summary of prior rounds, rather than a growing transcript. This follows TN3193's advice to split work across sessions and keeps round cost flat.
-4. The Phase 0 spike records, per device: model availability, `contextSize`, input and output tokens per round, and latency. Results go in `docs/research/model-budget.md`.
+4. The Phase 0 spike records, per device: model availability, `SystemLanguageModel.variant` (iOS 27: `core3` or `coreAdvanced3`), `contextSize`, input and output tokens per round, and latency. Results go in `docs/research/model-budget.md`.
 
 ## Consequences
 

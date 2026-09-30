@@ -1,0 +1,8 @@
+// Shared build settings for the Starling app.
+//
+// Signing: create App/Config/Local.xcconfig (gitignored) containing
+//   DEVELOPMENT_TEAM = <your 10-character team ID>
+// so each developer signs with their own team without editing tracked files.
+#include? "Local.xcconfig"
+
+CODE_SIGN_STYLE = Automatic
