@@ -2,6 +2,19 @@
 
 Interface change requests from the Negotiation lane. Everything below has a local workaround, so none of it blocks Phase 1.
 
+## Status (Core v1.1, merged to main at c4debe0)
+
+| # | Request | Answer | Lane F follow-up |
+|---|---------|--------|------------------|
+| 1 | `handle(_:)` on `DownService` | Done | `DownNegotiator` conforms; the tests drive it through `any DownService` |
+| 2 | A key for the Down level | Done: `IssueKey.downLevel` | Used instead of spelling `down_level` |
+| 3 | Currency check in `violations` | Done: `LimitViolation.Reason.currencyMismatch` | Local special case removed |
+| 4 | Feature tag per conversation | Deferred to Phase 2 | Phase 1 routes every conversation to Down |
+| 5 | Consent memory for retries | Assigned to lane H's consent coordinator | None |
+| 6 | Test-only `StarlingTransport` dependency | Approved | None |
+
+Also adopted from v1.1: `Answer.issue` (answers name their issue, and an answer whose issue differs from the query is ignored) and `OutboundContext.psi` on every PSI step (provider descriptor plus the time slots the set was built from).
+
 ## 1. Add `handle(_:)` to `DownService`
 
 What: add the Inbox entry point to the protocol, and a matching method to `ScriptedDownService`.
@@ -60,3 +73,47 @@ Meanwhile: Down starts the retry timer only after the first send returns, so a s
 What: `Packages/StarlingNegotiation/Package.swift` depends on `../StarlingTransport`, used only by the test target (for `LoopbackHub`, which the kickoff asks the tests to use). The library target depends on `StarlingCore` alone.
 
 Why it needs a note: ADR 0006 routes dependencies between non-core packages through the Orchestrator.
+
+## Answers to lane H (`docs/requests/H.md` section 4, on `phase-1/h-app`)
+
+### 1. Building the Down service with the app's Outbox
+
+The initializer is public and takes an `Outbox` the app builds, so the app keeps the policy, the consent sheet, and any `OutboxObserver`:
+
+```swift
+makeDownService: { consent in
+    let outbox = Outbox(transport: secureChannel, policy: policy, consent: consent, observer: auditLog)
+    return DownNegotiator(
+        localPeer: identity.peerID,      // must equal the Outbox transport's localPeer
+        outbox: outbox,
+        pairedPeers: pairedPeerStore,
+        model: agentModel,
+        psi: psiProvider                 // InsecurePSIStub() until Nightjar lands
+    )
+}
+```
+
+Defaults: `clock: .system`, `timeZone: .current`, `configuration: DownConfiguration()` (5 s retries, 6 attempts).
+
+The app's side of the contract:
+
+- Pass **every** `InboxEvent` to `handle(_:)`, including `peerAvailable`/`peerUnavailable` (they decide which friends are asked) and `hello` (Down records the card and skips friends whose card lacks `Capability.down`). Down does not send `hello`; the app's link layer does.
+- `setIntent` throws `DownError.expired` if the expiry is not in the future, and `DownError.noAvailableTime` if the rules leave no free half-hour before it. Keep the review open with a message in both cases.
+- Every Outbox error other than a lost frame (`denied`, `consentDeclined`, `policyChangedDuringConsent`) ends that friend's run for the rest of the intent, silently.
+- Call `shutdown()` when tearing the service down.
+
+For the "does matching hide free time" note, `downService.psiProvider.isPrivate` is `nonisolated` and needs no `await`. The app can also read `descriptor.isPrivate` from the provider it passed in.
+
+### 2. One merged `OwnerRules` per intent
+
+Yes. One merged `OwnerRules` per intent (ADR 0141: constraints accumulate, the most restrictive sharing wins) is what `DownIntent.rules` expects. What Down reads from it:
+
+- **Time:** hard `within` and `dailyWindow` constraints filter the free half-hours. Accumulating is correct: a slot must pass all of them.
+- **Activity:** `prefers(liked:avoided:)`. Avoided keywords from every constraint are always refused. Liked keywords are taken **in order**, and the first one both sides accept goes into the plan. Please put the intent's constraints before the standing ones on the same issue, so "want food tonight" outranks a standing preference.
+- **Budget:** the lowest `atMost` in the owner's currency.
+- **Expiry:** `DownIntent.expiresAt` also bounds the plan: slots must end by it. Set it at or after the end of the latest window the owner stated.
+
+Down does not read `disclosure`; the policy enforces it. Two consequences to show in review:
+
+- A `never` rule on `time` makes the policy refuse every PSI step, so Down cannot run at all.
+- A `never` rule on `activity` or `budget` makes the policy refuse that query, and the run with that friend ends without a match. Leaving withheld issues out of the exchange instead is a candidate Phase 2 change (ADR 0121).
