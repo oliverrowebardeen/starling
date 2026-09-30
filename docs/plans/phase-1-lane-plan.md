@@ -1,6 +1,6 @@
 # Phase 1 lane plan: Down? (local)
 
-- Status: **Proposed. Waiting for the owner's approval. No agents spawned.**
+- Status: **Approved by the owner on 2026-09-30.** Owner decisions: ADR 0003 (Noise) accepted with an instruction to be careful; all 7 lanes approved to run at once; spawning and merging pre-approved; the phone-to-phone part of the Phase 0 device checklist is deferred until a friend's phone is available (the one-phone-plus-Mac variant covers it meanwhile). Xcode 27 is installed. The exact kickoff prompts are in `phase-1-kickoff-prompts.md`.
 - Date: 2026-09-29
 - Author: Orchestrator
 
