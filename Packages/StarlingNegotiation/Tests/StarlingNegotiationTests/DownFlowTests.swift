@@ -67,6 +67,37 @@ import Testing
         await world.stop()
     }
 
+    @Test func everyPSIStepDeclaresItsProviderAndInputsToThePolicy() async throws {
+        // Like lane G's policy: a PSI step without its context is refused.
+        let policy = FixedPolicyEngine { message in
+            guard case .psi = message.envelope.body, message.context.psi == nil else { return .allow }
+            return .deny(PolicyViolation(rule: "psi-needs-context"))
+        }
+        let world = DownWorld(["ana", "ben"], policy: policy)
+        try await world.start()
+        let (ana, ben) = (world["ana"], world["ben"])
+        try await ana.want(time: [T.slot(19, 21)])
+        try await ben.want(time: [T.slot(20, 22)])
+        try await eventually("both matched") { await matchCounts(ana, ben) == [1, 1] }
+        try await world.settle()
+
+        let windows = [ana.id: T.slot(19, 21), ben.id: T.slot(20, 22)]
+        let psiSteps = await policy.evaluated.filter { $0.envelope.body.kind == .psi }
+        #expect(psiSteps.count >= 2)
+        for step in psiSteps {
+            let context = try #require(step.context.psi)
+            #expect(context.provider == InsecurePSIStub().descriptor)
+            // The inputs are the sender's own free half-hours, exactly.
+            guard case .slots(let slots)? = context.inputs[.time], let window = windows[step.envelope.sender] else {
+                Issue.record("no time inputs")
+                continue
+            }
+            #expect(Set(context.inputs.keys) == [.time])
+            #expect(DownProfile.merge(slots) == [window])
+        }
+        await world.stop()
+    }
+
     @Test func eachPairOfFriendsMatchesOnItsOwn() async throws {
         let world = DownWorld(["ana", "ben", "cai"], model: Self.fuzzyModel())
         try await world.start()

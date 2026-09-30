@@ -51,7 +51,7 @@ public actor DownNegotiator: DownService {
     private var timers: [ConversationID: Task<Void, Never>] = [:]
     var conversations: [ConversationID: DownConversation] = [:]
     private var activeByPeer: [PeerID: ConversationID] = [:]
-    private var finished: [ConversationID: (peer: PeerID, replies: [DownSignature: DownReply])] = [:]
+    private var finished: [ConversationID: (peer: PeerID, replies: [DownSignature: DownReply], psiContext: OutboundContext)] = [:]
     private var finishedOrder: [ConversationID] = []
 
     /// Per intent: PSI runs with each peer, and peers we are done with.
@@ -230,7 +230,7 @@ public actor DownNegotiator: DownService {
 
         let conversation = DownConversation(
             id: ConversationID(), peer: peer, role: .initiator, generation: current,
-            profile: profile, psiSessionID: UUID(), psi: session
+            profile: profile, psiSessionID: UUID(), psi: session, provider: psi.descriptor
         )
         register(conversation)
         guard let frame = try? PSIFrame(session: conversation.psiSessionID, step: 0, payload: payload) else {
@@ -256,7 +256,7 @@ public actor DownNegotiator: DownService {
         else { return }
         let conversation = DownConversation(
             id: envelope.conversation, peer: peer, role: .responder, generation: current,
-            profile: profile, psiSessionID: frame.session, psi: session
+            profile: profile, psiSessionID: frame.session, psi: session, provider: psi.descriptor
         )
         register(conversation)
         await handlePSI(frame, in: conversation.id)
@@ -336,8 +336,15 @@ public actor DownNegotiator: DownService {
             end(id, .failed)
             return .ended
         }
+        // Every PSI step tells the policy what it discloses (Core v1.1); a
+        // policy refuses a PSI step without this.
+        var context = OutboundContext.empty
+        if case .psi = body {
+            guard let psiContext = conversations[id]?.psiContext ?? finished[id]?.psiContext else { return .ended }
+            context = psiContext
+        }
         do {
-            let envelope = try await outbox.send(body, to: peer, conversation: id, recipientCard: cards[peer])
+            let envelope = try await outbox.send(body, to: peer, conversation: id, recipientCard: cards[peer], context: context)
             noteSent(envelope)
             return .sent
         } catch is OutboxError {
@@ -434,7 +441,7 @@ public actor DownNegotiator: DownService {
         }
         record(outcome)
 
-        finished[id] = (conversation.peer, conversation.replies)
+        finished[id] = (conversation.peer, conversation.replies, conversation.psiContext)
         finishedOrder.append(id)
         while finishedOrder.count > configuration.maxFinishedConversations {
             finished[finishedOrder.removeFirst()] = nil

@@ -56,6 +56,10 @@ struct DownProfile: Sendable {
         availability = (try? ConstraintSet([.time: [try Constraint(.within(windows))]])) ?? .empty
     }
 
+    /// What the PSI set is built from, for the policy (padding is not an
+    /// input: it is random and discloses nothing).
+    var psiInputs: [IssueKey: IssueValue] { [.time: .slots(tokens.slots)] }
+
     // MARK: - The gate
 
     /// True when `plan` has the Down shape and breaks none of the owner's

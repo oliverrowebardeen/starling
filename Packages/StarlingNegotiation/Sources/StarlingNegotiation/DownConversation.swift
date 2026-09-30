@@ -31,6 +31,9 @@ struct DownConversation: Sendable {
     let profile: DownProfile
     let psiSessionID: UUID
     let psi: any PSISession
+    /// Told to the policy with every PSI step of this conversation: the
+    /// provider and the free slots the set was built from (Core v1.1).
+    let psiContext: OutboundContext
 
     var phase = Phase.psi
     var nextInboundPSIStep: UInt8
@@ -57,7 +60,10 @@ struct DownConversation: Sendable {
     /// work (and without a second model call).
     var replies: [DownSignature: DownReply] = [:]
 
-    init(id: ConversationID, peer: PeerID, role: PSIRole, generation: Int, profile: DownProfile, psiSessionID: UUID, psi: any PSISession) {
+    init(
+        id: ConversationID, peer: PeerID, role: PSIRole, generation: Int, profile: DownProfile,
+        psiSessionID: UUID, psi: any PSISession, provider: PSIProviderDescriptor
+    ) {
         self.id = id
         self.peer = peer
         self.role = role
@@ -65,6 +71,7 @@ struct DownConversation: Sendable {
         self.profile = profile
         self.psiSessionID = psiSessionID
         self.psi = psi
+        psiContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: provider, inputs: profile.psiInputs))
         nextInboundPSIStep = role == .initiator ? 1 : 0
     }
 }
