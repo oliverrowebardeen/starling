@@ -34,5 +34,16 @@ let package = Package(
                 .product(name: "StarlingFakes", package: "StarlingCore"),
             ]
         ),
+        // Evaluations framework suites (iOS and macOS 27, Xcode 27). A
+        // separate target so only these files import Evaluations.
+        .testTarget(
+            name: "StarlingAgentEvaluations",
+            dependencies: [
+                "StarlingAgent",
+                "StarlingAgentBench",
+                .product(name: "StarlingCore", package: "StarlingCore"),
+                .product(name: "StarlingFakes", package: "StarlingCore"),
+            ]
+        ),
     ]
 )

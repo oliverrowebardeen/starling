@@ -13,6 +13,7 @@ import StarlingCore
 public enum InterpretationSet {
     public static let now = Date(timeIntervalSince1970: 1_790_683_200)
     public static let timeZone = TimeZone(identifier: "UTC")!
+    public static let context = InterpretationContext(now: now, timeZone: timeZone, issues: [.time, .activity, .budget])
 
     /// Evening start and end, for "tonight" and "evening" with no hours.
     static let evening = 17...20
