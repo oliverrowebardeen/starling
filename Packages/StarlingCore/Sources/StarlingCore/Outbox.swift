@@ -3,6 +3,9 @@ import Foundation
 public enum OutboxError: Error, Hashable, Sendable {
     case denied(PolicyViolation)
     case consentDeclined
+    /// The policy's answer changed while the owner was deciding (rules
+    /// edited, peer trust removed); nothing was sent (v1.1).
+    case policyChangedDuringConsent
 }
 
 /// Told about every envelope the transport accepted, for example to keep an
@@ -74,6 +77,19 @@ public actor Outbox {
             throw OutboxError.denied(violation)
         case .needsConsent(let disclosure):
             guard await consent.requestConsent(for: disclosure) == .approved else { throw OutboxError.consentDeclined }
+            // The owner may take a long time. Honor cancellation, and send
+            // only if the policy still gives the same answer now.
+            try Task.checkCancellation()
+            switch await policy.evaluate(message) {
+            case .allow:
+                break
+            case .needsConsent(let current) where current == disclosure:
+                break
+            case .deny(let violation):
+                throw OutboxError.denied(violation)
+            case .needsConsent:
+                throw OutboxError.policyChangedDuringConsent
+            }
         }
 
         try await transport.send(Frame(codec.encode(envelope)), to: recipient)
