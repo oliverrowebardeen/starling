@@ -17,11 +17,22 @@ final class DebugHarness {
     let down = ScriptedDownService()
     let peers: InMemoryPairedPeerStore
     let usesScriptedModel: Bool
+    /// Stands in for the secure channel until lanes E1 and E2 merge: frames
+    /// injected here go through a real `Inbox` to the app's Inbox loop, and
+    /// sends from the Outbox demos are recorded, not delivered.
+    let transport = RecordingTransport()
+    /// Created once: the transport's event stream has a single consumer.
+    let inboxEvents: AsyncStream<InboxEvent>
+    /// Fixed per launch so a repeated demo send has an identical disclosure
+    /// and the consent memory can be seen.
+    let sampleStart: Date
     private var pairingCount = 0
 
     init(peers: [PairedPeer] = [], defaults: UserDefaults = .standard) {
         self.peers = InMemoryPairedPeerStore(peers)
         usesScriptedModel = defaults.bool(forKey: Self.scriptedModelKey)
+        inboxEvents = Inbox(localPeer: transport.localPeer).events(from: transport)
+        sampleStart = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 3600).rounded(.up) * 3600)
     }
 
     func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) -> AppServices {
@@ -32,6 +43,7 @@ final class DebugHarness {
             peers: peers,
             makeDownService: { _ in down },
             makePairingSession: { await DebugHarness.scriptedPairing() },
+            inboxEvents: inboxEvents,
             notifier: notifier,
             localNetwork: BonjourLocalNetworkPrompter()
         )
@@ -93,11 +105,44 @@ final class DebugHarness {
         down.emit(.ended(reason))
     }
 
-    /// Asks the consent sheet about a typical Down disclosure, the way
-    /// `Outbox` will once lanes F and G merge.
-    func requestSampleConsent(through consent: any ConsentProvider) async -> ConsentOutcome? {
-        guard let friend = try? await peers.all().first, let disclosure = try? Self.sampleDisclosure(to: friend.id) else { return nil }
-        return await consent.requestConsent(for: disclosure)
+    /// Sends a sample proposal to the first friend through a real `Outbox`
+    /// whose policy asks for consent, the way lane F's sends will once lanes
+    /// F and G merge. With `rulesChangeDuringConsent`, the policy's answer
+    /// changes while the sheet is open, which Outbox refuses (Core v1.1).
+    /// Returns what happened in plain words.
+    func sendSample(through consent: any ConsentProvider, rulesChangeDuringConsent: Bool) async -> String {
+        guard let friend = try? await peers.all().first,
+              // The change demo starts from its own disclosure so an approval
+              // remembered from the plain demo does not skip its sheet.
+              let asked = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: rulesChangeDuringConsent ? 1800 : 1500),
+              let changed = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 2500),
+              let proposal = try? Proposal(round: 0, terms: Self.sampleTerms())
+        else { return "Add a friend first." }
+        let policy = DemoPolicy(first: asked, recheck: rulesChangeDuringConsent ? changed : asked)
+        let outbox = Outbox(transport: transport, policy: policy, consent: consent)
+        do {
+            try await outbox.send(.propose(proposal), to: friend.id, conversation: ConversationID())
+            return "Sent to \(friend.nickname) (recorded, not delivered)."
+        } catch {
+            return SendFailureMessage.text(for: error) ?? "Failed: \(error)"
+        }
+    }
+
+    /// Injects a proposal from the first friend as if it arrived over the
+    /// link, then reports how many Inbox events the Down service has seen.
+    func simulateInboundMessage() async -> String {
+        guard let friend = try? await peers.all().first else { return "Add a friend first." }
+        do {
+            let envelope = try Envelope(
+                conversation: ConversationID(), sender: friend.id, recipient: transport.localPeer, sequence: 0,
+                sentAt: Timestamp(Date()), body: .propose(try Proposal(round: 0, terms: Self.sampleTerms()))
+            )
+            transport.inject(.received(try Frame(EnvelopeCodec().encode(envelope)), from: friend.id))
+        } catch {
+            return "Couldn't build the message: \(error)"
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        return "The Down service has received \(await down.handled.count) Inbox events."
     }
 
     static func sampleTerms() throws -> Terms {
@@ -109,13 +154,30 @@ final class DebugHarness {
         ])
     }
 
-    static func sampleDisclosure(to peer: PeerID) throws -> Disclosure {
-        let start = Date().addingTimeInterval(3600)
-        return Disclosure(recipient: peer, recipientModel: .onDevice, items: [
+    static func sampleDisclosure(to peer: PeerID, start: Date, budgetMinorUnits: Int64 = 1500) throws -> Disclosure {
+        Disclosure(recipient: peer, recipientModel: .onDevice, items: [
             DisclosedItem(category: .psi, issue: .time, value: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(4 * 3600))])),
             DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("food")])),
-            DisclosedItem(category: .terms, issue: .budget, value: .amount(try MoneyAmount(minorUnits: 1500))),
+            DisclosedItem(category: .terms, issue: .budget, value: .amount(try MoneyAmount(minorUnits: budgetMinorUnits))),
         ])
+    }
+}
+
+/// Asks for consent on every send; the re-check after consent can return a
+/// different disclosure to exercise `OutboxError.policyChangedDuringConsent`.
+actor DemoPolicy: PolicyEngine {
+    private let first: Disclosure
+    private let recheck: Disclosure
+    private var evaluations = 0
+
+    init(first: Disclosure, recheck: Disclosure) {
+        self.first = first
+        self.recheck = recheck
+    }
+
+    func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
+        evaluations += 1
+        return .needsConsent(evaluations == 1 ? first : recheck)
     }
 }
 

@@ -63,21 +63,21 @@ struct DeveloperView: View {
             Button("Simulate: match (a maybe)") { Task { await simulateMatch(bothDown: false) } }
             Button("Simulate: Down? expired") { harness.simulateEnded(.expired) }
             Button("Simulate: Down? failed") { harness.simulateEnded(.failed) }
-            Button("Show a consent sheet") {
-                Task {
-                    guard let outcome = await harness.requestSampleConsent(through: app.consent) else {
-                        status = "Add a friend first."
-                        return
-                    }
-                    status = "Consent: \(outcome == .approved ? "approved" : "declined")."
-                }
+            Button("Send a sample through Outbox") {
+                Task { status = await harness.sendSample(through: app.consent, rulesChangeDuringConsent: false) }
+            }
+            Button("Send, with rules changing during consent") {
+                Task { status = await harness.sendSample(through: app.consent, rulesChangeDuringConsent: true) }
+            }
+            Button("Simulate: message from a friend") {
+                Task { status = await harness.simulateInboundMessage() }
             }
             Toggle("Scripted model (next launch)", isOn: $scriptedModel)
             if let status { Text(status).foregroundStyle(.secondary) }
         } header: {
             Text("Fakes (Debug builds only)")
         } footer: {
-            Text("Stands in for lanes E1, E2, F, and G until they merge. The scripted model returns the same rules every time, including \"karaoke\", so the review flags show.")
+            Text("Stands in for lanes E1, E2, F, and G until they merge. Sends go through a real Outbox and are recorded, not delivered. An approved sample is not asked again for 10 minutes or until the Down? intent changes. The scripted model returns the same rules every time, including \"karaoke\", so the review flags show.")
         }
     }
 

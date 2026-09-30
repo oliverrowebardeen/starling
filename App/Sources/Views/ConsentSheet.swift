@@ -70,7 +70,7 @@ struct ConsentSheet: View {
         }
         .task {
             let friend = try? await app.services.peers?.all().first
-            if let friend, let disclosure = try? DebugHarness.sampleDisclosure(to: friend.id) {
+            if let friend, let disclosure = try? DebugHarness.sampleDisclosure(to: friend.id, start: Date()) {
                 _ = await app.consent.requestConsent(for: disclosure)
             }
         }
