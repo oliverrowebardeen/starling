@@ -16,6 +16,8 @@ let package = Package(
     dependencies: [
         .package(path: "../../Packages/StarlingCore"),
         .package(path: "../../Packages/StarlingTransport"),
+        // Used only by the opt-in prompt-injection test target.
+        .package(path: "../../Packages/StarlingAgent"),
     ],
     targets: [
         .target(
@@ -34,5 +36,10 @@ let package = Package(
         .executableTarget(name: "starling-sim", dependencies: ["SimulatorKit", "Scenarios"]),
         .testTarget(name: "SimulatorKitTests", dependencies: ["SimulatorKit"]),
         .testTarget(name: "ScenarioTests", dependencies: ["Scenarios", "SimulatorKit"]),
+        .testTarget(name: "PromptInjectionTests", dependencies: [
+            .product(name: "StarlingCore", package: "StarlingCore"),
+            .product(name: "StarlingFakes", package: "StarlingCore"),
+            .product(name: "StarlingAgent", package: "StarlingAgent"),
+        ], resources: [.copy("Results")]),
     ]
 )
