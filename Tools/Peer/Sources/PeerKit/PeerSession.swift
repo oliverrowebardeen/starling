@@ -18,7 +18,10 @@ public actor PeerSession {
     private let transport: any Transport
     private let outbox: Outbox
     private var inboxTask: Task<Void, Never>?
-    private var pending: [MessageID: ContinuousClock.Instant] = [:]
+    /// Start times by conversation. Keyed by conversation, not message ID,
+    /// because the conversation exists before sending: an accept can arrive
+    /// while this actor is still suspended in `outbox.send`.
+    private var pending: [ConversationID: ContinuousClock.Instant] = [:]
     private let clock = ContinuousClock()
 
     /// Peers in the order they were found, for `send <number>`.
@@ -57,9 +60,15 @@ public actor PeerSession {
     }
 
     public func sendProposal(to peer: PeerID) async throws {
-        let envelope = try await outbox.send(.propose(Self.sampleProposal()), to: peer, conversation: ConversationID())
-        pending[envelope.id] = clock.now
-        emit("-> propose to \(peer.short) (#\(envelope.sequence))")
+        let conversation = ConversationID()
+        pending[conversation] = clock.now
+        do {
+            let envelope = try await outbox.send(.propose(Self.sampleProposal()), to: peer, conversation: conversation)
+            emit("-> propose to \(peer.short) (#\(envelope.sequence))")
+        } catch {
+            pending[conversation] = nil
+            throw error
+        }
     }
 
     public func describePeers() -> [String] {
@@ -98,8 +107,8 @@ public actor PeerSession {
             } catch {
                 emit("Accept to \(envelope.sender.short) failed: \(error)")
             }
-        case .accept(let acceptance):
-            if let sentAt = pending.removeValue(forKey: acceptance.proposal) {
+        case .accept:
+            if let sentAt = pending.removeValue(forKey: envelope.conversation) {
                 let rtt = sentAt.duration(to: clock.now)
                 roundTrips.append(rtt)
                 emit("<- accept from \(envelope.sender.short), round trip \(String(format: "%.1f", Self.milliseconds(rtt))) ms")

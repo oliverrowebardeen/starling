@@ -30,13 +30,15 @@ import Testing
     @Test(.timeLimit(.minutes(1)))
     func selectsPeersByNumberOrPrefix() async throws {
         let hub = LoopbackHub()
-        let mac = PeerSession(transport: LoopbackTransport(hub: hub))
-        let phone = PeerSession(transport: LoopbackTransport(hub: hub))
+        // Fixed IDs: a random phone ID starting with "9" would make the
+        // "no such peer 9" check below match it as a prefix.
+        let mac = PeerSession(transport: LoopbackTransport(localPeer: try PeerID(bytes: Data(repeating: 0x11, count: 32)), hub: hub))
+        let phone = PeerSession(transport: LoopbackTransport(localPeer: try PeerID(bytes: Data(repeating: 0xAB, count: 32)), hub: hub))
         try await mac.start()
         try await phone.start()
         #expect(await waitForLine("Found", in: mac))
 
-        try await mac.sendProposal(to: String(phone.me.hex.prefix(6)))
+        try await mac.sendProposal(to: "abab")
         await #expect(throws: PeerSession.PeerError.noSuchPeer("9")) { try await mac.sendProposal(to: "9") }
         await #expect(throws: PeerSession.PeerError.noSuchPeer("")) { try await mac.sendProposal(to: "") }
         #expect(await mac.describePeers() == ["1) \(phone.me.short)"])
