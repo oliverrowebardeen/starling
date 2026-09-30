@@ -1,8 +1,9 @@
 import Foundation
 import StarlingCore
 
-/// TLV message types on a LocalP2P link.
-enum LinkMessageType: Int {
+/// TLV message types on a LocalP2P link. Package-visible because the
+/// Wi-Fi Aware transport speaks the same link protocol (ADR 0110).
+package enum LinkMessageType: Int {
     /// First message in each direction: see `LinkHello`.
     case hello = 1
     /// One Starling frame.
