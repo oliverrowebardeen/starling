@@ -11,7 +11,7 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 - Delivery is best effort (ARCHITECTURE rule 2.5). Any step can be lost, and the app may be closed.
 - Set sizes are visible in DH-based PSI, and a dishonest peer can submit every slot in a small domain to learn the whole set (brief 3.9).
 - `InsecurePSIStub` reveals the initiator's set to the responder, so while it is in use the policy layer asks for consent on PSI frames (section 7, step 4). A consent sheet shows the recipient, so it is itself a notification.
-- The frozen v1 messages have no field for the level (`down`/`maybe`) and no way to tag a conversation as Down.
+- The frozen v1 messages had no field for the level (`down`/`maybe`) and have no way to tag a conversation as Down. Core v1.1 added `IssueKey.downLevel` for the first; the second is deferred to Phase 2.
 
 ## Decision
 
@@ -27,31 +27,32 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 5. Tokens are UTF-8 `starling/down/v1/slot/<startMinute>`, one per UTC-aligned 30-minute slot that breaks none of the owner's time limits, lies between now and the intent's expiry, and is among the first 24 such slots.
 6. Every set is padded with random `starling/down/v1/pad/<hex>` tokens to exactly 24 elements, and `maxPeerSetSize` is 24. A peer therefore cannot tell how much free time the owner has from the set size, and one run probes at most 12 hours of slots.
 7. The level is not an input to the token set, so `down` and `maybe` produce identical tokens.
-8. The initiator must learn the intersection (the stub gives it to both roles). An empty result ends the conversation on both phones with no further message.
+8. Every PSI step passes `OutboundContext.psi` to the Outbox: the provider's descriptor and the free slots the set was built from (`[.time: .slots(...)]`; padding is not an input). The policy uses it to judge what the step discloses and refuses a PSI step without it (Core v1.1).
+9. The initiator must learn the intersection (the stub gives it to both roles). An empty result ends the conversation on both phones with no further message.
 
 ### Step 2: details, only after overlap
 
-9. The initiator sends `query(activity, keywords: its liked activities)` if it has any, and `query(budget, amount: its cap)` if it has one.
-10. The responder answers the activity query with the acceptable subset of the candidates: one `AgentModel.match` call if the owner has liked activities, none otherwise (ADR 0121). The budget answer is the lower of the two caps, or `declined` if the currencies differ. Answers are cached, so a retried query gets the same answer without a second model call.
-11. An empty activity answer means no shared activity, and the conversation ends without an offer.
+10. The initiator sends `query(activity, keywords: its liked activities)` if it has any, and `query(budget, amount: its cap)` if it has one.
+11. The responder answers the activity query with the acceptable subset of the candidates: one `AgentModel.match` call if the owner has liked activities, none otherwise (ADR 0121). The budget answer is the lower of the two caps, or `declined` if the currencies differ. Answers are cached, so a retried query gets the same answer without a second model call.
+12. An empty activity answer means no shared activity, and the conversation ends without an offer.
 
 ### Step 3: agree
 
-12. The initiator proposes round 0: the first contiguous block of shared slots, capped at 2 hours; the first liked activity the peer accepted; the answered budget.
-13. The receiver of any offer checks it in code. A compliant offer is accepted, or countered with an alternative when a soft preference is unmet (ADR 0121). A non-compliant offer gets a counter repaired in code: budget down to the cap, avoided activities dropped, the time shortened from its end. If nothing can be repaired, or `maxRounds` (default 4) is reached, it gets a `reject`.
+13. The initiator proposes round 0: the first contiguous block of shared slots, capped at 2 hours; the first liked activity the peer accepted; the answered budget.
+14. The receiver of any offer checks it in code. A compliant offer is accepted, or countered with an alternative when a soft preference is unmet (ADR 0121). A non-compliant offer gets a counter repaired in code: budget down to the cap, avoided activities dropped, the time shortened from its end. If nothing can be repaired, or `maxRounds` (default 4) is reached, it gets a `reject`.
 
 ### Step 4: match before notify
 
-14. The phone that did not make the final offer (the **acceptor**) sends `accept` with the offered plan plus its own level under the issue key `down_level` (`keywords: ["down"]` or `["maybe"]`).
-15. The **offerer** checks that the accept names one of its offer envelopes, carries exactly its plan, and has a valid level. It then sends its own `accept` of the same plan with its level (the **confirmation**), and after that send succeeds it emits `DownEvent.matched`.
-16. The acceptor emits `matched` when the confirmation arrives. `bothDown` is true only when both levels are `down`.
-17. Each level crosses the wire only after the other side has committed to the identical plan (by offering it or accepting it), so a `maybe` is revealed only when interest is mutual.
+15. The phone that did not make the final offer (the **acceptor**) sends `accept` with the offered plan plus its own level under `IssueKey.downLevel` (`down_level`, with `keywords: ["down"]` or `["maybe"]`).
+16. The **offerer** checks that the accept names one of its offer envelopes, carries exactly its plan, and has a valid level. It then sends its own `accept` of the same plan with its level (the **confirmation**), and after that send succeeds it emits `DownEvent.matched`.
+17. The acceptor emits `matched` when the confirmation arrives. `bothDown` is true only when both levels are `down`.
+18. Each level crosses the wire only after the other side has committed to the identical plan (by offering it or accepting it), so a `maybe` is revealed only when interest is mutual.
 
 ### Retries and silence
 
-18. Every step that expects a reply is resent every `retryInterval` (default 5 s) up to `maxAttempts` (default 6) times, and every wait is bounded the same way. A timeout ends the conversation without an event.
-19. A retry arrives in a new envelope, so duplicates are recognized by content (PSI step and payload, query, offer round and terms, accept terms) and answered from a reply cache. Finished conversations keep their cache (the last 64) so a late retry still gets its answer.
-20. Rejections, timeouts, withdrawn or expired intents, policy refusals, and malformed or oversized input all end without an event on either phone. Clearing an intent sends nothing to friends.
+19. Every step that expects a reply is resent every `retryInterval` (default 5 s) up to `maxAttempts` (default 6) times, and every wait is bounded the same way. A timeout ends the conversation without an event.
+20. A retry arrives in a new envelope, so duplicates are recognized by content (PSI step and payload, query, offer round and terms, accept terms) and answered from a reply cache. Finished conversations keep their cache (the last 64) so a late retry still gets its answer.
+21. Rejections, timeouts, withdrawn or expired intents, policy refusals, and malformed or oversized input all end without an event on either phone. Clearing an intent sends nothing to friends.
 
 ## Consequences
 
@@ -61,7 +62,7 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 - **Remaining leak:** the existence of a PSI run shows that the starter has Down turned on. Hiding this would take cover traffic (periodic runs with dummy sets), which with the stub means constant consent prompts. Recorded for the threat model; revisit when Nightjar's PSI lands.
 - **A dishonest friend** can still learn our free slots within the next 12 hours by submitting every slot. The set cap and the three-runs-per-intent cap bound it; they do not remove it.
 - **PSI initiator requirement:** a provider whose initiator learns nothing would need the responder to drive step 2. Nightjar's API must be checked against this when it lands.
-- The `down_level` key and the Down-only conversation routing are workarounds for the frozen v1 messages. The requests are in `docs/requests/F.md`.
+- Routing every conversation that opens with a PSI step to Down is a Phase 1 workaround; a per-conversation feature tag is deferred to Phase 2 (`docs/requests/F.md`, request 4).
 
 ## Sources
 
