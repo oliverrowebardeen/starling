@@ -96,18 +96,19 @@ package enum OutputMapping {
     package static func rules(_ raw: RawRules, context: InterpretationContext) throws -> OwnerRules {
         var constraints: [IssueKey: [Constraint]] = [:]
 
+        // Clamping first keeps every later computation in range, whatever
+        // the model produced.
         let earliest = raw.earliestHour.map { min(max($0, 0), 23) }
         let latest = raw.latestHour.map { min(max($0, 1), 24) }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = context.timeZone
         if let day = raw.day.flatMap({ Self.dayOffset($0, now: context.now, calendar: calendar) }) {
             let midnight = calendar.startOfDay(for: context.now)
-            if let dayStart = calendar.date(byAdding: .day, value: day, to: midnight) {
-                let from = dayStart.addingTimeInterval(Double(earliest ?? 0) * 3600)
-                let to = dayStart.addingTimeInterval(Double(latest ?? 24) * 3600)
-                if to > from, let slot = try? TimeSlot(start: from, end: to) {
-                    constraints[.time, default: []].append(try Constraint(.within([slot])))
-                }
+            if let dayStart = calendar.date(byAdding: .day, value: day, to: midnight),
+               let from = wallClock(hour: earliest ?? 0, on: dayStart, calendar: calendar),
+               let to = wallClock(hour: latest ?? 24, on: dayStart, calendar: calendar),
+               to > from, let slot = try? TimeSlot(start: from, end: to) {
+                constraints[.time, default: []].append(try Constraint(.within([slot])))
             }
         } else if earliest != nil || latest != nil {
             let from = (earliest ?? 0) * 60
@@ -167,6 +168,16 @@ package enum OutputMapping {
     static func money(dollars: Int) -> MoneyAmount? {
         guard dollars >= 0, Int64(dollars) <= ProtocolLimits.maxMoneyMinorUnits / 100 else { return nil }
         return try? MoneyAmount(minorUnits: Int64(dollars) * 100)
+    }
+
+    /// The instant a local clock shows `hour`:00 on `dayStart`'s date, with 24
+    /// meaning the next midnight. Uses calendar components, not elapsed
+    /// seconds, so daylight-saving days come out right.
+    package static func wallClock(hour: Int, on dayStart: Date, calendar: Calendar) -> Date? {
+        if hour == 24 {
+            return calendar.date(byAdding: .day, value: 1, to: dayStart).map { calendar.startOfDay(for: $0) }
+        }
+        return calendar.date(bySettingHour: hour, minute: 0, second: 0, of: dayStart)
     }
 
     private static func keywords(_ strings: [String]) -> [Keyword] {

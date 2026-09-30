@@ -121,6 +121,18 @@ enum AgentFixtures {
         #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: 1, offer: Int.min, same: true)], wanted: wanted, offered: offered) }
     }
 
+    /// 2026-11-01 is the US fall-back day: midnight is PDT, the evening is PST.
+    /// "18:00 to 20:00" must mean the wall clock, not 18 hours after midnight.
+    @Test func interpretedHoursFollowTheWallClockAcrossDaylightSaving() throws {
+        let pacific = TimeZone(identifier: "America/Los_Angeles")!
+        let noon = Date(timeIntervalSince1970: 1_793_563_200) // 2026-11-01 20:00 UTC, 12:00 PST
+        let context = InterpretationContext(now: noon, timeZone: pacific, issues: [])
+        let rules = try OutputMapping.rules(RawRules(day: .relative(0), earliestHour: 18, latestHour: 24), context: context)
+        let sixPM = Date(timeIntervalSince1970: 1_793_584_800)    // 2026-11-02 02:00 UTC
+        let midnight = Date(timeIntervalSince1970: 1_793_606_400) // 2026-11-02 08:00 UTC
+        #expect(rules.constraints[.time] == [try Constraint(.within([try TimeSlot(start: sixPM, end: midnight)]))])
+    }
+
     @Test func mapsRulesWithNamedWeekdays() throws {
         let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
         let raw = RawRules(day: .weekday(7), earliestHour: 13, latestHour: 17, wants: ["Boba", "bad:word"], avoids: ["sushi"], maxDollars: 20, neverShare: [.location])

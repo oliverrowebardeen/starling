@@ -1,4 +1,5 @@
 import Foundation
+import StarlingAgent
 import StarlingCore
 
 /// A two-sided negotiation: A opens with `opening`, then the sides alternate.
@@ -31,9 +32,14 @@ public enum BenchScenarios {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let today = calendar.startOfDay(for: now)
-        func slot(day: Int = 0, _ from: Double, _ to: Double) throws -> TimeSlot {
-            let base = today.addingTimeInterval(Double(day) * 86_400)
-            return try TimeSlot(start: base.addingTimeInterval(from * 3600), end: base.addingTimeInterval(to * 3600))
+        // Wall-clock hours via the calendar, so scenarios stay correct on
+        // daylight-saving days.
+        func slot(day: Int = 0, _ from: Int, _ to: Int) throws -> TimeSlot {
+            guard let base = calendar.date(byAdding: .day, value: day, to: today),
+                  let start = OutputMapping.wallClock(hour: from, on: base, calendar: calendar),
+                  let end = OutputMapping.wallClock(hour: to, on: base, calendar: calendar)
+            else { throw ValidationError("BenchScenarios", "cannot build slot") }
+            return try TimeSlot(start: start, end: end)
         }
         func words(_ list: String) throws -> [Keyword] {
             try list.split(separator: ",").map { try Keyword(String($0)) }
