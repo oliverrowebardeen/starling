@@ -13,6 +13,9 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0007](0007-ci-on-the-xcode-27-runner.md) | CI on the GitHub `xcode-27` runner | Accepted |
 | [0008](0008-repo-name-and-visibility.md) | Repo name `starling-ios`, private for now | Accepted |
 | [0009](0009-task-level-agent-model-interface.md) | Task-level `AgentModel` interface | Accepted |
+| [0170](0170-app-icon-from-an-icon-composer-bundle.md) | App icon from an Icon Composer bundle, wired through XcodeGen | Proposed |
+| [0171](0171-icon-group-shadow-at-20-percent.md) | App icon group shadow at 20 percent | Proposed |
+| [0172](0172-status-mark-drawn-live-with-even-odd.md) | Status mark drawn live with an even-odd knockout, in its own package | Proposed |
 
 ## Template
 
