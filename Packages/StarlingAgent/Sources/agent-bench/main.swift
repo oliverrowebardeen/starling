@@ -5,13 +5,15 @@ import StarlingAgentBench
 // Runs the model bench with the on-device model on this Mac.
 // Usage: swift run agent-bench [--repetitions N] [--json path]
 //        swift run agent-bench --interpretation [--held-out] [--json path]
-// The second form scores the labeled interpretation set (or the held-out
-// set) instead.
+//        swift run agent-bench --matching [--json path]
+// The other forms score the labeled interpretation set (or the held-out
+// set) or the labeled match set instead.
 
 var repetitions = 1
 var jsonPath: String?
 var interpretation = false
 var heldOut = false
+var matching = false
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty {
     let flag = arguments.removeFirst()
@@ -20,10 +22,24 @@ while !arguments.isEmpty {
     case "--json": jsonPath = arguments.isEmpty ? nil : arguments.removeFirst()
     case "--interpretation": interpretation = true
     case "--held-out": heldOut = true
+    case "--matching": matching = true
     default:
-        print("usage: agent-bench [--repetitions N] [--json path] | agent-bench --interpretation [--held-out] [--json path]")
+        print("usage: agent-bench [--repetitions N] [--json path] | agent-bench --interpretation [--held-out] [--json path] | agent-bench --matching [--json path]")
         exit(1)
     }
+}
+
+if matching {
+    let agent = FoundationModelsAgent()
+    FileHandle.standardError.write(Data("Scoring \(MatchSet.labels.count) match cases on \(agent.descriptor.identifier)...\n".utf8))
+    let report = await MatchEval(model: agent).run { result in
+        FileHandle.standardError.write(Data("  \(result.isCorrect ? "ok  " : "miss") \(result.label.name)\n".utf8))
+    }
+    print(report.markdown())
+    if let jsonPath {
+        try report.json().write(to: URL(fileURLWithPath: jsonPath))
+    }
+    exit(0)
 }
 
 if interpretation {
