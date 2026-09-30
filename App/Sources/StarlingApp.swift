@@ -14,7 +14,9 @@ struct HomeView: View {
         NavigationStack {
             List {
                 Section {
+                    #if DEBUG
                     NavigationLink("Nearby", destination: NearbyView())
+                    #endif
                     NavigationLink("Model Bench", destination: ModelBenchView())
                 } header: {
                     Text("Phase 0 spike")
