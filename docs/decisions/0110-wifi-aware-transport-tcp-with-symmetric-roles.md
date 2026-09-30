@@ -31,7 +31,7 @@
 - A frame can still be lost if a preferred link arrives more than 3 seconds after a provisional one was activated, and it replaces it. The `Transport` contract allows loss; negotiation already tolerates it.
 - **Threat model input for lane E1:** the `PeerID` in a hello is an unauthenticated claim. An OS-paired device can claim a friend's `PeerID` and displace that friend's link (denial of service). The secure channel rejects its frames, but cannot stop the displacement. Only devices the owner paired in person can try this.
 - Keepalives cost a little battery while links are idle. Revisit after device tests.
-- `LinkMessageType` in `StarlingLocalP2P` is internal, so this target repeats its two values (`AwareMessageType`). See `docs/requests/E2.md`.
+- Both transports share `LinkMessageType` from `StarlingLocalP2P`. (Revised 2026-09-30: the enum was internal at first and this target kept a copy, `AwareMessageType`, until `docs/requests/E2.md` request 1 made it package-visible.)
 - Radio behavior runs only on devices; `docs/checklists/phase-1-E2.md` covers it.
 
 ## Sources
