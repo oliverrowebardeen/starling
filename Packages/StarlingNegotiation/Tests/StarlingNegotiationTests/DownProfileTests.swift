@@ -29,6 +29,8 @@ import Testing
         #expect(!me.permits(try T.plan(time: T.slot(19, 21), activity: ["tacos", "sushi"])))
         #expect(!me.permits(try T.plan(time: T.slot(22, 24))))
         #expect(!me.permits(try T.plan(time: T.slot(18, 19))))
+        #expect(me.violations(of: try Terms([.time: .slots([T.slot(19, 20)]), .budget: .amount(try MoneyAmount(minorUnits: 100, currency: "EUR"))]))
+            == [LimitViolation(issue: .budget, reason: .currencyMismatch)])
     }
 
     @Test func malformedPlansFail() throws {
@@ -38,7 +40,6 @@ import Testing
         #expect(!me.permits(try Terms([.time: .slots([T.slot(19, 20), T.slot(21, 22)])])))
         #expect(!me.permits(try Terms([.time: time, .place: .keywords([T.keyword("home")])])))
         #expect(!me.permits(try Terms([.time: time, .activity: .keywords([])])))
-        #expect(!me.permits(try Terms([.time: time, .budget: .amount(try MoneyAmount(minorUnits: 100, currency: "EUR"))])))
         #expect(!me.permits(try Terms([.time: time, .budget: .flag(true)])))
     }
 
@@ -107,6 +108,8 @@ import Testing
     @Test func overBudgetIsRepairedToTheCap() throws {
         let me = try profile(maxBudget: 15)
         #expect(me.assess(try T.plan(time: T.slot(19, 20), budget: 30), overlap: nil, canCounter: true) == .repair(try T.plan(time: T.slot(19, 20), budget: 15)))
+        let euros = try Terms([.time: .slots([T.slot(19, 20)]), .budget: .amount(try MoneyAmount(minorUnits: 500, currency: "EUR"))])
+        #expect(me.assess(euros, overlap: nil, canCounter: true) == .repair(try T.plan(time: T.slot(19, 20), budget: 15)))
     }
 
     @Test func avoidedActivitiesAreDroppedOrTheOfferIsRejected() throws {

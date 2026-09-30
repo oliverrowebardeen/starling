@@ -11,7 +11,7 @@ struct DownProfile: Sendable {
     /// Where an acceptance carries its sender's level (ADR 0120). Only
     /// `accept` bodies include it, so a level crosses the wire only once the
     /// other side has offered or accepted the same plan.
-    static let levelKey = try! IssueKey("down_level")
+    static let levelKey = IssueKey.downLevel
     static let planIssues: Set<IssueKey> = [.time, .activity, .budget]
 
     let level: DownLevel
@@ -82,10 +82,8 @@ struct DownProfile: Sendable {
         default: return false
         }
         switch plan[.budget] {
-        case nil: break
-        // `violations` ignores a cap in another currency, so a different
-        // currency is refused here rather than treated as within budget.
-        case .amount(let amount)? where budgetCap == nil || budgetCap!.currency == amount.currency: break
+        // A different currency from the cap is a violation (currencyMismatch).
+        case nil, .amount?: break
         default: return false
         }
         return true
@@ -170,7 +168,8 @@ struct DownProfile: Sendable {
 
     private func repair(_ offer: Terms, overlap: [TimeSlot]?) -> Terms? {
         var values = offer.values
-        if case .amount(let amount)? = values[.budget], let cap = budgetCap, amount.minorUnits > cap.minorUnits {
+        if case .amount(let amount)? = values[.budget], let cap = budgetCap,
+           amount.currency != cap.currency || amount.minorUnits > cap.minorUnits {
             values[.budget] = .amount(cap)
         }
         if case .keywords(let keywords)? = values[.activity] {
