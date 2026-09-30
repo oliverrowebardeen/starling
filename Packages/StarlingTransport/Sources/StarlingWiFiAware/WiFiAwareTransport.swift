@@ -114,7 +114,7 @@ public actor WiFiAwareTransport: Transport {
             throw TransportError.peerUnreachable(peer)
         }
         do {
-            try await channel.send(frame.bytes, type: AwareMessageType.frame.rawValue)
+            try await channel.send(frame.bytes, type: LinkMessageType.frame.rawValue)
         } catch {
             throw TransportError.failed(String(describing: error))
         }
@@ -292,9 +292,9 @@ public actor WiFiAwareTransport: Transport {
         let timeout = timing.helloTimeout
         return try await withThrowingTaskGroup(of: LinkHello.self) { group in
             group.addTask {
-                try await channel.send(ours, type: AwareMessageType.hello.rawValue)
+                try await channel.send(ours, type: LinkMessageType.hello.rawValue)
                 let message = try await channel.receive()
-                guard message.type == AwareMessageType.hello.rawValue else {
+                guard message.type == LinkMessageType.hello.rawValue else {
                     throw ValidationError("WiFiAware", "expected hello")
                 }
                 return try LinkHello(decoding: message.content)
@@ -312,7 +312,7 @@ public actor WiFiAwareTransport: Transport {
         while !Task.isCancelled {
             do {
                 let message = try await channel.receive()
-                guard message.type == AwareMessageType.frame.rawValue else {
+                guard message.type == LinkMessageType.frame.rawValue else {
                     log("unexpected message type \(message.type) from \(remote.short); closing")
                     return
                 }

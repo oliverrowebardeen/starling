@@ -1,14 +1,7 @@
 import Foundation
 
-/// TLV message types on a Wi-Fi Aware link. The same values and meaning as
-/// LocalP2P's link protocol, whose enum is internal to its target.
-package enum AwareMessageType: Int, Sendable {
-    /// First message in each direction: a `LinkHello`.
-    case hello = 1
-    /// One Starling frame.
-    case frame = 2
-}
-
+/// One TLV message on a Wi-Fi Aware link. `type` is a `LinkMessageType`
+/// raw value: the link protocol is LocalP2P's (ADR 0110).
 package struct AwareMessage: Hashable, Sendable {
     package let type: Int
     package let content: Data
