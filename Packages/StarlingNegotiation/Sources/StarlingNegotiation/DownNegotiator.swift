@@ -49,6 +49,15 @@ public actor DownNegotiator: DownService {
 
     private var workers: [PeerID: (queue: AsyncStream<Work>.Continuation, task: Task<Void, Never>)] = [:]
     private var timers: [ConversationID: Task<Void, Never>] = [:]
+    /// Sends in the Outbox (possibly waiting on policy or the owner's consent).
+    /// Ending their conversation cancels them and releases the waiting worker.
+    private var pendingSends: [UUID: PendingSend] = [:]
+
+    private struct PendingSend {
+        let conversation: ConversationID
+        let task: Task<Void, Never>
+        let waiter: CheckedContinuation<Result<Envelope, any Error>, Never>
+    }
     var conversations: [ConversationID: DownConversation] = [:]
     private var activeByPeer: [PeerID: ConversationID] = [:]
     private var finished: [ConversationID: (peer: PeerID, replies: [DownSignature: DownReply], psiContext: OutboundContext)] = [:]
@@ -179,6 +188,8 @@ public actor DownNegotiator: DownService {
 
     private func endEverything() {
         for id in Array(conversations.keys) { end(id, .withdrawn) }
+        // Replies for finished conversations may still be in the Outbox.
+        cancelSends { _ in true }
         intent?.expiry.cancel()
         intent = nil
     }
@@ -351,7 +362,7 @@ public actor DownNegotiator: DownService {
             context = psiContext
         }
         do {
-            let envelope = try await outbox.send(body, to: peer, conversation: id, recipientCard: cards[peer], context: context)
+            let envelope = try await cancellableSend(body, to: peer, in: id, context: context).get()
             noteSent(envelope)
             return .sent
         } catch is OutboxError {
@@ -361,6 +372,40 @@ public actor DownNegotiator: DownService {
             return .ended
         } catch {
             return conversations[id] == nil && finished[id] == nil ? .ended : .lost
+        }
+    }
+
+    /// Runs one `Outbox.send` in its own task, so `end(_:_:)` can cancel it
+    /// while it waits on policy or consent. The Outbox checks cancellation
+    /// after consent and again right before the transport, so a cancelled
+    /// send never leaves. Cancelling also resumes this call at once, so the
+    /// friend's work queue is not held up by a sheet nobody will answer.
+    private func cancellableSend(_ body: MessageBody, to peer: PeerID, in id: ConversationID, context: OutboundContext) async -> Result<Envelope, any Error> {
+        let key = UUID()
+        let card = cards[peer]
+        return await withCheckedContinuation { waiter in
+            let task = Task { [weak self, outbox] in
+                let result: Result<Envelope, any Error>
+                do {
+                    result = .success(try await outbox.send(body, to: peer, conversation: id, recipientCard: card, context: context))
+                } catch {
+                    result = .failure(error)
+                }
+                await self?.finishSend(key, result)
+            }
+            pendingSends[key] = PendingSend(conversation: id, task: task, waiter: waiter)
+        }
+    }
+
+    private func finishSend(_ key: UUID, _ result: Result<Envelope, any Error>) {
+        pendingSends.removeValue(forKey: key)?.waiter.resume(returning: result)
+    }
+
+    private func cancelSends(where matches: (ConversationID) -> Bool) {
+        for (key, pending) in pendingSends where matches(pending.conversation) {
+            pendingSends[key] = nil
+            pending.task.cancel()
+            pending.waiter.resume(returning: .failure(CancellationError()))
         }
     }
 
@@ -439,6 +484,7 @@ public actor DownNegotiator: DownService {
     func end(_ id: ConversationID, _ outcome: DownOutcome) {
         guard let conversation = conversations.removeValue(forKey: id) else { return }
         timers.removeValue(forKey: id)?.cancel()
+        cancelSends { $0 == id }
         if activeByPeer[conversation.peer] == id { activeByPeer[conversation.peer] = nil }
         switch outcome {
         case .matched, .noOverlap, .rejected, .policy, .failed:
