@@ -1,0 +1,11 @@
+# Lane G integration requests
+
+Owner: Orchestrator. Consumers: F and H. Updated for Core v1.1 at `c4debe0`.
+
+1. **Resolved: answer issue.** `Answer.issue` now identifies the disclosed issue in the envelope. Policy and audit use it directly. G removed `registerReceivedQuery` and all query lookup state. F does not register queries with policy.
+2. **Resolved: PSI provenance.** `OutboundMessage.context.psi` now carries the actual local provider descriptor and typed inputs via `Outbox.send(..., context:)`. G removed `registerPSIStep` and all session registration/cleanup APIs. Every PSI send must provide context; missing context denies the send. Non-private providers require consent showing all inputs, with never rules taking precedence. Context remains local only.
+3. **Resolved: audit hook.** Core now exposes `OutboxObserver`. `AuditLog` conforms to it, and `InMemoryAuditLog` is installed directly as `Outbox(observer:)`. G removed `AuditedOutbox`. F and H can retain concrete Core Outbox while auditing all successful sends. Denied, declined, cancelled-before-transport, and failed sends are not recorded as successes.
+4. **Open, nonblocking: exact protocol metadata in Disclosure.** Core v1.1 Disclosure still cannot carry the exact outgoing agent card, control metadata, PSI provider descriptor, or consent reason. Its items accurately represent issue values and category markers; G's consent model labels the markers honestly. A future additive local metadata field could let H show exact protocol details and provider identity without guessing from IssueValue. This does not require changing wire messages.
+5. **Resolved: consent lifecycle.** Core now re-evaluates policy after approval and checks cancellation before transport. G removed its wrapper cancellation check and the app workaround guidance. Integration tests verify that a rule change to never during consent or cancellation of the pending send prevents both sending and success auditing.
+
+Core v1.1 also adds `IssueKey.downLevel`: G treats it as an interest disclosure, preserves owner rules, and presents the `down` or `maybe` keyword as what the owner said. `LimitViolation.Reason.currencyMismatch` needs no G migration because G does not switch over hard-limit reasons; negotiation remains responsible for those checks.
