@@ -5,36 +5,6 @@ import FoundationModels
 // free text wherever it can, so output is short and checkable.
 
 @Generable
-enum MoveKind {
-    case accept, counter, reject
-}
-
-@Generable
-struct MoveOutput {
-    // Generated first on purpose: the model writes properties in order, and
-    // naming the conflicts before choosing a move stops it from committing
-    // to "accept" first (Phase 0 bench, docs/research/model-budget.md).
-    @Guide(description: "Proposal items marked BREAKS LIMIT", .maximumCount(4))
-    var brokenItems: [String]
-    var move: MoveKind
-    @Guide(description: "Counter only: time option number")
-    var timeOption: Int?
-    @Guide(description: "Counter only: activity option number")
-    var activityOption: Int?
-    @Guide(description: "Counter only: budget in whole dollars")
-    var budgetDollars: Int?
-
-    var raw: RawMove {
-        let kind: RawMove.Kind = switch move {
-        case .accept: .accept
-        case .counter: .counter
-        case .reject: .reject
-        }
-        return RawMove(kind: kind, timeOption: timeOption, activityOption: activityOption, budgetDollars: budgetDollars)
-    }
-}
-
-@Generable
 enum DayName {
     case none, today, tonight, tomorrow, monday, tuesday, wednesday, thursday, friday, saturday, sunday
 }

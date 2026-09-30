@@ -69,8 +69,9 @@ public struct FoundationModelsAgent: AgentModel {
 
     public func decide(_ context: NegotiationContext) async throws -> ModelResult<NegotiationMove> {
         let prompt = PromptRenderer.decide(context, timeZone: timeZone)
-        let (output, usage, latency) = try await generate(MoveOutput.self, instructions: PromptRenderer.decideInstructions, prompt: prompt.text)
-        return ModelResult(value: try OutputMapping.move(output.raw, prompt: prompt, proposal: context.proposal), usage: usage, latency: latency)
+        let schema = try DecisionSchema(prompt: prompt, proposal: context.proposal)
+        let (content, usage, latency) = try await generate(schema.schema, instructions: PromptRenderer.decideInstructions, prompt: prompt.text)
+        return ModelResult(value: try OutputMapping.move(try schema.move(from: content), prompt: prompt, proposal: context.proposal), usage: usage, latency: latency)
     }
 
     // MARK: - Generation

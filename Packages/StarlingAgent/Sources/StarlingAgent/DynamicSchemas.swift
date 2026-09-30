@@ -87,3 +87,86 @@ extension OutputMapping {
         }
     }
 }
+
+/// The move schema for one decision, with a property only for each issue
+/// the proposal is about. The Phase 0 bench saw a time-only negotiation
+/// answer with "activity option 2" because the static schema always had an
+/// activity field; here that field does not exist unless activity is in play.
+package struct DecisionSchema {
+    package static let moves = ["accept", "counter", "reject"]
+
+    package let schema: GenerationSchema
+    /// Property names in generation order, for tests and debugging.
+    package let properties: [String]
+
+    package init(prompt: DecisionPrompt, proposal: Proposal) throws {
+        var properties: [DynamicGenerationSchema.Property] = []
+        var names: [String] = []
+        func add(_ name: String, _ property: DynamicGenerationSchema.Property) {
+            names.append(name)
+            properties.append(property)
+        }
+        let issues = proposal.terms.values.keys.sorted().map(\.rawValue)
+        if !issues.isEmpty {
+            // Generated first on purpose: naming the conflicts before choosing
+            // a move stops the model committing to "accept" first (Phase 0
+            // bench, docs/research/model-budget.md).
+            add("brokenItems", DynamicGenerationSchema.Property(
+                name: "brokenItems",
+                description: "Proposal items marked BREAKS LIMIT",
+                schema: DynamicGenerationSchema(
+                    arrayOf: DynamicGenerationSchema(name: "Issue", anyOf: issues),
+                    minimumElements: 0,
+                    maximumElements: issues.count
+                )
+            ))
+        }
+        add("move", DynamicGenerationSchema.Property(
+            name: "move",
+            schema: DynamicGenerationSchema(name: "Move", anyOf: Self.moves)
+        ))
+        if proposal.terms[.time] != nil, !prompt.timeOptions.isEmpty {
+            add("timeOption", Self.option("timeOption", "Counter only: time option number", count: prompt.timeOptions.count))
+        }
+        if proposal.terms[.activity] != nil, !prompt.activityOptions.isEmpty {
+            add("activityOption", Self.option("activityOption", "Counter only: activity option number", count: prompt.activityOptions.count))
+        }
+        if case .amount = proposal.terms[.budget] {
+            add("budgetDollars", DynamicGenerationSchema.Property(
+                name: "budgetDollars",
+                description: "Counter only: budget in whole dollars",
+                schema: DynamicGenerationSchema(type: Int.self, guides: [.range(0...Self.maxDollars)]),
+                isOptional: true
+            ))
+        }
+        self.properties = names
+        schema = try GenerationSchema(root: DynamicGenerationSchema(name: "Decision", properties: properties), dependencies: [])
+    }
+
+    /// Reads the model's move. Anything the schema did not offer stays nil,
+    /// and OutputMapping.move validates the rest.
+    package func move(from content: GeneratedContent) throws -> RawMove {
+        let kind: RawMove.Kind = switch try content.value(String.self, forProperty: "move") {
+        case "accept": .accept
+        case "counter": .counter
+        case "reject": .reject
+        case let other: throw AgentModelError.invalidOutput("move \(other) not offered")
+        }
+        func number(_ name: String) throws -> Int? {
+            properties.contains(name) ? try content.value(Int?.self, forProperty: name) : nil
+        }
+        return RawMove(kind: kind, timeOption: try number("timeOption"), activityOption: try number("activityOption"), budgetDollars: try number("budgetDollars"))
+    }
+
+    /// Whole dollars the model may name; matches the Core money limit.
+    static let maxDollars = Int(ProtocolLimits.maxMoneyMinorUnits / 100)
+
+    private static func option(_ name: String, _ description: String, count: Int) -> DynamicGenerationSchema.Property {
+        DynamicGenerationSchema.Property(
+            name: name,
+            description: description,
+            schema: DynamicGenerationSchema(type: Int.self, guides: [.range(1...count)]),
+            isOptional: true
+        )
+    }
+}
