@@ -151,9 +151,25 @@ enum Oracles {
         #expect(result.aggregateValue(.mean(of: MatchEvaluation.wantsFound)) == 1)
     }
 
+    /// Evaluation.run() logs a sample whose model call threw and leaves it
+    /// out of the means, so a mean can pass on the samples that survived.
+    /// Every suite here must also check `errors` (Codex re-review of PR #19);
+    /// this confirms a failed call shows up there.
+    @available(iOS 27.0, macOS 27.0, *)
+    @Test func failedInferenceIsReportedNotSkipped() async throws {
+        let failing = ScriptedAgentModel(onInterpret: { utterance, context in
+            if utterance.text == InterpretationSet.labels[0].text { throw AgentModelError.interrupted }
+            return try await Oracles.interpret.onInterpret(utterance, context)
+        })
+        let result = try await InterpretationEvaluation(model: failing, labels: InterpretationSet.labels).run()
+        #expect(result.errors.inferenceFailureCount == 1)
+        #expect(result.errors.hasFailures)
+    }
+
     /// Real model. Prints the per-field summary; thresholds sit a little
     /// under the macOS 26.7 numbers in Reports/phase-1-quality.md, so a
-    /// regression fails but run-to-run noise does not.
+    /// regression fails but run-to-run noise does not. A failed model call
+    /// fails the test, rather than dropping out of the means.
     @available(iOS 27.0, macOS 27.0, *)
     @Test(.enabled(if: live), .timeLimit(.minutes(10)))
     func interpretationWithTheRealModel() async throws {
@@ -161,6 +177,8 @@ enum Oracles {
         let tuning = try await InterpretationEvaluation(model: agent, labels: InterpretationSet.labels).run(info: ["set": "tuning"])
         let heldOut = try await InterpretationEvaluation(model: agent, labels: InterpretationSet.heldOut).run(info: ["set": "held-out"])
         print("Interpretation (tuning):\n\(tuning.groupedSummary)\nInterpretation (held-out):\n\(heldOut.groupedSummary)")
+        #expect(!tuning.errors.hasFailures, "tuning: \(tuning.errors)")
+        #expect(!heldOut.errors.hasFailures, "held-out: \(heldOut.errors)")
         #expect(tuning.aggregateValue(.mean(of: InterpretationEvaluation.metric(.neverShare))) >= 0.85)
         #expect(tuning.aggregateValue(.mean(of: InterpretationEvaluation.metric(.budget))) >= 0.85)
     }
@@ -170,6 +188,7 @@ enum Oracles {
     func matchingWithTheRealModel() async throws {
         let result = try await MatchEvaluation(model: FoundationModelsAgent()).run()
         print("Matching:\n\(result.groupedSummary)")
+        #expect(!result.errors.hasFailures, "\(result.errors)")
         #expect(result.aggregateValue(.mean(of: MatchEvaluation.noFalseMatch)) >= 0.7)
     }
 }
