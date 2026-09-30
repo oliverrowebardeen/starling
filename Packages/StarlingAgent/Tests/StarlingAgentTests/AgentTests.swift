@@ -92,6 +92,35 @@ enum AgentFixtures {
         #expect(throws: AgentModelError.self) { _ = try OutputMapping.move(raw, prompt: prompt, proposal: context.proposal) }
     }
 
+    /// Model output is untrusted: extreme integers must become errors, not
+    /// arithmetic traps that crash the app.
+    @Test(arguments: [
+        RawMove(kind: .counter, budgetDollars: Int.max),
+        RawMove(kind: .counter, budgetDollars: Int.min),
+        RawMove(kind: .counter, timeOption: Int.min),
+        RawMove(kind: .counter, activityOption: Int.min),
+        RawMove(kind: .counter, timeOption: Int.max),
+    ])
+    func extremeIntegersInMovesThrow(raw: RawMove) throws {
+        let context = try AgentFixtures.context()
+        let prompt = PromptRenderer.decide(context, timeZone: AgentFixtures.utc)
+        #expect(throws: AgentModelError.self) { _ = try OutputMapping.move(raw, prompt: prompt, proposal: context.proposal) }
+    }
+
+    @Test func extremeIntegersInRulesAreIgnored() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        let rules = try OutputMapping.rules(RawRules(day: .relative(Int.min), earliestHour: Int.min, latestHour: Int.max, maxDollars: Int.max), context: context)
+        #expect(rules.constraints[.budget].isEmpty)
+        #expect(rules.constraints[.time] == [try Constraint(.dailyWindow(from: 0, to: 1440))])
+    }
+
+    @Test func extremeIntegersInMatchesThrow() throws {
+        let wanted = [try Keyword("food")]
+        let offered = [try Keyword("boba")]
+        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: Int.min, offer: 1, same: true)], wanted: wanted, offered: offered) }
+        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: 1, offer: Int.min, same: true)], wanted: wanted, offered: offered) }
+    }
+
     @Test func mapsRulesWithNamedWeekdays() throws {
         let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
         let raw = RawRules(day: .weekday(7), earliestHour: 13, latestHour: 17, wants: ["Boba", "bad:word"], avoids: ["sushi"], maxDollars: 20, neverShare: [.location])

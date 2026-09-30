@@ -68,21 +68,15 @@ package enum OutputMapping {
             var values = proposal.terms.values
             var changed = false
             if let option = raw.timeOption {
-                guard prompt.timeOptions.indices.contains(option - 1) else {
-                    throw AgentModelError.invalidOutput("time option \(option) not offered")
-                }
-                values[.time] = .slots([prompt.timeOptions[option - 1]])
+                values[.time] = .slots([try pick(option, from: prompt.timeOptions, what: "time")])
                 changed = true
             }
             if let option = raw.activityOption {
-                guard prompt.activityOptions.indices.contains(option - 1) else {
-                    throw AgentModelError.invalidOutput("activity option \(option) not offered")
-                }
-                values[.activity] = .keywords([prompt.activityOptions[option - 1]])
+                values[.activity] = .keywords([try pick(option, from: prompt.activityOptions, what: "activity")])
                 changed = true
             }
             if let dollars = raw.budgetDollars {
-                guard let amount = try? MoneyAmount(minorUnits: Int64(dollars) * 100) else {
+                guard let amount = money(dollars: dollars) else {
                     throw AgentModelError.invalidOutput("budget \(dollars) out of range")
                 }
                 values[.budget] = .amount(amount)
@@ -127,7 +121,7 @@ package enum OutputMapping {
             constraints[.activity] = [try Constraint(.prefers(liked: liked, avoided: avoided), strength: .soft)]
         }
 
-        if let dollars = raw.maxDollars, dollars >= 0, let amount = try? MoneyAmount(minorUnits: Int64(dollars) * 100) {
+        if let dollars = raw.maxDollars, let amount = money(dollars: dollars) {
             constraints[.budget] = [try Constraint(.atMost(amount))]
         }
 
@@ -153,12 +147,26 @@ package enum OutputMapping {
     package static func matches(_ raw: [RawMatch], wanted: [Keyword], offered: [Keyword]) throws -> [KeywordMatch] {
         var seen = Set<[Int]>()
         return try raw.compactMap { match in
-            guard wanted.indices.contains(match.want - 1), offered.indices.contains(match.offer - 1) else {
-                throw AgentModelError.invalidOutput("match \(match.want)->\(match.offer) out of range")
-            }
+            let want = try pick(match.want, from: wanted, what: "want")
+            let offer = try pick(match.offer, from: offered, what: "offer")
             guard seen.insert([match.want, match.offer]).inserted else { return nil }
-            return KeywordMatch(wanted: wanted[match.want - 1], offered: offered[match.offer - 1], strength: match.same ? .equivalent : .satisfies)
+            return KeywordMatch(wanted: want, offered: offer, strength: match.same ? .equivalent : .satisfies)
         }
+    }
+
+    /// A 1-based option number from the model, range-checked before any
+    /// arithmetic so `Int.min` cannot overflow.
+    static func pick<T>(_ number: Int, from options: [T], what: String) throws -> T {
+        guard number >= 1, number <= options.count else {
+            throw AgentModelError.invalidOutput("\(what) option \(number) not offered")
+        }
+        return options[number - 1]
+    }
+
+    /// Whole dollars from the model, range-checked before multiplying.
+    static func money(dollars: Int) -> MoneyAmount? {
+        guard dollars >= 0, Int64(dollars) <= ProtocolLimits.maxMoneyMinorUnits / 100 else { return nil }
+        return try? MoneyAmount(minorUnits: Int64(dollars) * 100)
     }
 
     private static func keywords(_ strings: [String]) -> [Keyword] {
