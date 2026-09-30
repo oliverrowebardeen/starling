@@ -21,7 +21,7 @@ enum AdversarialFixtures {
         case .accept: return .accept(Acceptance(proposal: message, terms: terms))
         case .reject: return .reject(Rejection(proposal: message, reason: .noOverlap))
         case .query: return .query(try Query(issue: .activity, candidates: .keywords([try Keyword("food")])))
-        case .answer: return .answer(try Answer(query: message, status: .answered, acceptable: .keywords([try Keyword("food")])))
+        case .answer: return .answer(try Answer(query: message, issue: .activity, status: .answered, acceptable: .keywords([try Keyword("food")])))
         case .psi: return .psi(try PSIFrame(session: conversation.rawValue, step: 0, payload: Data([0, 1, 255])))
         }
     }

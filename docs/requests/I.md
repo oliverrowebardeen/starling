@@ -1,22 +1,24 @@
 # Lane I requests
 
-## Orchestrator: PSI stub input validation
+## Resolved in Core v1.1: PSI stub input validation
 
-The public `PSIProvider` tests reproduce two failures in Orchestrator-owned
-`Packages/StarlingCore/Sources/StarlingFakes/InsecurePSIStub.swift`:
+Core v1.1, merged in `c4debe0`, fixes both findings in Orchestrator-owned
+`Packages/StarlingCore/Sources/StarlingFakes/InsecurePSIStub.swift`. Issues #6
+and #7 are closed:
 
 1. [Issue #6](https://github.com/oliverrowebardeen/starling-ios/issues/6): the
-   initiator accepts an intersection or cardinality above `maxPeerSetSize`.
-   It also accepts 336 copies of one reply digest with a peer limit of 1.
-   Bound the raw reply list and cardinality by the configured peer limit.
+   initiator now rejects an intersection or cardinality above `maxPeerSetSize`.
+   The raw reply list is bounded before deduplication, including the 336-copy
+   digest attack with a peer limit of 1.
 2. [Issue #7](https://github.com/oliverrowebardeen/starling-ios/issues/7): the
-   responder accepts digest lengths 0, 1, 31, 33, and 64. Require 32-byte
-   SHA-256 digests and throw `PSIError.malformedMessage` for malformed entries.
+   responder now requires 32-byte SHA-256 digests. Lengths 0, 1, 31, 33, and 64
+   throw `PSIError.malformedMessage`.
 
 Reproductions live in `Tools/Simulator/Tests/ScenarioTests/PSIAbuseTests.swift`.
-The failing expectations use non-intermittent `withKnownIssue` markers linked
-to those issues. No shared interface change or production workaround was made.
-Corrected behavior will require removing the corresponding marker.
+The tests now assert the typed errors directly, without `withKnownIssue`
+markers. Cardinality replies above the peer bound, including `Int.max`, now
+expect `PSIError.peerSetTooLarge`. The Answer fixture supplies its `.activity`
+issue for the v1.1 initializer. Markers for #8 and #9 remain unchanged.
 
 ## E1 and Orchestrator: secure simulator wiring
 
@@ -32,7 +34,7 @@ acceptance test exercise the actual secure channel. Lane I cannot edit
 
 ## F and G integration follow-up
 
-The v1-freeze tests exercise Inbox and Outbox with Loopback and policy/consent
+The v1.1 tests exercise Inbox and Outbox with Loopback and policy/consent
 fakes. After F and G merge, the Orchestrator should request the final lane I
 pass against their concrete implementations: one-sided and reordered exchanges,
 no false notifications, hard-limit enforcement, and consent denial. The current

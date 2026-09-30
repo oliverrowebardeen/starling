@@ -91,15 +91,18 @@ import Testing
         await #expect(throws: PSIError.unsupportedOutput(.cardinality)) { try await session.handle(payload) }
     }
 
-    @Test func malformedRepliesHaveTypedErrors() async throws {
+    @Test func malformedAndOversizedRepliesHaveTypedErrors() async throws {
         for output in [PSIOutput.intersection, .cardinality] {
-            let malformed = [Data(), Data("{}".utf8), Data([0xff]),
-                             try JSONEncoder().encode(Reply(hashes: [Data(repeating: 0, count: 32)], count: -1)),
-                             try JSONEncoder().encode(Reply(hashes: [Data()], count: Int.max))]
-            for payload in malformed {
+            let malformed: [(Data, PSIError)] = [
+                (Data(), .malformedMessage), (Data("{}".utf8), .malformedMessage), (Data([0xff]), .malformedMessage),
+                (try JSONEncoder().encode(Reply(hashes: [Data(repeating: 0, count: 32)], count: -1)), .malformedMessage),
+                (try JSONEncoder().encode(Reply(hashes: [Data()], count: Int.max)),
+                 output == .cardinality ? .peerSetTooLarge(Int.max) : .malformedMessage),
+            ]
+            for (payload, expected) in malformed {
                 let session = try provider.makeSession(role: .initiator, localSet: elements(1), configuration: configuration(output))
                 _ = try await session.start()
-                await #expect(throws: PSIError.malformedMessage) { try await session.handle(payload) }
+                await #expect(throws: expected) { try await session.handle(payload) }
             }
         }
     }
@@ -108,11 +111,8 @@ import Testing
     func malformedDigestLengthsAreRejected(length: Int) async throws {
         let session = try provider.makeSession(role: .responder, localSet: elements(1), configuration: configuration())
         let payload = try request(hashes: [Data(repeating: 0, count: length)])
-        let error = try await rejection(session, payload: payload)
-        #expect(error == nil || error == .malformedMessage)
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/7") {
-            #expect(error == .malformedMessage)
-        }
+        // Regression: https://github.com/oliverrowebardeen/starling-ios/issues/7
+        await #expect(throws: PSIError.malformedMessage) { try await session.handle(payload) }
     }
 
     @Test(arguments: [PSIOutput.intersection, .cardinality])
@@ -121,11 +121,8 @@ import Testing
         guard case .send(let first) = try await session.start() else { Issue.record("Expected request"); return }
         let sent = try JSONDecoder().decode(Request.self, from: first)
         let payload = try JSONEncoder().encode(Reply(hashes: output == .intersection ? sent.hashes : nil, count: output == .cardinality ? 2 : nil))
-        let error = try await rejection(session, payload: payload)
-        #expect(error == nil || error == .peerSetTooLarge(2))
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/6") {
-            #expect(error == .peerSetTooLarge(2))
-        }
+        // Regression: https://github.com/oliverrowebardeen/starling-ios/issues/6
+        await #expect(throws: PSIError.peerSetTooLarge(2)) { try await session.handle(payload) }
     }
 
     @Test func repeatedReplyHashesCannotBypassPeerBound() async throws {
@@ -133,15 +130,7 @@ import Testing
         guard case .send(let first) = try await session.start() else { Issue.record("Expected request"); return }
         let sent = try JSONDecoder().decode(Request.self, from: first)
         let payload = try JSONEncoder().encode(Reply(hashes: Array(repeating: sent.hashes[0], count: 336), count: nil))
-        let error = try await rejection(session, payload: payload)
-        #expect(error == nil || error == .peerSetTooLarge(336))
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/6") {
-            #expect(error == .peerSetTooLarge(336))
-        }
-    }
-
-    private func rejection(_ session: any PSISession, payload: Data) async throws -> PSIError? {
-        do { _ = try await session.handle(payload); return nil }
-        catch let error as PSIError { return error }
+        // Regression: https://github.com/oliverrowebardeen/starling-ios/issues/6
+        await #expect(throws: PSIError.peerSetTooLarge(336)) { try await session.handle(payload) }
     }
 }
