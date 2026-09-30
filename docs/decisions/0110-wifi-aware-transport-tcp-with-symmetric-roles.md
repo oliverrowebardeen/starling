@@ -27,7 +27,7 @@
 ## Consequences
 
 - On first contact both phones dial, so one extra connection opens and closes. Later reconnects open one.
-- With one-sided discovery, the first frame waits up to 3 seconds, the same as LocalP2P's fallback.
+- With one-sided discovery, the first frame waits up to 3 seconds on first contact (the grace period). Once roles are known, and the side that should dial cannot see us, it waits up to 6 seconds (the fallback wait, then the grace period).
 - A frame can still be lost if a preferred link arrives more than 3 seconds after a provisional one was activated, and it replaces it. The `Transport` contract allows loss; negotiation already tolerates it.
 - **Threat model input for lane E1:** the `PeerID` in a hello is an unauthenticated claim. An OS-paired device can claim a friend's `PeerID` and displace that friend's link (denial of service). The secure channel rejects its frames, but cannot stop the displacement. Only devices the owner paired in person can try this.
 - Keepalives cost a little battery while links are idle. Revisit after device tests.
