@@ -86,6 +86,22 @@ import Testing
         #expect(Grounding.numbers(in: Grounding.words("$15, 10pm, twenty five, eight, noon")) == [15, 10, 25, 8])
     }
 
+    /// Codex review of PR #19: "two hundred" read as {2, 100}, so a correct
+    /// $200 budget was dropped as ungrounded.
+    @Test(arguments: [
+        ("budget two hundred dollars", 200),
+        ("two hundred fifty max", 250),
+        ("up to two hundred and fifty", 250),
+        ("a hundred bucks", 100),
+        ("one hundred twenty five dollars", 125),
+        ("nine hundred ninety nine", 999),
+        ("twelve hundred", 1_200),
+    ])
+    func composesHundreds(_ text: String, _ amount: Int) {
+        #expect(Grounding.numbers(in: Grounding.words(text)) == [amount])
+        #expect(Grounding.check(RawRules(maxDollars: amount), against: text).maxDollars == amount)
+    }
+
     struct HourCase: Sendable, CustomTestStringConvertible {
         let from: Int?, to: Int?, part: RawRules.PartOfDay?, text: String, expectedFrom: Int?, expectedTo: Int?
         init(_ from: Int?, _ to: Int?, _ part: RawRules.PartOfDay?, _ text: String, _ expectedFrom: Int?, _ expectedTo: Int?) {

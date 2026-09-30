@@ -183,7 +183,8 @@ package enum Grounding {
     }
 
     /// Every whole number the message states, as digits ("$15") or words
-    /// ("twenty", "twenty five").
+    /// ("twenty five", "two hundred and fifty"). A number spelled in words
+    /// counts once, as the whole amount: "two hundred" is 200, not 2 and 100.
     static func numbers(in words: [String]) -> Set<Int> {
         var found = Set<Int>()
         var index = 0
@@ -191,23 +192,58 @@ package enum Grounding {
             let word = words[index]
             if let value = Int(word) {
                 found.insert(value)
+                index += 1
             } else if meridiem(word) != nil, let value = Int(word.dropLast(2)) {
                 found.insert(value)
-            } else if let tens = tensWords[word] {
-                if index + 1 < words.count, let ones = unitWords[words[index + 1]], (1...9).contains(ones) {
-                    found.insert(tens + ones)
-                    index += 1
-                } else {
-                    found.insert(tens)
-                }
-            } else if let value = unitWords[word] {
+                index += 1
+            } else if let (value, next) = spelledNumber(in: words, from: index) {
                 found.insert(value)
-            } else if word == "hundred" {
-                found.insert(100)
+                index = next
+            } else {
+                index += 1
             }
-            index += 1
         }
         return found
+    }
+
+    /// Reads a number spelled in words starting at `start`, up to 9,999:
+    /// an optional part below 100, an optional "hundred" (after "a", "one",
+    /// or a number below 100), then an optional "and" and a part below 100.
+    /// Returns the value and the index after it, or nil if no number starts
+    /// there.
+    static func spelledNumber(in words: [String], from start: Int) -> (Int, Int)? {
+        func belowHundred(at index: Int) -> (Int, Int)? {
+            guard index < words.count else { return nil }
+            if let tens = tensWords[words[index]] {
+                if index + 1 < words.count, let ones = unitWords[words[index + 1]], (1...9).contains(ones) {
+                    return (tens + ones, index + 2)
+                }
+                return (tens, index + 1)
+            }
+            return unitWords[words[index]].map { ($0, index + 1) }
+        }
+        var index = start
+        var value = 0
+        var matched = false
+        if let (lead, next) = belowHundred(at: index) {
+            value = lead
+            index = next
+            matched = true
+        }
+        let leadsHundred = !matched && words[index] == "a" && index + 1 < words.count && words[index + 1] == "hundred"
+        if leadsHundred { index += 1 }
+        if index < words.count, words[index] == "hundred", !matched || value >= 1 {
+            value = (matched ? value : 1) * 100
+            index += 1
+            matched = true
+            var rest = index
+            if rest < words.count, words[rest] == "and" { rest += 1 }
+            if let (tail, next) = belowHundred(at: rest) {
+                value += tail
+                index = next
+            }
+        }
+        return matched ? (value, index) : nil
     }
 
     private static let unitWords: [String: Int] = [
