@@ -28,7 +28,9 @@ final class NearbySession {
     private var transport: LocalP2PTransport?
     private var outbox: Outbox?
     private var inboxTask: Task<Void, Never>?
-    private var pending: [MessageID: ContinuousClock.Instant] = [:]
+    /// Start times by conversation, which exists before sending, so an
+    /// accept that arrives while `send` is still suspended is still timed.
+    private var pending: [ConversationID: ContinuousClock.Instant] = [:]
     private let clock = ContinuousClock()
 
     func start() async {
@@ -63,11 +65,13 @@ final class NearbySession {
 
     func sendProposal(to peer: PeerID) async {
         guard let outbox else { return }
+        let conversation = ConversationID()
+        pending[conversation] = clock.now
         do {
-            let envelope = try await outbox.send(.propose(Self.sampleProposal()), to: peer, conversation: ConversationID())
-            pending[envelope.id] = clock.now
+            let envelope = try await outbox.send(.propose(Self.sampleProposal()), to: peer, conversation: conversation)
             append("-> propose to \(peer.short) (#\(envelope.sequence), \(try EnvelopeCodec().encode(envelope).count) bytes)")
         } catch {
+            pending[conversation] = nil
             append("Send to \(peer.short) failed: \(error)")
         }
     }
@@ -95,8 +99,8 @@ final class NearbySession {
             Task { [outbox] in
                 _ = try? await outbox?.send(reply, to: envelope.sender, conversation: envelope.conversation)
             }
-        case .accept(let acceptance):
-            if let sentAt = pending.removeValue(forKey: acceptance.proposal) {
+        case .accept:
+            if let sentAt = pending.removeValue(forKey: envelope.conversation) {
                 let rtt = sentAt.duration(to: clock.now)
                 append("<- accept from \(envelope.sender.short), round trip \(rtt.formatted(.units(allowed: [.milliseconds])))")
             } else {
