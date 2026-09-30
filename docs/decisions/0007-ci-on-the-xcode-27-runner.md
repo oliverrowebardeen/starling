@@ -1,0 +1,33 @@
+# ADR 0007: CI on the GitHub `xcode-27` runner
+
+- Status: Accepted
+- Date: 2026-09-29
+- Owner: Orchestrator
+
+## Context
+
+The brief asks for GitHub Actions on macOS, provided runner images carry the needed Xcode. As of 2026-09-29:
+
+- `macos-26` (arm64, GA) carries Xcode 26.0.1 through 26.6 and iOS simulators up to 26.5. No iOS 27 SDK.
+- `xcode-27` (arm64, **public preview**) runs macOS 27.0 with Xcode 27.0 (default), 27.1, and a 27.2 beta, plus iOS 27.0 to 27.2 SDKs and simulators.
+- Neither image ships XcodeGen.
+- The repository is private (ADR 0008). Private repositories spend Actions minutes, and macOS minutes are billed at a multiple of Linux minutes.
+
+## Decision
+
+1. CI runs on `runs-on: xcode-27` and pins Xcode 27.0 with `xcode-select`.
+2. Jobs: (a) `Tools/test-all.sh` with warnings as errors; (b) install XcodeGen, generate the project, and `xcodebuild build` the app for the iOS 27 Simulator without signing.
+3. Triggers: pull requests and pushes to `main` only, with concurrency cancellation, to limit minutes.
+4. The local command, when CI is unavailable, is `Tools/test-all.sh` (works on macOS 26 with Xcode 26.1.1 or newer).
+
+## Consequences
+
+- A preview image can change or break; if it does, fall back to `macos-26` for package tests only and document it here.
+- Device-only behavior (LocalP2P radios, Wi-Fi Aware, on-device model numbers) is never covered by CI. Each lane's device checklist covers it.
+- If minutes run short on the private repo, CI can move to push-to-`main` only, or the repo can go public when the owner is ready.
+
+## Sources
+
+- Runner images and labels: https://github.com/actions/runner-images
+- `xcode-27` image contents: https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md
+- Xcode 27 preview announcement: https://github.com/actions/runner-images/issues/14404
