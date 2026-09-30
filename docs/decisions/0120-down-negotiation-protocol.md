@@ -18,13 +18,13 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 ### Roles
 
 1. Any phone with an active intent starts a PSI run with each reachable paired friend: when the intent is set, and when a friend's link comes up. A friend whose `hello` card lacks `Capability.down` is skipped.
-2. If both start at once, the run started by the lower `PeerID` goes ahead and the other side abandons its own. Retries resolve the case where the winning request was lost.
+2. If both start at once, the run started by the lower `PeerID` goes ahead and the other side abandons its own. The tie-break comes before the run cap in item 4, so it works on the last allowed run too. Retries resolve the case where the winning request was lost.
 3. A phone with **no** intent does not answer. It never shows a consent sheet, never runs the model, and its owner learns nothing. To the starter, this looks the same as an unreachable phone.
 4. Per intent, at most `maxRunsPerPeer` (default 3) runs with one friend in either role. A run that ended with no overlap, a rejection, a match, or a policy refusal is not retried with that friend during the same intent. Only a timeout allows another run, for example after a link heals.
 
 ### Step 1: mutual interest (PSI)
 
-5. Tokens are UTF-8 `starling/down/v1/slot/<startMinute>`, one per UTC-aligned 30-minute slot that breaks none of the owner's time limits, lies between now and the intent's expiry, and is among the first 24 such slots.
+5. Tokens are UTF-8 `starling/down/v1/slot/<startMinute>`, one per UTC-aligned 30-minute slot that breaks none of the owner's time limits, lies between now and the intent's expiry, and is among the first 24 such slots. "Now" is when each run starts, not when the intent was set, so a run after a delay offers only slots still ahead. A run with no slots left does not start.
 6. Every set is padded with random `starling/down/v1/pad/<hex>` tokens to exactly 24 elements, and `maxPeerSetSize` is 24. A peer therefore cannot tell how much free time the owner has from the set size, and one run probes at most 12 hours of slots.
 7. The level is not an input to the token set, so `down` and `maybe` produce identical tokens.
 8. Every PSI step passes `OutboundContext.psi` to the Outbox: the provider's descriptor and the free slots the set was built from (`[.time: .slots(...)]`; padding is not an input). The policy uses it to judge what the step discloses and refuses a PSI step without it (Core v1.1).
@@ -33,13 +33,13 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 ### Step 2: details, only after overlap
 
 10. The initiator sends `query(activity, keywords: its liked activities)` if it has any, and `query(budget, amount: its cap)` if it has one.
-11. The responder answers the activity query with the acceptable subset of the candidates: one `AgentModel.match` call if the owner has liked activities, none otherwise (ADR 0121). The budget answer is the lower of the two caps, or `declined` if the currencies differ. Answers are cached, so a retried query gets the same answer without a second model call.
+11. The responder answers the activity query with the acceptable subset of the candidates: one `AgentModel.match` call if the owner has liked activities, none otherwise (ADR 0121). The budget answer is the lower of the two caps, or `declined` if the currencies differ. Answers are cached, so a retried query gets the same answer without a second model call. Each of the two issues is answered once per conversation; any other query gets no answer. The details phase, from the end of PSI to the offer, has one fixed deadline (twice a step's budget) that answering does not reset.
 12. An empty activity answer means no shared activity, and the conversation ends without an offer.
 
 ### Step 3: agree
 
 13. The initiator proposes round 0: the first contiguous block of shared slots, capped at 2 hours; the first liked activity the peer accepted; the answered budget.
-14. The receiver of any offer checks it in code. A compliant offer is accepted, or countered with an alternative when a soft preference is unmet (ADR 0121). A non-compliant offer gets a counter repaired in code: budget down to the cap, avoided activities dropped, the time shortened from its end. If nothing can be repaired, or `maxRounds` (default 4) is reached, it gets a `reject`.
+14. The receiver of any offer checks it in code, including against the clock: an offer whose start minute has passed is rejected as expired, and neither side sends or honors an accept of such a plan. A compliant offer is accepted, or countered with an alternative when a soft preference is unmet (ADR 0121). A non-compliant offer gets a counter repaired in code: budget down to the cap, avoided activities dropped, the time shortened from its end. If nothing can be repaired, or `maxRounds` (default 4) is reached, it gets a `reject`.
 
 ### Step 4: match before notify
 
@@ -51,8 +51,9 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 ### Retries and silence
 
 19. Every step that expects a reply is resent every `retryInterval` (default 5 s) up to `maxAttempts` (default 6) times, and every wait is bounded the same way. A timeout ends the conversation without an event.
-20. A retry arrives in a new envelope, so duplicates are recognized by content (PSI step and payload, query, offer round and terms, accept terms) and answered from a reply cache. Finished conversations keep their cache (the last 64) so a late retry still gets its answer.
+20. A retry arrives in a new envelope, so duplicates are recognized by content (PSI step and payload, query, offer round and terms, accept terms) and answered from a reply cache. After a conversation ends, its cache is replayed only if it ended **matched** under the intent that is still current, which is the lost-confirmation case. After any other ending (withdrawn, expired, refused, rejected, timed out, failed) a late retry gets nothing, so a withdrawal cannot be undone by a replayed accept and a declined consent sheet is not raised again.
 21. Rejections, timeouts, withdrawn or expired intents, policy refusals, and malformed or oversized input all end without an event on either phone. Clearing an intent sends nothing to friends.
+22. Ending a conversation, or the whole intent, cancels its sends still inside the Outbox (for example waiting on the owner's consent). The Outbox checks cancellation after consent and before the transport, so nothing from a withdrawn intent leaves, whenever the owner answers the sheet.
 
 ## Consequences
 
