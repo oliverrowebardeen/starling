@@ -364,10 +364,8 @@ public actor DownNegotiator: DownService {
         case .query(let query):
             return clean(query.issue, query.candidates)
         case .answer(let answer):
-            // An answer does not say which query it is for; check every issue
-            // it could be.
             guard let value = answer.acceptable else { return true }
-            return DownProfile.planIssues.allSatisfy { clean($0, value) }
+            return clean(answer.issue, value)
         case .psi, .reject, .hello:
             return true
         }

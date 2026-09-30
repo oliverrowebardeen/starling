@@ -221,12 +221,7 @@ final class DownWorld: Sendable {
                 case .propose(let proposal), .counter(let proposal): terms = proposal.terms
                 case .accept(let acceptance): terms = DownProfile.split(acceptance.terms)?.plan
                 case .query(let query): terms = try? Terms([query.issue: query.candidates])
-                case .answer(let answer):
-                    switch answer.acceptable {
-                    case .keywords(let keywords)?: terms = try? Terms([.activity: .keywords(keywords)])
-                    case .amount(let amount)?: terms = try? Terms([.budget: .amount(amount)])
-                    default: terms = nil
-                    }
+                case .answer(let answer): terms = answer.acceptable.flatMap { try? Terms([answer.issue: $0]) }
                 default: terms = nil
                 }
                 if let terms {

@@ -92,8 +92,8 @@ enum DownSignature: Hashable, Sendable {
 /// arrives next.
 enum DownReply: Hashable, Sendable {
     case psi(PSIFrame)
-    /// Nil means declined.
-    case answer(IssueValue?)
+    /// A nil value means declined.
+    case answer(issue: IssueKey, value: IssueValue?)
     case accept(Terms)
     case counter(round: UInt16, terms: Terms)
     case reject(Rejection.Reason)
@@ -104,8 +104,8 @@ enum DownReply: Hashable, Sendable {
         switch self {
         case .psi(let frame):
             return .psi(frame)
-        case .answer(let value):
-            return .answer(try Answer(query: inbound.id, status: value == nil ? .declined : .answered, acceptable: value))
+        case .answer(let issue, let value):
+            return .answer(try Answer(query: inbound.id, issue: issue, status: value == nil ? .declined : .answered, acceptable: value))
         case .accept(let terms):
             return .accept(Acceptance(proposal: inbound.id, terms: terms))
         case .counter(let round, let terms):

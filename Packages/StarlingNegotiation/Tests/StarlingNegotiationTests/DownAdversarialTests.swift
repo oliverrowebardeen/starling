@@ -78,6 +78,38 @@ import Testing
         await world.stop()
     }
 
+    @Test func anAnswerNamingTheWrongIssueIsIgnored() async throws {
+        // Ben starts this time: Mallory is paired before Ben's intent.
+        let world = DownWorld(["ben"])
+        let mallory = RawPeer(hub: world.hub)
+        try await world.start()
+        try await mallory.start()
+        let ben = world["ben"]
+        try await ben.store.save(PairedPeer(publicKey: mallory.key, nickname: "mallory", pairedAt: Timestamp(T.now)))
+        try await eventually("ben sees mallory") { await ben.negotiator.isReachable(mallory.id) }
+        try await ben.want(time: [T.slot(19, 22)], liked: ["food"])
+
+        // Mallory answers the PSI run honestly, as a responder with the same evening.
+        let request = try await mallory.next(.psi)
+        guard case .psi(let frame) = request.body else { return }
+        let mine = DownTokenSet(constraints: try T.constraints(time: [T.slot(19, 22)]), now: T.now, expiresAt: T.at(24), timeZone: TimeZone(identifier: "UTC")!)
+        let session = try InsecurePSIStub().makeSession(role: .responder, localSet: mine.elements, configuration: DownTokenSet.psiConfiguration())
+        guard case .finish(let reply?, _) = try await session.handle(frame.payload) else { return }
+        try await mallory.send(.psi(try PSIFrame(session: frame.session, step: 1, payload: reply)), to: ben.id, in: request.conversation)
+
+        // Then answers Ben's activity query under the budget issue.
+        let query = try await mallory.next(.query)
+        try await mallory.send(
+            .answer(try Answer(query: query.id, issue: .budget, status: .answered, acceptable: .keywords([T.keyword("food")]))),
+            to: ben.id, in: query.conversation
+        )
+        try await world.settle()
+        #expect(await !world.wire.sent(by: ben.id).contains { $0.body.kind == .propose })
+        #expect(await ben.negotiator.diagnostics.outcomes[.timedOut] == 1)
+        await mallory.stop()
+        await world.stop()
+    }
+
     @Test func anOversizedPSISetIsRefusedWithoutAReply() async throws {
         let (world, ben, mallory) = try await benAndMallory()
         _ = try await openRun(from: mallory, to: ben, elementCount: DownTokenSet.setSize + 1)
@@ -213,8 +245,8 @@ import Testing
         #expect(!DownNegotiator.passesGate(.accept(Acceptance(proposal: id, terms: good)), profile: profile))
         #expect(!DownNegotiator.passesGate(.accept(Acceptance(proposal: id, terms: profile.accepting(bad))), profile: profile))
         #expect(!DownNegotiator.passesGate(.query(try Query(issue: .activity, candidates: .keywords([T.keyword("sushi")]))), profile: profile))
-        #expect(!DownNegotiator.passesGate(.answer(try Answer(query: id, status: .answered, acceptable: .keywords([T.keyword("sushi")]))), profile: profile))
-        #expect(!DownNegotiator.passesGate(.answer(try Answer(query: id, status: .answered, acceptable: .amount(T.usd(20)))), profile: profile))
-        #expect(DownNegotiator.passesGate(.answer(try Answer(query: id, status: .declined)), profile: profile))
+        #expect(!DownNegotiator.passesGate(.answer(try Answer(query: id, issue: .activity, status: .answered, acceptable: .keywords([T.keyword("sushi")]))), profile: profile))
+        #expect(!DownNegotiator.passesGate(.answer(try Answer(query: id, issue: .budget, status: .answered, acceptable: .amount(T.usd(20)))), profile: profile))
+        #expect(DownNegotiator.passesGate(.answer(try Answer(query: id, issue: .budget, status: .declined)), profile: profile))
     }
 }

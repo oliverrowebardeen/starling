@@ -136,15 +136,16 @@ extension DownNegotiator {
             value = nil
         }
 
-        guard var current = conversations[id], let body = try? DownReply.answer(value).body(answering: envelope) else { return }
-        current.replies[.query(query)] = .answer(value)
+        let reply = DownReply.answer(issue: query.issue, value: value)
+        guard var current = conversations[id], let body = try? reply.body(answering: envelope) else { return }
+        current.replies[.query(query)] = reply
         conversations[id] = current
         await transmit([body], in: id, awaitingReply: false)
     }
 
     private func handleAnswer(_ answer: Answer, in id: ConversationID) async {
         guard var conversation = conversations[id], conversation.phase == .awaitingAnswers,
-              let issue = conversation.queries[answer.query], conversation.pendingQueries.contains(issue)
+              let issue = conversation.queries[answer.query], answer.issue == issue, conversation.pendingQueries.contains(issue)
         else { return }
         switch (issue, answer.acceptable) {
         case (.activity, .keywords(let keywords)?): conversation.activityAnswer = keywords
