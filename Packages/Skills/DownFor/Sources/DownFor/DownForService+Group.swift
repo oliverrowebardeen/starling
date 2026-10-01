@@ -19,7 +19,7 @@ extension DownForService {
               request.mirror.state == .negotiating
         else { return }
         let all = runs.values.filter { $0.request == id }
-        guard !all.contains(where: { $0.phase == .psi || $0.phase == .details }) else { return }
+        guard !all.contains(where: { $0.phase == .psi || $0.phase == .details || $0.phase == .vetting }) else { return }
         let mine = all.filter { $0.role == .hub }
         if mine.contains(where: { $0.phase == .ready }) {
             let quiet = configuration.retryInterval * 2
@@ -35,6 +35,9 @@ extension DownForService {
         }
         let ready = mine.filter { $0.phase == .ready }
         guard !ready.isEmpty else { return checkSettled(id) }
+        // Before anyone is named to anyone, ask each member which of the
+        // others it could share a plan with its own request includes.
+        if startVetting(ready) { return }
         guard let plan = plan(for: ready.map(\.key.peer), in: id) else {
             for run in ready {
                 enqueue(.notify(run.notice, .noOverlap), for: run.key.peer)
@@ -50,6 +53,32 @@ extension DownForService {
         considerProposing(id)
     }
 
+    /// How many times the starter may ask one member about the others.
+    static let maxVettingRounds = 2
+
+    /// Starts the audience check for every ready member that could share a
+    /// plan with another ready member it was not yet asked about: the same
+    /// half-hour and an activity both accept. Returns whether any started.
+    /// Only those friends are in the question, so a member hears of no one
+    /// it could not be grouped with.
+    private func startVetting(_ ready: [Run]) -> Bool {
+        guard ready.count >= 2 else { return false }
+        var started = false
+        for run in ready where run.vetCount < Self.maxVettingRounds {
+            let others = ready.filter { other in
+                other.key.peer != run.key.peer && !Set(other.overlap ?? []).isDisjoint(with: run.overlap ?? [])
+                    && !Set(other.activityAnswer ?? []).isDisjoint(with: run.activityAnswer ?? [])
+            }.map(\.key.peer)
+            let new = Set(others).subtracting(run.vettedAgainst)
+            guard !new.isEmpty else { continue }
+            runs[run.key]?.phase = .vetting
+            runs[run.key]?.vetCount += 1
+            enqueue(.act(run.key, .vet(others.sorted())), for: run.key.peer)
+            started = true
+        }
+        return started
+    }
+
     /// The group plan from these friends' answers, or nil.
     private func plan(for peers: [PeerID], in id: InteractionID) -> (terms: Terms, members: [PeerID])? {
         guard let request = requests[id] else { return nil }
@@ -58,9 +87,12 @@ extension DownForService {
             guard let run = runs[RunKey(conversation: request.conversation, peer: peer)], let overlap = run.overlap else { continue }
             candidates[peer] = CandidateAnswers(overlap: overlap, activities: run.activityAnswer ?? [])
         }
+        let conversation = request.conversation
+        let allowed = Dictionary(uniqueKeysWithValues: peers.map { ($0, runs[RunKey(conversation: conversation, peer: $0)]?.allowed ?? []) })
         guard let plan = GroupPlanner.plan(
             hub: localPeer, liked: request.profile.liked,
-            candidates: candidates, maxMinutes: configuration.maxPlanMinutes, now: clock.now()
+            candidates: candidates, maxMinutes: configuration.maxPlanMinutes, now: clock.now(),
+            together: { allowed[$0]?.contains($1) == true }
         ), plan.members.allSatisfy({ request.profile.permits(plan.terms, me: localPeer, hub: localPeer, member: $0, now: clock.now()) })
         else { return nil }
         return plan

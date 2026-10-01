@@ -97,6 +97,21 @@ import Testing
         #expect(terms[.budget] == nil)
     }
 
+    @Test func friendsWhoDidNotAskEachOtherAreNeverGrouped() throws {
+        // All three share boba at 19:00, but peers[1] and peers[2] did not
+        // include each other: the plan is the starter and one of them.
+        let everyone = answers(halfHours(19, 21), ["boba"])
+        let (terms, members) = try #require(GroupPlanner.plan(
+            hub: hub, liked: [T.keyword("boba")], candidates: [peers[1]: everyone, peers[2]: everyone],
+            maxMinutes: 120, now: T.now, together: { _, _ in false }
+        ))
+        #expect(members == [peers[1]])
+        #expect(terms[.people] == nil)
+        // Asking in one direction only is not enough either.
+        #expect(GroupPlanner.largestGroup(of: [peers[0], peers[1], peers[2]], together: { asker, _ in asker == peers[0] }) == [peers[0]])
+        #expect(GroupPlanner.largestGroup(of: [peers[0], peers[1], peers[2]], together: { $0 != peers[2] && $1 != peers[2] }) == [peers[0], peers[1]])
+    }
+
     @Test func tiesGoToTheStartersFirstChoiceThenTheEarliestTime() throws {
         let (terms, members) = try #require(GroupPlanner.plan(
             hub: hub, liked: ["boba", "tacos"].map(T.keyword),

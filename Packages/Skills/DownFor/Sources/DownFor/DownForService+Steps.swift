@@ -123,6 +123,10 @@ extension DownForService {
     private func dispatch(_ envelope: Envelope, in key: RunKey) async {
         guard let run = runs[key] else { return }
         switch envelope.body {
+        case .psi(let frame) where run.role == .hub && run.phase == .vetting && frame.session == run.vetting?.session:
+            await handleVettingReply(frame, in: key)
+        case .psi(let frame) where run.role == .member && frame.session != run.psiSessionID:
+            await answerVetting(frame, envelope: envelope, in: key)
         case .psi(let frame): await handlePSI(frame, in: key)
         case .query(let query): await handleQuery(query, envelope: envelope, in: key)
         case .answer(let answer): handleAnswer(answer, in: key)
@@ -312,7 +316,13 @@ extension DownForService {
             guard proposal.round >= highest else { return }
             if proposal.round == highest, run.terms != terms { return }
         }
-        guard request.profile.permits(terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now()) else {
+        // A roster may name only friends this owner's own request includes
+        // (review of PR #56, finding 1); a plan that names anyone else is
+        // refused like any other no.
+        let roster = DownForProfile.roster(of: terms, hub: key.peer, member: localPeer) ?? []
+        let allowed = Set(request.record.participants + [localPeer])
+        guard roster.allSatisfy(allowed.contains),
+              request.profile.permits(terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now()) else {
             // Not a plan this owner can be in: no card, and the starter
             // carries on without us. It reads as an ordinary no.
             enqueue(.notify(run.notice, .noOverlap), for: key.peer)
@@ -324,7 +334,6 @@ extension DownForService {
             return
         }
         let revision = (request.mirror.proposalRevision ?? 0) + 1
-        let roster = DownForProfile.roster(of: terms, hub: key.peer, member: localPeer) ?? []
         let card = SkillProposal(revision: revision, participants: roster, terms: terms, plan: DownForProfile.plan(from: terms, origin: key.conversation, hub: key.peer, member: localPeer))
         // Behind a consent sheet the card cannot show yet; the starter's
         // next resend brings it back.
@@ -411,6 +420,18 @@ extension DownForService {
         case .accept:
             guard run.role == .member, run.phase == .accepted, let terms = run.terms, let proposal = run.proposalEnvelopes.last else { return }
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)
+        case .vet(let others):
+            guard run.role == .hub, run.phase == .vetting else { return }
+            let tokens = FriendTokens(others, size: FriendTokens.starterSetSize)
+            guard let session = try? psi.makeSession(role: .initiator, localSet: tokens.elements, configuration: FriendTokens.starterConfiguration()),
+                  case .send(let payload)? = try? await session.start(), runs[key]?.phase == .vetting,
+                  let people = try? IssueValue.peers(others).validated()
+            else { return end(key, .failed) }
+            let id = UUID()
+            runs[key]?.vetting = (id, session, tokens)
+            runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: [.people: people]), interaction: run.request)
+            guard let frame = try? PSIFrame(session: id, step: 0, payload: payload) else { return end(key, .failed) }
+            await transmit([.psi(frame)], in: key, awaitingReply: true)
         case .confirm:
             // The group's terms: for an invitation, with the roster added.
             if run.role == .hub, let terms = request.group?.terms, let proposal = run.acceptedProposal {
@@ -420,5 +441,47 @@ extension DownForService {
             // member who missed it retries, and gets the cached reply.
             confirmationSent(run.request, to: key.peer)
         }
+    }
+
+    // MARK: - Who may share a plan (review of PR #56, finding 1)
+
+    /// The member's answer to the starter's audience check: which of the
+    /// starter's candidates this request includes. Only for the starter
+    /// this request is committed to, and at most twice per run.
+    private func answerVetting(_ frame: PSIFrame, envelope: Envelope, in key: RunKey) async {
+        guard let run = runs[key], frame.step == 0, run.phase == .details || run.phase == .proposed,
+              run.vetCount < Self.maxVettingRounds, let request = requests[run.request], request.engagement == .member(key)
+        else { return }
+        runs[key]?.vetCount += 1
+        let tokens = FriendTokens(request.record.participants, size: FriendTokens.memberSetSize)
+        guard let session = try? psi.makeSession(role: .responder, localSet: tokens.elements, configuration: FriendTokens.memberConfiguration()),
+              case .finish(let payload?, let result)? = try? await session.handle(frame.payload), runs[key] != nil,
+              let reply = try? PSIFrame(session: frame.session, step: 1, payload: payload)
+        else { return }
+        // What the reply discloses: the starter's candidates this request
+        // includes, when the provider tells this side.
+        var inputs: [IssueKey: IssueValue] = [:]
+        if case .intersection(let shared)? = result, let people = try? IssueValue.peers(Array(tokens.friends(in: shared)).sorted()).validated() {
+            inputs[.people] = people
+        }
+        runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: inputs), interaction: run.request)
+        runs[key]?.replies[.psi(step: frame.step, payload: frame.payload)] = .psi(reply)
+        _ = await send(.psi(reply), in: key)
+    }
+
+    private func handleVettingReply(_ frame: PSIFrame, in key: RunKey) async {
+        guard let run = runs[key], let vetting = run.vetting, frame.step == 1 else { return }
+        guard case .finish(_, .intersection(let shared)?)? = try? await vetting.psi.handle(frame.payload),
+              let current = runs[key], current.phase == .vetting, current.vetting?.session == vetting.session
+        else { return end(key, .failed) }
+        let asked = Set(vetting.tokens.friends(in: vetting.tokens.elements))
+        runs[key]?.allowed.formUnion(vetting.tokens.friends(in: shared))
+        runs[key]?.vettedAgainst.formUnion(asked)
+        runs[key]?.vetting = nil
+        runs[key]?.phase = .ready
+        runs[key]?.outstanding = []
+        runs[key]?.timerToken += 1
+        timers.removeValue(forKey: key)?.cancel()
+        considerProposing(run.request)
     }
 }

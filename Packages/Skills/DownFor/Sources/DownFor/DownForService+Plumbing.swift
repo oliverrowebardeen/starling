@@ -125,6 +125,7 @@ extension DownForService {
     /// see the answer only picks among the friend's candidates (ADR 0019).
     static func context(for body: MessageBody, run: Run) -> OutboundContext {
         switch body {
+        case .psi(let frame) where frame.session != run.psiSessionID: run.vetContext ?? OutboundContext(interaction: run.request)
         case .psi: run.psiContext
         case .answer(let answer): OutboundContext(answering: run.receivedQueries[answer.query], interaction: run.request)
         default: OutboundContext(interaction: run.request)

@@ -7,6 +7,74 @@ import Testing
 
 /// Core v2.1 (ADRs 0019 and 0020) and review finding 1, over LoopbackHub.
 @Suite(.timeLimit(.minutes(1))) struct SendModeAndAudienceTests {
+    // MARK: Finding 1: rosters name only friends each member asked
+
+    @Test func friendsWhoDidNotAskEachOtherAreNeverNamedToEachOther() async throws {
+        let world = World(3)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let (a, b, c) = (world["A"], world["B"], world["C"])
+        // A asks both; B and C each ask only A.
+        let mine = try await a.down(for: ["boba"], with: [b, c])
+        let bs = try await b.down(for: ["boba"], with: [a])
+        let cs = try await c.down(for: ["boba"], with: [a])
+        try await a.waitForProposal(mine)
+        try await Task.sleep(for: .milliseconds(200))
+
+        // A's plan is a pair, and nobody's card or envelope names B and C
+        // together.
+        let card = try #require(await a.lifecycle.interaction(mine)?.proposal)
+        #expect(card.participants.count == 2)
+        for envelope in await world.wire.envelopes {
+            if case .propose(let proposal) = envelope.body { #expect(proposal.terms[.people] == nil) }
+        }
+        let cards = [await b.lifecycle.interaction(bs)?.proposal, await c.lifecycle.interaction(cs)?.proposal].compactMap { $0 }
+        #expect(cards.count == 1)
+        #expect(cards.allSatisfy { $0.participants.count == 2 })
+        await world.expectCleanLifecycles()
+    }
+
+    @Test func friendsWhoAskedEachOtherAreGrouped() async throws {
+        // The control: with everyone asking everyone, one group of three.
+        let world = World(3)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let (a, b, c) = (world["A"], world["B"], world["C"])
+        let ids = [
+            try await a.down(for: ["boba"], with: [b, c]),
+            try await b.down(for: ["boba"], with: [a, c]),
+            try await c.down(for: ["boba"], with: [a, b]),
+        ]
+        for (phone, id) in zip([a, b, c], ids) {
+            try await eventually("\(phone.name) sees three") { await phone.lifecycle.interaction(id)?.proposal?.participants.count == 3 }
+        }
+        await world.expectCleanLifecycles()
+    }
+
+    @Test func aRosterNamingSomeoneTheOwnerDidNotAskIsRefused() async throws {
+        let world = World(1)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let b = world["A"]
+        let mallory = try Mallory(hub: world.hub)
+        try await mallory.start()
+        defer { Task { await mallory.stop() } }
+        let mine = try await b.down(for: ["boba"], time: [T.slot(19, 21)], with: [], extraParticipants: [mallory.id])
+        let conversation = try await mallory.findSharedTime(with: b.id)
+        try await mallory.send(.query(try Query(issue: .activity, candidates: .keywords([T.keyword("boba")]))), to: b.id, in: conversation)
+        _ = try await mallory.next(.answer, in: conversation)
+
+        let stranger = PeerID.random()
+        let terms = try Terms([
+            .time: .slots([T.slot(19.5, 20.5)]), .activity: .keywords([T.keyword("boba")]), .people: .peers([mallory.id, b.id, stranger]),
+        ])
+        try await mallory.send(.propose(try Proposal(round: 0, terms: terms)), to: b.id, in: conversation)
+        let no = try await mallory.next(.reject, in: conversation)
+        // An ordinary no (ADR 0019 decision 5), and no card.
+        #expect(no.body == .reject(Rejection(proposal: (no.body.rejection?.proposal)!, reason: .noOverlap)))
+        #expect(await !b.lifecycle.reached(.proposed, mine))
+    }
+
     // MARK: Invite mode
 
     @Test func anInvitationBecomesACardAndAPlan() async throws {
