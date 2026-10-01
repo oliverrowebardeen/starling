@@ -18,10 +18,11 @@ import Testing
         #expect(sent.first?.peer == Fixtures.bob)
         #expect(try EnvelopeCodec().decode(#require(sent.first).frame.bytes) == envelope)
         #expect(envelope.sender == Fixtures.alice)
-        // The policy judged the draft: the same message, before its number
-        // and send time were set.
-        #expect(await policy.evaluated.map(\.envelope.id) == [envelope.id])
-        #expect(await policy.evaluated.map(\.envelope.body) == [envelope.body])
+        // The policy judged the draft, the same message before its number
+        // and send time were set: once to clear it, and once more at the
+        // last moment before it left (ADR 0021).
+        #expect(await policy.evaluated.map(\.envelope.id) == [envelope.id, envelope.id])
+        #expect(await policy.evaluated.map(\.envelope.body) == [envelope.body, envelope.body])
     }
 
     @Test func deniedMessagesNeverReachTheTransport() async throws {

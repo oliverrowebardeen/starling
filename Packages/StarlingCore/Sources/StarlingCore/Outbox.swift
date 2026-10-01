@@ -3,8 +3,9 @@ import Foundation
 public enum OutboxError: Error, Hashable, Sendable {
     case denied(PolicyViolation)
     case consentDeclined
-    /// The policy's answer changed while the owner was deciding (rules
-    /// edited, peer trust removed); nothing was sent (v1.1).
+    /// The policy's answer changed after it cleared the send: while the
+    /// owner was deciding (v1.1), or while the send waited its turn, for
+    /// example after a stricter setting (ADR 0021); nothing was sent.
     case policyChangedDuringConsent
     /// The conversation has used every sequence number; nothing was sent,
     /// because the next number would repeat one the friend has seen.
@@ -192,7 +193,7 @@ public actor Outbox {
         let previous = tails[key]
         let work = Task { () async throws -> Envelope in
             await previous?.value
-            return try await self.numberAndSend(draft, key: key)
+            return try await self.numberAndSend(draft, key: key, message: message, cleared: decision)
         }
         tails[key] = Task { _ = await work.result }
         let workID = UUID()
@@ -216,18 +217,38 @@ public actor Outbox {
     /// not the ledger directly, so nothing already cleared slips out after.
     /// A send already sealed by the transport may still complete.
     public func retire(_ conversation: ConversationID) async throws {
-        try await ledger?.retire(conversation)
+        // Cancel first, so a ledger that fails to record the retirement
+        // still leaves nothing of this conversation in flight.
         for work in inFlight[conversation]?.values ?? [:].values { work.cancel() }
+        try await ledger?.retire(conversation)
+    }
+
+    /// Cancels every send still in flight, in every conversation. The app
+    /// calls it after installing a stricter policy, so nothing cleared under
+    /// the looser one leaves, wherever it waits (ADR 0021). Each skill sees
+    /// its send cancelled and retries under the new policy if it still can.
+    public func cancelInFlight() {
+        for sends in inFlight.values {
+            for work in sends.values { work.cancel() }
+        }
     }
 
     /// Numbers `draft` and hands it to the transport. Runs once this key's
     /// earlier send has finished, so nothing else is numbered meanwhile.
-    private func numberAndSend(_ draft: Envelope, key: SequenceKey) async throws -> Envelope {
+    private func numberAndSend(_ draft: Envelope, key: SequenceKey, message: OutboundMessage, cleared: PolicyDecision) async throws -> Envelope {
         // Last point before anything leaves: a cancelled send never goes out,
-        // including one cancelled while it waited, and nothing goes out in a
-        // conversation retired while this send waited (ADR 0021).
+        // including one cancelled while it waited, nothing goes out in a
+        // conversation retired while this send waited, and the policy is
+        // asked again, so a stricter setting installed while this send
+        // waited stops it (ADR 0021).
         try Task.checkCancellation()
         if let ledger, try await ledger.isRetired(key.conversation) { throw OutboxError.conversationRetired }
+        switch (cleared, await policy.evaluate(message)) {
+        case (_, .allow): break
+        case (.needsConsent(let approved), .needsConsent(let current)) where approved == current: break
+        case (_, .deny(let violation)): throw OutboxError.denied(violation)
+        default: throw OutboxError.policyChangedDuringConsent
+        }
         try Task.checkCancellation()
 
         // Number the envelope now. A denied, declined, or cancelled send
