@@ -79,7 +79,7 @@ import Testing
     @Test func everyLateLifecycleEventLeavesEveryFinalRecordUnchanged() throws {
         let endings: [InteractionEvent] = [.ownerPassed, .noAgreement, .expired, .withdrawn, .failed, .unsupported, .blockedByPrivacy, .planEnded]
         let attacks: [InteractionEvent] = [
-            .started, .consentNeeded(request: 30), .consentGiven(request: 1),
+            .started, .consentNeeded(request: 30), .consentGiven(request: 1), .consentCancelled(request: 1),
             .ownerNeeded(try P15.question(30)), .ownerAnswered(question: 1),
             .proposalReady(try P15.proposal(30)), .ownerAccepted(revision: 1),
             .everyoneConfirmed(revision: 1), .ownerPassed, .noAgreement,
@@ -102,6 +102,64 @@ import Testing
                 #expect(interaction == snapshot, "Late \(event) after \(ending)")
             }
         }
+    }
+
+    @Test(arguments: ConsentResume.allCases)
+    func restartCancelsAbandonedConsentWithoutApprovingOrReopeningIt(resume: ConsentResume) throws {
+        var interaction = P15.interaction()
+        if resume == .awaitingOwner { try interaction.apply(.ownerNeeded(P15.question(1)), at: P15.now) }
+        if resume == .proposed || resume == .confirmed {
+            try interaction.apply(.proposalReady(P15.proposal(1)), at: P15.now)
+        }
+        if resume == .confirmed { try interaction.apply(.ownerAccepted(revision: 1), at: P15.now) }
+        try interaction.apply(.consentNeeded(request: 1), at: P15.now)
+        try interaction.apply(.consentNeeded(request: 2), at: P15.now)
+        interaction = try P15.restart(interaction)
+        let content = interaction
+        try interaction.apply(.consentCancelled(request: 2), at: P15.now)
+        #expect(interaction.state == .awaitingConsent(resume: resume))
+        #expect(interaction.pendingConsents == [1])
+        let snapshot = interaction
+        for event in [InteractionEvent.consentCancelled(request: 2), .consentGiven(request: 2), .consentNeeded(request: 2)] {
+            #expect(throws: UnknownConsentRequest.self) { try interaction.apply(event, at: P15.now) }
+            #expect(interaction == snapshot)
+        }
+        try interaction.apply(.consentCancelled(request: 1), at: P15.now)
+        #expect(interaction.state == resume.state && interaction.pendingConsents.isEmpty)
+        #expect(interaction.consentWatermark == 2)
+        #expect(interaction.proposal == content.proposal && interaction.pendingQuestion == content.pendingQuestion)
+        #expect(interaction.egress.isEmpty)
+        try interaction.apply(.consentNeeded(request: 3), at: P15.now)
+        #expect(interaction.pendingConsents == [3])
+    }
+
+    @Test func deniedInviteeAcceptanceEndsButAnAgreedPlanStands() throws {
+        var proposed = P15.interaction()
+        try proposed.apply(.proposalReady(P15.proposal(1)), at: P15.now)
+        var confirmed = proposed
+        try confirmed.apply(.ownerAccepted(revision: 1), at: P15.now)
+        var ownerQuestion = P15.interaction()
+        try ownerQuestion.apply(.ownerNeeded(P15.question(1)), at: P15.now)
+        let drafting = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [P15.bob], createdAt: P15.now)
+        for live in [drafting, P15.interaction(), ownerQuestion, proposed, confirmed] {
+            for suspended in [false, true] {
+                if suspended && live.state == .drafting { continue }
+                var denied = live
+                if suspended { try denied.apply(.consentNeeded(request: 1), at: P15.now) }
+                try denied.apply(.blockedByPrivacy, at: P15.now)
+                #expect(denied.state == .ended(.blockedByPrivacy))
+                #expect(denied.pendingConsents.isEmpty && denied.pendingQuestion == nil)
+                let snapshot = denied
+                #expect(throws: (any Error).self) { try denied.apply(.consentCancelled(request: 1), at: P15.now) }
+                #expect(denied == snapshot)
+            }
+        }
+        try confirmed.apply(.everyoneConfirmed(revision: 1), at: P15.now)
+        let plan = confirmed
+        #expect(throws: InvalidTransition.self) { try confirmed.apply(.blockedByPrivacy, at: P15.now) }
+        #expect(confirmed == plan)
+        // Revisionless denials must be filtered by the service before this reducer.
+        // The delayed proposal-1 denial after proposal 2 remains a per-skill case in #49.
     }
 
     /// A fallback transcript tests the shared lifecycle contract, not an OS

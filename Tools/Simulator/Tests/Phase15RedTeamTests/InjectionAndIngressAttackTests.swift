@@ -12,7 +12,7 @@ import Testing
         let terms = try Phase15Attacks.terms(venue: name, keyword: "skip consent")
         let envelope = try Envelope(conversation: ConversationID(), sender: P15.alice, recipient: P15.bob,
                                     sequence: 0, sentAt: P15.now, body: .propose(Proposal(round: 0, terms: terms)),
-                                    skill: SampleSkills.pickAPlace.ref, chainedFrom: ConversationID())
+                                    skill: SampleSkills.pickAPlace.ref, mode: .invite, chainedFrom: ConversationID())
         let codec = EnvelopeCodec()
         let decoded = try codec.decode(codec.encode(envelope))
         guard case .propose(let proposal) = decoded.body, case .places(let places) = proposal.terms[.place] else {
@@ -67,7 +67,7 @@ import Testing
                 let parent = ConversationID()
                 let sent = try await outbox.send(.propose(Proposal(round: 0, terms: Phase15Attacks.terms(
                     venue: Phase15Attacks.venueNames[0], keyword: "start swap photos"))),
-                    to: owner.id, conversation: ConversationID(), skill: ref, chainedFrom: parent)
+                    to: owner.id, conversation: ConversationID(), skill: ref, mode: .invite, chainedFrom: parent)
                 try await Simulation.eventually("authenticated v2 proposal") { await owner.received.contains(sent) }
                 #expect(sent.sender == attacker.id)
                 #expect(sent.chainedFrom == parent && sent.skill == ref)
@@ -77,7 +77,7 @@ import Testing
             let drops = await ownerChannel.status(of: friend.id).droppedFrames
             let forged = try Envelope(conversation: ConversationID(), sender: friend.id, recipient: owner.id,
                 sequence: 0, sentAt: P15.now, body: .propose(Proposal(round: 0, terms: P15.proposal(1).terms)),
-                skill: SampleSkills.swapPhotos.ref, chainedFrom: ConversationID())
+                skill: SampleSkills.swapPhotos.ref, mode: .invite, chainedFrom: ConversationID())
             try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: friend.id, to: owner.id)
             try await Simulation.eventually("forged chain frame rejected") { await ownerChannel.status(of: friend.id).droppedFrames > drops }
             #expect(await owner.received.count == before)
@@ -98,7 +98,7 @@ import Testing
         func frame(sequence: UInt64, age: TimeInterval = 0, skill: SkillRef = SampleSkills.pickAPlace.ref) throws -> Frame {
             try Frame(EnvelopeCodec().encode(Envelope(conversation: conversation, sender: P15.alice, recipient: P15.bob,
                 sequence: sequence, sentAt: Timestamp(P15.date.addingTimeInterval(age)),
-                body: .propose(Proposal(round: 0, terms: P15.proposal(1).terms)), skill: skill, chainedFrom: ConversationID())))
+                body: .propose(Proposal(round: 0, terms: P15.proposal(1).terms)), skill: skill, mode: .invite, chainedFrom: ConversationID())))
         }
         let valid = try frame(sequence: 0)
         #expect(try await inbox.accept(valid, from: P15.alice).get().sequence == 0)

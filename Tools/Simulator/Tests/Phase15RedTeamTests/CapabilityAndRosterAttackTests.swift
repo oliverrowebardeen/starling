@@ -28,7 +28,7 @@ import Testing
     @Test func forgedSkillNamesAndLegacyMetadataAreRejectedOnDecode() throws {
         let envelope = try Envelope(conversation: ConversationID(), sender: P15.alice, recipient: P15.bob,
                                     sequence: 0, sentAt: P15.now, body: .propose(Proposal(round: 0, terms: P15.proposal(1).terms)),
-                                    skill: SampleSkills.swapPhotos.ref, chainedFrom: ConversationID())
+                                    skill: SampleSkills.swapPhotos.ref, mode: .invite, chainedFrom: ConversationID())
         let codec = EnvelopeCodec()
         let object = try #require(JSONSerialization.jsonObject(with: codec.encode(envelope)) as? [String: Any])
         for name in ["Swap_Photos", "swap_photos\n", "ѕwap_photos", "request_permission", String(repeating: "a", count: 33)] {
