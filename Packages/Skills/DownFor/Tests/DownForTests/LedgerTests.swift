@@ -103,4 +103,31 @@ import Testing
         // the session, though the ledger could not record it.
         #expect(await a.service.isRetired(try #require(await a.lifecycle.interaction(mine)?.conversation)))
     }
+
+    /// A starter that restarted begins its run again in the same
+    /// conversation with a new PSI session; a member still holding the old
+    /// one answers the new one (found under load: the pair never formed).
+    @Test func aMemberAnswersAStartersRestartedRun() async throws {
+        let world = World(1)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let b = world["A"]
+        let mallory = try Mallory(hub: world.hub)
+        try await mallory.start()
+        defer { Task { await mallory.stop() } }
+        _ = try await b.down(for: ["boba"], with: [], extraParticipants: [mallory.id])
+        let (conversation, _) = try await mallory.openRun(with: b.id)
+
+        // Mallory "restarts": a new session, step 0, same conversation.
+        let tokens = SlotTokenSet(namespace: DownForProfile.namespace, constraints: .empty, now: T.now, expiresAt: T.at(31), timeZone: T.utc)
+        let session = try InsecurePSIStub().makeSession(role: .initiator, localSet: tokens.elements, configuration: SlotTokenSet.psiConfiguration())
+        guard case .send(let payload) = try await session.start() else { return }
+        let fresh = UUID()
+        try await mallory.send(.psi(try PSIFrame(session: fresh, step: 0, payload: payload)), to: b.id, in: conversation)
+        try await eventually("an answer to the new session") {
+            await mallory.inbox.envelopes.contains { envelope in
+                if case .psi(let frame) = envelope.body { frame.session == fresh } else { false }
+            }
+        }
+    }
 }

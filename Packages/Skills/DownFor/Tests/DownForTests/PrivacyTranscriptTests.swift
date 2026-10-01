@@ -50,7 +50,7 @@ import Testing
         let vetting = FriendTokens([PeerID.random()], size: FriendTokens.starterSetSize)
         let session = try InsecurePSIStub().makeSession(role: .initiator, localSet: vetting.elements, configuration: FriendTokens.starterConfiguration())
         if case .send(let payload) = try await session.start() {
-            try await mallory.send(.psi(try PSIFrame(session: UUID(), step: 0, payload: payload)), to: b.id, in: conversation)
+            try await mallory.send(.psi(try PSIFrame(session: UUID(), step: DownForService.vettingStep, payload: payload)), to: b.id, in: conversation)
         }
         let late = try Terms([.time: .slots([T.slot(22, 23)]), .activity: .keywords([T.keyword("boba")])])
         try await mallory.send(.propose(try Proposal(round: 1, terms: late)), to: b.id, in: conversation)

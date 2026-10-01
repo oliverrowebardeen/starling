@@ -147,8 +147,14 @@ extension DownForService {
         switch envelope.body {
         case .psi(let frame) where run.role == .hub && run.phase == .vetting && frame.session == run.vetting?.session:
             await handleVettingReply(frame, in: key)
-        case .psi(let frame) where run.role == .member && frame.session != run.psiSessionID:
+        case .psi(let frame) where run.role == .member && frame.step >= Self.vettingStep:
             await answerVetting(frame, envelope: envelope, in: key)
+        case .psi(let frame) where run.role == .member && frame.step == 0 && frame.session != run.psiSessionID
+            && (run.phase == .psi || run.phase == .details):
+            // The starter began this run again, after a restart: its old
+            // session is gone. Answer the new one, within the run cap.
+            end(key, .yielded, react: false)
+            await respond(to: envelope, frame: frame)
         case .psi(let frame): await handlePSI(frame, in: key)
         case .query(let query): await handleQuery(query, envelope: envelope, in: key)
         case .answer(let answer): handleAnswer(answer, in: key)
@@ -461,7 +467,7 @@ extension DownForService {
             if let people = try? IssueValue.peers(others).validated() { inputs[.people] = people }
             runs[key]?.vetting = (id, session, tokens)
             runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: inputs), interaction: run.request)
-            guard let frame = try? PSIFrame(session: id, step: 0, payload: payload) else { return end(key, .failed) }
+            guard let frame = try? PSIFrame(session: id, step: Self.vettingStep, payload: payload) else { return end(key, .failed) }
             await transmit([.psi(frame)], in: key, awaitingReply: true)
         case .confirm:
             // The group's terms: for an invitation, with the roster added.
@@ -476,18 +482,23 @@ extension DownForService {
 
     // MARK: - Who may share a plan (review of PR #56, finding 1)
 
+    /// The audience check's PSI frames use steps 100 and 101, apart from the
+    /// time PSI's, so a member tells a check from a starter beginning its
+    /// run again.
+    static let vettingStep: UInt8 = 100
+
     /// The member's answer to the starter's audience check: which of the
     /// starter's candidates this request includes. Only for the starter
     /// this request is committed to, and at most twice per run.
     private func answerVetting(_ frame: PSIFrame, envelope: Envelope, in key: RunKey) async {
-        guard let run = runs[key], frame.step == 0, run.phase == .details,
+        guard let run = runs[key], frame.step == Self.vettingStep, run.phase == .details,
               run.vetCount < Self.maxVettingRounds, let request = requests[run.request], request.engagement == .member(key)
         else { return }
         runs[key]?.vetCount += 1
         let tokens = FriendTokens(request.record.participants, size: FriendTokens.memberSetSize)
         guard let session = try? psi.makeSession(role: .responder, localSet: tokens.elements, configuration: FriendTokens.memberConfiguration()),
               case .finish(let payload?, let result)? = try? await session.handle(frame.payload), runs[key] != nil,
-              let reply = try? PSIFrame(session: frame.session, step: 1, payload: payload)
+              let reply = try? PSIFrame(session: frame.session, step: Self.vettingStep + 1, payload: payload)
         else { return }
         // What the reply discloses: the starter's candidates this request
         // includes, when the provider tells this side.
@@ -501,7 +512,7 @@ extension DownForService {
     }
 
     private func handleVettingReply(_ frame: PSIFrame, in key: RunKey) async {
-        guard let run = runs[key], let vetting = run.vetting, frame.step == 1 else { return }
+        guard let run = runs[key], let vetting = run.vetting, frame.step == Self.vettingStep + 1 else { return }
         guard case .finish(_, .intersection(let shared)?)? = try? await vetting.psi.handle(frame.payload),
               let current = runs[key], current.phase == .vetting, current.vetting?.session == vetting.session
         else { return end(key, .failed) }
