@@ -305,4 +305,41 @@ struct AdversarialTests {
         #expect(!world.envelopes.contains { $0.sender == target.id && $0.skill != nil })
         await world.stop()
     }
+
+    /// Issue #68: an answer counts only if it names a query this starter
+    /// sent that friend in this conversation. A friend whose answer names any
+    /// other message (a made-up ID, or a stale one relabelled) is ignored,
+    /// and so is a rejection that names nothing this starter sent.
+    @Test func anAnswerMustNameAQueryTheStarterSent() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        // Mallory's owner has not answered, so only crafted answers arrive.
+        let mallory = world.phone("Mallory", calendar: FakeCalendarStore(status: .denied))
+        try await world.start()
+
+        let started = try await a.findATime(with: [mallory])
+        try await eventually("Ana's query") { world.envelopes.contains { $0.sender == a.id && $0.body.kind == .query } }
+        let sent = world.envelopes.first { $0.sender == a.id && $0.body.kind == .query }!
+        guard case .query(let query) = sent.body, case .slots(let offered) = query.candidates else {
+            Issue.record("expected a time query")
+            return
+        }
+
+        let forged = try Answer(query: MessageID(), issue: .time, status: .answered, acceptable: .slots([offered[0]]))
+        try await mallory.send(.answer(forged), to: a, conversation: sent.conversation, answering: query)
+        try await mallory.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: a, conversation: sent.conversation)
+        try await eventually("both refused") {
+            let ignored = await a.service.diagnostics.ignored
+            return ignored["answer to a query never sent", default: 0] == 1 && ignored["rejection of nothing sent", default: 0] == 1
+        }
+        #expect(await a.coordinator.interaction(started)?.state == .negotiating)
+        #expect(await a.coordinator.interaction(started)?.proposal == nil)
+
+        // The same answer naming the real query counts.
+        let genuine = try Answer(query: sent.id, issue: .time, status: .answered, acceptable: .slots([offered[0]]))
+        try await mallory.send(.answer(genuine), to: a, conversation: sent.conversation, answering: query)
+        let (_, proposal) = try await a.waitForProposal()
+        #expect(proposal.plan?.time == offered[0])
+        await world.stop()
+    }
 }

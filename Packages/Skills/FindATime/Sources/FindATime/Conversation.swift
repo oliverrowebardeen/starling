@@ -45,6 +45,10 @@ struct Initiating: Hashable, Sendable, Codable {
     /// "no plan": a friend never asked learns nothing, not even that a
     /// request existed.
     var contacted: Set<PeerID> = []
+    /// The query envelopes sent to each friend in this collecting step,
+    /// retries included. An answer or a rejection counts only if it names
+    /// one of them (issue #68).
+    var queryIDs: [PeerID: Set<MessageID>] = [:]
     var answerDeadline: Timestamp?
     var draft: Draft?
     /// Envelopes of the current proposal sent to each friend, retries included.

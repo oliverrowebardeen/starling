@@ -196,8 +196,8 @@ public actor FindATimeService: SkillService {
             case .propose(let proposal): receiveProposal(envelope, proposal)
             case .accept(let acceptance):
                 if initiating[envelope.conversation] != nil { receiveAcceptance(envelope, acceptance) } else { receiveConfirmation(envelope, acceptance) }
-            case .reject:
-                if initiating[envelope.conversation] != nil { receiveInitiatorRejection(envelope) } else { receiveInviteeRejection(envelope) }
+            case .reject(let rejection):
+                if initiating[envelope.conversation] != nil { receiveInitiatorRejection(envelope, rejection) } else { receiveInviteeRejection(envelope) }
             case .hello, .counter, .psi:
                 ignore("unexpected \(envelope.body.kind)")
             }
