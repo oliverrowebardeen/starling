@@ -142,6 +142,27 @@ struct WithdrawalTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// After a relaunch, a friend's phone never answers the organizer's
+    /// acknowledgment, so the two phones cannot acknowledge each other
+    /// forever.
+    @Test func acknowledgmentsAreNeverAcknowledged() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        await maya.transport.lose(.max) { $0.body.kind == .reject }
+        try await maya.pass(in: conversation)
+        #expect(await eventually { await maya.transport.lost.contains { $0.body.kind == .reject } })
+        await maya.restart()
+        await maya.transport.clearRules()
+        #expect(await eventually { await maya.service.pendingWithdrawals.isEmpty })
+        try await Task.sleep(for: .milliseconds(300))
+        let rejects = await group.wire.envelopes.filter { $0.conversation == conversation && $0.body.kind == .reject }
+        #expect(rejects.count < 12)
+    }
+
     @Test func noRejectionEverNamesAPass() async throws {
         let (group, oliver, maya, jake) = try await threeFriends()
         defer { Task { await group.stop() } }

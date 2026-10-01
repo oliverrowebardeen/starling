@@ -140,6 +140,10 @@ public actor PickAPlaceService: SkillService {
     /// Conversations that ended before this launch, oldest first, bounded.
     /// A message for one opens nothing.
     var endedConversations: Set<ConversationID> = []
+    /// The ended conversations this phone organized. Only an organizer
+    /// acknowledges a rejection; a friend never does, so two phones can
+    /// never acknowledge each other's acknowledgments.
+    var endedOrganized: Set<ConversationID> = []
     var endedConversationOrder: [ConversationID] = []
     /// Yeses taken back, retried until the organizer acknowledges them.
     var pendingWithdrawals: [ConversationID: PendingWithdrawal] = [:]
@@ -250,9 +254,10 @@ public actor PickAPlaceService: SkillService {
         } else if invites[conversation] != nil {
             inviteReceived(envelope)
         } else if endedConversations.contains(conversation) {
-            // A friend still taking back a yes in a request that ended
-            // before this launch hears it is over, so it stops retrying.
-            if case .reject = envelope.body, pendingWithdrawals[conversation] == nil { acknowledge(envelope) }
+            // A friend still taking back a yes in a request this phone
+            // organized, and that ended before this launch, hears it is
+            // over, so it stops retrying.
+            if case .reject = envelope.body, endedOrganized.contains(conversation) { acknowledge(envelope) }
             return
         } else if skill.version.isCompatible(with: descriptor.ref.version) {
             await loadAdmissions()
@@ -269,11 +274,14 @@ public actor PickAPlaceService: SkillService {
     }
 
     /// Remembers a conversation that ended, so it is never opened again.
-    func markEnded(_ conversation: ConversationID) {
+    func markEnded(_ conversation: ConversationID, organizedHere: Bool) {
+        if organizedHere { endedOrganized.insert(conversation) }
         guard endedConversations.insert(conversation).inserted else { return }
         endedConversationOrder.append(conversation)
         while endedConversationOrder.count > Self.maxEndedMarkers {
-            endedConversations.remove(endedConversationOrder.removeFirst())
+            let oldest = endedConversationOrder.removeFirst()
+            endedConversations.remove(oldest)
+            endedOrganized.remove(oldest)
         }
     }
 

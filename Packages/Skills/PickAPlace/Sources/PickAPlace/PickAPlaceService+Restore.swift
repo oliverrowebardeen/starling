@@ -31,7 +31,7 @@ extension PickAPlaceService {
             switch interaction.state {
             case .drafting: continue
             case .planned, .done, .ended:
-                markEnded(interaction.conversation)
+                markEnded(interaction.conversation, organizedHere: interaction.role == .initiator)
                 if interaction.role == .initiator, interaction.state == .planned { resumeSettled(interaction) }
                 continue
             default: break
