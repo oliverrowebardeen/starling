@@ -1,7 +1,7 @@
 # ADR 0100: Noise secure channel implementation
 
 - Status: Proposed
-- Date: 2026-09-30 (revised the same day after four Codex reviews of PR #16; see decisions 5, 7, 11, and 12)
+- Date: 2026-09-30 (revised after five Codex reviews of PR #16, 2026-09-30 to 10-01; see decisions 5, 7, 11, and 12)
 - Owner: Lane E1 (Identity and secure channel)
 
 ## Context
@@ -49,6 +49,7 @@ Noise revision 34 facts this design relies on:
    - If no acknowledgement ever arrives, the initiator starts a new handshake.
    - **One restart budget.** Every replacement of an unconfirmed session spends from the same budget of two, refilled only by authenticated progress (a frame from the responder on the current or a superseded session) or a link reset (added after the second review, finding 3). That covers an unacknowledged confirm, the nonce cap, and an explicit `reconnect`. A link that loses every confirmation therefore ends in silence rather than in endless handshakes.
    - **One admission gate** (fourth review, finding 3). Every new handshake goes through it, whether it comes from link-up, `reconnect`, the nonce cap, or a confirm timeout, and including a `reconnect` when no session is current. While unconfirmed sessions are retained, a new attempt is admitted only if it spends from the budget and if its later retirement could not evict a retained session the peer may still be using. Otherwise it waits for authenticated progress or a link reset.
+   - **Admission comes after the lookup** (fifth review, finding 3). It is decided after the handshake's awaited pin lookup, immediately before the attempt is installed. Only one attempt per peer runs at a time; concurrent `reconnect`s coalesce.
 
    Each confirm has its own strictly increasing nonce, so a replayed confirm is dropped and cannot draw an acknowledgement.
 6. **Who initiates.** Either side may send message 1 when a link comes up, on `reconnect(_:)`, or when a session rolls over. If both do, the lower `PeerID`'s handshake wins: the higher side abandons its own and answers. An initiator retries after 5 seconds, up to 3 attempts. That covers the gap between one phone finishing pairing and the other pinning the key.
@@ -83,7 +84,14 @@ Noise revision 34 facts this design relies on:
     | commit ends | `committing -= 1`; if `epoch != e0` after the save, delete the pin (quarantine if that fails) and `epoch += 1` |
     | lookup | refused if `removing`, `committing`, or `quarantined`; otherwise read the pin, then accept it only if the epoch and those flags are unchanged; returns the pin and its epoch `e` |
 
-    **Sessions carry their epoch.** A handshake records the epoch `e` of the lookup that authenticated it, and the session it creates is stamped with `e`. It is installed only if `e` is still the peer's epoch. Then, on every transport sharing the authority, every frame sealed or accepted on a session is checked synchronously against the peer's current epoch; a session whose epoch is behind is dead and is torn down on first touch. Observers (transports, pairing services) are also notified of revocations, but only for liveness: correctness rests on the per-frame check.
+    **Sessions carry their epoch.** A handshake records the epoch `e` of the lookup that authenticated it, and the session it creates is stamped with `e`. It is installed only if `e` is still the peer's epoch. Then, on every transport sharing the authority, every action that makes a session observable happens inside one authority mutex section that first checks the stamp against the peer's current epoch (`PinAuthority.ifCurrent`, added after the fifth review):
+    - sealing a frame (the check, taking the nonce, encrypting);
+    - accepting a frame (the check, committing the receive state, publishing the plaintext);
+    - announcing the peer.
+
+    A session whose epoch is behind is dead and is torn down on first touch. Observers (transports, pairing services) are also notified of revocations, but only for liveness: correctness rests on these checks.
+
+    **The commit decision is one section** (fifth review). After its save, a commit compares the epoch and, if unchanged, ends (`committing -= 1`) in the same section. If the epoch moved, the commit stays in progress (lookups refused) until its rollback ends it.
 
     **Invariant.** For every peer `p` and every transport sharing the authority:
     1. A frame is sent or delivered on a session only if the session's epoch equals `p`'s current epoch at that moment.
@@ -95,7 +103,28 @@ Noise revision 34 facts this design relies on:
     - (c) No session can be authenticated from a pin that an unpair or a commit might still remove, because lookups are refused while either is in progress. The end-of-unpair and rollback epoch moves kill anything that slipped through regardless.
     - (d) A commit leaves a pin only if no revocation began between its ceremony's start and its end.
 
-    The tests hold each path at each of its awaits, with two `SecureTransport`s sharing one authority:
+    **Audit: every read of revocation state and what covers its action** (fifth review). The next review can check this list instead of searching for sites.
+
+    | # | Where | Reads | Acts | Covered by |
+    |---|-------|-------|------|------------|
+    | 1 | `PinAuthority.commit`, admission | epoch, blocked | `committing += 1`, then save | One section |
+    | 2 | `PinAuthority.commit`, decision | epoch | end the commit, or stay in progress and roll back | One section (fifth review, finding 1) |
+    | 3 | `PinAuthority.commit`, rollback end | (none) | epoch moves, `committing -= 1`, quarantine | One section |
+    | 4 | `PinAuthority.beginRemoval`, `markRevoked`, `endRemoval` | (none) | epoch moves, removal mark | One section each |
+    | 5 | `PinAuthority.pinned` | blocked, epoch, before and after the store read | returns `(pin, e)` | Two sections around the await. Fails closed: either can only refuse, and the result is only a candidate stamped with `e`; nothing is sealed, accepted, or announced on it without rows 9 to 11. |
+    | 6 | `SecureTransport.pinnedKey` | epoch, blocked after the lookup | builds handshake state stamped with `e` | Not one section, by design: the stamp is what rows 9 to 11 check atomically. |
+    | 7 | `SecureTransport.receiveHandshake2` | `initiation.epoch` against the epoch | installs the initiator session stamped with it | Not one section, by design: installing is not observable. The confirm it sends goes through row 10, and the announcement through row 11. |
+    | 8 | `SecureTransport.receiveHandshake1` | (stamp from row 6) | adds a pending session | Not observable until promoted, which happens only inside row 9. |
+    | 9 | `SecureTransport.receiveTransport` | stamp against epoch | commits the receive state (nonce window, promotion, confirmation), announces, yields the plaintext | One section via `ifCurrent` (fifth review, finding 2). Decryption runs before it, on copies. |
+    | 10 | `SecureTransport.seal` | stamp against epoch | takes the nonce, encrypts, stores the cipher state | One section via `ifCurrent` (fifth review, finding 2) |
+    | 11 | `SecureTransport.announce` | stamp against epoch | yields `peerAvailable` | One section via `ifCurrent` |
+    | 12 | `SecureTransport.purgeStale` | epoch | removes stale sessions and handshakes | Not one section, fails safe: a stale read can only keep a session that rows 9 to 11 then reject. |
+    | 13 | `SecureTransport.status` | (through row 12) | reports the proven key | Diagnostic only; may report a key revoked an instant later. |
+    | 14 | `PairingService.pair` | epoch | records the ceremony's `e0` | No action: `e0` is compared only in rows 1 and 2. |
+
+    Session generations, admission, and retained sessions are actor-isolated to one `SecureTransport` and not shared, so actor isolation covers them; admission is decided after the pin lookup, immediately before the attempt is installed (decision 5).
+
+    **Deterministic tests.** `PinAuthority` has a test checkpoint hook: named points (an epoch read, a commit decision) where a test runs a synchronous action, such as moving the epoch as another transport would. It is nil in production, never awaits, and never runs under the state mutex. The tests hold each path at each of its awaits, or act at a checkpoint, with two `SecureTransport`s sharing one authority:
     - the commit's save, before and after the write;
     - the unpair's removal, before and after the delete;
     - the revocation notice;
