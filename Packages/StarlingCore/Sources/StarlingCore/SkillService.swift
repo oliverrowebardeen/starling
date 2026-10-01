@@ -123,6 +123,8 @@ public protocol SkillService: Sendable {
     var descriptor: SkillDescriptor { get }
     /// Single consumer: the lifecycle coordinator.
     var events: AsyncStream<SkillEvent> { get }
+    /// Called after the coordinator has saved the interaction and applied
+    /// `.started`; the service does not emit `.started` itself.
     func start(_ request: SkillRequest) async throws
     func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws
     /// Friends learn nothing beyond "no plan".

@@ -118,8 +118,9 @@ public enum InteractionState: Hashable, Sendable, Codable {
 /// What a skill (or the owner, through the shared screens) reports. The
 /// state machine decides what each one means in each state.
 public enum InteractionEvent: Hashable, Sendable, Codable {
-    /// The owner sent the request (initiator), or the agent started handling
-    /// an incoming one (invitee).
+    /// The owner sent the request. Only the lifecycle coordinator applies
+    /// it, before calling `SkillService.start`; an invitee interaction is
+    /// created negotiating and never receives it (ADR 0011, amendment 13).
     case started
     /// A send is waiting on the consent sheet. `request` tells overlapping
     /// requests in one interaction apart.

@@ -52,6 +52,13 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
     - Question revisions and consent IDs each keep a high-water mark that only rises, persisted with the interaction, so a completed one can never be reopened or replayed.
 12. **Consent requests are scoped to their interaction.** `Disclosure` carries the conversation and skill, and both are part of its equality. A remembered approval, or a queued request settled with it, never crosses into another interaction. A retry inside one conversation still reuses the approval.
 
+### Amendment after lane P15-E's report (2026-10-01)
+
+13. **The coordinator applies `.started` for an initiator.** When the owner sends, the lifecycle coordinator applies `.started` to the new `Interaction` and saves it, then calls `SkillService.start`.
+    - A skill service never emits `.lifecycle(_, .started)`. The owner's tap is what starts an interaction (ARCHITECTURE rule 8), and the coordinator is the code that handles the tap, so it records it. Every skill then behaves the same way, and no service can move an interaction out of drafting by itself.
+    - If `start` throws, the coordinator applies `.failed`.
+    - An invitee `Interaction` is created in negotiating and never receives `.started`.
+
 ## Consequences
 
 - Home, the proposal card, It's a plan, and the plan timeline render any skill, including future ones, from `Interaction` and `SkillDescriptor` alone.
