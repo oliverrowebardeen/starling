@@ -466,6 +466,38 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.interaction(sent.interaction)?.state == .ended(.failed))
     }
 
+    // MARK: Saving before sending (re-review of PR #54, finding 3)
+
+    /// The service starts only once the started interaction is on disk.
+    @Test func theServiceStartsOnlyAfterTheRecordIsSaved() async throws {
+        let store = BlockingStore()
+        let lifecycle = coordinator(store: store)
+        await lifecycle.start()
+        let sent = request(to: [maya])
+        await store.block()
+        let starting = Task { try await lifecycle.start(sent, settings: Self.settings) }
+        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(await store.waiting == 1)
+        #expect(await down.started.isEmpty, "nothing is sent while the save is pending")
+        #expect(lifecycle.interaction(sent.interaction) == nil)
+
+        await store.release()
+        _ = try await starting.value
+        #expect(await down.started.map(\.interaction) == [sent.interaction])
+        #expect(try await store.interaction(sent.interaction)?.state == .negotiating)
+    }
+
+    @Test func aSaveThatFailsRefusesTheStart() async throws {
+        let store = BlockingStore()
+        let lifecycle = coordinator(store: store)
+        await lifecycle.start()
+        await store.failSaves()
+        let sent = request(to: [maya])
+        await #expect(throws: StartRefusal.notSaved) { try await lifecycle.start(sent, settings: Self.settings) }
+        #expect(await down.started.isEmpty)
+        #expect(lifecycle.interaction(sent.interaction) == nil)
+    }
+
     // MARK: Persistence
 
     @Test func everyChangeIsSavedAndSurvivesARestart() async throws {
@@ -493,7 +525,38 @@ actor FailingSkillService: SkillService {
         let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
         await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
         await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
-        #expect(seen.map(\.1) == [.drafting, .negotiating, .proposed])
-        #expect(seen.map(\.0) == [nil, .drafting, .negotiating])
+        // A request appears once it is saved as started; its history still
+        // begins with drafting.
+        #expect(seen.map(\.1) == [.negotiating, .proposed])
+        #expect(seen.map(\.0) == [nil, .negotiating])
+        #expect(lifecycle.interaction(id)?.history.first?.state == .drafting)
     }
+}
+
+/// An interaction store whose saves can be held or made to fail.
+actor BlockingStore: InteractionStore {
+    struct Failure: Error {}
+    private let base = InMemoryInteractionStore()
+    private var blocked = false
+    private var failing = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    var waiting: Int { held.count }
+
+    func block() { blocked = true }
+    func release() {
+        blocked = false
+        held.forEach { $0.resume() }
+        held = []
+    }
+    func failSaves() { failing = true }
+
+    func all() async throws -> [Interaction] { try await base.all() }
+    func interaction(_ id: InteractionID) async throws -> Interaction? { try await base.interaction(id) }
+    func interaction(conversation: ConversationID) async throws -> Interaction? { try await base.interaction(conversation: conversation) }
+    func save(_ interaction: Interaction) async throws {
+        if failing { throw Failure() }
+        if blocked { await withCheckedContinuation { held.append($0) } }
+        try await base.save(interaction)
+    }
+    func remove(_ id: InteractionID) async throws { try await base.remove(id) }
 }

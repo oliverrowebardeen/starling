@@ -45,6 +45,8 @@ public enum StartRefusal: Error, Hashable, Sendable {
     case blockedByPrivacy(Set<PrivacyTopic>)
     /// The service could not start; the interaction ended as failed.
     case failed(String)
+    /// The request could not be saved on the phone, so it was not sent.
+    case notSaved
 }
 
 /// The one lifecycle coordinator (ADR 0011 decision 7, ADR 0201).
@@ -244,8 +246,18 @@ public final class LifecycleCoordinator {
             insert(item)
             throw .unsupported
         }
+        try? item.apply(.started, at: Timestamp(now()))
+        // The record must be on disk before the skill sends anything, so a
+        // request that went out can always be restored or withdrawn after a
+        // crash. A save that fails refuses the start: nothing is sent and
+        // nothing is shown (ADR 0011 amendment 13, re-review of PR #54).
+        do {
+            try await store.save(item)
+        } catch {
+            logger.error("start refused, save failed: \(String(describing: error), privacy: .public)")
+            throw .notSaved
+        }
         insert(item)
-        apply(.started, to: item.id, reportedAs: nil, skill: skill.id)
         do {
             try await service.start(request)
         } catch {
