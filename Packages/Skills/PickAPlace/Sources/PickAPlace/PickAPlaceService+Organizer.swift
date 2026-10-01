@@ -27,6 +27,11 @@ struct Organizer {
     /// reply that was not a list.
     var out: Set<PeerID> = []
     var lastHeard: [PeerID: MessageID] = [:]
+    /// Friends the policy refuses to send to (only on-device agents, or an
+    /// unverified pairing). Nothing more is sent to them, and they count as
+    /// silent, so the request runs exactly as if they had not answered:
+    /// nobody can tell an exclusion from silence (ADR 0020).
+    var excluded: Set<PeerID> = []
     var proposal: SkillProposal?
     var lastProposeID: [PeerID: MessageID] = [:]
     /// The proposals sent to each friend, most recent last and bounded. A
@@ -59,8 +64,8 @@ struct Organizer {
     /// Friends who still think something may happen.
     var stillInvolved: [PeerID] {
         switch phase {
-        case .asking: friends.filter { !out.contains($0) }
-        case .proposing: invited.filter { !passed.contains($0) && !timedOut.contains($0) }
+        case .asking: friends.filter { !out.contains($0) && !excluded.contains($0) }
+        case .proposing: invited.filter { !passed.contains($0) && !timedOut.contains($0) && !excluded.contains($0) }
         case .settled, .ended: []
         }
     }
@@ -137,7 +142,8 @@ extension PickAPlaceService {
 
     func keepAsking(_ conversation: ConversationID, _ friend: PeerID) async {
         var interval = configuration.retryInterval
-        while let organizer = organized[conversation], organizer.phase == .asking, organizer.waitingOn.contains(friend) {
+        while let organizer = organized[conversation], organizer.phase == .asking, organizer.waitingOn.contains(friend),
+              !organizer.excluded.contains(friend) {
             do {
                 let query = try Query(issue: .place, candidates: .places(organizer.ranking))
                 try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
@@ -211,7 +217,7 @@ extension PickAPlaceService {
             endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
             return
         }
-        let left = organizer.friends.filter { !choice.friends.contains($0) && !organizer.out.contains($0) }
+        let left = organizer.friends.filter { !choice.friends.contains($0) && !organizer.out.contains($0) && !organizer.excluded.contains($0) }
         // The organizer comes first in the roster, so a friend's phone can
         // tell who organized it after a restart.
         let roster = [localPeer] + choice.friends
@@ -225,6 +231,7 @@ extension PickAPlaceService {
         organizer.proposal = proposal
         organizer.phase = .proposing
         organizer.out.formUnion(left)
+        organizer.out.formUnion(organizer.excluded)
         organized[conversation] = organizer
         // A query still waiting on a consent sheet must not reach a friend
         // who has already been told "no plan".
@@ -262,7 +269,7 @@ extension PickAPlaceService {
         var interval = configuration.retryInterval
         while let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal,
               organizer.invited.contains(friend), !organizer.accepted.contains(friend), !organizer.passed.contains(friend),
-              !organizer.timedOut.contains(friend) {
+              !organizer.timedOut.contains(friend), !organizer.excluded.contains(friend) {
             do {
                 let round = UInt16(min(proposal.revision - 1, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
                 let sent = try await send(.propose(Proposal(round: round, terms: proposal.terms)), to: friend,
@@ -323,7 +330,7 @@ extension PickAPlaceService {
         organizer.timedOut.formUnion(silent)
         organized[conversation] = organizer
         let chainedFrom = organizer.chainedFrom
-        for friend in silent {
+        for friend in silent where !organizer.excluded.contains(friend) {
             let lastHeard = organizer.lastHeard[friend]
             spawn(conversation) { service in
                 await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: .expired)), to: friend,
@@ -341,6 +348,7 @@ extension PickAPlaceService {
         let yes = organizer.invited.filter(organizer.accepted.contains)
         let silent = organizer.invited.filter {
             !organizer.accepted.contains($0) && !organizer.passed.contains($0) && !organizer.timedOut.contains($0)
+                && !organizer.excluded.contains($0)
         }
         guard !yes.isEmpty else {
             endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
@@ -422,20 +430,12 @@ extension PickAPlaceService {
         case OutboxError.denied(let violation) where violation.issue == nil:
             // A rule about this recipient, not a topic: only on-device
             // agents and this friend's card says otherwise, or the paired
-            // store could not vouch for them. Leave this friend out.
-            switch organizer.phase {
-            case .asking:
-                organizer.out.insert(friend)
-                organized[conversation] = organizer
-                if organizer.waitingOn.isEmpty { decide(conversation) }
-            case .proposing:
-                organizer.accepted.remove(friend)
-                organizer.passed.insert(friend)
-                organized[conversation] = organizer
-                tryFinalize(conversation)
-            case .settled, .ended:
-                break
-            }
+            // store could not vouch for them. Leave this friend out the way
+            // silence would: no early decision, no early confirmation, and
+            // nothing more sent to them.
+            organizer.excluded.insert(friend)
+            organizer.accepted.remove(friend)
+            organized[conversation] = organizer
             return false
         case OutboxError.denied:
             // A topic set to Never, at any live step.

@@ -104,6 +104,35 @@ struct PrivacyTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// ADR 0020, decision 9: Maya cannot tell from timing whether Jake was
+    /// left out by Oliver's policy or simply did not answer.
+    @Test(arguments: [true, false])
+    func exclusionTakesAsLongAsSilence(excludedByPolicy: Bool) async throws {
+        let window = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                             answerWindow: .milliseconds(600), confirmWindow: .seconds(3))
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let policy = DeterministicPolicyEngine(
+            ownerRules: OwnerRules(constraints: .empty, disclosure: try PrivacySettings([.place: .share, .people: .share]).disclosureRules),
+            onlyOnDeviceAgents: true
+        )
+        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: excludedByPolicy ? policy : FixedPolicyEngine(.allow), configuration: window)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: window)
+        // Excluded: Jake's model runs in the cloud. Silent: nothing fits him.
+        let jake = excludedByPolicy
+            ? Phone("Jake", hub: hub, maps: maps, model: .thirdPartyCloud(provider: "acme"), configuration: window)
+            : Phone("Jake", hub: hub, maps: maps, limits: limits(avoid: ["boba", "restaurant"]), configuration: window)
+        let group = try await Group([oliver, maya, jake], hub: hub)
+        defer { Task { await group.stop() } }
+
+        let started = Date()
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(Date().timeIntervalSince(started) >= 0.55)
+        #expect(await maya.interaction(conversation)?.proposal?.participants == [oliver.id, maya.id])
+        #expect(await group.wire.sent(by: jake.id).isEmpty)
+    }
+
     @Test func sharingWithOnDeviceFriendsNeedsNoSheet() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
