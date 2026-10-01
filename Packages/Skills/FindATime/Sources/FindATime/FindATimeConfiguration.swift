@@ -91,6 +91,8 @@ public struct FindATimeConfiguration: Hashable, Sendable {
 public enum FindATimeError: Error, Hashable, Sendable {
     /// The request is for another skill or an incompatible version.
     case wrongSkill
+    /// The request asks for a send mode the skill does not offer (ADR 0020).
+    case unsupportedMode
     /// An interaction with this ID or conversation is already running.
     case alreadyStarted
     /// The owner's range and daily window leave no time to offer.

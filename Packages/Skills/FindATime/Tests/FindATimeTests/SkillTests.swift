@@ -5,7 +5,7 @@ import StarlingFakes
 import Testing
 
 struct SkillTests {
-    @Test func descriptorStartsFromTheSampleAndAddsPeople() {
+    @Test func descriptorMatchesTheSample() {
         let sample = SampleSkills.findATime
         let real = FindATimeSkill.descriptor
         #expect(real.ref == sample.ref)
@@ -15,7 +15,10 @@ struct SkillTests {
         #expect(real.permissions == [.calendarFullAccess])
         #expect(real.produces == [.timeSlot, .plan])
         #expect(real.topicsRequired == [.time])
-        #expect(real.topicsUsed == sample.topicsUsed.union([.people]))
+        #expect(real.topicsUsed == sample.topicsUsed)
+        #expect(real.topicsUsed.contains(.calendarDetails))
+        #expect(real.sendModes == [.invite])
+        #expect(real.defaultSendMode == .invite)
     }
 
     @Test func registersWithTheOtherSkillsAndRuns() throws {

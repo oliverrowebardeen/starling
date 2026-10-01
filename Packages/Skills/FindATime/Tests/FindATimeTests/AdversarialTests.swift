@@ -35,6 +35,8 @@ struct AdversarialTests {
         try await mallory.send(.query(Query(issue: .time, candidates: .keywords([Keyword("now")]))), to: target, conversation: ConversationID())
         try await mallory.send(query([T.slot(9, 10)]), to: target, conversation: ConversationID(), skill: SkillRef(.findATime, SkillVersion(2)))
         try await mallory.send(query([T.slot(9, 10)]), to: target, conversation: ConversationID(), skill: nil)
+        // A quiet ask is a mode Find a time does not offer: never a card (ADR 0020).
+        try await mallory.send(query([T.slot(9, 10)]), to: target, conversation: ConversationID(), mode: .askQuietly)
 
         #expect(try await settle(target).isEmpty)
         #expect(calendar.requestCount == 0)
@@ -216,7 +218,7 @@ struct AdversarialTests {
         // secure channel would drop this, so the check here is the last line).
         let forged = try Envelope(
             conversation: conversation, sender: b.id, recipient: a.id, sequence: 9_000, sentAt: Timestamp(Date()),
-            body: .answer(steer), skill: FindATimeSkill.ref
+            body: .answer(steer), skill: FindATimeSkill.ref, mode: .invite
         )
         try await world.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: b.id, to: a.id)
         try await eventually("forged answer refused") { await a.service.diagnostics.ignored["answer outside the offer", default: 0] == 1 }

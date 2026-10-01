@@ -263,9 +263,10 @@ final class Phone: Sendable {
     /// Sends a crafted message through this phone's Outbox, as a friend's
     /// modified app could.
     @discardableResult
-    func send(_ body: MessageBody, to peer: Phone, conversation: ConversationID, skill: SkillRef? = FindATimeSkill.ref, chainedFrom: ConversationID? = nil) async throws -> Envelope {
+    func send(_ body: MessageBody, to peer: Phone, conversation: ConversationID, skill: SkillRef? = FindATimeSkill.ref,
+              mode: SendMode = .invite, chainedFrom: ConversationID? = nil) async throws -> Envelope {
         let outbox = state.withLock { $0.outbox! }
-        return try await outbox.send(body, to: peer.id, conversation: conversation, skill: skill, chainedFrom: chainedFrom)
+        return try await outbox.send(body, to: peer.id, conversation: conversation, skill: skill, mode: skill == nil ? nil : mode, chainedFrom: chainedFrom)
     }
 
     static let card = try! AgentCard(model: .onDevice, capabilities: [], skills: [FindATimeSkill.ref])
@@ -321,14 +322,14 @@ final class Phone: Sendable {
     @discardableResult
     func findATime(
         with friends: [Phone], range: [TimeSlot] = [T.slot(8, 24)], also: [Constraint] = [], daily: (Int, Int)? = nil,
-        activity: String? = "stats", expiresIn hours: Double = 48, chainedFrom: ConversationID? = nil
+        activity: String? = "stats", expiresIn hours: Double = 48, chainedFrom: ConversationID? = nil, mode: SendMode = .invite
     ) async throws -> InteractionID {
         var constraints: [IssueKey: [Constraint]] = [.time: [try Constraint(.within(range))] + also]
         if let daily { constraints[.time]!.append(try Constraint(.dailyWindow(from: daily.0, to: daily.1))) }
         if let activity { constraints[.activity] = [try Constraint(.prefers(liked: [Keyword(activity)], avoided: []), strength: .soft)] }
         let intent = SkillIntent(
             skill: FindATimeSkill.ref, rules: OwnerRules(constraints: try ConstraintSet(constraints)),
-            audience: .picked(friends.map(\.id)), expiresAt: Timestamp(clock.now.addingTimeInterval(hours * 3600))
+            audience: .picked(friends.map(\.id)), mode: mode, expiresAt: Timestamp(clock.now.addingTimeInterval(hours * 3600))
         )
         // As the coordinator does (ADR 0011, amendment 13): apply `.started`
         // when the owner sends, then start; if start throws, apply `.failed`.

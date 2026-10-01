@@ -352,6 +352,8 @@ struct LifecycleTests {
         await #expect(throws: FindATimeError.noTimesInRange) { try await a.findATime(with: [b], range: [T.slot(22, 23)]) }
         // A daily window shorter than one slot.
         await #expect(throws: FindATimeError.noTimesInRange) { try await a.findATime(with: [b], daily: (600, 630)) }
+        // Asking quietly is not one of Find a time's modes.
+        await #expect(throws: FindATimeError.unsupportedMode) { try await a.findATime(with: [b], mode: .askQuietly) }
         #expect(world.envelopes.allSatisfy { $0.skill == nil })
         #expect(await a.coordinator.all().allSatisfy { $0.state == .ended(.failed) })
         await world.stop()

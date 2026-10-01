@@ -169,6 +169,9 @@ public actor FindATimeService: SkillService {
             }
             guard let skill = envelope.skill, skill.id == FindATimeSkill.ref.id else { return }
             guard skill.version.isCompatible(with: FindATimeSkill.ref.version) else { return ignore("incompatible version") }
+            // A mode the skill does not offer is ignored like any unknown
+            // request: a quiet ask never becomes a card (ADR 0020).
+            guard let mode = envelope.mode, descriptor.sendModes.contains(mode) else { return ignore("unsupported mode") }
             guard envelope.recipient == localPeer, envelope.sender != localPeer else { return ignore("misaddressed") }
             guard await isPaired(envelope.sender) else { return ignore("not a friend") }
             switch envelope.body {
@@ -363,7 +366,7 @@ public actor FindATimeService: SkillService {
         do {
             let envelope = try await outbox.send(
                 body, to: peer, conversation: conversation, recipientCard: cards[peer],
-                skill: FindATimeSkill.ref, chainedFrom: chainedFrom
+                skill: FindATimeSkill.ref, mode: .invite, chainedFrom: chainedFrom
             )
             diagnostics.sends += 1
             return .sent(envelope)

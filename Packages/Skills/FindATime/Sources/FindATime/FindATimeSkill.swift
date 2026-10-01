@@ -6,10 +6,11 @@ import StarlingCore
 public enum FindATimeSkill {
     public static let ref = SkillRef(.findATime, SkillVersion(1, 0))
 
-    /// Starts from `StarlingFakes.SampleSkills.findATime` and adds the
-    /// people topic: a group plan carries its roster under `IssueKey.people`
-    /// (ADR 0012), and ADR 0014 requires every topic a skill sends to be in
-    /// `topicsUsed`. A two-person plan sends no roster.
+    /// Matches `StarlingFakes.SampleSkills.findATime` (Core v2.1):
+    /// - people, because a group plan carries its roster under
+    ///   `IssueKey.people` (ADR 0012); a two-person plan sends no roster;
+    /// - calendar details, read on the phone only to judge candidates and
+    ///   never sent, so only time is required (ADR 0019).
     public static let descriptor = try! SkillDescriptor(
         ref: ref,
         wording: SkillWording(
@@ -17,14 +18,17 @@ public enum FindATimeSkill {
             acceptAction: "That works", declineAction: "Not then", declineNote: "If you pass, they just won't see it."
         ),
         buildingBlock: .privateQuery,
-        topicsUsed: [.time, .activity, .people],
+        topicsUsed: [.time, .activity, .people, .calendarDetails],
         topicsRequired: [.time],
         permissions: [.calendarFullAccess],
         produces: [.timeSlot, .plan],
         intent: IntentSchema(slots: [
             IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
             IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
-        ])
+        ]),
+        // Friends see the request as a card. Asking quietly needs mutual
+        // reveal, which Find a time does not use (ADR 0020).
+        sendModes: [.invite]
     )
 }
 

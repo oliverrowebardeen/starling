@@ -10,6 +10,7 @@ extension FindATimeService {
         guard skill.id == FindATimeSkill.ref.id, skill.version.isCompatible(with: FindATimeSkill.ref.version) else {
             throw FindATimeError.wrongSkill
         }
+        guard descriptor.sendModes.contains(request.intent.mode) else { throw FindATimeError.unsupportedMode }
         let id = request.conversation
         guard conversationOf[request.interaction] == nil, initiating[id] == nil, invited[id] == nil, finished[id] == nil else {
             throw FindATimeError.alreadyStarted
