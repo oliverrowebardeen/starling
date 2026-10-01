@@ -263,6 +263,77 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(await location.requests == 1)
     }
 
+    // MARK: Review of PR #54, finding 5
+
+    /// A parser that finishes after the owner narrowed the audience never
+    /// overwrites the draft, and Start stays off while it reads.
+    @Test func aLateParserResultNeverOverwritesTheOwnersEdits() async throws {
+        let gate = Gate()
+        let model = ScriptedSkillModel(
+            onRoute: { _, _ in .downFor },
+            onIntent: { text, skill in
+                await gate.wait()
+                return try await ComposerHarness.bobaModel(names: ["maya", "jake"]).onIntent(text, skill)
+            }
+        )
+        let h = try await ComposerHarness(skillModel: model)
+        h.model.text = "boba with maya and jake"
+        let reading = Task { await h.model.understand() }
+        await eventually { h.model.isUnderstanding && h.model.skill == .downFor }
+        #expect(!h.model.canSend, "Start is off while the model reads")
+
+        h.model.audience = .pick
+        h.model.picked = [h.maya.id]
+        await gate.open()
+        await reading.value
+
+        #expect(h.model.picked == [h.maya.id])
+        #expect(h.model.constraints == .empty, "the stale chips were dropped")
+        #expect(!h.model.isUnderstanding)
+    }
+
+    /// An edit while the calendar sheet is up drops the send: the request
+    /// never goes to people the owner did not review.
+    @Test func anEditWhileThePermissionSheetIsUpDropsTheSend() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time next week"
+        await h.model.understand()
+        let sending = Task { await h.model.send() }
+        await eventually { h.permissions.pending != nil }
+        h.model.toggle(h.jake.id)
+        h.permissions.proceed()
+        #expect(await sending.value == nil)
+        #expect(await h.time.started.isEmpty)
+        #expect(h.model.notice == "You changed the request while Starling was asking. Check it and tap again.")
+        #expect(h.lifecycle.interactions.isEmpty)
+    }
+
+    @Test func cancelWhileThePermissionSheetIsUpSendsNothing() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time next week"
+        await h.model.understand()
+        let sending = Task { await h.model.send() }
+        await eventually { h.permissions.pending != nil }
+        h.model.clear()
+        h.permissions.proceed()
+        #expect(await sending.value == nil)
+        #expect(await h.time.started.isEmpty)
+    }
+
+    /// The request that goes out is the one captured when Start was tapped.
+    @Test func theSentRequestIsTheReviewedOne() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time next week"
+        await h.model.understand()
+        h.model.audience = .pick
+        h.model.picked = [h.jake.id]
+        let sending = Task { await h.model.send() }
+        await eventually { h.permissions.pending != nil }
+        h.permissions.proceed()
+        #expect(await sending.value != nil)
+        #expect(await h.time.started.map(\.participants) == [[h.jake.id]])
+    }
+
     @Test func cancelClearsTheDraft() async throws {
         let h = try await ComposerHarness()
         h.model.text = "boba"
@@ -306,5 +377,22 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(3 * 3600)) == "Expires in 3 hrs")
         #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(3600)) == "Expires in 1 hr")
         #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(45 * 60)) == "Expires in 45 min")
+    }
+}
+
+/// Holds a scripted model until the test opens it.
+actor Gate {
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiting.forEach { $0.resume() }
+        waiting = []
     }
 }

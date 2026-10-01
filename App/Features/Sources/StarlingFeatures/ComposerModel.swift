@@ -80,15 +80,21 @@ public final class ComposerModel {
         public let adds: SkillExposure
     }
 
-    public var text = ""
+    /// Every edit the owner makes to the draft bumps `generation`, so a
+    /// parser result or a send that started on an older draft is dropped
+    /// instead of overwriting what the owner reviewed (review of PR #54,
+    /// finding 5).
+    public private(set) var generation: UInt64 = 0
+
+    public var text = "" { didSet { if text != oldValue { generation &+= 1 } } }
     public private(set) var skill: SkillID?
     /// Whether the model chose the skill (the chip is highlighted).
     public private(set) var routedByModel = false
     public private(set) var isUnderstanding = false
-    public var constraints = ConstraintSet.empty
-    public var audience = AudienceChoice.allFriends
-    public var picked: Set<PeerID> = []
-    public var expiry = Expiry.hours(3)
+    public var constraints = ConstraintSet.empty { didSet { if constraints != oldValue { generation &+= 1 } } }
+    public var audience = AudienceChoice.allFriends { didSet { if audience != oldValue { generation &+= 1 } } }
+    public var picked: Set<PeerID> = [] { didSet { if picked != oldValue { generation &+= 1 } } }
+    public var expiry = Expiry.hours(3) { didSet { if expiry != oldValue { generation &+= 1 } } }
     public private(set) var chain: ChainDraft?
     public private(set) var notice: String?
     public private(set) var isSending = false
@@ -180,10 +186,13 @@ public final class ComposerModel {
     public func choose(_ skill: SkillID) async {
         guard skill != self.skill else { return }
         self.skill = skill
+        generation &+= 1
         routedByModel = false
         notice = nil
         if let descriptor, availability(of: skill) == .available, !trimmedText.isEmpty, let skillModel {
-            await fill(from: trimmedText, for: descriptor, model: skillModel)
+            isUnderstanding = true
+            defer { isUnderstanding = false }
+            await fill(from: trimmedText, for: descriptor, model: skillModel, draft: generation)
         }
     }
 
@@ -204,13 +213,16 @@ public final class ComposerModel {
         defer { isUnderstanding = false }
         notice = nil
         let available = registry.available(in: settings.skillSettings).filter { lifecycle.skillsInBuild.contains($0.id) }
+        let draft = generation
         let routed: SkillID?
         do {
             routed = try await skillModel.route(words, among: available).value
         } catch {
-            notice = "Starling couldn't read that. Pick what this is below."
+            if draft == generation { notice = "Starling couldn't read that. Pick what this is below." }
             return
         }
+        // The owner changed the draft while the model was reading it.
+        guard draft == generation else { return }
         // The model can only name a skill that can run; code checks anyway.
         guard let routed, let descriptor = available.first(where: { $0.id == routed }) else {
             notice = "Starling isn't sure what this is. Pick one below."
@@ -218,17 +230,20 @@ public final class ComposerModel {
         }
         skill = routed
         routedByModel = true
-        await fill(from: words, for: descriptor, model: skillModel)
+        await fill(from: words, for: descriptor, model: skillModel, draft: draft)
     }
 
-    private func fill(from words: String, for skill: SkillDescriptor, model: any SkillModel) async {
+    private func fill(from words: String, for skill: SkillDescriptor, model: any SkillModel, draft: UInt64) async {
         let parsed: ParsedIntent
         do {
             parsed = try await model.intent(from: words, for: skill, now: now(), timeZone: timeZone).value
         } catch {
-            notice = "Starling couldn't fill this in. Edit the details by hand."
+            if draft == generation { notice = "Starling couldn't fill this in. Edit the details by hand." }
             return
         }
+        // A result for an older draft never overwrites what the owner has
+        // since edited, such as a narrower audience.
+        guard draft == generation, self.skill == skill.id else { return }
         // Only the skill's own slots: a model answer cannot add an issue
         // the skill does not ask about.
         let slots = Set(skill.intent.slots.map(\.issue))
@@ -368,7 +383,9 @@ public final class ComposerModel {
         }
     }
 
-    public var canSend: Bool { blocker == nil && !isSending }
+    /// Off while the model is reading the draft, so the owner never sends
+    /// before the chips settle.
+    public var canSend: Bool { blocker == nil && !isSending && !isUnderstanding }
 
     /// The skill's own button label: "See who's up for it" for Down for….
     public var startLabel: String { descriptor?.wording.startAction ?? "Start" }
@@ -398,17 +415,12 @@ public final class ComposerModel {
         isSending = true
         defer { isSending = false }
         notice = nil
-        await beforeFirstRequest()
 
-        let names = audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
-        // Location is asked when the owner lets the agent suggest nearby
-        // places, and photos after a plan ends, not at the start.
-        if descriptor.permissions.contains(.calendarFullAccess) {
-            if case .askInstead(let fallback?) = await permissions.prepare(.calendarFullAccess, for: descriptor, friends: names, settings: settings) {
-                notice = fallback
-            }
-        }
-
+        // The request is fixed here, from the draft the owner reviewed.
+        // Anything awaited after this point (Local Network, the calendar
+        // sheet) cannot change who it goes to or what it says, and an edit
+        // or Cancel meanwhile drops the send.
+        let reviewed = generation
         let rules: OwnerRules
         do {
             rules = try StandingRules.forRequest(intent: constraints, saved: savedRules(), privacy: settings.settings.privacy)
@@ -416,20 +428,37 @@ public final class ComposerModel {
             notice = "These details and your rules together are too many to send. Remove a chip or a rule."
             return nil
         }
+        let recipients = participants
+        let names = audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
         let audienceValue: Audience = switch audience {
         case .allFriends: .allFriends
         case .closeFriends: .closeFriends
-        case .pick: .picked(participants)
+        case .pick: .picked(recipients)
         }
+        let chain = chain
         let request = SkillRequest(
             interaction: InteractionID(),
             conversation: ConversationID(),
             intent: SkillIntent(skill: descriptor.ref, rules: rules, audience: audienceValue, expiresAt: Timestamp(expiresAt)),
-            participants: participants,
+            participants: recipients,
             inputs: chain?.inputs ?? [],
             chainedFrom: chain?.link.parentConversation
         )
-        let fallback = notice
+
+        await beforeFirstRequest()
+        // Location is asked when the owner lets the agent suggest nearby
+        // places, and photos after a plan ends, not at the start.
+        var fallback: String?
+        if descriptor.permissions.contains(.calendarFullAccess) {
+            if case .askInstead(let text?) = await permissions.prepare(.calendarFullAccess, for: descriptor, friends: names, settings: settings) {
+                fallback = text
+            }
+        }
+        guard reviewed == generation else {
+            notice = "You changed the request while Starling was asking. Check it and tap again."
+            return nil
+        }
+
         do {
             let id = try await lifecycle.start(request, chain: chain?.link, settings: settings.skillSettings)
             clear()
@@ -474,6 +503,8 @@ public final class ComposerModel {
 
     /// Cancel: clears the draft (ADR 0015 decision 2).
     public func clear() {
+        // Also invalidates a send waiting on a permission sheet.
+        generation &+= 1
         text = ""
         skill = nil
         routedByModel = false
