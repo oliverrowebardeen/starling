@@ -118,8 +118,9 @@ public enum InteractionState: Hashable, Sendable, Codable {
 /// What a skill (or the owner, through the shared screens) reports. The
 /// state machine decides what each one means in each state.
 public enum InteractionEvent: Hashable, Sendable, Codable {
-    /// The owner sent the request (initiator), or the agent started handling
-    /// an incoming one (invitee).
+    /// The owner sent the request. Only the lifecycle coordinator applies
+    /// it, before calling `SkillService.start`; an invitee interaction is
+    /// created negotiating and never receives it (ADR 0011, amendment 13).
     case started
     /// A send is waiting on the consent sheet. `request` tells overlapping
     /// requests in one interaction apart.
@@ -148,6 +149,10 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     case withdrawn
     case failed
     case unsupported
+    /// The policy denied a send. Ends any live step except planned. Like
+    /// `failed`, it names no revision: a service reports it only for a send
+    /// made for the current step, never for a superseded one (ADR 0011,
+    /// amendment 14).
     case blockedByPrivacy
     /// The planned time has passed.
     case planEnded
@@ -204,10 +209,14 @@ extension InteractionState {
         case (_, .withdrawn): return .ended(.withdrawn)
         case (_, .expired): return .ended(.expired)
         case (_, .failed): return .ended(.failed)
+        // The policy denied a send. Any step that sends can be denied, such
+        // as an invitee's acceptance. A plan already agreed stands: a denied
+        // send after it does not call the plan off.
+        case (.planned, .blockedByPrivacy): throw InvalidTransition(from: self, event: event)
+        case (_, .blockedByPrivacy): return .ended(.blockedByPrivacy)
 
         case (.drafting, .started): return .negotiating
         case (.drafting, .unsupported): return .ended(.unsupported)
-        case (.drafting, .blockedByPrivacy): return .ended(.blockedByPrivacy)
 
         case (.negotiating, .consentNeeded): return .awaitingConsent(resume: .negotiating)
         case (.awaitingOwner, .consentNeeded): return .awaitingConsent(resume: .awaitingOwner)
@@ -227,7 +236,6 @@ extension InteractionState {
         case (.negotiating, .proposalReady): return .proposed
         case (.negotiating, .noAgreement): return .ended(.nobodyUp)
         case (.negotiating, .unsupported): return .ended(.unsupported)
-        case (.negotiating, .blockedByPrivacy): return .ended(.blockedByPrivacy)
 
         case (.proposed, .ownerAccepted): return .confirmed
         case (.proposed, .ownerPassed): return .ended(.declined)
