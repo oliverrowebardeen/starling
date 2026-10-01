@@ -100,6 +100,13 @@ struct Invited: Hashable, Sendable, Codable {
     /// What this phone told the starter works.
     var answered: [TimeSlot]?
     var offer: Offer?
+    /// The proposal revision whose acceptance has left the phone (cleared
+    /// policy and consent and reached the link). A confirmation counts only
+    /// for it.
+    var acceptanceLeft: UInt32?
+    /// A confirmation that arrived while the acceptance was still waiting
+    /// (on a consent sheet, say). Applied once the acceptance leaves.
+    var heldConfirmation: Acceptance?
 
     var conversation: ConversationID { interaction.conversation }
 }

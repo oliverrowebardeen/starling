@@ -137,6 +137,37 @@ struct AdversarialTests {
         await world.stop()
     }
 
+    /// Review of PR #53, finding 3: a confirmation that arrives while our
+    /// acceptance is still on its consent sheet makes no plan. It is held,
+    /// and counts only once the acceptance has actually left.
+    @Test func aConfirmationBeforeOurAcceptanceLeftWaitsForIt() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory")
+        let sheet = HeldConsent()
+        let target = world.phone("Ben", policy: FixedPolicyEngine(decide: { message in
+            guard case .accept = message.envelope.body else { return .allow }
+            return .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: [],
+                                            conversation: message.envelope.conversation, skill: message.envelope.skill))
+        }), consent: sheet)
+        try await world.start()
+        let conversation = ConversationID()
+        try await mallory.send(query([T.slot(9, 10), T.slot(10, 11)]), to: target, conversation: conversation)
+        try await eventually("Ben answered") { world.envelopes.contains { $0.sender == target.id && $0.body.kind == .answer } }
+        let terms = try Terms([.time: .slots([T.slot(9, 10)])])
+        let offer = try await mallory.send(.propose(Proposal(round: 0, terms: terms)), to: target, conversation: conversation)
+        let (card, _) = try await target.waitForProposal()
+        try await target.accept(card)
+        try await eventually("Ben's sheet is open") { await sheet.asked == 1 }
+
+        try await mallory.send(.accept(Acceptance(proposal: offer.id, terms: terms)), to: target, conversation: conversation)
+        #expect(try await settle(target).allSatisfy { $0.plan == nil })
+
+        await sheet.answerAll(.approved)
+        try await target.waitForState(card, .planned)
+        #expect(world.envelopes.contains { $0.sender == target.id && $0.body.kind == .accept })
+        await world.stop()
+    }
+
     /// A late or replayed query after a pass gets "no plan" again, never a
     /// new question.
     @Test func aRetriedQueryNeverReopensAPass() async throws {

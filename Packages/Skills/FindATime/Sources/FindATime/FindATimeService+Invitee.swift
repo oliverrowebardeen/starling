@@ -211,6 +211,7 @@ extension FindATimeService {
         let card = SkillProposal(revision: revision, participants: plan.attendees.peers, terms: proposal.terms, plan: plan)
         guard emit(.proposalReady(card), to: &value.interaction) else { return }
         value.offer = offer
+        value.heldConfirmation = nil
         value.phase = .proposed
         invited[id] = value
         checkpoint(id)
@@ -232,9 +233,15 @@ extension FindATimeService {
     /// it, the result belongs to a step that is over and is dropped, even
     /// if the owner has since accepted the newer one (ADR 0011, amendment 14).
     private func acceptanceSent(_ id: ConversationID, revision: UInt32, _ outcome: SendOutcome) {
-        guard let value = invited[id], value.phase == .accepted, value.offer?.revision == revision else { return }
+        guard var value = invited[id], value.phase == .accepted, value.offer?.revision == revision else { return }
         switch outcome {
-        case .sent, .failed:
+        case .sent:
+            guard value.acceptanceLeft != revision else { return }
+            value.acceptanceLeft = revision
+            invited[id] = value
+            checkpoint(id)
+            if let held = value.heldConfirmation { confirm(id, with: held) }
+        case .failed:
             return
         case .declined, .denied:
             inviteeRefused(id, outcome)
@@ -260,8 +267,24 @@ extension FindATimeService {
             return value.phase == .planned ? () : ignore("confirmation out of turn")
         }
         guard acceptance.terms == offer.terms, offer.ids.contains(acceptance.proposal) else { return ignore("confirmation of other terms") }
+        guard value.acceptanceLeft == offer.revision else {
+            // Our acceptance has not left yet (a consent sheet may be open),
+            // so no plan can exist. Hold the confirmation until it does.
+            value.heldConfirmation = acceptance
+            invited[id] = value
+            checkpoint(id)
+            return ignore("confirmation before our acceptance left")
+        }
+        confirm(id, with: acceptance)
+    }
+
+    private func confirm(_ id: ConversationID, with acceptance: Acceptance) {
+        guard var value = invited[id], value.phase == .accepted, let offer = value.offer, value.acceptanceLeft == offer.revision,
+              acceptance.terms == offer.terms, offer.ids.contains(acceptance.proposal)
+        else { return }
         guard emit(.everyoneConfirmed(revision: offer.revision), to: &value.interaction) else { return }
         value.phase = .planned
+        value.heldConfirmation = nil
         invited[id] = value
         if let time = offer.plan.time { produce(.timeSlot(time), for: value.interaction.id) }
         produce(.plan(offer.plan), for: value.interaction.id)
