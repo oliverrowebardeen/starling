@@ -68,9 +68,10 @@ import Testing
         let consent = ScriptedConsentProvider(.approved)
         let policy = DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: Self.swapOn.privacy.disclosureRules))
         let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: InMemoryEgressJournal(), now: { clock.now })
+        let ledger = InMemoryConversationLedger()
         let outbox = Outbox(transport: transport, policy: ChainedFromPolicy(wrapping: policy, store: store), consent: consent,
-                            observer: recorder, now: { clock.now })
-        let service = SwapPhotosService(outbox: outbox, me: Fixtures.me, planLookup: { _ in Fixtures.plan }, now: { clock.now })
+                            observer: recorder, ledger: ledger, now: { clock.now })
+        let service = SwapPhotosService(outbox: outbox, ledger: ledger, me: Fixtures.me, planLookup: { _ in Fixtures.plan }, now: { clock.now })
         var events = service.events.makeAsyncIterator()
 
         // The plan ends with no opt-in: nothing starts.
@@ -133,8 +134,9 @@ import Testing
         // for any permission.
         let mayaTransport = RecordingTransport(localPeer: Fixtures.maya)
         let mayaConsent = ScriptedConsentProvider(.approved)
-        let mayaOutbox = Outbox(transport: mayaTransport, policy: FixedPolicyEngine(.allow), consent: mayaConsent, now: { clock.now })
-        let maya = SwapPhotosService(outbox: mayaOutbox, me: Fixtures.maya, planLookup: { $0 == Fixtures.parentConversation ? Fixtures.plan : nil },
+        let mayaLedger = InMemoryConversationLedger()
+        let mayaOutbox = Outbox(transport: mayaTransport, policy: FixedPolicyEngine(.allow), consent: mayaConsent, ledger: mayaLedger, now: { clock.now })
+        let maya = SwapPhotosService(outbox: mayaOutbox, ledger: mayaLedger, me: Fixtures.maya, planLookup: { $0 == Fixtures.parentConversation ? Fixtures.plan : nil },
                                      now: { clock.now })
         let inbox = Inbox(localPeer: Fixtures.maya, now: { clock.now })
         for frame in await transport.sent where frame.peer == Fixtures.maya {

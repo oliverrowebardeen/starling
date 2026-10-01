@@ -70,8 +70,8 @@ actor GatedRecheckPolicy: PolicyEngine {
 
 extension Phone {
     init(policy: any PolicyEngine, consent: any ConsentProvider) {
-        self.init { transport in
-            Outbox(transport: transport, policy: policy, consent: consent, now: { Fixtures.afterTonight })
+        self.init { transport, ledger in
+            Outbox(transport: transport, policy: policy, consent: consent, ledger: ledger, now: { Fixtures.afterTonight })
         }
     }
 }

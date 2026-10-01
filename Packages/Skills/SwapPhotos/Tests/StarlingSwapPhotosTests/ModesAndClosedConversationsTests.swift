@@ -82,4 +82,43 @@ import Testing
         await phone.service.handle(.message(try Fixtures.offer(conversation: conversation)))
         #expect(await phone.events().isEmpty)
     }
+
+    @Test func everyEndingRetiresTheConversationThroughOutbox() async throws {
+        // A friend's card the owner passes on.
+        let phone = Phone()
+        let offer = try Fixtures.offer()
+        await phone.service.handle(.message(offer))
+        var iterator = phone.service.events.makeAsyncIterator()
+        guard case .incoming(let id, _, _, _) = await iterator.next() else {
+            Issue.record("expected an incoming interaction")
+            return
+        }
+        try await phone.service.answer(id, with: .pass)
+        #expect(try await phone.ledger.isRetired(offer.conversation))
+
+        // The owner's own Swap photos, withdrawn while picking.
+        let request = Fixtures.request()
+        try await phone.service.start(request)
+        await phone.service.withdraw(request.interaction)
+        #expect(try await phone.ledger.isRetired(request.conversation))
+        #expect(await phone.service.retireFailures == 0)
+    }
+
+    @Test func aConversationTheLedgerRetiredIsNeverOpened() async throws {
+        // Retired on an earlier launch, past any 24-hour restore window.
+        let ledger = InMemoryConversationLedger()
+        let conversation = ConversationID()
+        try await ledger.retire(conversation)
+        let phone = Phone(ledger: ledger)
+        await phone.service.handle(.message(try Fixtures.offer(conversation: conversation)))
+        #expect(await phone.events().isEmpty)
+    }
+
+    @Test func aLedgerThatCannotAnswerOpensNothing() async throws {
+        let ledger = InMemoryConversationLedger()
+        await ledger.failAll()
+        let phone = Phone(ledger: ledger)
+        await phone.service.handle(.message(try Fixtures.offer()))
+        #expect(await phone.events().isEmpty)
+    }
 }

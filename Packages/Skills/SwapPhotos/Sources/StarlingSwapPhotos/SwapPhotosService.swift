@@ -73,15 +73,23 @@ public actor SwapPhotosService: SkillService {
     /// arrive while an acceptance of the older one is waiting, so there can
     /// be more than one.
     private var inFlight: [InteractionID: [UUID: Task<Void, any Error>]] = [:]
-    /// Conversations that ended on this phone. A late or retried envelope
-    /// for one is ignored, never reopened as a new card (ADR 0011
-    /// amendment 15).
+    private let ledger: any ConversationLedger
+    /// Conversations ended on this launch: a cache in front of the ledger,
+    /// filled before the ledger's write, so an envelope that arrives while
+    /// the retirement is being recorded is not reopened either.
     private var closed: Set<ConversationID> = []
+    /// Retirements the ledger could not record. A ledger that cannot write
+    /// cannot read either, so a later offer is still refused (fail closed).
+    public private(set) var retireFailures = 0
 
+    /// `ledger` is the app's `ConversationLedger`, the one its Outbox uses
+    /// (ADR 0021): a conversation it has retired is never opened again.
     /// `planLookup` returns the plan made in a conversation on this phone, so
     /// an offer from someone who was not in that plan is dropped.
-    public init(outbox: Outbox, me: PeerID, planLookup: @escaping @Sendable (ConversationID) async -> Plan?, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(outbox: Outbox, ledger: any ConversationLedger, me: PeerID, planLookup: @escaping @Sendable (ConversationID) async -> Plan?,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.outbox = outbox
+        self.ledger = ledger
         self.me = me
         self.planLookup = planLookup
         self.now = now
@@ -127,7 +135,7 @@ public actor SwapPhotosService: SkillService {
 
         case (.picking, .pass):
             emit(interaction, .ownerPassed)
-            forget(interaction)
+            await forget(interaction)
 
         case (.invited(let from, let offer, let proposal, let revision), .accept(let accepted)) where accepted == revision:
             sessions[interaction]?.advance(to: .accepted(revision: revision))
@@ -141,7 +149,7 @@ public actor SwapPhotosService: SkillService {
         case (.invited, .pass):
             // Silence: "If you pass, they just won't see it."
             emit(interaction, .ownerPassed)
-            forget(interaction)
+            await forget(interaction)
 
         default:
             throw SwapPhotosError.unexpectedAnswer(interaction)
@@ -181,7 +189,7 @@ public actor SwapPhotosService: SkillService {
             return sessions[interaction]?.stepID == step
         } catch {
             guard !task.isCancelled, let current = sessions[interaction], current.stepID == step else { return false }
-            end(interaction, after: error)
+            await end(interaction, after: error)
             return false
         }
     }
@@ -189,18 +197,19 @@ public actor SwapPhotosService: SkillService {
     /// A send that did not go out ends the interaction. A declined consent
     /// sheet is the coordinator's to record (it applies the pass), so it
     /// adds nothing here.
-    private func end(_ interaction: InteractionID, after error: any Error) {
+    private func end(_ interaction: InteractionID, after error: any Error) async {
         switch error {
         case OutboxError.consentDeclined: break
         case OutboxError.denied: emit(interaction, .blockedByPrivacy)
         default: emit(interaction, .failed)
         }
-        forget(interaction)
+        await forget(interaction)
     }
 
-    /// Cancels every send still in flight, so nothing more leaves for it.
+    /// Cancels every send still in flight and retires the conversation, so
+    /// nothing more leaves for it and nothing reopens it.
     public func withdraw(_ interaction: InteractionID) async {
-        forget(interaction)
+        await forget(interaction)
     }
 
     // MARK: - As a friend
@@ -221,12 +230,16 @@ public actor SwapPhotosService: SkillService {
               let count = Self.photoCount(offer.terms), (1...SwapPhotos.maxPhotos).contains(count),
               let chainedFrom = envelope.chainedFrom
         else { return }
+        // Never a conversation the ledger has retired (ADR 0021). A ledger
+        // that cannot answer opens nothing.
+        guard (try? await ledger.isRetired(envelope.conversation)) == false else { return }
         // Only someone who was in the plan, about a plan this phone was in.
         guard let plan = await planLookup(chainedFrom),
               plan.attendees.peers.contains(envelope.sender), plan.attendees.peers.contains(me)
         else { return }
-        // Another message may have opened this conversation while we looked.
-        guard byConversation[envelope.conversation] == nil else { return }
+        // Another message may have opened, or an ending closed, this
+        // conversation while we looked.
+        guard byConversation[envelope.conversation] == nil, !closed.contains(envelope.conversation) else { return }
 
         let id = InteractionID()
         let revision: UInt32 = 1
@@ -278,12 +291,12 @@ public actor SwapPhotosService: SkillService {
     /// Anything further along cannot be resumed, because the offer's terms
     /// and message IDs are not stored, so it is reported as failed. A link
     /// still waiting for its plan to end is the scheduler's, not ours. The
-    /// coordinator also passes interactions that ended in the last day; their
-    /// conversations stay closed to late retries.
+    /// coordinator also passes interactions that ended in the last day; they
+    /// are retired again, in case the app quit before it recorded that.
     public func restore(_ interactions: [Interaction]) async {
         for interaction in interactions where interaction.skill.id == descriptor.id {
             if interaction.state.isFinal {
-                closed.insert(interaction.conversation)
+                await retire(interaction.conversation)
                 continue
             }
             if interaction.state == .drafting { continue }
@@ -294,7 +307,7 @@ public actor SwapPhotosService: SkillService {
                 byConversation[interaction.conversation] = interaction.id
             } else {
                 emit(interaction.id, .failed)
-                closed.insert(interaction.conversation)
+                await retire(interaction.conversation)
             }
         }
     }
@@ -311,13 +324,21 @@ public actor SwapPhotosService: SkillService {
         continuation.yield(.lifecycle(interaction, event))
     }
 
-    /// Ends the session here: cancels every send still in flight for it, and
-    /// keeps its conversation closed, so a friend's retried offer after a
-    /// pass never shows the card again.
-    private func forget(_ interaction: InteractionID) {
+    /// Ends the session here: cancels every send still in flight for it and
+    /// retires its conversation, so a friend's retried offer after a pass
+    /// never shows the card again, after a restart too.
+    private func forget(_ interaction: InteractionID) async {
         if let tasks = inFlight.removeValue(forKey: interaction) { for task in tasks.values { task.cancel() } }
         guard let conversation = sessions.removeValue(forKey: interaction)?.conversation else { return }
         byConversation[conversation] = nil
+        await retire(conversation)
+    }
+
+    /// Records the ending in the ledger through Outbox, which also cancels any
+    /// send of the conversation still waiting in its queue or the
+    /// transport's (ADR 0021 decision 10).
+    private func retire(_ conversation: ConversationID) async {
         closed.insert(conversation)
+        do { try await outbox.retire(conversation) } catch { retireFailures += 1 }
     }
 }

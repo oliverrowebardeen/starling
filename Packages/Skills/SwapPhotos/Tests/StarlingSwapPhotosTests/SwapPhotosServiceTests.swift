@@ -38,18 +38,22 @@ enum Fixtures {
 struct Phone {
     let service: SwapPhotosService
     let transport: RecordingTransport
+    /// The phone's one ledger, shared by its Outbox and the service.
+    let ledger: InMemoryConversationLedger
 
-    init(policy: PolicyDecision = .allow, now: Date = Fixtures.afterTonight) {
-        self.init(now: now) { transport in
-            Outbox(transport: transport, policy: FixedPolicyEngine(policy), consent: ScriptedConsentProvider(.approved), now: { now })
+    init(policy: PolicyDecision = .allow, now: Date = Fixtures.afterTonight, ledger: InMemoryConversationLedger = InMemoryConversationLedger()) {
+        self.init(now: now, ledger: ledger) { transport, ledger in
+            Outbox(transport: transport, policy: FixedPolicyEngine(policy), consent: ScriptedConsentProvider(.approved), ledger: ledger, now: { now })
         }
     }
 
-    /// A phone whose Outbox the test builds around its transport.
-    init(now: Date = Fixtures.afterTonight, outbox: (RecordingTransport) -> Outbox) {
+    /// A phone whose Outbox the test builds around its transport and ledger.
+    init(now: Date = Fixtures.afterTonight, ledger: InMemoryConversationLedger = InMemoryConversationLedger(),
+         outbox: (RecordingTransport, InMemoryConversationLedger) -> Outbox) {
         let knownPlans = [Fixtures.parentConversation: Fixtures.plan]
         transport = RecordingTransport(localPeer: Fixtures.me)
-        service = SwapPhotosService(outbox: outbox(transport), me: Fixtures.me, planLookup: { knownPlans[$0] }, now: { now })
+        self.ledger = ledger
+        service = SwapPhotosService(outbox: outbox(transport, ledger), ledger: ledger, me: Fixtures.me, planLookup: { knownPlans[$0] }, now: { now })
     }
 
     func sent() async throws -> [Envelope] {
