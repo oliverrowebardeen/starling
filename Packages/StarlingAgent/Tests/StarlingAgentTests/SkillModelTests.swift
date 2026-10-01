@@ -31,7 +31,7 @@ import Testing
 
     @Test func fieldsFollowTheSkillsSlots() throws {
         #expect(try IntentGenerationSchema(skill: SampleSkills.downFor).properties == [
-            "wants", "avoids", "day", "earliestHour", "latestHour", "partOfDay", "issue:place", "maxDollars", "audience", "names",
+            "wants", "avoids", "day", "earliestHour", "latestHour", "partOfDay", "issue:place", "maxDollars", "audience", "names", "mode",
         ])
         #expect(try IntentGenerationSchema(skill: SampleSkills.findATime).properties == [
             "day", "earliestHour", "latestHour", "partOfDay", "wants", "avoids", "audience", "names",
@@ -44,8 +44,9 @@ import Testing
         let schema = try IntentGenerationSchema(skill: SampleSkills.downFor)
         let raw = try schema.raw(from: GeneratedContent(properties: [
             "wants": ["boba"], "avoids": [String](), "day": "tonight", "earliestHour": 7, "latestHour": 24, "partOfDay": "none",
-            "issue:place": ["nearby"], "maxDollars": 0, "audience": "everyone", "names": [String](),
+            "issue:place": ["nearby"], "maxDollars": 0, "audience": "everyone", "names": [String](), "mode": "quietly",
         ]))
+        #expect(raw.mode == .quietly)
         #expect(raw.rules.day == .relative(0))
         #expect(raw.rules.partOfDay == .evening)
         #expect(raw.rules.earliestHour == 7 && raw.rules.latestHour == nil && raw.rules.maxDollars == nil)
@@ -81,6 +82,34 @@ import Testing
         #expect(parsed.audience == nil)
         // No time named: the request lasts three hours.
         #expect(parsed.expiresAt == Timestamp(now.addingTimeInterval(3 * 3600)))
+    }
+
+    @Test func modeAndExceptionsOnlyWhenTheOwnerSaysSo() throws {
+        let skill = SampleSkills.downFor
+        let except = RawIntent(rules: RawRules(wants: ["boba"]), audience: .everyoneExcept, names: ["Jake"], mode: .quietly)
+        let parsed = try SkillOutputMapping.parsed(except, utterance: "quietly, boba with everyone except Jake", skill: skill, now: now, timeZone: utc)
+        #expect(parsed.audience == .everyoneExcept([]))
+        #expect(parsed.mentionedNames == ["Jake"])
+        #expect(parsed.mode == .askQuietly)
+
+        // The model's claims without the words behind them come to nothing.
+        let unsaid = try SkillOutputMapping.parsed(except, utterance: "boba with Jake", skill: skill, now: now, timeZone: utc)
+        #expect(unsaid.audience == nil && unsaid.mode == nil)
+        #expect(unsaid.mentionedNames == ["Jake"])
+
+        // The small model's habit: the friend left out comes back as an
+        // avoid. Code moves it, and only in the "everyone except" pattern.
+        let habit = RawIntent(rules: RawRules(wants: ["boba"], avoids: ["jake"]), audience: .everyone)
+        let moved = try SkillOutputMapping.parsed(habit, utterance: "boba tonight with everyone except Jake", skill: skill, now: now, timeZone: utc)
+        #expect(moved.audience == .everyoneExcept([]) && moved.mentionedNames == ["Jake"])
+        #expect(moved.constraints[.activity] == [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []), strength: .soft)])
+        let food = RawIntent(rules: RawRules(wants: ["food"], avoids: ["sushi"]), audience: .everyone)
+        let kept = try SkillOutputMapping.parsed(food, utterance: "anything but sushi, anyone?", skill: skill, now: now, timeZone: utc)
+        #expect(kept.constraints[.activity] == [try Constraint(.prefers(liked: [], avoided: [try Keyword("sushi")]), strength: .soft)])
+
+        // A mode the skill does not offer is never a chip.
+        let invite = RawIntent(rules: RawRules(wants: ["stats"]), mode: .quietly)
+        #expect(try SkillOutputMapping.parsed(invite, utterance: "quietly find a time for stats", skill: SampleSkills.findATime, now: now, timeZone: utc).mode == nil)
     }
 
     @Test func namesKeepTheOwnersSpellingAndSkipGroupWords() {

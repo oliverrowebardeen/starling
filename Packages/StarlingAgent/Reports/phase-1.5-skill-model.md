@@ -118,3 +118,72 @@ Remaining failure modes:
 ## Proposal sentence
 
 One live sample, with typed facts (Maya, Jake, boba, 8:30 PM tonight, a place), passed every check: "Maya and Jake are planning to meet at Boba Guys tonight at 8:30 PM for boba. Does that work for you?" The place was filled in by code from the `{place}` placeholder; the venue name never reached the prompt. Any sentence that fails a check is replaced by the template (`ProposalTemplate` in the Down for... package).
+
+## Core v2.1 round (2026-10-01)
+
+Core v2.1 (ADR 0020) adds send modes and new audience cases, so the chip schema gained a mode field and an `everyoneExcept` audience. The chip sets gained three tuning items and two held-out items for them, written together before either was measured. Same Mac, same model.
+
+| Measure | Before this round | After |
+|---------|------------------:|------:|
+| Chips all right, tuning set | 16 / 20 | 20 / 23 |
+| Chips all right, held-out set | 6 / 10 | 6 / 12 |
+| Mode chip, tuning / held-out | n/a | 23 / 23, 12 / 12 |
+| Worst chips call | 1,811 tokens | 2,021 tokens |
+| Routing, tuning set (prompt unchanged) | 36 / 40 | 36 / 40 |
+
+- The first run with the mode field reached 2,084 tokens, over ADR 0002's 2,048. Shorter field descriptions and instructions brought it to 2,021.
+- From the tuning set only: the small model files the friend in "everyone except Jake" under avoids. Code now moves an avoid that follows "everyone except" or "everyone but" into the left-out names; "anything but sushi" stays an avoid.
+- Held-out misses that remain: a group's name ("the climbing crew") read as an avoid; "who's up for" not read as everyone; "close friends" read as everyone; "Sam" read as an activity; "before 3" as 15 to 24.
+- The proposal sentence now gets the time as a `{time}` placeholder, like the place (review of PR #56, finding 7); a sentence with any time of its own is refused. One live sample after the change wrote "at {time}", which code folds into "tonight at 8:30 PM".
+- `SkillModel` cannot see the friends list, and `ParsedIntent` has no field for left-out names or a group, so names follow a convention for now: with `everyoneExcept([])` they are the friends left out, and a group's name arrives among them. `docs/requests/P15-B.md` asks for fields.
+
+### Chips, tuning set
+
+- Model: `apple.system`, 23 labeled utterances, 0 failed calls, 1 invented activities
+- Worst call: 2021 tokens
+
+| Chip | Correct | Accuracy |
+|------|--------:|---------:|
+| days | 23 / 23 | 100% |
+| times | 23 / 23 | 100% |
+| wants | 22 / 23 | 96% |
+| avoids | 23 / 23 | 100% |
+| budget | 23 / 23 | 100% |
+| place | 22 / 23 | 96% |
+| audience | 21 / 23 | 91% |
+| names | 23 / 23 | 100% |
+| mode | 23 / 23 | 100% |
+| **all chips** | 20 / 23 | 87% |
+
+| # | Utterance | Wrong chips | Got |
+|--:|-----------|-------------|-----|
+| 4 | who wants to play basketball this afternoon | audience | day +0; 12-17; wants basketball |
+| 5 | karaoke friday night with close friends | audience | day +3; 18-24; wants karaoke; ask everyone |
+| 16 | ramen near downtown on thursday | wants, place | day +2; 0-24; wants ramen, downtown; place nearby |
+
+### Chips, held-out set
+
+- Model: `apple.system`, 12 labeled utterances, 0 failed calls, 1 invented activities
+- Worst call: 2018 tokens
+
+| Chip | Correct | Accuracy |
+|------|--------:|---------:|
+| days | 12 / 12 | 100% |
+| times | 11 / 12 | 92% |
+| wants | 11 / 12 | 92% |
+| avoids | 11 / 12 | 92% |
+| budget | 12 / 12 | 100% |
+| place | 11 / 12 | 92% |
+| audience | 9 / 12 | 75% |
+| names | 10 / 12 | 83% |
+| mode | 12 / 12 | 100% |
+| **all chips** | 6 / 12 | 50% |
+
+| # | Utterance | Wrong chips | Got |
+|--:|-----------|-------------|-----|
+| 1 | who's up for bowling tonight | audience | day +0; 18-24; wants bowling |
+| 2 | hot pot tonight with Sam, under $25 | wants, names | day +0; 18-24; wants hot pot, sam; $25 |
+| 3 | quick coffee before 3 today | times | day +0; 15-24; wants coffee |
+| 4 | beach tomorrow afternoon if anyone's around | place | day +1; 12-17; wants beach; place beach; ask everyone |
+| 6 | pizza friday with close friends, no pineapple | audience | day +3; 0-24; wants pizza; avoids pineapple; ask everyone |
+| 11 | invite the climbing crew to bowling saturday | avoids, audience, names | day +4; 0-24; wants bowling; avoids climbing; ask everyone; mode invite |

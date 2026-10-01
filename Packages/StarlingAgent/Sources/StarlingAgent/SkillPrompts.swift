@@ -18,7 +18,8 @@ extension PromptRenderer {
         Read what the owner wants from their message. Fill a field only from the owner's own words. \
         Activities are short lowercase things to do or eat, never days, times, prices, places, or people. \
         Names are only names of people, never activities, places, or words like whoever or anyone. \
-        Audience is everyone when the owner asks anyone, whoever, or everyone.
+        Audience is everyone for anyone, whoever, or everyone; everyoneExcept when someone is left out. \
+        Mode only if the owner says quietly or invite.
         """
 
     package static let proposalInstructions = """
@@ -103,6 +104,12 @@ package enum SkillOutputMapping {
     /// friends" and "whoever's around" say who, not where.
     static let distanceWords: Set<String> = ["far", "near", "nearby", "walking"]
 
+    /// Words that ask quietly, or send an invitation (ADR 0020).
+    static let quietWords: Set<String> = ["quietly", "quiet", "secretly", "discreetly", "lowkey"]
+    static let inviteWords: Set<String> = ["invite", "inviting", "invitation", "invites"]
+    /// Words that leave someone out of everyone.
+    static let exceptWords: Set<String> = ["except", "but", "without", "minus", "excluding"]
+
     /// Words that ask everyone, or close friends, or no one in particular.
     static let everyoneWords: Set<String> = ["everyone", "everybody", "anyone", "anybody", "whoever", "whoevers", "all", "friends", "people", "folks", "crew", "group"]
     static let defaultExpiry: TimeInterval = 3 * 3600
@@ -113,6 +120,22 @@ package enum SkillOutputMapping {
     /// the message says so. Nothing is invented; the owner edits the rest.
     package static func parsed(_ raw: RawIntent, utterance: String, skill: SkillDescriptor, now: Date, timeZone: TimeZone) throws -> ParsedIntent {
         let slots = Set(skill.intent.slots.map(\.issue))
+        var raw = raw
+        if skill.intent.asksForAudience {
+            // "everyone except Jake": the small model files Jake under
+            // avoids. Right after "everyone except" or "everyone but", an
+            // avoid is a person left out, not something to skip.
+            let excepted = leftOut(in: Grounding.words(utterance))
+            let moved = raw.rules.avoids.filter { avoid in
+                let own = Grounding.words(avoid)
+                return !own.isEmpty && own.allSatisfy(excepted.contains)
+            }
+            if !moved.isEmpty {
+                raw.rules.avoids.removeAll { moved.contains($0) }
+                raw.names += moved
+                raw.audience = .everyoneExcept
+            }
+        }
         var rules = raw.rules
         // Interpretation of a request never sets sharing: privacy topics do
         // that, globally (ADR 0014).
@@ -146,14 +169,29 @@ package enum SkillOutputMapping {
             // A name is not something the owner wants to do or a place.
             let taken = Set((raw.rules.wants + raw.rules.avoids + raw.extras.values.flatMap { $0 }).flatMap { Grounding.words($0) })
             names = grounded(names: raw.names, in: utterance).filter { Set(Grounding.words($0)).isDisjoint(with: taken) }
-            if names.isEmpty {
+            let said = Set(words)
+            if raw.audience == .everyoneExcept, !names.isEmpty, !said.isDisjoint(with: exceptWords), !said.isDisjoint(with: everyoneWords) {
+                // The names are the friends to leave out; the app resolves
+                // them, since the model never sees the friends list.
+                audience = .everyoneExcept([])
+            } else if names.isEmpty {
                 switch raw.audience {
-                case .everyone where !Set(words).isDisjoint(with: everyoneWords): audience = .allFriends
+                case .everyone where !said.isDisjoint(with: everyoneWords): audience = .allFriends
                 case .closeFriends where words.contains("close"): audience = .closeFriends
                 default: break
                 }
             }
         }
+
+        // A mode chip only when the owner's words ask for it, and only one
+        // the skill offers.
+        var mode: SendMode?
+        switch raw.mode {
+        case .quietly where !Set(words).isDisjoint(with: quietWords): mode = .askQuietly
+        case .invite where !Set(words).isDisjoint(with: inviteWords): mode = .invite
+        default: break
+        }
+        if let chosen = mode, !skill.sendModes.contains(chosen) { mode = nil }
 
         var expiresAt: Timestamp?
         if skill.intent.asksForExpiry {
@@ -163,7 +201,21 @@ package enum SkillOutputMapping {
             }
             expiresAt = Timestamp(end)
         }
-        return ParsedIntent(constraints: try ConstraintSet(constraints), audience: audience, expiresAt: expiresAt, mentionedNames: names)
+        return ParsedIntent(constraints: try ConstraintSet(constraints), audience: audience, mode: mode, expiresAt: expiresAt, mentionedNames: names)
+    }
+
+    /// The words right after "everyone except" or "everyone but" (and the
+    /// like), up to "and" or the end: the people the owner leaves out.
+    static func leftOut(in words: [String]) -> Set<String> {
+        var found = Set<String>()
+        for index in words.indices.dropLast() where everyoneWords.contains(words[index]) && exceptWords.contains(words[index + 1]) {
+            var next = index + 2
+            while next < words.count, !["and", "tonight", "today", "tomorrow"].contains(words[next]) {
+                found.insert(words[next])
+                next += 1
+            }
+        }
+        return found
     }
 
     /// Names that appear in the message as written, in the message's own

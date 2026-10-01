@@ -45,7 +45,13 @@ package struct RouteSchema {
 /// grounding and mapping.
 package struct RawIntent: Hashable, Sendable {
     package enum Audience: String, Hashable, Sendable, CaseIterable {
-        case none, everyone, closeFriends, named
+        case none, everyone, closeFriends, everyoneExcept, named
+    }
+
+    /// How the owner asked to send it (ADR 0020), when the skill offers a
+    /// choice.
+    package enum Mode: String, Hashable, Sendable, CaseIterable {
+        case none, quietly, invite
     }
 
     package var rules = RawRules()
@@ -53,12 +59,14 @@ package struct RawIntent: Hashable, Sendable {
     package var extras: [IssueKey: [String]] = [:]
     package var audience = Audience.none
     package var names: [String] = []
+    package var mode = Mode.none
 
-    package init(rules: RawRules = RawRules(), extras: [IssueKey: [String]] = [:], audience: Audience = .none, names: [String] = []) {
+    package init(rules: RawRules = RawRules(), extras: [IssueKey: [String]] = [:], audience: Audience = .none, names: [String] = [], mode: Mode = .none) {
         self.rules = rules
         self.extras = extras
         self.audience = audience
         self.names = names
+        self.mode = mode
     }
 }
 
@@ -107,7 +115,10 @@ package struct IntentGenerationSchema {
         }
         if skill.intent.asksForAudience {
             add("audience", "Who the owner wants to ask", DynamicGenerationSchema(name: "Audience", anyOf: RawIntent.Audience.allCases.map(\.rawValue)))
-            add("names", "Names of people the owner mentioned, as written", words(Self.maxNames))
+            add("names", "Names of people or groups, as written", words(Self.maxNames))
+        }
+        if skill.sendModes.count > 1 {
+            add("mode", "How the owner asked to send it", DynamicGenerationSchema(name: "Mode", anyOf: RawIntent.Mode.allCases.map(\.rawValue)))
         }
         self.properties = names
         schema = try GenerationSchema(root: DynamicGenerationSchema(name: "Intent", properties: properties), dependencies: [])
@@ -140,6 +151,10 @@ package struct IntentGenerationSchema {
                 guard let audience = RawIntent.Audience(rawValue: choice) else { throw AgentModelError.invalidOutput("audience \(choice)") }
                 raw.audience = audience
             case "names": raw.names = try strings(name)
+            case "mode":
+                let choice = try content.value(String.self, forProperty: name)
+                guard let mode = RawIntent.Mode(rawValue: choice) else { throw AgentModelError.invalidOutput("mode \(choice)") }
+                raw.mode = mode
             default:
                 guard name.hasPrefix("issue:"), let issue = try? IssueKey(String(name.dropFirst(6))) else { continue }
                 raw.extras[issue] = try strings(name)

@@ -46,7 +46,7 @@ let phase15Skills = [SampleSkills.downFor, SampleSkills.findATime, SampleSkills.
             .activity: [try Constraint(.prefers(liked: [try Keyword("tea")], avoided: []), strength: .soft)],
         ]), mentionedNames: ["Maya"])
         let result = ChipScorer.score(label, parsed: wrong, now: now, timeZone: InterpretationSet.timeZone)
-        #expect(result.correct == [.avoids, .budget])
+        #expect(result.correct == [.avoids, .budget, .mode])
         #expect(result.inventedWants == ["tea"])
     }
 
@@ -54,7 +54,8 @@ let phase15Skills = [SampleSkills.downFor, SampleSkills.findATime, SampleSkills.
         // Every label is in New's length limit and names only slot issues.
         for label in ChipSet.labels + ChipSet.heldOut {
             _ = try OwnerUtterance(label.text)
-            #expect(label.audience == nil || ["everyone", "close"].contains(label.audience!))
+            #expect(label.audience == nil || ["everyone", "close", "except"].contains(label.audience!))
+            #expect(label.mode == nil || ["quietly", "invite"].contains(label.mode!))
         }
     }
 }

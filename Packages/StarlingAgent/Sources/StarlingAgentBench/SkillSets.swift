@@ -99,18 +99,24 @@ public struct ChipLabel: Hashable, Sendable, Codable {
     public let fields: InterpretationLabel
     /// Each item is one expected place word, with `|` between spellings.
     public let place: [String]
-    /// "everyone", "close", or nil when the owner said nobody in particular.
+    /// "everyone", "close", "except", or nil when the owner said nobody in
+    /// particular. With "except", `names` are the friends left out.
     public let audience: String?
+    /// Names of friends or of the owner's groups, as written.
     public let names: [String]
+    /// "quietly" or "invite" when the owner's words ask for a send mode.
+    public let mode: String?
 
     public init(
         _ text: String, day: InterpretationLabel.Day? = nil, from: ClosedRange<Int> = 0...0, to: ClosedRange<Int> = 24...24,
-        wants: [String] = [], avoids: [String] = [], budget: Int? = nil, place: [String] = [], audience: String? = nil, names: [String] = []
+        wants: [String] = [], avoids: [String] = [], budget: Int? = nil, place: [String] = [], audience: String? = nil, names: [String] = [],
+        mode: String? = nil
     ) {
         fields = InterpretationLabel(text, day: day, from: from, to: to, wants: wants, avoids: avoids, budget: budget)
         self.place = place
         self.audience = audience
         self.names = names
+        self.mode = mode
     }
 
     public var text: String { fields.text }
@@ -143,6 +149,11 @@ public enum ChipSet {
         .init("anyone free for a walk around the lake", wants: ["walk"], place: ["lake|around the lake"], audience: "everyone"),
         .init("tacos, $15 max, whoever's around", wants: ["tacos"], budget: 15, audience: "everyone"),
         .init("climbing wednesday evening with Jake", day: .wednesday, from: evening, to: lateEnd, wants: ["climbing|climb"], names: ["Jake"]),
+        // Core v2.1: send modes and leaving someone out (ADR 0020). Added
+        // with their held-out items, before any measurement of them.
+        .init("quietly see if anyone's up for boba tonight", day: .today, from: evening, to: lateEnd, wants: ["boba"], audience: "everyone", mode: "quietly"),
+        .init("invite Maya and Jake to tacos friday", day: .friday, wants: ["tacos"], names: ["Maya", "Jake"], mode: "invite"),
+        .init("boba tonight with everyone except Jake", day: .today, from: evening, to: lateEnd, wants: ["boba"], audience: "except", names: ["Jake"]),
     ]
 
     public static let heldOut: [ChipLabel] = [
@@ -156,5 +167,7 @@ public enum ChipSet {
         .init("run along the river at 7 tomorrow morning", day: .tomorrow, from: 7...7, wants: ["run|running"], place: ["river|along the river"]),
         .init("cheap eats near campus, $8 max", wants: ["cheap eats|food|eats"], budget: 8, place: ["campus|near campus"]),
         .init("tennis this afternoon, anyone?", day: .today, from: 12...13, to: 17...18, wants: ["tennis"], audience: "everyone"),
+        .init("invite the climbing crew to bowling saturday", day: .saturday, wants: ["bowling"], names: ["climbing crew"], mode: "invite"),
+        .init("dinner tonight with everyone but Sam", day: .today, from: evening, to: lateEnd, wants: ["dinner"], audience: "except", names: ["Sam"]),
     ]
 }

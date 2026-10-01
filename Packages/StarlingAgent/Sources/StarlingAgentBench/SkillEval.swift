@@ -111,7 +111,7 @@ public struct RoutingReport: Sendable, Codable {
 // MARK: - Chips
 
 public enum ChipField: String, Hashable, Sendable, Codable, CaseIterable {
-    case days, times, wants, avoids, budget, place, audience, names
+    case days, times, wants, avoids, budget, place, audience, names, mode
 }
 
 public struct ChipResult: Hashable, Sendable, Codable {
@@ -120,6 +120,7 @@ public struct ChipResult: Hashable, Sendable, Codable {
     public let place: [String]
     public let audience: String?
     public let names: [String]
+    public let mode: String?
     public let error: String?
     public let correct: Set<ChipField>
     public let inventedWants: [String]
@@ -147,19 +148,27 @@ public enum ChipScorer {
         let audience: String? = switch parsed.audience {
         case .allFriends?: "everyone"
         case .closeFriends?: "close"
+        case .everyoneExcept?: "except"
+        case .group?: "group"
         case .picked?, nil: nil
         }
         if audience == label.audience { correct.insert(.audience) }
+        let mode: String? = switch parsed.mode {
+        case .askQuietly?: "quietly"
+        case .invite?: "invite"
+        case nil: nil
+        }
+        if mode == label.mode { correct.insert(.mode) }
         if parsed.mentionedNames.map({ $0.lowercased() }) == label.names.map({ $0.lowercased() }) { correct.insert(.names) }
 
         return ChipResult(
-            label: label, actual: fields, place: place, audience: audience, names: parsed.mentionedNames, error: nil,
+            label: label, actual: fields, place: place, audience: audience, names: parsed.mentionedNames, mode: mode, error: nil,
             correct: correct, inventedWants: base.inventedWants, usage: usage, latencyMilliseconds: latencyMilliseconds
         )
     }
 
     public static func failure(_ label: ChipLabel, error: String) -> ChipResult {
-        ChipResult(label: label, actual: nil, place: [], audience: nil, names: [], error: error, correct: [], inventedWants: [], usage: nil, latencyMilliseconds: 0)
+        ChipResult(label: label, actual: nil, place: [], audience: nil, names: [], mode: nil, error: error, correct: [], inventedWants: [], usage: nil, latencyMilliseconds: 0)
     }
 }
 
@@ -229,6 +238,7 @@ public struct ChipReport: Sendable, Codable {
                 if !result.place.isEmpty { got += "; place " + result.place.joined(separator: ", ") }
                 if let audience = result.audience { got += "; ask \(audience)" }
                 if !result.names.isEmpty { got += "; with " + result.names.joined(separator: ", ") }
+                if let mode = result.mode { got += "; mode \(mode)" }
                 lines.append("| \(index + 1) | \(result.label.text) | \(wrong) | \(result.error ?? got) |")
             }
         }
