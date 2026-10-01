@@ -3,6 +3,7 @@ import Foundation
 import StarlingCore
 import StarlingFakes
 import StarlingTransport
+import Synchronization
 import Testing
 
 /// Withdrawal cancels sends still in flight, and a policy denial at any
@@ -137,6 +138,53 @@ struct InFlightTests {
         #expect(await !group.wire.sent(by: oliver.id).contains { $0.body.kind == .propose })
         // Maya hears "no plan" and nothing else.
         #expect(await maya.reaches(.ended(.nobodyUp), in: request.conversation))
+    }
+
+    /// ADR 0011, amendment 14: a send whose step was superseded while it was
+    /// in flight reports nothing. Oliver's query to Jake waits on a consent
+    /// sheet; meanwhile Maya answers, the answer window closes, and Oliver
+    /// proposes. Then the policy recheck denies the old query.
+    @Test func aDenialForASupersededStepIsDropped() async throws {
+        let quick = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                            answerWindow: .milliseconds(400), confirmWindow: .seconds(3))
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let gate = ConsentGate()
+        let jakeID = Mutex<PeerID?>(nil)
+        let checks = Mutex(0)
+        // Queries to Jake: ask on the first check, deny on the recheck.
+        let policy = FixedPolicyEngine(decide: { message in
+            let envelope = message.envelope
+            guard envelope.body.kind == .query, envelope.recipient == jakeID.withLock({ $0 }) else { return .allow }
+            let check = checks.withLock { $0 += 1; return $0 }
+            return check == 1
+                ? .needsConsent(Disclosure(recipient: envelope.recipient, recipientModel: nil, items: [], conversation: envelope.conversation, skill: envelope.skill))
+                : .deny(PolicyViolation(rule: "test.never", issue: .place))
+        })
+        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: policy, gate: gate, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: quick)
+        jakeID.withLock { $0 = jake.id }
+        let group = try await Group([oliver, maya, jake], hub: hub)
+        defer { Task { await group.stop() } }
+
+        let request = try await oliver.organize(Venues.all, with: [maya, jake])
+        #expect(await eventually { await gate.waiting >= 1 })
+        #expect(await eventually { await oliver.coordinator.received.contains { if case .lifecycle(request.id, .proposalReady) = $0 { true } else { false } } })
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(await !oliver.coordinator.received.contains(.lifecycle(request.id, .blockedByPrivacy)))
+        #expect(await !group.wire.sent(by: oliver.id).contains { $0.body.kind == .query && $0.recipient == jake.id })
+        // The plan goes ahead. Oliver's coordinator refused the proposal
+        // while its sheet for the old query was up (a cancelled consent
+        // request has no event yet; docs/requests/P15-D.md), so the owner's
+        // yes goes to the service directly.
+        #expect(await maya.reaches(.proposed, in: request.conversation))
+        try await maya.accept(in: request.conversation)
+        try await oliver.service.answer(request.id, with: .accept(proposal: 1))
+        #expect(await maya.reaches(.planned, in: request.conversation))
+        #expect(await oliver.coordinator.received.contains(.lifecycle(request.id, .everyoneConfirmed(revision: 1))))
     }
 
     @Test func aDeclinedSheetAddsNoEventFromTheService() async throws {

@@ -6,6 +6,9 @@ import StarlingCore
 struct Organizer {
     enum Phase: Equatable { case asking, proposing, settled, ended }
 
+    /// The step a send was made for (ADR 0011, amendment 14).
+    enum Step: Equatable { case asking, proposing(UInt32) }
+
     let id: InteractionID
     let conversation: ConversationID
     let chainedFrom: ConversationID?
@@ -33,6 +36,13 @@ struct Organizer {
     var confirmationsRepeated: [PeerID: Int] = [:]
 
     var isFinished: Bool { phase == .settled || phase == .ended }
+    var step: Step? {
+        switch phase {
+        case .asking: .asking
+        case .proposing: proposal.map { .proposing($0.revision) }
+        case .settled, .ended: nil
+        }
+    }
     var invited: [PeerID] { proposal?.participants.filter { friends.contains($0) } ?? [] }
     var waitingOn: [PeerID] { friends.filter { answers[$0] == nil && !out.contains($0) } }
     /// Friends who still think something may happen.
@@ -94,7 +104,7 @@ extension PickAPlaceService {
         // The coordinator applied `.started` before calling `start` (ADR
         // 0011, amendment 13); the service never reports it.
         for friend in friends {
-            spawn(conversation) { await $0.keepAsking(conversation, friend) }
+            spawn(conversation, asking: true) { await $0.keepAsking(conversation, friend) }
         }
         let window = configuration.answerWindow
         spawn(conversation) { service in
@@ -121,7 +131,7 @@ extension PickAPlaceService {
                 let query = try Query(issue: .place, candidates: .places(organizer.ranking))
                 try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
             } catch {
-                guard organizerCanRetry(conversation, after: error) else { return }
+                guard organizerCanRetry(conversation, after: error, step: .asking) else { return }
             }
             guard let next = await pause(interval) else { return }
             interval = next
@@ -203,6 +213,9 @@ extension PickAPlaceService {
         organizer.phase = .proposing
         organizer.out.formUnion(left)
         organized[conversation] = organizer
+        // A query still waiting on a consent sheet must not reach a friend
+        // who has already been told "no plan".
+        cancelAsking(conversation)
 
         // Friends the place does not fit, and friends who never answered,
         // hear "no plan" and nothing else.
@@ -240,7 +253,7 @@ extension PickAPlaceService {
                                           conversation: conversation, chainedFrom: organizer.chainedFrom)
                 organized[conversation]?.lastProposeID[friend] = sent.id
             } catch {
-                guard organizerCanRetry(conversation, after: error) else { return }
+                guard organizerCanRetry(conversation, after: error, step: .proposing(proposal.revision)) else { return }
             }
             guard let next = await pause(interval) else { return }
             interval = next
@@ -354,9 +367,10 @@ extension PickAPlaceService {
     }
 
     /// What a failed send means for the whole request. Returns whether to
-    /// keep retrying.
-    func organizerCanRetry(_ conversation: ConversationID, after error: any Error) -> Bool {
-        guard let organizer = organized[conversation], !organizer.isFinished else { return false }
+    /// keep retrying. A send made for a step the request has left is
+    /// dropped, whatever its result (ADR 0011, amendment 14).
+    func organizerCanRetry(_ conversation: ConversationID, after error: any Error, step: Organizer.Step) -> Bool {
+        guard let organizer = organized[conversation], !organizer.isFinished, organizer.step == step else { return false }
         switch error {
         case OutboxError.denied:
             // A topic set to Never, at any live step.

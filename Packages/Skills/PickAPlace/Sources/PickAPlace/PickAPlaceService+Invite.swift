@@ -118,13 +118,18 @@ extension PickAPlaceService {
         do {
             let answer = try Answer(query: query, issue: .place, status: .answered, acceptable: .places(acceptable))
             try await send(.answer(answer), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
-        } catch OutboxError.denied {
-            endInvite(conversation, event: .blockedByPrivacy, reply: nil)
-        } catch OutboxError.consentDeclined {
-            // The coordinator applies the pass.
-            endInvite(conversation, event: nil, reply: nil)
         } catch {
+            // The list belongs to the step before any proposal; once one has
+            // arrived, the result no longer describes the current step
+            // (ADR 0011, amendment 14).
+            guard invites[conversation]?.proposal == nil else { return }
+            switch error {
+            case OutboxError.denied: endInvite(conversation, event: .blockedByPrivacy, reply: nil)
+            // The coordinator applies the pass.
+            case OutboxError.consentDeclined: endInvite(conversation, event: nil, reply: nil)
             // The organizer asks again.
+            default: break
+            }
         }
     }
 
@@ -194,7 +199,11 @@ extension PickAPlaceService {
             guard revision == proposal.revision else { throw PickAPlaceError.staleProposal }
             guard !invite.accepted else { return }
             let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
-            switch await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom) {
+            let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
+            // A yes to a proposal that has since been replaced reports
+            // nothing (ADR 0011, amendment 14).
+            guard invites[conversation]?.proposal?.revision == revision else { return }
+            switch result {
             case nil:
                 break
             case is CancellationError?:

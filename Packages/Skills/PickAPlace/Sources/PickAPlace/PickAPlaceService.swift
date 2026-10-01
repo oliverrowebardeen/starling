@@ -137,7 +137,14 @@ public actor PickAPlaceService: SkillService {
     /// Withdrawing or ending it cancels them, so a send suspended on a
     /// consent sheet or the policy recheck never leaves afterwards. Each
     /// entry removes itself when its work finishes.
-    var tasks: [ConversationID: [UUID: @Sendable () -> Void]] = [:]
+    var tasks: [ConversationID: [UUID: Tracked]] = [:]
+
+    /// One tracked piece of work. Asking work is cancelled on its own when
+    /// the organizer stops asking.
+    struct Tracked {
+        let asking: Bool
+        let cancel: @Sendable () -> Void
+    }
 
     /// - Parameters:
     ///   - localPeer: This phone's ID, the Outbox's transport's `localPeer`.
@@ -221,7 +228,7 @@ public actor PickAPlaceService: SkillService {
 
     /// Ends every request silently and finishes `events`.
     public func shutdown() async {
-        for list in tasks.values { list.values.forEach { $0() } }
+        for list in tasks.values { list.values.forEach { $0.cancel() } }
         tasks = [:]
         organized = [:]
         invites = [:]
@@ -249,13 +256,13 @@ public actor PickAPlaceService: SkillService {
 
     /// Runs work for one conversation on its own task, cancelled when the
     /// conversation ends.
-    func spawn(_ conversation: ConversationID, _ work: @escaping @Sendable (isolated PickAPlaceService) async -> Void) {
+    func spawn(_ conversation: ConversationID, asking: Bool = false, _ work: @escaping @Sendable (isolated PickAPlaceService) async -> Void) {
         let token = UUID()
         let task = Task {
             await work(self)
             self.taskEnded(token, in: conversation)
         }
-        tasks[conversation, default: [:]][token] = { task.cancel() }
+        tasks[conversation, default: [:]][token] = Tracked(asking: asking, cancel: { task.cancel() })
     }
 
     func taskEnded(_ token: UUID, in conversation: ConversationID) {
@@ -275,14 +282,24 @@ public actor PickAPlaceService: SkillService {
             }
         }
         let token = UUID()
-        tasks[conversation, default: [:]][token] = { task.cancel() }
+        tasks[conversation, default: [:]][token] = Tracked(asking: false, cancel: { task.cancel() })
         let result = await task.value
         taskEnded(token, in: conversation)
         return result
     }
 
     func cancelTasks(_ conversation: ConversationID) {
-        tasks.removeValue(forKey: conversation)?.values.forEach { $0() }
+        tasks.removeValue(forKey: conversation)?.values.forEach { $0.cancel() }
+    }
+
+    /// Cancels only the organizer's queries, including one waiting on a
+    /// consent sheet, once it has stopped asking.
+    func cancelAsking(_ conversation: ConversationID) {
+        guard let list = tasks[conversation] else { return }
+        for (token, tracked) in list where tracked.asking {
+            tracked.cancel()
+            tasks[conversation]?[token] = nil
+        }
     }
 
     /// Waits `interval`, then returns the next, doubled up to the maximum;
