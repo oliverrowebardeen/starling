@@ -1,7 +1,7 @@
 # ADR 0100: Noise secure channel implementation
 
 - Status: Proposed
-- Date: 2026-09-30 (revised the same day after three Codex reviews of PR #16; see decisions 5, 7, 11, and 12)
+- Date: 2026-09-30 (revised the same day after four Codex reviews of PR #16; see decisions 5, 7, 11, and 12)
 - Owner: Lane E1 (Identity and secure channel)
 
 ## Context
@@ -47,7 +47,8 @@ Noise revision 34 facts this design relies on:
      - the last confirmed session, which only a confirmed session can replace, so it survives any number of unconfirmed replacements;
      - every newer session replaced before it was confirmed, up to all the sessions one restart budget can create (`maxUnconfirmedRestarts + 1`; third review, finding 2), in case the responder switched to one of them. A frame that decrypts under one of these confirms it: it becomes the last confirmed session, kept until a newer one is confirmed.
    - If no acknowledgement ever arrives, the initiator starts a new handshake.
-   - **One restart budget.** Every replacement of an unconfirmed session spends from the same budget of two, refilled only when a session is confirmed or the link comes back (added after the second review, finding 3). That covers an unacknowledged confirm, the nonce cap, and an explicit `reconnect`. A link that loses every confirmation therefore ends in silence rather than in endless handshakes.
+   - **One restart budget.** Every replacement of an unconfirmed session spends from the same budget of two, refilled only by authenticated progress (a frame from the responder on the current or a superseded session) or a link reset (added after the second review, finding 3). That covers an unacknowledged confirm, the nonce cap, and an explicit `reconnect`. A link that loses every confirmation therefore ends in silence rather than in endless handshakes.
+   - **One admission gate** (fourth review, finding 3). Every new handshake goes through it, whether it comes from link-up, `reconnect`, the nonce cap, or a confirm timeout, and including a `reconnect` when no session is current. While unconfirmed sessions are retained, a new attempt is admitted only if it spends from the budget and if its later retirement could not evict a retained session the peer may still be using. Otherwise it waits for authenticated progress or a link reset.
 
    Each confirm has its own strictly increasing nonce, so a replayed confirm is dropped and cannot draw an acknowledgement.
 6. **Who initiates.** Either side may send message 1 when a link comes up, on `reconnect(_:)`, or when a session rolls over. If both do, the lower `PeerID`'s handshake wins: the higher side abandons its own and answers. An initiator retries after 5 seconds, up to 3 attempts. That covers the gap between one phone finishing pairing and the other pinning the key.
@@ -59,16 +60,46 @@ Noise revision 34 facts this design relies on:
    - `status(of:)` reports the claimed ID next to the proven key, plus per-claim drop counts.
 9. **Sizes.** Outgoing plaintext is capped at `ProtocolLimits.maxEnvelopeBytes` (56 KiB). Ciphertext adds 26 bytes (type, nonce, kind, tag), which stays under `maxFrameBytes` (60 KiB).
 10. **Silence.** Every rejected frame is dropped without a reply and without a distinguishing error. The only local trace is a drop counter (ADR 0003 care requirement 4).
-11. **Revocation is immediate, and one authority orders it** (first review HIGH 1; extended after the second review's finding 1; made structural after the third review's finding 1, the third round in which unpair and pairing raced at a new await).
+11. **Revocation: one synchronous authority, and sessions stamped with an epoch** (first review HIGH 1; second review finding 1; third review finding 1; redesigned after the fourth review, because each round found a revocation race at a new await).
 
-    `PinAuthority` is the one authority over pinned keys. Every pin mutation goes through it: a pairing commit, or an unpair's removal. So does every use of a pin for a handshake. **Invariant:** once an unpair of a peer has begun, no pin for that peer survives it, no lookup that overlaps it returns a pin, and no session with the peer exists after its first await. The rules that make it hold:
-    - **Mark first.** A revocation takes its mark synchronously, before any await. It moves the peer's revocation token, and an unpair also records a removal in progress until the pin is gone. `SecureTransport.unpair(_:)` ends every session and handshake with the peer in the same synchronous step, then notifies observers (`PairingService` cancels its ceremony) and removes the pin.
-    - **One lock for mutations.** Pairing commits and unpair removals run one at a time under one async lock, so they never interleave, whatever they await. A commit saves only if the token has not moved since its ceremony began and no removal is in progress. It checks the token again after the save; if a revocation started meanwhile, it removes the pin before releasing the lock. No pin is left behind, even when the save already landed.
-    - **Lookups are refused while unpairing.** A lookup returns nothing while a removal is in progress, and discards what it read if the token moved. A pin that a commit will undo exists only while the removal mark is set: the mark is set before the commit's post-save check and cleared only after the removal, which waits for the commit to release the lock. So no lookup can return that pin. Lookups do not take the lock, so a slow save cannot stall the event loop.
-    - **Stale continuations are void.** `SecureTransport` also keeps a per-peer session generation, moved by every teardown, rollover, and revocation. A lookup that resumes under a different generation or revocation token returns nothing, and handshake state is created synchronously after that check.
-    - **Pairing cannot bypass the authority.** `PairingService` is created with the `SecureTransport` (sharing its authority and pairing link) or with an explicit `PinAuthority`, and commits only through it.
+    **One authority per identity.** The app creates one `PinAuthority` for its identity and pinned-peer store, and injects it into every `SecureTransport` (LocalP2P, Wi-Fi Aware) and every `PairingService`. No component creates its own. All revocation state lives in the authority behind a `Synchronization.Mutex`: checks and updates are atomic and contain no suspension point. Only Keychain I/O is async.
 
-    The tests hold each path at each of its awaits and check the invariant: the commit's save before and after the write, and the unpair's removal before and after the delete and its revocation notice.
+    **State, per peer:**
+    - `epoch`: a number that only moves forward (from a `GenerationTable`, decision 12).
+    - `removing`: unpairs in progress.
+    - `committing`: pairing commits in progress.
+    - `quarantined`: a removal failed and the pin may still be stored.
+
+    One pin lock, also in the authority, serializes every Keychain write (commits and removals).
+
+    **Transitions** (each synchronous, under the mutex):
+
+    | Event | Effect |
+    |-------|--------|
+    | `revoke(p)` (`disconnect`) | `epoch += 1` |
+    | unpair begins | `epoch += 1`, `removing += 1` |
+    | unpair ends (after the delete, under the pin lock) | `epoch += 1`, `removing -= 1`; if the delete failed, `quarantined = true`, otherwise `false` |
+    | commit begins (under the pin lock) | allowed only if `epoch == e0` (the epoch when its ceremony started), `removing == 0`, and not quarantined; then `committing += 1` |
+    | commit ends | `committing -= 1`; if `epoch != e0` after the save, delete the pin (quarantine if that fails) and `epoch += 1` |
+    | lookup | refused if `removing`, `committing`, or `quarantined`; otherwise read the pin, then accept it only if the epoch and those flags are unchanged; returns the pin and its epoch `e` |
+
+    **Sessions carry their epoch.** A handshake records the epoch `e` of the lookup that authenticated it, and the session it creates is stamped with `e`. It is installed only if `e` is still the peer's epoch. Then, on every transport sharing the authority, every frame sealed or accepted on a session is checked synchronously against the peer's current epoch; a session whose epoch is behind is dead and is torn down on first touch. Observers (transports, pairing services) are also notified of revocations, but only for liveness: correctness rests on the per-frame check.
+
+    **Invariant.** For every peer `p` and every transport sharing the authority:
+    1. A frame is sent or delivered on a session only if the session's epoch equals `p`'s current epoch at that moment.
+    2. The epoch moves synchronously at the start of every revocation (before any await), at the end of every unpair, and on every commit rollback.
+
+    It follows that:
+    - (a) No session authenticated before a revocation began is usable after it began, on any transport.
+    - (b) No pin survives an unpair: the delete runs under the pin lock after every commit that began earlier, and a commit that saved and then saw the epoch move deletes its own pin. If a delete fails, the peer is quarantined and lookups refuse it.
+    - (c) No session can be authenticated from a pin that an unpair or a commit might still remove, because lookups are refused while either is in progress. The end-of-unpair and rollback epoch moves kill anything that slipped through regardless.
+    - (d) A commit leaves a pin only if no revocation began between its ceremony's start and its end.
+
+    The tests hold each path at each of its awaits, with two `SecureTransport`s sharing one authority:
+    - the commit's save, before and after the write;
+    - the unpair's removal, before and after the delete;
+    - the revocation notice;
+    - a `disconnect` during a held commit.
 12. **Bounded state** (third review, finding 3). Only peers with a pinned key get per-peer state; link presence is a separate set cleared on link loss, so an unauthenticated claim alone leaves nothing behind. On link loss a peer keeps only its replay cache, and a revoked peer keeps nothing. Idle state past `maxTrackedPeers` (default 1,024) is forgotten.
 
     Session generations and revocation tokens live in a bounded `GenerationTable`:
