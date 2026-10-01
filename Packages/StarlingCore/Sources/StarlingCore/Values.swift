@@ -77,7 +77,8 @@ public struct IssueKey: Hashable, Comparable, Sendable, CustomStringConvertible 
         self.rawValue = rawValue
     }
 
-    private init(known: String) { rawValue = known }
+    /// For constants defined in this module; skips validation.
+    init(known: String) { rawValue = known }
 
     public static let time = IssueKey(known: "time")
     public static let activity = IssueKey(known: "activity")
