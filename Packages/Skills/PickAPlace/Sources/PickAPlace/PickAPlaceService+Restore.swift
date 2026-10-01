@@ -38,8 +38,10 @@ extension PickAPlaceService {
             }
             let conversation = interaction.conversation
             let isNew = conversationOf[interaction.id] == nil && organized[conversation] == nil && invites[conversation] == nil
-            let resumed = isNew && interaction.skill.version.isCompatible(with: descriptor.ref.version)
-                && (interaction.role == .initiator ? resumeOrganizer(interaction) : resumeInvite(interaction))
+            var resumed = false
+            if isNew, interaction.skill.version.isCompatible(with: descriptor.ref.version) {
+                resumed = interaction.role == .initiator ? await resumeOrganizer(interaction) : await resumeInvite(interaction)
+            }
             if !resumed { emit(interaction.id, .failed) }
         }
     }
@@ -84,7 +86,7 @@ extension PickAPlaceService {
         return (place, roster)
     }
 
-    private func resumeOrganizer(_ interaction: Interaction) -> Bool {
+    private func resumeOrganizer(_ interaction: Interaction) async -> Bool {
         let step = Self.step(of: interaction.state)
         guard step == .proposed || step == .confirmed, let proposal = interaction.proposal,
               let (place, roster) = Self.parts(of: proposal), roster.first == localPeer
@@ -112,16 +114,19 @@ extension PickAPlaceService {
         return true
     }
 
-    private func resumeInvite(_ interaction: Interaction) -> Bool {
+    private func resumeInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
         switch Self.step(of: interaction.state) {
         case .negotiating:
             // The coordinator recorded the friend who asked.
             guard let organizer = interaction.participants.first, organizer != localPeer else { return false }
-            // The candidates are not stored: the organizer's next query sets
-            // them, and only that one set is answered.
+            // The candidates already answered, from the ledger, so only that
+            // set is answered again. With none recorded, the list never
+            // left, and the organizer's next query sets them. An unreadable
+            // ledger leaves the request unable to answer at all.
+            guard let answered = try? await ledger.answeredCandidates(in: conversation) else { return false }
             var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
-                                candidates: [])
+                                candidates: Array(answered))
             invite.announced = true
             invite.revision = interaction.proposalRevision ?? 0
             invites[conversation] = invite

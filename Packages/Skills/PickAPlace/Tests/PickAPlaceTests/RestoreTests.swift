@@ -161,6 +161,56 @@ struct RestoreTests {
         #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
     }
 
+    /// Re-review of PR #55, finding 1: a relaunch never lets a friend ask
+    /// about more places in the same conversation.
+    @Test func aRelaunchNeverOpensNewCandidates() async throws {
+        let hub = LoopbackHub()
+        let pho = candidate("Pho Hoa", id: "I.pho", tier: .one, kinds: ["restaurant"])
+        let maps = FakeMaps(Venues.all + [pho])
+        let maya = Phone("Maya", hub: hub, maps: maps)
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        let skill = PickAPlaceSkill.ref
+        let conversation = ConversationID()
+        func ask(_ places: [PlaceChoice]) async throws {
+            try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places(places))), to: maya.id,
+                                          conversation: conversation, skill: skill, mode: .invite)
+        }
+        let first = [Venues.bobaGuys.choice, Venues.teaLab.choice]
+        try await ask(first)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+
+        for _ in 0..<2 {
+            await maya.restart()
+            try await ask([Venues.fancy.choice, pho.choice])
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        let answered = await group.wire.sent(by: maya.id).compactMap { envelope -> [PlaceChoice]? in
+            if case .answer(let answer) = envelope.body, case .places(let places)? = answer.acceptable { places } else { nil }
+        }
+        #expect(answered.allSatisfy { Set($0).isSubset(of: first) })
+        #expect(try await maya.ledger.answeredCandidates(in: conversation) == Set(first))
+
+        // The same places again are still answered.
+        try await ask(first)
+        #expect(await eventually { await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }.count >= 2 })
+    }
+
+    @Test func anUnavailableLedgerAnswersNothing() async throws {
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all))
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        await maya.ledger.setFailingAnswered(true)
+        try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice, Venues.fancy.choice]))),
+                                      to: maya.id, conversation: ConversationID(), skill: PickAPlaceSkill.ref, mode: .invite)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await group.wire.sent(by: maya.id).isEmpty)
+        #expect(await maya.coordinator.incoming.isEmpty)
+    }
+
     @Test func anUnreadableLedgerAdmitsNothing() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))

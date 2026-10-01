@@ -152,12 +152,19 @@ extension PickAPlaceService {
             invites[conversation]?.acceptable = acceptable
             invites[conversation]?.facts = facts
         }
+        let saysNo = acceptable.isEmpty && organizerIsOnDevice(invite.organizer)
+        // A yes or no about a candidate is recorded before it leaves; if the
+        // record cannot be kept, or the conversation would pass its limit,
+        // nothing is answered (re-review of PR #55, finding 1).
+        if !acceptable.isEmpty || saysNo {
+            guard await recordAnswered(candidates, in: conversation) else { return }
+        }
         guard !acceptable.isEmpty else {
             // The no goes out without asking only to an organizer whose
             // agent runs on its phone, where the policy needs no sheet; to
             // anyone else the phone stays silent rather than show the owner
             // a sheet for a request it never showed them.
-            endInvite(conversation, event: .noAgreement, reply: organizerIsOnDevice(invite.organizer) ? .noOverlap : nil)
+            endInvite(conversation, event: .noAgreement, reply: saysNo ? .noOverlap : nil)
             return
         }
         announce(conversation)
@@ -179,6 +186,17 @@ extension PickAPlaceService {
             default: break
             }
         }
+    }
+
+    /// Adds `candidates` to the conversation's answered set in the ledger.
+    /// False when the ledger is unavailable or the set would pass
+    /// `ProtocolLimits.maxCandidatesAnsweredPerIssue`.
+    func recordAnswered(_ candidates: [PlaceChoice], in conversation: ConversationID) async -> Bool {
+        guard let previous = try? await ledger.answeredCandidates(in: conversation) else { return false }
+        let all = previous.union(candidates)
+        guard all.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue else { return false }
+        guard all != previous else { return true }
+        return (try? await ledger.recordAnswered(all, in: conversation, at: clock.now())) != nil
     }
 
     func organizerIsOnDevice(_ peer: PeerID) -> Bool {
