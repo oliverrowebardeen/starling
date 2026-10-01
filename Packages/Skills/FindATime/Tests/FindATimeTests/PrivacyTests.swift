@@ -103,12 +103,12 @@ struct PrivacyTests {
         await world.stop()
     }
 
-    /// ADR 0019, decision 4: an answer that only says which of the
-    /// friend's own times work carries no value of the owner's, so it goes
+    /// ADR 0019, decision 4 and amendment 10: an answer that only says
+    /// which of the friend's own times work, and an acceptance of exactly
+    /// what the friend proposed, carry no value of the owner's, so they go
     /// without a sheet whatever the time topic is set to. Ben sets time to
-    /// Ask me; his answer still leaves without asking, while his "That
-    /// works" (which repeats the terms) gets a sheet.
-    @Test func aYesOrNoAnswerNeedsNoSheet() async throws {
+    /// Ask me and is never asked, yet the plan is made.
+    @Test func aYesOrNoAnswerAndAnAcceptanceNeedNoSheet() async throws {
         var settings = PrivacySettings()
         try settings.set(.askMe, for: .time)
         let rules = OwnerRules(constraints: .empty, disclosure: settings.disclosureRules)
@@ -119,12 +119,14 @@ struct PrivacyTests {
                             policyWithFriends: { DeterministicPolicyEngine(ownerRules: rules, pairedPeers: $0) })
         try await world.start()
 
-        try await a.findATime(with: [b])
+        let started = try await a.findATime(with: [b])
         let (bCard, _) = try await b.waitForProposal()
         #expect(await sheet.asked == 0)
         #expect(settings.choice(for: .calendarDetails) == .never)
         try await b.accept(bCard)
-        try await eventually("Ben's sheet for his acceptance") { await sheet.asked == 1 }
+        try await a.accept(started)
+        try await b.waitForState(bCard, .planned)
+        #expect(await sheet.asked == 0)
         await world.stop()
     }
 
@@ -150,6 +152,14 @@ struct PrivacyTests {
             #expect(!sends.isEmpty)
             #expect(sends.allSatisfy { $0.context.interaction == id && $0.envelope.mode == .invite })
         }
+        let acceptances = await policyB.evaluated.filter { $0.envelope.body.kind == .accept }
+        #expect(!acceptances.isEmpty)
+        #expect(acceptances.allSatisfy { message in
+            guard case .accept(let acceptance) = message.envelope.body, let proposal = message.context.accepting else { return false }
+            return proposal.isAcceptedAsOffered(by: acceptance)
+        })
+        // The starter's confirmation repeats its own terms: no accepting.
+        #expect(await policyA.evaluated.filter { $0.envelope.body.kind == .accept }.allSatisfy { $0.context.accepting == nil })
         let answers = await policyB.evaluated.filter { $0.envelope.body.kind == .answer }
         #expect(answers.allSatisfy { message in
             guard case .answer(let answer) = message.envelope.body, let query = message.context.answering else { return false }

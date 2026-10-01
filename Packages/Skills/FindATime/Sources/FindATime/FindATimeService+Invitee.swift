@@ -210,7 +210,7 @@ extension FindATimeService {
         guard let plan = try? terms.plan(origin: id, asker: value.asker, local: localPeer) else { return ignore("proposal plan") }
 
         let revision = (value.interaction.proposalRevision ?? 0) + 1
-        let offer = Offer(round: proposal.round, terms: proposal.terms, ids: [envelope.id], latest: envelope.id, revision: revision, plan: plan)
+        let offer = Offer(round: proposal.round, terms: proposal.terms, proposal: proposal, ids: [envelope.id], latest: envelope.id, revision: revision, plan: plan)
         let card = SkillProposal(revision: revision, participants: plan.attendees.peers, terms: proposal.terms, plan: plan)
         guard emit(.proposalReady(card), to: &value.interaction) else { return }
         value.offer = offer

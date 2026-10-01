@@ -370,10 +370,14 @@ public actor FindATimeService: SkillService {
         // so the policy can see it only says yes or no (ADR 0019).
         let interaction = initiating[conversation]?.interaction.id ?? invited[conversation]?.interaction.id ?? finished[conversation]?.interaction
         let answering: Query? = if case .answer = body { invited[conversation]?.query } else { nil }
+        // A friend's acceptance repeats exactly the starter's proposal, so it
+        // goes like a yes (ADR 0019 amendment 10). The starter's own
+        // confirmation repeats its own terms and stays under the topics.
+        let accepting: Proposal? = if case .accept = body { invited[conversation]?.offer?.proposal } else { nil }
         do {
             let envelope = try await outbox.send(
                 body, to: peer, conversation: conversation, recipientCard: cards[peer],
-                context: OutboundContext(answering: answering, interaction: interaction),
+                context: OutboundContext(answering: answering, interaction: interaction, accepting: accepting),
                 skill: FindATimeSkill.ref, mode: .invite, chainedFrom: chainedFrom
             )
             diagnostics.sends += 1

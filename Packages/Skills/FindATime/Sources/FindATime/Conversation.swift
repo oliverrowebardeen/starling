@@ -124,6 +124,9 @@ struct Invited: Hashable, Sendable, Codable {
 struct Offer: Hashable, Sendable, Codable {
     let round: UInt16
     let terms: Terms
+    /// The proposal as it arrived, passed to the policy with this phone's
+    /// acceptance (`OutboundContext.accepting`, ADR 0019 amendment 10).
+    var proposal: Proposal?
     /// Envelopes carrying these terms (the first and any retries).
     var ids: Set<MessageID>
     var latest: MessageID
