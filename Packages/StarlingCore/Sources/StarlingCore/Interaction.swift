@@ -149,7 +149,10 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     case withdrawn
     case failed
     case unsupported
-    /// The policy denied a send. Ends any live step except planned.
+    /// The policy denied a send. Ends any live step except planned. Like
+    /// `failed`, it names no revision: a service reports it only for a send
+    /// made for the current step, never for a superseded one (ADR 0011,
+    /// amendment 14).
     case blockedByPrivacy
     /// The planned time has passed.
     case planEnded

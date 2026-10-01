@@ -59,6 +59,7 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
     - If `start` throws, the coordinator applies `.failed`.
     - An invitee `Interaction` is created in negotiating and never receives `.started`.
 14. **A policy denial ends any live step except planned** (review of PR #51). Any step that sends can be denied, for example an invitee's acceptance after the owner set the topic to Never, so `blockedByPrivacy` ends drafting, negotiating, awaiting the owner, proposed, confirmed, and awaiting consent. A plan already agreed stands: a denied send after it does not call the plan off.
+    - Like `failed` and `noAgreement`, `blockedByPrivacy` names no revision, so Core cannot tell which send it belongs to. The service can: it reports a denial, or a failure, only for a send made for the interaction's current step, and drops the result of a send whose step was superseded (for example a denied acceptance of proposal 1 arriving after proposal 2 replaced it). Lane F tests this per skill.
 
 ## Consequences
 
