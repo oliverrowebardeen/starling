@@ -29,7 +29,12 @@ struct Organizer {
     var lastHeard: [PeerID: MessageID] = [:]
     var proposal: SkillProposal?
     var lastProposeID: [PeerID: MessageID] = [:]
+    /// The proposals sent to each friend, most recent last and bounded. A
+    /// yes counts only when it names one of them.
+    var proposeIDs: [PeerID: [MessageID]] = [:]
     var accepted: Set<PeerID> = []
+    /// Friends who passed or took their yes back. Final: a late or
+    /// repeated yes from them is ignored, so a withdrawal is never undone.
     var passed: Set<PeerID> = []
     var ownerAccepted = false
     var finalTerms: Terms?
@@ -162,9 +167,11 @@ extension PickAPlaceService {
         case (.asking, .reject):
             organizer.out.insert(sender)
         case (.proposing, .accept(let acceptance)):
-            guard organizer.invited.contains(sender), acceptance.terms == organizer.proposal?.terms else { return }
+            guard organizer.invited.contains(sender), !organizer.passed.contains(sender),
+                  acceptance.terms == organizer.proposal?.terms,
+                  organizer.proposeIDs[sender]?.contains(acceptance.proposal) == true
+            else { return }
             organizer.accepted.insert(sender)
-            organizer.passed.remove(sender)
         case (.proposing, .reject):
             guard organizer.invited.contains(sender) else { return }
             organizer.accepted.remove(sender)
@@ -252,6 +259,10 @@ extension PickAPlaceService {
                 let sent = try await send(.propose(Proposal(round: round, terms: proposal.terms)), to: friend,
                                           conversation: conversation, chainedFrom: organizer.chainedFrom)
                 organized[conversation]?.lastProposeID[friend] = sent.id
+                organized[conversation]?.proposeIDs[friend, default: []].append(sent.id)
+                if let count = organized[conversation]?.proposeIDs[friend]?.count, count > Self.maxRememberedProposals {
+                    organized[conversation]?.proposeIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
+                }
             } catch {
                 guard organizerCanRetry(conversation, after: error, step: .proposing(proposal.revision), friend: friend) else { return }
             }
@@ -259,6 +270,10 @@ extension PickAPlaceService {
             interval = next
         }
     }
+
+    /// Proposals remembered per friend, so a yes naming one sent a while ago
+    /// still counts.
+    static let maxRememberedProposals = 32
 
     func organizerAnswer(_ conversation: ConversationID, _ answer: OwnerAnswer) async throws {
         guard let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal else {

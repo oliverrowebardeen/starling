@@ -132,6 +132,33 @@ struct GroupFlowTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    @Test func aLateYesNeverUndoesAPass() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        try await maya.accept(in: conversation)
+        try await maya.pass(in: conversation)
+        #expect(await maya.reaches(.ended(.withdrawn), in: conversation))
+
+        // Maya's yes arrives again after her withdrawal, naming a real
+        // proposal; Jake sends a yes that names no proposal Oliver sent.
+        let proposals = await group.wire.envelopes.filter { $0.body.kind == .propose && $0.recipient == maya.id }
+        let terms = try #require(await oliver.interaction(conversation)?.proposal?.terms)
+        try await maya.outbox.send(.accept(Acceptance(proposal: try #require(proposals.last).id, terms: terms)), to: oliver.id,
+                                   conversation: conversation, skill: PickAPlaceSkill.ref)
+        try await jake.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: oliver.id,
+                                   conversation: conversation, skill: PickAPlaceSkill.ref)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await oliver.service.organized[conversation]?.accepted.isEmpty == true)
+
+        try await jake.accept(in: conversation)
+        try await oliver.accept(in: conversation)
+        #expect(await oliver.reaches(.planned, in: conversation))
+        #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, jake.id] })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aFriendWhomNothingFitsStaysSilentAndIsLeftOut() async throws {
         let (group, oliver, maya, jake) = try await threeFriends(
             jakeLimits: limits(budget: 5, needs: ["halal"], avoid: ["boba"]),
