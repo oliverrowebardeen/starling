@@ -1,6 +1,6 @@
 # ADR 0018: Hand-offs to Calendar, Messages, Maps, and Siri
 
-- Status: Proposed. Decision 2 (link a friend to a contact for Messages) answers a gap in the prompt and needs Oliver's agreement; decision 5 waits on what Muse and Dots are.
+- Status: Accepted (Oliver approved the contact link, decision 2, on 2026-09-30). Decision 5, Muse and Dots, stays open and out of Phase 1.5 scope.
 - Date: 2026-09-30
 - Owner: Orchestrator
 

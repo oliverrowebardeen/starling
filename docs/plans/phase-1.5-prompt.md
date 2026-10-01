@@ -2,11 +2,11 @@
 
 Oliver's Phase 1.5 prompt, 2026-09-30, kept as written below this note. Where it and an ADR differ, the ADR wins:
 
-- **Intent schema** (section 2): data in `IntentSchema`, turned into a guided-generation schema by StarlingAgent at runtime, not an `@Generable` type in each skill. ADR 0010, decision 2; Proposed until Oliver agrees.
-- **Pre-permission sheet** (sections 5 and 10.3): one "Continue" button before the system alert, per the HIG. "Just ask me" is the fallback on denial and a switch in You. ADR 0013; Proposed until Oliver agrees.
+- **Intent schema** (section 2): data in `IntentSchema`, turned into a guided-generation schema by StarlingAgent at runtime, not an `@Generable` type in each skill. ADR 0010, decision 2; approved by Oliver.
+- **Pre-permission sheet** (sections 5 and 10.3): one "Continue" button before the system alert, per the HIG. "Just ask me" is the fallback on denial and a switch in You. ADR 0013; approved by Oliver.
 - **Banned words** (section 9, exit criterion 7): Oliver clarified on 2026-09-30 that the goal is not looking like a dating app, not a word list, and that a crush skill could come later. Tone is reviewed by eye (ADR 0017).
 - **New (+) button** (section 7): a `Tab(role: .prominent)` whose screen is the composer. iOS has no action-button tab, and the HIG reserves tab bars for navigation. ADR 0015.
-- **Message the group** (section 4): Starling has no phone numbers. The owner may link a friend to a contact on this phone. ADR 0018; Proposed until Oliver agrees.
+- **Message the group** (section 4): Starling has no phone numbers. The owner may link a friend to a contact on this phone. ADR 0018; approved by Oliver.
 - **Muse and Dots** (section 3): open question. They are not in the brief or the repo.
 - **DESIGN.md** did not exist when the prompt was written. It now does (`docs/DESIGN.md`).
 
