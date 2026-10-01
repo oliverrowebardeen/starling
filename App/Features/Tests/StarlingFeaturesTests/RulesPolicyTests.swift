@@ -17,7 +17,7 @@ final class EngineFactory: @unchecked Sendable {
         return FixedPolicyEngine(decide: { message in
             neverPlace
                 ? .deny(PolicyViolation(rule: "never", issue: .place))
-                : .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: []))
+                : .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: [], conversation: message.envelope.conversation, skill: message.envelope.skill))
         })
     }
 }

@@ -69,6 +69,9 @@ public final class PairingModel {
     public private(set) var candidates: [PairingCandidate] = []
     public var selected: PairingCandidate?
     public var nickname = ""
+    /// The name the other phone gave itself in the system picker. It comes
+    /// from that phone, so it is only offered, never filled in (issue #46).
+    public private(set) var suggestedName: String?
     public private(set) var notice: String?
     public var localPeer: PeerID { directory.localPeer }
 
@@ -79,8 +82,23 @@ public final class PairingModel {
     /// being created is cancelled as soon as it exists.
     private var isEnded = false
 
-    public init(directory: PairingDirectory) {
+    private let friends: @MainActor () -> [PairedPeer]
+
+    /// - Parameter friends: Every paired friend now, for the nickname check.
+    public init(directory: PairingDirectory, friends: @escaping @MainActor () -> [PairedPeer] = { [] }) {
         self.directory = directory
+        self.friends = friends
+    }
+
+    /// A warning when the name matches or looks like another friend's.
+    public var nicknameWarning: String? {
+        NicknameCheck.warning(for: nickname, among: friends())
+    }
+
+    /// The owner chose to use the other phone's own name.
+    public func useSuggestedName() {
+        guard let suggestedName else { return }
+        nickname = suggestedName
     }
 
     public func refreshCandidates() async {
@@ -98,8 +116,8 @@ public final class PairingModel {
     public static let pickedDeviceLink = "Wi-Fi Aware"
 
     /// The owner picked a device in the system's Wi-Fi Aware picker: select
-    /// the PeerID behind it, and suggest the device's name if the owner has
-    /// not typed one. The code comparison still verifies the pick (ADR 0003).
+    /// the PeerID behind it, and offer the device's name without filling it
+    /// in. The code comparison still verifies the pick (ADR 0003).
     public func pickedDevice(id: UInt64, name: String) async {
         guard let resolve = directory.peerForPickedDevice else { return }
         notice = nil
@@ -113,7 +131,8 @@ public final class PairingModel {
         candidates.removeAll { $0.peer == peer }
         candidates.insert(candidate, at: 0)
         selected = candidate
-        if nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { nickname = name }
+        let offered = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        suggestedName = offered.isEmpty ? nil : String(offered.prefix(PairedPeer.maxNicknameCharacters))
     }
 
     /// A phone is chosen and the nickname is one lane E1 will accept.

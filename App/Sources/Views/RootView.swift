@@ -2,79 +2,73 @@ import StarlingCore
 import StarlingFeatures
 import SwiftUI
 
+/// Home, Friends, and You in the tab bar, with New as the prominent tab
+/// (ADR 0015): a navigation destination whose screen is the composer. The
+/// consent sheet, Starling's pre-permission sheet, and It's a plan appear
+/// over any screen. Nothing is asked at launch (ADR 0013).
 struct RootView<Developer: View>: View {
-    static var onboardingKey: String { "onboarding.finished" }
-
     let app: AppModel
     @ViewBuilder let developer: () -> Developer
-    @AppStorage(RootView.onboardingKey) private var onboardingFinished = false
+    @State private var tab = AppTab.home
+    @State private var previousTab = AppTab.home
+    @Environment(\.scenePhase) private var scenePhase
+
+    enum AppTab: Hashable {
+        case home, friends, you, new
+    }
 
     var body: some View {
-        Group {
-            if onboardingFinished {
-                tabs
-            } else {
-                OnboardingView(model: app.makeOnboarding(), rules: app.rulesEditor) { onboardingFinished = true }
+        TabView(selection: $tab) {
+            Tab("Home", systemImage: "house", value: AppTab.home) {
+                NavigationStack {
+                    HomeView(app: app, startNew: { tab = .new }, continueWith: continuePlan)
+                }
+            }
+            Tab("Friends", systemImage: "person.2", value: AppTab.friends) {
+                NavigationStack { FriendsView(app: app) }
+            }
+            Tab("You", systemImage: "person.crop.circle", value: AppTab.you) {
+                NavigationStack { YouView(app: app, developer: developer) }
+            }
+            Tab("New", systemImage: "plus", value: AppTab.new, role: .prominent) {
+                NavigationStack {
+                    NewView(app: app, composer: app.composer, done: { tab = .home }, cancel: { tab = previousTab })
+                }
             }
         }
+        .onChange(of: tab) { old, new in
+            if new == .new, old != .new { previousTab = old }
+        }
         .task { await app.start() }
-        // The radios raise the Local Network alert, so they start here only
-        // once onboarding is done; on first run, onboarding's Local Network
-        // step starts them after its explanation (ADR 0142).
-        .task(id: onboardingFinished) {
-            if onboardingFinished { await app.startLinks() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { app.foreground() }
         }
         // The consent sheet can appear over any screen. Only the owner's
         // answer dismisses it (ConsentSheet), so the setter never declines.
         .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in
             ConsentSheet(request: request) { app.consent.answer($0, to: request.id) }
         }
-    }
-
-    private var tabs: some View {
-        TabView {
-            Tab("Down?", systemImage: "hand.wave") {
-                NavigationStack {
-                    if let down = app.down {
-                        DownView(model: down)
-                    } else {
-                        NotInBuildView(feature: "Down?", detail: "Matching with friends arrives when the negotiation lane merges.")
-                            .navigationTitle("Down?")
-                    }
-                }
-            }
-            Tab("Friends", systemImage: "person.2") {
-                NavigationStack {
-                    if let friends = app.friends {
-                        FriendsView(model: friends, makePairing: app.makePairing)
-                    } else {
-                        NotInBuildView(feature: "Friends", detail: "Pairing arrives when the identity and Wi-Fi Aware lanes merge.")
-                            .navigationTitle("Friends")
-                    }
-                }
-            }
-            Tab("Rules", systemImage: "list.bullet.rectangle") {
-                NavigationStack { RulesEditorView(model: app.rulesEditor) }
-            }
-            Tab("Developer", systemImage: "hammer") {
-                NavigationStack { developer() }
-            }
+        .sheet(item: Binding(get: { app.permissions.pending }, set: { _ in })) { explanation in
+            PrePermissionSheet(explanation: explanation) { app.permissions.proceed() }
+        }
+        .sheet(item: Binding(get: { app.celebrating.flatMap(app.lifecycle.interaction) }, set: { if $0 == nil { app.celebrating = nil } })) { root in
+            ItsAPlanView(app: app, root: root) { next in continuePlan(root, next) }
+        }
+        .alert("Want a heads-up when friends are up for it?", isPresented: Binding(
+            get: { app.composer.offerNotifications },
+            set: { if !$0 { app.composer.offerNotifications = false } }
+        )) {
+            Button("Turn on") { Task { await app.answerNotifications(true) } }
+            Button("Not now", role: .cancel) { Task { await app.answerNotifications(false) } }
+        } message: {
+            Text("Starling tells you only when there's a plan or something needs you.")
         }
     }
-}
 
-/// Says plainly that a feature is missing from this build instead of
-/// running it on a fake.
-struct NotInBuildView: View {
-    let feature: String
-    let detail: String
-
-    var body: some View {
-        ContentUnavailableView {
-            Label("\(feature) isn't in this build yet", systemImage: "shippingbox")
-        } description: {
-            Text(detail)
-        }
+    /// Keep it going: New opens on the chained step (ADR 0012).
+    private func continuePlan(_ root: Interaction, _ next: SkillDescriptor) {
+        app.composer.continuePlan(root, with: next)
+        tab = .new
     }
 }
 
@@ -82,6 +76,5 @@ struct NotInBuildView: View {
 #Preview {
     @Previewable @State var app = PreviewSupport.app()
     RootView(app: app, developer: { Text("Developer") })
-        .defaultAppStorage(UserDefaults(suiteName: "preview")!)
 }
 #endif

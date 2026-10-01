@@ -1,104 +1,99 @@
+#if DEBUG
+// The Developer section is in Debug builds only (ADR 0015 decision 5).
+// Release builds have no Developer section and no test-build notices;
+// a Release check guards that (requested in docs/requests/P15-A.md).
 import StarlingCore
 import StarlingFeatures
 import SwiftUI
 
-/// Phase 0 tools and, in Debug builds, controls that drive the fakes so the
-/// whole journey can be walked before lanes E1, E2, F, and G merge.
+/// Debug tools at the bottom of You: the test-build notices, the
+/// lifecycle's dropped events, controls that play friends' side over the
+/// scripted skills, and the Phase 0 and Phase 1 link and model tools.
 struct DeveloperView: View {
     let app: AppModel
-    #if DEBUG
     let harness: DebugHarness
     @AppStorage(DebugHarness.scriptedModelKey) private var scriptedModel = false
+    @AppStorage(DebugHarness.denyPermissionsKey) private var denyPermissions = false
     @State private var status: String?
-    #endif
-    @AppStorage(RootView<EmptyView>.onboardingKey) private var onboardingFinished = false
 
     var body: some View {
         List {
             Section {
-                NavigationLink("Model Bench", destination: ModelBenchView())
-                #if DEBUG
-                NavigationLink("Nearby", destination: NearbyView())
-                #endif
+                Label("This test build doesn't hide free times. Its matching step uses an insecure stand-in until Nightjar's private set intersection lands.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Label("Skills that haven't merged yet are played by scripted services. Their proposals come from your own chips, not from friends.", systemImage: "theatermasks")
             } header: {
-                Text("Phase 0 spike")
-            } footer: {
-                #if DEBUG
-                Text("Nearby links are not encrypted, so don't send anything personal. Nearby is left out of Release builds.")
-                #endif
+                Text("This is a test build")
             }
 
-            #if DEBUG
-            fakes
-            #endif
+            Section {
+                Button("Add a sample friend") {
+                    Task {
+                        await harness.addSampleFriend(to: app)
+                        status = "Added a friend for this session (never in the Keychain)."
+                    }
+                }
+                if let friend = app.friends?.friends.first, let driver = harness.driver {
+                    Button("\(friend.nickname)'s agent asks when you're free") {
+                        Task { await driver.friendAsksForATime(from: friend.id) }
+                    }
+                    Button("\(friend.nickname) is down for tacos too") {
+                        Task { await driver.friendIsDownToo(friend.id) }
+                    }
+                }
+                if let driver = harness.driver {
+                    Toggle("Propose automatically", isOn: Binding(get: { driver.autoPropose }, set: { driver.autoPropose = $0 }))
+                    ForEach(app.lifecycle.interactions.filter { $0.role == .initiator && $0.state == .negotiating }) { item in
+                        Button("Nobody's up for \(app.words.summary(item)?.title ?? "it")") { Task { await driver.nobodyUp(item.id) } }
+                    }
+                }
+                Button("Send a sample through Outbox") {
+                    Task { status = await harness.sendSample(through: app) }
+                }
+                if let status { Text(status).foregroundStyle(.secondary) }
+            } header: {
+                Text("Play a friend's side")
+            }
+
+            Section {
+                Toggle("System alerts say Don't Allow", isOn: $denyPermissions)
+                Button("Forget permission answers") { DebugPermissionAccess.reset() }
+                Toggle("Scripted rules model (next launch)", isOn: $scriptedModel)
+            } header: {
+                Text("Permissions and model")
+            } footer: {
+                Text("Calendar, location, and photos are stand-ins until lanes C, D, and E merge: Starling's sheet is real, the system alert is simulated.")
+            }
+
+            Section {
+                if app.lifecycle.dropped.isEmpty {
+                    Text("None").foregroundStyle(.secondary)
+                }
+                ForEach(app.lifecycle.dropped.reversed()) { drop in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: "\(drop.skill.rawValue): \(String(describing: drop.reason))").font(.footnote.monospaced())
+                        Text(verbatim: drop.event).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                }
+            } header: {
+                Text("Dropped lifecycle events")
+            } footer: {
+                Text("Stale proposals and questions, unknown consent requests, and invalid transitions leave the interaction unchanged (ADR 0201).")
+            }
 
             Section {
                 NavigationLink("Wi-Fi Aware") { WiFiAwareView(app: app) }
-            } footer: {
-                Text("Pair two phones and test the link (lane E2's device checklist).")
-            }
-
-            Section {
                 NavigationLink("Audit log") { AuditLogView(log: LiveServices.auditLog, friends: app.friends?.friends ?? []) }
+                NavigationLink("Model Bench", destination: ModelBenchView())
+                NavigationLink("Nearby", destination: NearbyView())
+            } header: {
+                Text("Links and model")
             } footer: {
-                Text("What this phone handed to a transport since launch.")
-            }
-
-            Section("Build") {
-                LabeledContent("Services", value: buildKind)
-                Button("Show onboarding again") { onboardingFinished = false }
+                Text("Nearby links are not encrypted, so don't send anything personal.")
             }
         }
         .navigationTitle("Developer")
+        .task { harness.driver?.run() }
     }
-
-    private var buildKind: String {
-        #if DEBUG
-        "Debug (fakes for unmerged lanes)"
-        #else
-        "Release (no fakes)"
-        #endif
-    }
-
-    #if DEBUG
-    @ViewBuilder private var fakes: some View {
-        Section {
-            if let sim = harness.simFriend {
-                LabeledContent("Sim friend", value: sim.state)
-                Button("Sim friend: I'm down") { Task { await sim.goDown(.down) } }
-                Button("Sim friend: I'm a maybe") { Task { await sim.goDown(.maybe) } }
-                Button("Sim friend: withdraw") { Task { await sim.withdraw() } }
-                Button(sim.inRange ? "Sim friend: walk out of range" : "Sim friend: come back in range") {
-                    Task { await sim.setInRange(!sim.inRange) }
-                }
-            }
-        } header: {
-            Text("Simulated friend (Debug builds only)")
-        } footer: {
-            Text("A second phone inside this app, paired with this one through its own lane E1 identity, running lane F's real Down over an in-process secure link. When it is down (food or boba, up to $20, next 8 hours) and you go down with overlapping time, the real matching runs: consent sheets, then a match notification on this phone.")
-        }
-
-        Section {
-            Button("Add a sample friend") {
-                Task {
-                    await harness.addSampleFriend()
-                    await app.friends?.load()
-                    status = "Added a friend (not reachable)."
-                }
-            }
-            Button("Send a sample through Outbox") {
-                Task { status = await harness.sendSample(through: app.outbox) }
-            }
-            Button("Send, with the policy changing during consent") {
-                Task { status = await harness.sendWithPolicyChangingDuringConsent(through: app.consent) }
-            }
-            Toggle("Scripted model (next launch)", isOn: $scriptedModel)
-            if let status { Text(status).foregroundStyle(.secondary) }
-        } header: {
-            Text("Fakes (Debug builds only)")
-        } footer: {
-            Text("Sample friends live only in this session, never in the Keychain. Sends go through the app's Outbox (lane G's policy and audit log). An approved sample is not asked again for 10 minutes or until the Down? intent changes. The scripted model returns the same rules every time, including \"karaoke\", so the review flags show, and accepts every offer.")
-        }
-    }
-    #endif
 }
+#endif

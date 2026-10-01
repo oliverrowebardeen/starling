@@ -2,8 +2,8 @@ import Foundation
 import StarlingCore
 
 /// Runs `AgentModel.interpret` on the owner's words and turns the result, or
-/// the failure, into something a screen can show. Shared by the rules editor
-/// and the Down screen.
+/// the failure, into something a screen can show, for the rules editor in
+/// You. Requests in New use `SkillModel` instead (ADR 0016).
 public struct RulesInterpreter: Sendable {
     public enum Outcome: Hashable, Sendable {
         /// A draft for review. Rows are marked as model-produced.
@@ -14,7 +14,6 @@ public struct RulesInterpreter: Sendable {
     }
 
     public static let standingIssues: [IssueKey] = [.time, .budget, .activity, .diet, .place]
-    public static let intentIssues: [IssueKey] = [.time, .activity, .budget, .place, .partySize]
 
     private let agent: (any AgentModel)?
     private let issues: [IssueKey]

@@ -6,7 +6,7 @@ import StarlingCore
 /// The model's interpretation is only a proposal: the Phase 0 bench measured
 /// it inventing activities and sharing flags and dropping budgets
 /// (docs/research/model-budget.md). Nothing reaches storage or a
-/// `DownService` without passing through a draft the owner has reviewed and
+/// skill without passing through a draft the owner has reviewed and
 /// `build()`.
 ///
 /// Items are flat structs with a field per rule kind so SwiftUI can bind to
@@ -272,79 +272,13 @@ public struct RulesDraftError: Error, Hashable, Sendable {
     public let problems: [RulesDraft.Problem]
 }
 
-// MARK: - Sharing rows
+// MARK: - Sharing
 
 extension RulesDraft {
-    /// Issues the review always shows a sharing row for, whether or not the
-    /// interpreted rules mention them. Interpretation can miss a "never
-    /// share" phrased in unexpected words (ADR 0161, "keep my location to
-    /// myself"), so the owner must see and be able to set every one.
-    public static let disclosableIssues: [IssueKey] = [.time, .activity, .budget, .place, .diet, .partySize]
-
-    /// One issue's sharing setting as the review shows it.
-    public struct SharingRow: Identifiable, Hashable, Sendable {
-        public var id: IssueKey { issue }
-        public let issue: IssueKey
-        /// What will apply: the draft's rule, tightened by any saved rule.
-        /// With no rule at all, the policy asks each time.
-        public let action: DisclosureRule.Action
-        /// The actions the owner may choose. A saved rule is a floor: an
-        /// intent can tighten it but never loosen it (ADR 0141).
-        public let choices: [DisclosureRule.Action]
-        /// Set when a saved rule, not this draft, decides the action.
-        public let fromSavedRules: Bool
-        /// The draft's rule for this issue, for review flags.
-        public let ruleID: UUID?
-    }
-
-    /// A row for every disclosable issue, plus any other issue the draft or
-    /// the saved rules mention. `standing` is the saved rules' sharing, used
-    /// when reviewing a Down intent; the rules editor passes none.
-    public func sharingRows(standing: [DisclosureRule] = []) -> [SharingRow] {
-        var floor: [IssueKey: DisclosureRule.Action] = [:]
-        for rule in standing {
-            floor[rule.issue] = floor[rule.issue].map { RulesMerge.restrictive($0, rule.action) } ?? rule.action
-        }
-        let mentioned = Set(items.map(\.issue) + sharing.map(\.issue) + floor.keys)
-        let extra = mentioned.subtracting(Self.disclosableIssues).sorted()
-        return (Self.disclosableIssues + extra).map { issue in
-            let rule = sharing.first { $0.issue == issue }
-            let saved = floor[issue]
-            // Exactly what RulesMerge publishes: with no draft rule the saved
-            // rule applies as is, and with neither the policy asks.
-            let action = Self.merged(rule?.action, saved)
-            let choices = Self.actions.filter { choice in saved.map { RulesMerge.restrictive($0, choice) == choice } ?? true }
-            return SharingRow(issue: issue, action: action, choices: choices, fromSavedRules: saved != nil && saved == action && rule?.action != action, ruleID: rule?.id)
-        }
-    }
-
-    /// Sets an issue's sharing. Choosing "ask each time" for an issue with no
-    /// rule writes nothing, since no rule already means ask (lane G's policy).
-    /// A choice looser than a saved rule is ignored.
-    public mutating func setSharing(_ action: DisclosureRule.Action, for issue: IssueKey, standing: [DisclosureRule] = []) {
-        let saved = standing.filter { $0.issue == issue }.map(\.action).reduce(nil) { floor, next in
-            floor.map { RulesMerge.restrictive($0, next) } ?? next
-        }
-        if let saved, RulesMerge.restrictive(saved, action) != action { return }
-        if let index = sharing.firstIndex(where: { $0.issue == issue }) {
-            sharing[index].action = action
-        } else if action != Self.merged(nil, saved) {
-            // Only write a rule when it changes what is published. Choosing
-            // "ask" over a saved allowance needs an explicit tightening rule.
-            sharing.append(Sharing(id: UUID(), origin: .owner, issue: issue, action: action))
-        }
-    }
-
-    /// The action RulesMerge publishes for one issue, from the draft's rule
-    /// and the saved rule. No rule at all means the policy asks.
-    static func merged(_ own: DisclosureRule.Action?, _ saved: DisclosureRule.Action?) -> DisclosureRule.Action {
-        switch (own, saved) {
-        case let (own?, saved?): RulesMerge.restrictive(saved, own)
-        case let (own?, nil): own
-        case let (nil, saved?): saved
-        case (nil, nil): .askEachTime
-        }
-    }
+    /// Sharing is no longer edited here: the privacy topics in You are the
+    /// standing sharing (ADR 0014). A draft still carries any Phase 1
+    /// sharing rules it was built from, so saving never drops them; the
+    /// app migrated them into topics once and the policy ignores them.
 
     /// Adds sharing rules from another draft (a new interpretation) keeping
     /// one entry per issue. Where both have a rule, the more restrictive
@@ -432,7 +366,7 @@ extension RulesDraft {
 
 // MARK: - Merging
 
-/// Combines the owner's standing rules with one Down intent. `DownService`
+/// Combines the owner's standing rules with one request's rules. A skill
 /// takes a single `OwnerRules`, so the app merges before calling it.
 public enum RulesMerge {
     /// Constraints on the same issue accumulate (both must hold), the

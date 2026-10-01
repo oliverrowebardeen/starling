@@ -143,6 +143,11 @@ func readyToPair(_ model: PairingModel) async {
         #expect(model.selected?.peer == peer)
         #expect(model.selected?.link == "Wi-Fi Aware")
         #expect(model.candidates.contains { $0.peer == peer })
+        // Issue #46: the other phone's own name is offered, never filled in.
+        #expect(model.nickname.isEmpty)
+        #expect(model.suggestedName == "Maya's iPhone")
+        #expect(!model.canStart)
+        model.useSuggestedName()
         #expect(model.nickname == "Maya's iPhone")
 
         model.nickname = "Maya"

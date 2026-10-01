@@ -1,3 +1,4 @@
+import AppIntents
 import StarlingFeatures
 import StarlingIdentity
 import SwiftUI
@@ -9,6 +10,7 @@ struct StarlingApp: App {
 
     init() {
         UserNotificationsNotifier.shared.install()
+        AppDependencyManager.shared.add(dependency: PlanReader.live)
     }
 
     var body: some Scene {
@@ -28,14 +30,15 @@ struct StarlingApp: App {
                 case .ready(let app):
                     #if DEBUG
                     RootView(app: app, developer: { DeveloperView(app: app, harness: boot.harness!) })
-                        .task { await DownSelfTest.runIfRequested(app: app, harness: boot.harness!) }
+                        .task { await LifecycleSelfTest.runIfRequested(app: app, harness: boot.harness!) }
                     #else
-                    RootView(app: app, developer: { DeveloperView(app: app) })
+                    // Release builds have no Developer section (ADR 0015).
+                    RootView(app: app, developer: { EmptyView() })
                     #endif
                 }
             }
             .task { await boot.load() }
-            // Lane F requires shutdown() on teardown (docs/requests/F.md).
+            // Skill services must be shut down on teardown.
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
                 if case .ready(let app) = boot.state { Task { await app.shutdown() } }
             }
@@ -68,6 +71,7 @@ final class Bootstrap {
             let harness = harness ?? DebugHarness()
             self.harness = harness
             state = .ready(AppModel(services: try await harness.services()))
+            harness.driver?.run()
             #else
             state = .ready(AppModel(services: try await AppServices.release()))
             #endif

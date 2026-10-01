@@ -184,7 +184,8 @@ final class TestClock: @unchecked Sendable {
         await eventually { consent.current != nil }
         let retry = Task { await consent.requestConsent(for: disclosure) }
         let unrelated = Task { await consent.requestConsent(for: other) }
-        try await Task.sleep(for: .milliseconds(20))
+        // Wait for both to queue; a fixed sleep fails on a loaded machine.
+        await eventually { consent.waitingCount == 3 }
 
         consent.answerCurrent(.declined)
         #expect(await first.value == .declined)

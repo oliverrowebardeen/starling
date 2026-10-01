@@ -1,3 +1,5 @@
+#if DEBUG
+// The Developer section is in Debug builds only (ADR 0015 decision 5).
 import FoundationModels
 import StarlingAgent
 import StarlingAgentBench
@@ -84,3 +86,4 @@ struct ModelBenchView: View {
         .navigationTitle("Model Bench")
     }
 }
+#endif

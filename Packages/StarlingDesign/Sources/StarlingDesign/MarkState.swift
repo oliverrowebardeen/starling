@@ -11,13 +11,15 @@ public enum MarkState: String, CaseIterable, Hashable, Sendable {
     /// No overlap: the shapes drift apart and the other one fades. No sound, no message.
     case noMatch
 
-    /// Spoken by VoiceOver. Deliberately neutral for `noMatch`.
+    /// Spoken by VoiceOver, in plan words (ADR 0017, DESIGN.md section 3).
+    /// Deliberately neutral for `noMatch`: an ending with nobody up makes no
+    /// sound and says nothing.
     public var accessibilityLabel: String {
         switch self {
         case .idle: "Starling"
-        case .searching: "Looking for a match"
+        case .searching: "Checking with friends"
         case .negotiating: "Agents are talking"
-        case .match: "Matched"
+        case .match: "It's a plan"
         case .noMatch: "Starling"
         }
     }

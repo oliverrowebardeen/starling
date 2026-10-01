@@ -37,6 +37,12 @@ public final class FriendsModel {
 
     public var canRename: Bool { renameFriend != nil }
 
+    /// A warning when `nickname` matches or looks like another friend's
+    /// (issue #46). The owner may keep it anyway.
+    public func nicknameWarning(_ nickname: String, for id: PeerID) -> String? {
+        NicknameCheck.warning(for: nickname, among: friends, excluding: id)
+    }
+
     public func isReachable(_ id: PeerID) -> Bool { reachable.contains(id) }
 
     public func load() async {

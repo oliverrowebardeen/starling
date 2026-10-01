@@ -3,8 +3,8 @@ import Observation
 import StarlingCore
 
 /// The app's link layer and its test view: which peers are connected, a
-/// round trip per peer, and the `hello` exchange lane F relies on ("Down
-/// does not send hello; the app's link layer does", docs/requests/F.md).
+/// round trip per peer, and the `hello` exchange that carries this agent's
+/// card, which friends read to see which skills it runs (ADR 0010).
 ///
 /// It rides the app's `Outbox` and gets events from the app's single Inbox
 /// loop, so every link (lane E1's secure transports) is covered and only one
@@ -28,7 +28,9 @@ public final class LinkTestModel {
     public private(set) var peers: [PeerRow] = []
 
     private let outbox: Outbox
-    private let card: AgentCard
+    /// This agent's card, sent in every hello. The app replaces it when the
+    /// owner switches a skill on or off.
+    public var card: AgentCard
     private let name: @MainActor (PeerID) -> String?
     /// How long a round trip waits for its reply before it counts as lost.
     private let replyTimeout: Duration
