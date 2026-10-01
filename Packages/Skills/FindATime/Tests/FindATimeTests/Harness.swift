@@ -303,7 +303,10 @@ final class Phone: Sendable {
 
     func waitForState(_ id: InteractionID? = nil, _ state: InteractionState, timeout: Duration = .seconds(5)) async throws {
         try await eventually("\(name) reaches \(state)", timeout: timeout) {
-            await self.coordinator.all().contains { (id == nil || $0.id == id) && $0.state == state }
+            // A plan's artifacts follow the state change as their own events.
+            await self.coordinator.all().contains {
+                (id == nil || $0.id == id) && $0.state == state && (state != .planned || ($0.plan != nil && $0.timeSlot != nil))
+            }
         }
     }
 
