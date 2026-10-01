@@ -359,13 +359,18 @@ public struct AgentCard: Hashable, Sendable, Codable {
     public let protocolVersions: [UInt16]
     public let model: ModelLocality
     public let localityEvidence: LocalityEvidence
+    /// Protocol features such as `psi`. User-facing features are `skills`.
     public let capabilities: [Capability]
+    /// The skills this agent runs, at their versions (ADR 0010). Mirrors
+    /// A2A, where `AgentCard.skills` is required. Empty on a Phase 1 card.
+    public let skills: [SkillRef]
 
     public init(
         protocolVersions: [UInt16] = [Envelope.currentVersion],
         model: ModelLocality,
         localityEvidence: LocalityEvidence = .selfDeclared,
-        capabilities: [Capability]
+        capabilities: [Capability],
+        skills: [SkillRef] = []
     ) throws {
         guard (1...ProtocolLimits.maxProtocolVersionsAdvertised).contains(protocolVersions.count) else {
             throw ValidationError("AgentCard.protocolVersions", "must list 1-\(ProtocolLimits.maxProtocolVersionsAdvertised) versions")
@@ -373,13 +378,28 @@ public struct AgentCard: Hashable, Sendable, Codable {
         guard capabilities.count <= ProtocolLimits.maxCapabilities else {
             throw ValidationError("AgentCard.capabilities", "too many")
         }
+        guard skills.count <= ProtocolLimits.maxSkillsAdvertised else {
+            throw ValidationError("AgentCard.skills", "too many")
+        }
+        guard Set(skills.map(\.id)).count == skills.count else {
+            throw ValidationError("AgentCard.skills", "lists a skill twice")
+        }
         self.protocolVersions = protocolVersions
         self.model = try model.validated()
         self.localityEvidence = localityEvidence
         self.capabilities = capabilities
+        self.skills = skills
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolVersions, model, localityEvidence, capabilities }
+    /// Whether this agent can run `skill` with us: same major version, or
+    /// why not, so the app can say "Maya's Starling doesn't do this yet"
+    /// and hide chain suggestions the group cannot run (ADR 0010).
+    public func support(for skill: SkillRef) -> SkillSupport {
+        guard let theirs = skills.first(where: { $0.id == skill.id }) else { return .missing }
+        return theirs.version.isCompatible(with: skill.version) ? .supported(theirs.version) : .incompatible(theirs.version)
+    }
+
+    private enum CodingKeys: String, CodingKey { case protocolVersions, model, localityEvidence, capabilities, skills }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -387,7 +407,19 @@ public struct AgentCard: Hashable, Sendable, Codable {
             protocolVersions: c.decode([UInt16].self, forKey: .protocolVersions),
             model: c.decode(ModelLocality.self, forKey: .model),
             localityEvidence: c.decode(LocalityEvidence.self, forKey: .localityEvidence),
-            capabilities: c.decode([Capability].self, forKey: .capabilities)
+            capabilities: c.decode([Capability].self, forKey: .capabilities),
+            skills: c.decodeIfPresent([SkillRef].self, forKey: .skills) ?? []
         )
     }
+}
+
+/// Whether a peer can run a skill with us.
+public enum SkillSupport: Hashable, Sendable {
+    case supported(SkillVersion)
+    /// The peer does not advertise the skill at all.
+    case missing
+    /// The peer runs the skill at a different major version.
+    case incompatible(SkillVersion)
+
+    public var isSupported: Bool { if case .supported = self { true } else { false } }
 }

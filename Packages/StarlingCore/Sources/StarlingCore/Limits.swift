@@ -24,6 +24,8 @@ public enum ProtocolLimits {
     public static let maxNegotiationRounds: UInt16 = 16
     public static let maxProtocolVersionsAdvertised = 4
     public static let maxCapabilities = 16
+    /// Skills one agent card may advertise (ADR 0010).
+    public static let maxSkillsAdvertised = 32
     public static let maxProviderNameCharacters = 32
     public static let maxPSIPayloadBytes = 32 * 1024
     public static let maxOwnerUtteranceCharacters = 500
