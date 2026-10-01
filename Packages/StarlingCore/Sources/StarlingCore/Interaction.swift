@@ -126,11 +126,16 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     case consentNeeded(request: UInt32)
     /// The owner approved that request.
     case consentGiven(request: UInt32)
-    case ownerNeeded
-    case ownerAnswered
-    /// A proposal card is ready. Revisions only increase; a newer one
-    /// replaces any proposal the owner has not answered.
-    case proposalReady(revision: UInt32)
+    /// The agent needs its owner to answer this question. The content
+    /// travels with the event, so the stored question is always the one
+    /// the state machine is waiting on.
+    case ownerNeeded(SkillQuestion)
+    /// The owner answered the question with this revision.
+    case ownerAnswered(question: UInt32)
+    /// A proposal card is ready, with its content and revision together.
+    /// Revisions only increase; a newer one replaces any proposal the owner
+    /// has not answered.
+    case proposalReady(SkillProposal)
     /// The owner said yes ("I'm in") to exactly this proposal revision.
     case ownerAccepted(revision: UInt32)
     /// The owner passed ("Not tonight") or declined consent.
@@ -154,8 +159,8 @@ public struct InvalidTransition: Error, Hashable, Sendable {
 }
 
 /// A consent completion for a request this interaction is not waiting on,
-/// or a request ID used twice: a late or replayed completion never resumes
-/// a later suspension.
+/// or a request ID at or below one already used (IDs only increase): a late
+/// or replayed completion never resumes a later suspension.
 public struct UnknownConsentRequest: Error, Hashable, Sendable {
     public let request: UInt32
 
@@ -166,6 +171,18 @@ public struct UnknownConsentRequest: Error, Hashable, Sendable {
 /// current one, or a proposal that does not move the revision forward.
 /// The owner's tap on an older card never accepts newer terms.
 public struct StaleProposal: Error, Hashable, Sendable {
+    public let current: UInt32?
+    public let event: InteractionEvent
+
+    public init(current: UInt32?, event: InteractionEvent) {
+        self.current = current
+        self.event = event
+    }
+}
+
+/// A question that does not move the question revision forward, or an
+/// answer to a question that is not the pending one.
+public struct StaleQuestion: Error, Hashable, Sendable {
     public let current: UInt32?
     public let event: InteractionEvent
 
@@ -292,17 +309,24 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     public let chain: ChainLink?
     public private(set) var artifacts: [Artifact]
     public private(set) var egress: [EgressRecord]
-    /// The revision of the proposal the owner is looking at or accepted.
-    public private(set) var proposalRevision: UInt32?
+    /// The current proposal, content and revision together, set only by
+    /// `proposalReady`, so the card always shows the terms the owner accepts
+    /// and survives an app restart.
+    public private(set) var proposal: SkillProposal?
+    /// The question the agent is waiting for its owner to answer, set only
+    /// by `ownerNeeded`.
+    public private(set) var pendingQuestion: SkillQuestion?
     /// Consent requests still waiting on the owner. The interaction resumes
     /// only when the last one is approved.
     public private(set) var pendingConsents: Set<UInt32>
-    /// The question the agent is waiting for its owner to answer, kept so
-    /// the card survives an app restart.
-    public private(set) var pendingQuestion: SkillQuestion?
-    /// The current proposal, kept so its card survives a restart. Its
-    /// revision is `proposalRevision` once `proposalReady` arrived.
-    public private(set) var proposal: SkillProposal?
+    /// The highest question revision and consent request ID used so far.
+    /// Both start at 1 and only increase, so a completed one can never be
+    /// reopened or replayed, including after a restart.
+    public private(set) var questionWatermark: UInt32
+    public private(set) var consentWatermark: UInt32
+
+    /// The revision of the proposal the owner is looking at or accepted.
+    public var proposalRevision: UInt32? { proposal?.revision }
 
     /// An initiator starts while drafting; an invitee starts negotiating,
     /// because its agent is already handling the request.
@@ -327,24 +351,30 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         self.chain = chain
         artifacts = []
         egress = []
-        proposalRevision = nil
-        pendingConsents = []
-        pendingQuestion = nil
         proposal = nil
+        pendingQuestion = nil
+        pendingConsents = []
+        questionWatermark = 0
+        consentWatermark = 0
     }
 
     public var updatedAt: Timestamp { history.last?.at ?? createdAt }
 
-    /// Applies `event`, recording the new state. Throws `InvalidTransition`
-    /// and leaves the interaction unchanged if the event does not apply.
+    /// Applies `event`, recording the new state. Throws `InvalidTransition`,
+    /// `StaleProposal`, `StaleQuestion`, or `UnknownConsentRequest` and
+    /// leaves the interaction unchanged if the event does not apply.
     public mutating func apply(_ event: InteractionEvent, at time: Timestamp) throws {
         switch event {
-        case .proposalReady(let revision):
-            if let current = proposalRevision, revision <= current { throw StaleProposal(current: current, event: event) }
+        case .proposalReady(let proposal):
+            if let current = proposalRevision, proposal.revision <= current { throw StaleProposal(current: current, event: event) }
         case .ownerAccepted(let revision), .everyoneConfirmed(let revision):
             guard revision == proposalRevision else { throw StaleProposal(current: proposalRevision, event: event) }
+        case .ownerNeeded(let question):
+            guard question.revision > questionWatermark else { throw StaleQuestion(current: questionWatermark, event: event) }
+        case .ownerAnswered(let revision):
+            guard revision == pendingQuestion?.revision else { throw StaleQuestion(current: pendingQuestion?.revision, event: event) }
         case .consentNeeded(let request):
-            guard !pendingConsents.contains(request) else { throw UnknownConsentRequest(request: request) }
+            guard request > consentWatermark else { throw UnknownConsentRequest(request: request) }
         case .consentGiven(let request):
             guard pendingConsents.contains(request) else { throw UnknownConsentRequest(request: request) }
             // Other requests are still open: stay suspended, with no new
@@ -364,34 +394,21 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         state = next
         if !alreadySuspended { history.append(StateChange(state: next, at: time)) }
         switch event {
-        case .proposalReady(let revision): proposalRevision = revision
-        case .consentNeeded(let request): pendingConsents.insert(request)
-        case .consentGiven(let request): pendingConsents.remove(request)
-        default: break
-        }
-        switch event {
+        case .proposalReady(let proposal): self.proposal = proposal
+        case .ownerNeeded(let question):
+            pendingQuestion = question
+            questionWatermark = question.revision
         case .ownerAnswered, .ownerPassed: pendingQuestion = nil
+        case .consentNeeded(let request):
+            pendingConsents.insert(request)
+            consentWatermark = request
+        case .consentGiven(let request): pendingConsents.remove(request)
         default: break
         }
         if next.isFinal {
             pendingConsents = []
             pendingQuestion = nil
         }
-    }
-
-    /// Keeps the question the agent put to its owner. A question older than
-    /// the one already kept is ignored.
-    public mutating func record(_ question: SkillQuestion) {
-        if let current = pendingQuestion, question.revision <= current.revision { return }
-        pendingQuestion = question
-    }
-
-    /// Keeps a proposal's content. One older than the current revision is
-    /// ignored, so a late event cannot put stale terms back on the card.
-    public mutating func record(_ proposal: SkillProposal) {
-        if let current = proposalRevision, proposal.revision < current { return }
-        if let kept = self.proposal, proposal.revision < kept.revision { return }
-        self.proposal = proposal
     }
 
     public mutating func setParticipants(_ peers: [PeerID]) { participants = peers }

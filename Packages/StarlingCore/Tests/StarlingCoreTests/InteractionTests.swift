@@ -4,6 +4,13 @@ import Testing
 
 @Suite struct InteractionTests {
     static let ref = SkillRef(.downFor, SkillVersion(1))
+    static func proposal(_ revision: UInt32, _ activity: String = "boba") -> SkillProposal {
+        SkillProposal(revision: revision, participants: [Fixtures.alice, Fixtures.bob],
+                      terms: try! Terms([.activity: .keywords([try! Keyword(activity)])]))
+    }
+    static func question(_ revision: UInt32) -> SkillQuestion {
+        SkillQuestion(revision: revision, issue: .time, candidates: .count(1), asker: Fixtures.alice)
+    }
     static func at(_ minutes: Int) -> Timestamp { Timestamp(Fixtures.now.addingTimeInterval(Double(minutes) * 60)) }
 
     @Test func theHappyPathRunsComposeToRemember() throws {
@@ -13,7 +20,7 @@ import Testing
             (.started, .negotiating, .inProgress),
             (.consentNeeded(request: 1), .awaitingConsent(resume: .negotiating), .needsYou),
             (.consentGiven(request: 1), .negotiating, .inProgress),
-            (.proposalReady(revision: 1), .proposed, .needsYou),
+            (.proposalReady(Self.proposal(1)), .proposed, .needsYou),
             (.ownerAccepted(revision: 1), .confirmed, .inProgress),
             (.everyoneConfirmed(revision: 1), .planned, .comingUp),
             (.planEnded, .done, .history),
@@ -31,7 +38,7 @@ import Testing
     @Test func passingAndSilenceEndWithoutAPlan() throws {
         var passed = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
         #expect(passed.state == .negotiating)
-        try passed.apply(.proposalReady(revision: 1), at: Self.at(1))
+        try passed.apply(.proposalReady(Self.proposal(1)), at: Self.at(1))
         try passed.apply(.ownerPassed, at: Self.at(2))
         #expect(passed.state == .ended(.declined))
 
@@ -44,7 +51,7 @@ import Testing
 
     @Test func finalStatesAcceptNothingSoLateEventsCannotReviveThem() throws {
         for final in [InteractionState.done, .ended(.declined), .ended(.expired)] {
-            for event in [InteractionEvent.started, .proposalReady(revision: 1), .everyoneConfirmed(revision: 1), .withdrawn] {
+            for event in [InteractionEvent.started, .proposalReady(Self.proposal(1)), .everyoneConfirmed(revision: 1), .withdrawn] {
                 #expect(throws: InvalidTransition.self) { try final.applying(event) }
             }
         }
@@ -52,9 +59,8 @@ import Testing
 
     @Test func eventsOutOfOrderAreRejectedAndLeaveTheInteractionUnchanged() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
-        for event in [InteractionEvent.planEnded, .ownerAnswered] {
-            #expect(throws: InvalidTransition.self) { try interaction.apply(event, at: Self.at(1)) }
-        }
+        #expect(throws: InvalidTransition.self) { try interaction.apply(.planEnded, at: Self.at(1)) }
+        #expect(throws: StaleQuestion.self) { try interaction.apply(.ownerAnswered(question: 1), at: Self.at(1)) }
         #expect(throws: UnknownConsentRequest.self) { try interaction.apply(.consentGiven(request: 1), at: Self.at(1)) }
         // No proposal yet, so any acceptance is stale.
         #expect(throws: StaleProposal.self) { try interaction.apply(.ownerAccepted(revision: 1), at: Self.at(1)) }
@@ -99,8 +105,8 @@ import Testing
     /// service has already shown proposal 2.
     @Test func anAnswerToAnOlderProposalNeverAcceptsNewerTerms() throws {
         var interaction = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
-        try interaction.apply(.proposalReady(revision: 1), at: Self.at(1))
-        try interaction.apply(.proposalReady(revision: 2), at: Self.at(2))
+        try interaction.apply(.proposalReady(Self.proposal(1)), at: Self.at(1))
+        try interaction.apply(.proposalReady(Self.proposal(2)), at: Self.at(2))
         #expect(interaction.proposalRevision == 2)
         // The replacement is on the timeline.
         #expect(interaction.history.map(\.state) == [.negotiating, .proposed, .proposed])
@@ -109,13 +115,13 @@ import Testing
         }
         #expect(interaction.state == .proposed)
         // Revisions only move forward.
-        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(revision: 2), at: Self.at(3)) }
-        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(revision: 1), at: Self.at(3)) }
+        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(Self.proposal(2)), at: Self.at(3)) }
+        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(Self.proposal(1)), at: Self.at(3)) }
 
         try interaction.apply(.ownerAccepted(revision: 2), at: Self.at(4))
         // Someone else passed; the agents propose again, and an old
         // confirmation cannot plan the new terms.
-        try interaction.apply(.proposalReady(revision: 3), at: Self.at(5))
+        try interaction.apply(.proposalReady(Self.proposal(3)), at: Self.at(5))
         #expect(throws: StaleProposal.self) { try interaction.apply(.everyoneConfirmed(revision: 2), at: Self.at(6)) }
         try interaction.apply(.ownerAccepted(revision: 3), at: Self.at(6))
         try interaction.apply(.everyoneConfirmed(revision: 3), at: Self.at(7))
@@ -126,7 +132,7 @@ import Testing
     /// acceptance discloses a place set to Ask me.
     @Test func consentCanInterruptAnyLiveStepAndResumesIt() throws {
         var invitee = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
-        try invitee.apply(.proposalReady(revision: 1), at: Self.at(1))
+        try invitee.apply(.proposalReady(Self.proposal(1)), at: Self.at(1))
         try invitee.apply(.ownerAccepted(revision: 1), at: Self.at(2))
         try invitee.apply(.consentNeeded(request: 7), at: Self.at(3))
         #expect(invitee.state == .awaitingConsent(resume: .confirmed))
@@ -176,25 +182,49 @@ import Testing
     /// Review 2 of PR #45: an app restart must keep what a card needs.
     @Test func pendingQuestionsAndProposalsSurviveARestart() throws {
         var interaction = Interaction(skill: SkillRef(.findATime, SkillVersion(1)), role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
-        let slots = try TimeSlot(start: Fixtures.now, end: Fixtures.now.addingTimeInterval(3600))
-        let question = SkillQuestion(revision: 1, issue: .time, candidates: .slots([slots]), asker: Fixtures.alice)
-        try interaction.apply(.ownerNeeded, at: Self.at(1))
-        interaction.record(question)
-        interaction.record(SkillQuestion(revision: 0, issue: .time, candidates: .slots([]), asker: nil))
-        #expect(interaction.pendingQuestion == question)
+        try interaction.apply(.ownerNeeded(Self.question(1)), at: Self.at(1))
+        #expect(interaction.pendingQuestion == Self.question(1))
 
         var restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(interaction))
         #expect(restored == interaction && restored.state == .awaitingOwner)
-
-        try restored.apply(.ownerAnswered, at: Self.at(2))
+        #expect(throws: StaleQuestion.self) { try restored.apply(.ownerAnswered(question: 2), at: Self.at(2)) }
+        try restored.apply(.ownerAnswered(question: 1), at: Self.at(2))
         #expect(restored.pendingQuestion == nil)
+        // An answered question cannot come back.
+        #expect(throws: StaleQuestion.self) { try restored.apply(.ownerNeeded(Self.question(1)), at: Self.at(3)) }
 
-        let terms = try Terms([.time: .slots([slots])])
-        try restored.apply(.proposalReady(revision: 2), at: Self.at(3))
-        restored.record(SkillProposal(revision: 2, participants: [Fixtures.alice, Fixtures.bob], terms: terms))
-        restored.record(SkillProposal(revision: 1, participants: [], terms: .empty))
-        #expect(restored.proposal?.revision == 2 && restored.proposal?.terms == terms)
+        try restored.apply(.proposalReady(Self.proposal(2)), at: Self.at(3))
         let again = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(restored))
-        #expect(again.proposal == restored.proposal && again.proposalRevision == 2)
+        #expect(again.proposal == Self.proposal(2) && again.proposalRevision == 2)
+    }
+
+    /// Review 3 of PR #45: content and revision change together, so a
+    /// confirmation can only plan the terms the owner accepted.
+    @Test func aConfirmedProposalCannotBeSwappedForOtherTerms() throws {
+        var interaction = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
+        try interaction.apply(.proposalReady(Self.proposal(1, "boba")), at: Self.at(1))
+        try interaction.apply(.ownerAccepted(revision: 1), at: Self.at(2))
+        // Same revision, different terms: refused.
+        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(Self.proposal(1, "tacos")), at: Self.at(3)) }
+        #expect(interaction.proposal == Self.proposal(1, "boba"))
+        // New terms need a new revision, which the old confirmation cannot plan.
+        try interaction.apply(.proposalReady(Self.proposal(2, "tacos")), at: Self.at(3))
+        #expect(throws: StaleProposal.self) { try interaction.apply(.everyoneConfirmed(revision: 1), at: Self.at(4)) }
+        #expect(interaction.state == .proposed && interaction.proposal == Self.proposal(2, "tacos"))
+    }
+
+    /// Review 3 of PR #45: a completed consent ID can never be reopened.
+    @Test func aCompletedConsentRequestCannotBeReopenedOrReplayed() throws {
+        var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        try interaction.apply(.started, at: Self.at(1))
+        try interaction.apply(.consentNeeded(request: 7), at: Self.at(2))
+        try interaction.apply(.consentGiven(request: 7), at: Self.at(3))
+        #expect(throws: UnknownConsentRequest(request: 7)) { try interaction.apply(.consentNeeded(request: 7), at: Self.at(4)) }
+        #expect(throws: UnknownConsentRequest(request: 3)) { try interaction.apply(.consentNeeded(request: 3), at: Self.at(4)) }
+        try interaction.apply(.consentNeeded(request: 8), at: Self.at(4))
+        #expect(throws: UnknownConsentRequest(request: 7)) { try interaction.apply(.consentGiven(request: 7), at: Self.at(5)) }
+        #expect(interaction.state == .awaitingConsent(resume: .negotiating))
+        let restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(interaction))
+        #expect(restored.consentWatermark == 8)
     }
 }

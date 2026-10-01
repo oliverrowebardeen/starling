@@ -110,9 +110,9 @@ public enum SkillEvent: Hashable, Sendable {
     /// creates an invitee `Interaction`; nothing starts a skill, asks for a
     /// permission, or notifies the owner because of this alone (ADR 0012).
     case incoming(InteractionID, conversation: ConversationID, from: PeerID, chainedFrom: ConversationID?)
+    /// Lifecycle events; `ownerNeeded` and `proposalReady` carry the
+    /// question or proposal itself, so content and state change together.
     case lifecycle(InteractionID, InteractionEvent)
-    case question(InteractionID, SkillQuestion)
-    case proposal(InteractionID, SkillProposal)
     case produced(InteractionID, Artifact)
 }
 
