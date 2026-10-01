@@ -22,6 +22,8 @@ struct Invite {
     var proposal: SkillProposal?
     var proposeID: MessageID?
     var accepted = false
+    /// The owner's yes is on its way, possibly waiting on a consent sheet.
+    var accepting = false
     var finished = false
 
     var isFinished: Bool { finished }
@@ -143,7 +145,10 @@ extension PickAPlaceService {
     // MARK: - Proposals
 
     func received(_ proposal: Proposal, id: MessageID, in conversation: ConversationID) async {
-        guard let invite = invites[conversation], !invite.isFinished, let acceptable = invite.acceptable,
+        // While this phone's list or yes is on its way, possibly waiting on
+        // a consent sheet, the card cannot change under the owner: a newer
+        // proposal is ignored, and the organizer sends it again.
+        guard let invite = invites[conversation], !invite.isFinished, !invite.answering, !invite.accepting, let acceptable = invite.acceptable,
               let place = validPlace(in: proposal.terms, acceptable: acceptable, organizer: invite.organizer),
               case .peers(let roster)? = proposal.terms[.people]
         else { return }
@@ -156,9 +161,12 @@ extension PickAPlaceService {
         // The owner's limits are checked again before the card is shown:
         // they may have changed since the list was sent (rule 6).
         let limits = await ownerLimits()
-        guard let invite = invites[conversation], !invite.isFinished else { return }
+        guard let invite = invites[conversation], !invite.isFinished, !invite.answering, !invite.accepting,
+              invite.proposal?.terms != proposal.terms
+        else { return }
         guard PlaceJudge.fit(place, facts: invite.facts[place] ?? .unknown, limits: limits).fits else {
-            endInvite(conversation, event: .noAgreement, reply: .declinedByOwner)
+            // A private limit: silent, like a list where nothing fits.
+            endInvite(conversation, event: .noAgreement, reply: nil)
             return
         }
         let revision = invite.revision + 1
@@ -197,9 +205,12 @@ extension PickAPlaceService {
         switch answer {
         case .accept(let revision):
             guard revision == proposal.revision else { throw PickAPlaceError.staleProposal }
-            guard !invite.accepted else { return }
+            // A second tap while the first is on its way changes nothing.
+            guard !invite.accepted, !invite.accepting else { return }
+            invites[conversation]?.accepting = true
             let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
+            invites[conversation]?.accepting = false
             // A yes to a proposal that has since been replaced reports
             // nothing (ADR 0011, amendment 14).
             guard invites[conversation]?.proposal?.revision == revision else { return }
@@ -225,7 +236,10 @@ extension PickAPlaceService {
             emit(invite.id, .ownerAccepted(revision: revision))
             spawnWaitForConfirmation(conversation)
         case .pass:
-            endInvite(conversation, event: .ownerPassed, reply: .declinedByOwner)
+            // After a yes, passing takes the yes back: the state machine
+            // calls that withdrawing.
+            let event: InteractionEvent = invite.accepted || invite.accepting ? .withdrawn : .ownerPassed
+            endInvite(conversation, event: event, reply: .declinedByOwner)
         case .reply:
             throw PickAPlaceError.notWaitingForYou
         }

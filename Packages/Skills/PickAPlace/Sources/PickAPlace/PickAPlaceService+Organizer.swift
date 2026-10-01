@@ -272,7 +272,8 @@ extension PickAPlaceService {
             emit(organizer.id, .ownerAccepted(revision: revision))
             tryFinalize(conversation)
         case .pass:
-            endOrganizer(conversation, event: .ownerPassed, reason: .declinedByOwner)
+            // After a yes, passing takes the yes back: withdrawing.
+            endOrganizer(conversation, event: organizer.ownerAccepted ? .withdrawn : .ownerPassed, reason: .declinedByOwner)
         case .reply:
             throw PickAPlaceError.notWaitingForYou
         }

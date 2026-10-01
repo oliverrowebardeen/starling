@@ -205,3 +205,106 @@ struct InFlightTests {
         #expect(await group.lifecyclesWereLegal())
     }
 }
+
+/// The owner's taps, and proposals that arrive while a send is on its way.
+@Suite("Owner taps", .serialized)
+struct OwnerTapTests {
+    let skill = PickAPlaceSkill.ref
+
+    func askingForYes() -> FixedPolicyEngine {
+        FixedPolicyEngine(decide: { message in
+            let envelope = message.envelope
+            guard envelope.body.kind == .accept else { return .allow }
+            return .needsConsent(Disclosure(recipient: envelope.recipient, recipientModel: nil, items: [],
+                                            conversation: envelope.conversation, skill: envelope.skill))
+        })
+    }
+
+    @Test func aDoubleTapSendsOneYes() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let gate = ConsentGate()
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let maya = Phone("Maya", hub: hub, maps: maps, policy: askingForYes(), gate: gate)
+        let group = try await Group([oliver, maya], hub: hub)
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+
+        let first = Task { try await maya.accept(in: conversation) }
+        let second = Task { try await maya.accept(in: conversation) }
+        #expect(await eventually { await gate.waiting >= 1 })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await gate.waiting == 1)
+        await gate.open()
+        try await first.value
+        try await second.value
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        let id = try #require(await maya.interaction(conversation)?.id)
+        #expect(await maya.coordinator.received.filter { $0 == .lifecycle(id, .ownerAccepted(revision: 1)) }.count == 1)
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func passingAfterSayingYesWithdraws() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let maya = Phone("Maya", hub: hub, maps: maps)
+        let group = try await Group([oliver, maya], hub: hub)
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(await oliver.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        try await oliver.accept(in: conversation)
+        #expect(await oliver.reaches(.planned, in: conversation))
+
+        // A fresh request: both say yes, then the organizer's owner passes.
+        let second = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await oliver.reaches(.proposed, in: second))
+        try await oliver.accept(in: second)
+        #expect(await oliver.reaches(.confirmed, in: second))
+        try await oliver.pass(in: second)
+        #expect(await oliver.reaches(.ended(.withdrawn), in: second))
+
+        // And a friend who said yes, then passes.
+        let third = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await maya.reaches(.proposed, in: third))
+        try await maya.accept(in: third)
+        #expect(await maya.reaches(.confirmed, in: third))
+        try await maya.pass(in: third)
+        #expect(await maya.reaches(.ended(.withdrawn), in: third))
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func aNewProposalWhileTheYesIsOnItsWayIsIgnored() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let gate = ConsentGate()
+        let maya = Phone("Maya", hub: hub, maps: maps, policy: askingForYes(), gate: gate)
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+
+        let conversation = ConversationID()
+        try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
+                                      conversation: conversation, skill: skill)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+        let first = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: first)), to: maya.id, conversation: conversation, skill: skill)
+        #expect(await maya.reaches(.proposed, in: conversation))
+
+        let tap = Task { try await maya.accept(in: conversation) }
+        #expect(await eventually { await gate.waiting >= 1 })
+        let slot = try TimeSlot(start: Date(timeIntervalSince1970: 1_790_000_000), end: Date(timeIntervalSince1970: 1_790_003_600))
+        let second = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id]), .time: .slots([slot])])
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill)
+        try await Task.sleep(for: .milliseconds(150))
+        await gate.open()
+        try await tap.value
+
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        #expect(await maya.interaction(conversation)?.proposal?.terms == first)
+        #expect(await group.lifecyclesWereLegal())
+    }
+}
