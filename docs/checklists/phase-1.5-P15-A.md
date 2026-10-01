@@ -49,6 +49,15 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 25. Phone A: You › Developer › "Maya's agent asks when you're free". Expect: Needs you "Maya's agent asked when you're free" with Review; Review shows three times; pick one, Send my answer. Expect: the card leaves Needs you.
 26. Phone A: Developer › "Maya is down for tacos too". Expect: a Needs you card "You and Maya are both down for tacos"; tap Not tonight. Expect: it leaves Home; Friends › Maya › History shows "You passed".
 
+## Core v2.1: modes, audience, topics
+
+28. Phone A: New, type "boba tonight". Expect: an Ask quietly / Invite choice under Ask, Ask quietly selected, the line "Friends see nothing unless they're up for it too.", and under the button "If nobody's up for it, nobody sees you asked." Switch to Invite. Expect: "The friends you ask see this as an invite."
+29. Phone A: Friends › New group "Climbing" with Maya, Save. New › Ask menu. Expect: All friends, Close friends, Climbing, Everyone except…, Pick friends. Choose Everyone except…, tap Maya. Expect: Maya dimmed, a chip "Not Maya", and the line that nobody you leave out can tell.
+30. Phone A: Friends › Maya › When you ask friends: Only ask quietly. New › All friends with Invite. Expect: Maya dimmed (not asked); switch to Ask quietly: Maya asked again.
+31. Phone B (Maya), during steps 29 and 30: Expect nothing at all on Phone B for any request it was left out of: no notification, no card, nothing in Home.
+32. Phone A: You › Privacy. Expect: Place, Exact location, Budget (Never), Diet, People, Photos, Interests (Share), Calendar details (Never), each with a line explaining the selected choice; Calendar details set to Share says Share and Ask me aren't used by any skill yet.
+33. Phone A: quit Starling while a consent sheet is up, then reopen. Expect: no sheet, and the request back in progress, not ended.
+
 ## Release build
 
 27. Archive a Release build (or run the Release scheme). Expect: You has no Developer section, and nothing anywhere says "test build"; New's tiles say "Not in this build yet" until the skill lanes merge.
