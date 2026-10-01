@@ -119,7 +119,10 @@ public actor PickAPlaceService: SkillService {
     var conversationOf: [InteractionID: ConversationID] = [:]
     /// Ended invites, oldest first, for pruning.
     var endedInvites: [ConversationID] = []
-    var tasks: [ConversationID: [Task<Void, Never>]] = [:]
+    /// Cancels the work, sends included, still running for a conversation.
+    /// Withdrawing or ending it cancels them, so a send suspended on a
+    /// consent sheet or the policy recheck never leaves afterwards.
+    var tasks: [ConversationID: [@Sendable () -> Void]] = [:]
 
     /// - Parameters:
     ///   - localPeer: This phone's ID, the Outbox's transport's `localPeer`.
@@ -206,7 +209,7 @@ public actor PickAPlaceService: SkillService {
 
     /// Ends every request silently and finishes `events`.
     public func shutdown() async {
-        for list in tasks.values { list.forEach { $0.cancel() } }
+        for list in tasks.values { list.forEach { $0() } }
         tasks = [:]
         organized = [:]
         invites = [:]
@@ -236,11 +239,26 @@ public actor PickAPlaceService: SkillService {
     /// conversation ends.
     func spawn(_ conversation: ConversationID, _ work: @escaping @Sendable (isolated PickAPlaceService) async -> Void) {
         let task = Task { await work(self) }
-        tasks[conversation, default: []].append(task)
+        tasks[conversation, default: []].append { task.cancel() }
+    }
+
+    /// Runs a send on a tracked task and waits for it, so ending the
+    /// conversation cancels it even while the caller is waiting.
+    func trackedSend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async -> (any Error)? {
+        let task = Task { () -> (any Error)? in
+            do {
+                try await self.send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        tasks[conversation, default: []].append { task.cancel() }
+        return await task.value
     }
 
     func cancelTasks(_ conversation: ConversationID) {
-        tasks.removeValue(forKey: conversation)?.forEach { $0.cancel() }
+        tasks.removeValue(forKey: conversation)?.forEach { $0() }
     }
 
     /// Waits `interval`, then returns the next, doubled up to the maximum;

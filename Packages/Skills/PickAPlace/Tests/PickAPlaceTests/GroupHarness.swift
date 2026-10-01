@@ -80,6 +80,8 @@ actor Wire {
 /// sheet records consentNeeded and consentGiven as the shared sheet would.
 actor Coordinator {
     private(set) var interactions: [InteractionID: Interaction] = [:]
+    /// Every event the service reported, applied or not.
+    private(set) var received: [SkillEvent] = []
     private(set) var rejected: [(SkillEvent, String)] = []
     private(set) var produced: [InteractionID: [Artifact]] = [:]
     private(set) var incoming: [(InteractionID, PeerID, ConversationID?)] = []
@@ -88,6 +90,7 @@ actor Coordinator {
     func add(_ interaction: Interaction) { interactions[interaction.id] = interaction }
 
     func apply(_ event: SkillEvent) {
+        received.append(event)
         switch event {
         case .incoming(let id, let conversation, let from, let chainedFrom):
             incoming.append((id, from, chainedFrom))
@@ -136,11 +139,14 @@ actor Coordinator {
 final class CoordinatorConsent: ConsentProvider {
     let coordinator: Coordinator
     let outcome: ConsentOutcome
+    /// When set, every sheet stays up until the gate opens.
+    let gate: ConsentGate?
     let asked = Mutex<[Disclosure]>([])
 
-    init(coordinator: Coordinator, outcome: ConsentOutcome) {
+    init(coordinator: Coordinator, outcome: ConsentOutcome, gate: ConsentGate? = nil) {
         self.coordinator = coordinator
         self.outcome = outcome
+        self.gate = gate
     }
 
     func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
@@ -151,8 +157,28 @@ final class CoordinatorConsent: ConsentProvider {
         let coordinator = coordinator
         _ = await eventually(1) { await coordinator.interaction(conversation: disclosure.conversation ?? ConversationID()) != nil }
         let request = await coordinator.consentRequested(for: disclosure.conversation)
+        await gate?.wait()
         if outcome == .approved, let request { await coordinator.consentApproved(request, conversation: disclosure.conversation) }
         return outcome
+    }
+}
+
+/// Holds consent sheets open until the test opens it.
+actor ConsentGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var waiting = 0
+
+    func wait() async {
+        guard !isOpen else { return }
+        waiting += 1
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }
 
@@ -178,13 +204,13 @@ final class Phone: Sendable {
 
     init(
         _ name: String, hub: LoopbackHub, maps: FakeMaps, limits: ConstraintSet = .empty,
-        policy: any PolicyEngine = FixedPolicyEngine(.allow), consent outcome: ConsentOutcome = .approved,
+        policy: any PolicyEngine = FixedPolicyEngine(.allow), consent outcome: ConsentOutcome = .approved, gate: ConsentGate? = nil,
         skills: [SkillRef] = [PickAPlaceSkill.ref], configuration: PickAPlaceConfiguration = fastConfiguration
     ) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
-        consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome)
+        consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
         outbox = Outbox(transport: transport, policy: policy, consent: consent)
         card = try! AgentCard(model: .onDevice, capabilities: [], skills: skills)
         let (peer, outbox, store, staged) = (key.peerID, outbox, store, staged)

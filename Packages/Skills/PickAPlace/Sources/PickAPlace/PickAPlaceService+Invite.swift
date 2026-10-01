@@ -172,15 +172,22 @@ extension PickAPlaceService {
         case .accept(let revision):
             guard revision == proposal.revision else { throw PickAPlaceError.staleProposal }
             guard !invite.accepted else { return }
-            do {
-                let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
-                try await send(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
-            } catch OutboxError.consentDeclined {
+            let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
+            switch await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom) {
+            case nil:
+                break
+            case is CancellationError?:
+                // Withdrawn or ended while the send waited; nothing left.
+                return
+            case OutboxError.consentDeclined?:
                 endInvite(conversation, event: .ownerPassed, reply: .declinedByOwner)
                 return
-            } catch OutboxError.denied {
+            case OutboxError.denied?:
                 endInvite(conversation, event: .failed, reply: .declinedByOwner)
                 throw OutboxError.denied(PolicyViolation(rule: "pick_a_place.acceptance"))
+            case let error?:
+                // Unreachable for now: the owner can tap again.
+                throw error
             }
             guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else { return }
             invites[conversation]?.accepted = true
