@@ -13,15 +13,15 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0007](0007-ci-on-the-xcode-27-runner.md) | CI on the GitHub `xcode-27` runner | Accepted |
 | [0008](0008-repo-name-and-visibility.md) | Repo name `starling-ios`, private for now | Accepted |
 | [0009](0009-task-level-agent-model-interface.md) | Task-level `AgentModel` interface | Accepted |
-| [0010](0010-skills-platform.md) | Starling is a platform of skills | Accepted, except decision 2 Proposed |
+| [0010](0010-skills-platform.md) | Starling is a platform of skills | Accepted |
 | [0011](0011-one-lifecycle-and-interactions.md) | One lifecycle for every skill, recorded as Interactions | Accepted |
 | [0012](0012-artifacts-and-chaining.md) | Skills chain through typed artifacts, with consent per link | Accepted |
-| [0013](0013-just-in-time-permissions.md) | Permissions belong to skills and are requested just in time | Proposed (needs Oliver's agreement) |
+| [0013](0013-just-in-time-permissions.md) | Permissions belong to skills and are requested just in time | Accepted |
 | [0014](0014-global-privacy-topics.md) | Global privacy topics: Share, Ask me, Never | Accepted |
 | [0015](0015-information-architecture.md) | Home, New, Friends, You | Accepted |
 | [0016](0016-model-in-the-core-loop.md) | The model works in the core loop | Accepted |
 | [0017](0017-copy-reads-as-plans-with-friends.md) | Copy reads as plans with friends, not a dating app | Accepted |
-| [0018](0018-hand-offs.md) | Hand-offs to Calendar, Messages, Maps, and Siri | Proposed (needs Oliver's agreement) |
+| [0018](0018-hand-offs.md) | Hand-offs to Calendar, Messages, Maps, and Siri | Accepted (Muse and Dots open) |
 | [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Proposed |
 | [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Proposed |
 | [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |

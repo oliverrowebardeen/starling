@@ -1,6 +1,6 @@
 # ADR 0010: Starling is a platform of skills
 
-- Status: Accepted, except decision 2 (intent schema as data, not `@Generable`), which departs from the Phase 1.5 prompt and is Proposed until Oliver agrees
+- Status: Accepted (decision 2, the intent schema as data rather than `@Generable`, approved by Oliver on 2026-09-30)
 - Date: 2026-09-30
 - Owner: Orchestrator
 

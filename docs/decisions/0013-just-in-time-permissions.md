@@ -1,6 +1,6 @@
 # ADR 0013: Permissions belong to skills and are requested just in time
 
-- Status: Proposed. Decision 3 (the pre-permission sheet has one button) departs from the Find a time mockup and needs Oliver's agreement; the rest follows the Phase 1.5 prompt.
+- Status: Accepted (Oliver approved the one-button sheet, decision 3, on 2026-09-30)
 - Date: 2026-09-30
 - Owner: Orchestrator
 
