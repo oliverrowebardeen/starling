@@ -70,6 +70,14 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
     - **`planEnded` comes from the coordinator.** It applies `planEnded` to every planned interaction whose `Plan.endsAt` has passed, at launch and while running. A service never emits it, so a plan ends once, the same way for every skill.
     - **`restore(_:)` also gets recently ended interactions.** The coordinator passes every live interaction of the skill and every one that ended in the last 24 hours, so a service can ignore a late retry for a conversation that has already ended instead of opening it again.
 
+### Amendment for the privacy review of PR #56 (2026-10-01)
+
+16. **A pass on a card goes through the skill.** When the owner taps a card's pass, the coordinator hides the card at once, on this phone only, and calls `SkillService.answer(_:with: .pass)`. It does not apply `ownerPassed` or retire the conversation itself.
+    - The service reports `ownerPassed` when the conversation can end without revealing the pass. For most skills that is immediately. For Down for… it is when the proposal's fixed delivery schedule ends, so the friend sees the same traffic as for an unanswered card.
+    - The coordinator retires and settles consent when that event arrives (ADR 0021 amendment 13).
+    - A declined consent sheet is unchanged: the coordinator applies the pass (amendment 15).
+17. **Quiet asks are one-to-one in Phase 1.5.** Down for… reveals interest between the starter and each friend separately, on independent schedules. No friend's messages depend on any other friend's answers. A group plan is a separate, explicit step: the starter invites the friends they matched with in Invite mode, with the roster under the people topic. The reviews of PR #56 found that a quiet group reveal across different audiences leaked interest or exclusion through rosters, schedules, and candidate limits. A private group reveal returns only with a design that passes a dedicated review.
+
 ## Consequences
 
 - Home, the proposal card, It's a plan, and the plan timeline render any skill, including future ones, from `Interaction` and `SkillDescriptor` alone.
