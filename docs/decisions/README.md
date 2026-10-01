@@ -25,6 +25,18 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0019](0019-never-stays-on-the-phone.md) | Never keeps a value on the phone, and every topic has the same control | Accepted (amends 0014) |
 | [0020](0020-send-modes-and-audience.md) | Send modes and audience: Ask quietly, Invite, and undetectable exclusion | Accepted (amends 0010, 0011) |
 | [0021](0021-one-ledger-for-what-a-friend-was-told.md) | One ledger for what a friend was told, enforced by Outbox | Accepted (amends 0011, 0019) |
+| [0200](0200-interactions-in-one-json-file.md) | Interactions persist in one JSON file | Proposed |
+| [0201](0201-the-lifecycle-coordinator-contract.md) | What the lifecycle coordinator applies, and what skills report | Proposed |
+| [0202](0202-first-use-permissions-and-no-onboarding.md) | No onboarding; Local Network and notifications at first use | Proposed |
+| [0203](0203-pair-symbol-palette.md) | Pair symbols from ten contrast-checked hue pairs | Proposed |
+| [0204](0204-hand-offs-on-the-phone.md) | How the hand-offs and their local records work | Proposed |
+| [0205](0205-audience-book-and-sent-sequences-on-the-phone.md) | The audience book, the Ask picker, and sent sequence numbers on the phone | Proposed |
+| [0230](0230-pick-a-place-private-aggregation.md) | Pick a place agrees on a venue by private aggregation over place queries | Proposed |
+| [0231](0231-venue-names-stay-out-of-prompts.md) | Venue names stay out of prompts in Phase 1.5 | Proposed (needs lane P15-F review) |
+| [0232](0232-candidates-from-apple-maps-location-at-first-use.md) | Candidates from Apple Maps, location at first use, typed places when denied | Proposed |
+| [0240](0240-chain-links-consent-and-time-triggers.md) | Chain links, per-link consent, and time-triggered chains | Proposed |
+| [0241](0241-egress-log-and-plan-audit.md) | The egress log and the plan's audit | Proposed |
+| [0242](0242-swap-photos-stub.md) | Swap photos ships flagged off, picking with the system picker | Proposed |
 | [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Proposed |
 | [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Proposed |
 | [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |
