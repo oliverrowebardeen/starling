@@ -435,7 +435,8 @@ extension RulesDraft {
 /// Combines the owner's standing rules with one Down intent. `DownService`
 /// takes a single `OwnerRules`, so the app merges before calling it.
 public enum RulesMerge {
-    /// Constraints on the same issue accumulate (both must hold). For sharing,
+    /// Constraints on the same issue accumulate (both must hold), the
+    /// intent's first. For sharing,
     /// the most restrictive rule for each issue wins, so an intent can never
     /// loosen a standing "never share" (ADR 0141).
     public static func intent(_ intent: OwnerRules, standing: OwnerRules) throws -> OwnerRules {
@@ -446,9 +447,12 @@ public enum RulesMerge {
     }
 
     /// Can throw: the accumulated constraints may break a ConstraintSet limit.
+    /// The intent's constraints come first on each issue: lane F reads liked
+    /// keywords in order, so "want food tonight" must outrank a standing
+    /// preference (docs/requests/F.md, answer 2).
     public static func constraints(intent: ConstraintSet, standing: ConstraintSet) throws -> ConstraintSet {
-        var constraints = standing.constraints
-        for (issue, list) in intent.constraints {
+        var constraints = intent.constraints
+        for (issue, list) in standing.constraints {
             constraints[issue, default: []].append(contentsOf: list)
         }
         return try ConstraintSet(constraints)
