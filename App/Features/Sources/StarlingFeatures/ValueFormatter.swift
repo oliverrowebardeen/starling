@@ -18,10 +18,13 @@ public struct DisplayLine: Hashable, Sendable {
 public struct ValueFormatter: Sendable {
     public let timeZone: TimeZone
     public let locale: Locale
+    /// "Now", for deciding when a date needs its year.
+    private let referenceDate: @Sendable () -> Date
 
-    public init(timeZone: TimeZone = .current, locale: Locale = .current) {
+    public init(timeZone: TimeZone = .current, locale: Locale = .current, referenceDate: @escaping @Sendable () -> Date = { Date() }) {
         self.timeZone = timeZone
         self.locale = locale
+        self.referenceDate = referenceDate
     }
 
     // MARK: Issues
@@ -57,15 +60,23 @@ public struct ValueFormatter: Sendable {
         return major.formatted(.currency(code: amount.currency).locale(locale).precision(.fractionLength(digits)))
     }
 
-    /// "Tue 7:00 PM to 11:00 PM", or with both days when the slot crosses midnight.
+    /// "Tue, Sep 29, 7:00 PM to 11:00 PM", with the end's date too when the
+    /// slot crosses midnight, and the year when it is not this year. Slots
+    /// are absolute times, so the date is always shown: two slots a week
+    /// apart must never read the same.
     public func slot(_ slot: TimeSlot) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        let day = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: timeZone).weekday(.abbreviated)
-        let time = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: timeZone).hour().minute()
-        let start = "\(slot.start.formatted(day)) \(slot.start.formatted(time))"
+        let base = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: timeZone)
+        let thisYear = calendar.component(.year, from: referenceDate())
+        func day(_ date: Date) -> String {
+            let style = base.weekday(.abbreviated).month(.abbreviated).day()
+            return date.formatted(calendar.component(.year, from: date) == thisYear ? style : style.year())
+        }
+        let time = base.hour().minute()
+        let start = "\(day(slot.start)), \(slot.start.formatted(time))"
         let sameDay = calendar.isDate(slot.start, inSameDayAs: slot.end.addingTimeInterval(-1))
-        let end = sameDay ? slot.end.formatted(time) : "\(slot.end.formatted(day)) \(slot.end.formatted(time))"
+        let end = sameDay ? slot.end.formatted(time) : "\(day(slot.end)), \(slot.end.formatted(time))"
         return "\(start) to \(end)"
     }
 

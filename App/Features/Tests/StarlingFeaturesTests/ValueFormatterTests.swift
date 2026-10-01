@@ -66,4 +66,34 @@ import Testing
         #expect(lines.map(\.title) == ["Activity", "Budget"])
         #expect(lines.map(\.detail) == ["food", "$15.00"])
     }
+
+    /// Re-review finding 2 on PR #15: absolute slots must carry their date,
+    /// or slots a week apart read the same on consent sheets and matches.
+    @Test func slotsAWeekApartReadDifferently() throws {
+        // Tuesday 2026-09-29 19:00 UTC, and the same time a week later.
+        let start = Int64(1_790_708_400 / 60)
+        let first = try TimeSlot(startMinute: start, endMinute: start + 240)
+        let second = try TimeSlot(startMinute: start + 7 * 24 * 60, endMinute: start + 7 * 24 * 60 + 240)
+        let formatter = ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US"), referenceDate: { Fixtures.noon })
+        #expect(formatter.slot(first) != formatter.slot(second))
+        #expect(formatter.slot(first).contains("Sep 29"))
+        #expect(formatter.slot(second).contains("Oct 6"))
+    }
+
+    @Test func aSlotCrossingMidnightNamesBothDates() throws {
+        let start = Int64(1_790_708_400 / 60) + 4 * 60 // 23:00
+        let slot = try TimeSlot(startMinute: start, endMinute: start + 120)
+        let formatter = ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US"), referenceDate: { Fixtures.noon })
+        #expect(formatter.slot(slot).contains("Sep 29"))
+        #expect(formatter.slot(slot).contains("Sep 30"))
+    }
+
+    @Test func aSlotInAnotherYearShowsTheYear() throws {
+        let start = Int64(1_790_708_400 / 60) + 365 * 24 * 60
+        let slot = try TimeSlot(startMinute: start, endMinute: start + 60)
+        let formatter = ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US"), referenceDate: { Fixtures.noon })
+        #expect(formatter.slot(slot).contains("2027"))
+        #expect(!ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US"), referenceDate: { Fixtures.noon })
+            .slot(try TimeSlot(startMinute: Int64(1_790_708_400 / 60), endMinute: Int64(1_790_708_400 / 60) + 60)).contains("2026"))
+    }
 }
