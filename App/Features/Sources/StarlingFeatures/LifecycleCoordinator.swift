@@ -117,6 +117,14 @@ public final class LifecycleCoordinator {
         interactions.first { $0.id == id }
     }
 
+    /// Conversations that can still resume: live interactions and those
+    /// that ended within the restore window. Their sent sequence numbers
+    /// must be kept.
+    public var resumableConversations: Set<ConversationID> {
+        let cutoff = Timestamp(now().addingTimeInterval(-Self.recentlyEnded))
+        return Set(interactions.filter { !$0.state.isFinal || $0.updatedAt >= cutoff }.map(\.conversation))
+    }
+
     public func interaction(conversation: ConversationID) -> Interaction? {
         interactions.first { $0.conversation == conversation }
     }

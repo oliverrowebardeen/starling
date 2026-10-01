@@ -242,6 +242,30 @@ import Testing
         #expect(app.notes.contactLinks.isEmpty)
     }
 
+    /// Re-review of PR #54, finding 4: at launch the sequence store keeps
+    /// numbers for live and recently ended interactions only.
+    @Test func launchKeepsSequenceNumbersForResumableConversationsOnly() async throws {
+        let file = JSONFile(url: FileManager.default.temporaryDirectory.appending(path: "starling-seq-\(UUID().uuidString).json"))
+        let sequences = FileSentSequenceStore(file: file)
+        var live = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [.random()], createdAt: Timestamp(Date()))
+        try live.apply(.started, at: Timestamp(Date()))
+        var old = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [.random()], createdAt: Timestamp(Date().addingTimeInterval(-3 * 86_400)))
+        try old.apply(.withdrawn, at: Timestamp(Date().addingTimeInterval(-2 * 86_400)))
+        let hello = ConversationID()
+        try sequences.recordSent(1, in: live.conversation)
+        try sequences.recordSent(2, in: old.conversation)
+        try sequences.recordSent(3, in: hello)
+
+        var services = Self.services()
+        services.interactions = InMemoryInteractionStore([live, old])
+        services.sequences = sequences
+        let app = AppModel(services: services)
+        await app.start()
+        #expect(sequences.highestSent(in: live.conversation) == 1)
+        #expect(sequences.highestSent(in: old.conversation) == nil)
+        #expect(sequences.highestSent(in: hello) == nil)
+    }
+
     @Test func keepItGoingHidesChainsAFriendCannotRun() async throws {
         let maya = Fixtures.peer("Maya")
         let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)

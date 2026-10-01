@@ -47,17 +47,27 @@ import Testing
         #expect(store.highestSent(in: conversation) == nil)
     }
 
-    @Test func onlyTheMostRecentlyUsedConversationsAreKept() throws {
-        let store = FileSentSequenceStore(file: file, maxConversations: 2)
-        let a = ConversationID(), b = ConversationID(), c = ConversationID()
-        try store.recordSent(1, in: a)
-        try store.recordSent(1, in: b)
-        try store.recordSent(2, in: a)
-        try store.recordSent(1, in: c)
-        let reopened = FileSentSequenceStore(file: file, maxConversations: 2)
-        #expect(reopened.highestSent(in: a) == 2)
+    /// Re-review of PR #54, finding 4: nothing is evicted by count, so a
+    /// live conversation's number is never forgotten however many others
+    /// (hello traffic included) are used.
+    @Test func noConversationIsEvictedByCount() throws {
+        let store = FileSentSequenceStore(file: file)
+        let live = ConversationID()
+        try store.recordSent(9, in: live)
+        for _ in 0..<1_100 { try store.recordSent(1, in: ConversationID()) }
+        #expect(FileSentSequenceStore(file: file).highestSent(in: live) == 9)
+    }
+
+    @Test func retainingKeepsOnlyResumableConversations() throws {
+        let store = FileSentSequenceStore(file: file)
+        let a = ConversationID(), b = ConversationID()
+        try store.recordSent(5, in: a)
+        try store.recordSent(6, in: b)
+        try store.retainOnly([a])
+        let reopened = FileSentSequenceStore(file: file)
+        #expect(reopened.highestSent(in: a) == 5)
         #expect(reopened.highestSent(in: b) == nil)
-        #expect(reopened.highestSent(in: c) == 1)
+        #expect(reopened.conversationCount == 1)
     }
 
     @Test func anUnreadableFileIsMovedAside() throws {

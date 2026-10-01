@@ -37,7 +37,7 @@ public struct AppServices: Sendable {
     public var auditLog: (any OutboxObserver)?
     /// Remembers each conversation's highest sent sequence number across
     /// launches (Core v2.1). Nil keeps it in memory only.
-    public var sequences: (any SentSequenceStore)?
+    public var sequences: (any RetainingSentSequenceStore)?
     /// The link the app's `Outbox` sends on. Nil until a transport the app
     /// may send owner data over is in the build.
     public var transport: (any Transport)?
@@ -74,7 +74,7 @@ public struct AppServices: Sendable {
         inboxEvents: AsyncStream<InboxEvent>? = nil,
         makePolicy: (@Sendable (OwnerRules, Bool) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
-        sequences: (any SentSequenceStore)? = nil,
+        sequences: (any RetainingSentSequenceStore)? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -306,6 +306,10 @@ public final class AppModel {
         refreshCard()
         await lifecycle.start()
         lifecycle.tick()
+        // Before anything is sent this launch: keep sequence numbers for
+        // every conversation that can still resume, and drop the rest. Not
+        // when the interactions could not be read, which would drop them all.
+        if lifecycle.notice == nil { try? services.sequences?.retainOnly(lifecycle.resumableConversations) }
         // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
         if settings.settings.localNetworkAsked { await startLinks() }
