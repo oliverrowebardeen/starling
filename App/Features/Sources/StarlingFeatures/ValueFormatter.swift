@@ -60,7 +60,7 @@ public struct ValueFormatter: Sendable {
         case .flag(let flag): flag ? "Yes" : "No"
         case .count(let count): String(count)
         case .places(let places): places.map(\.name.rawValue).joined(separator: ", ")
-        case .peers(let peers): peers.map { peerName($0) ?? "someone you haven't paired with (\($0.short))" }.joined(separator: ", ")
+        case .peers(let peers): RosterLabels.labels(for: peers, name: peerName).joined(separator: ", ")
         }
     }
 

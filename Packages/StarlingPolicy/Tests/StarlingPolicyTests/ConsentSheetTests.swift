@@ -74,7 +74,7 @@ import Testing
         }
         #expect(detail([alice, bob, c]) != detail([alice, bob, d]))
         let named = detail([alice, bob, c], names: [alice: "Maya", bob: "Jake"])
-        #expect(named.contains("Maya") && named.contains("Jake") && named.contains(c.short))
-        #expect(!named.contains(alice.short))
+        #expect(named.contains("Maya") && named.contains("Jake") && named.contains(c.fingerprint))
+        #expect(!named.contains(alice.fingerprint))
     }
 }

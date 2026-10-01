@@ -37,8 +37,17 @@ public struct PeerID: Hashable, Comparable, Sendable, CustomStringConvertible {
     /// Lowercase hex, 64 characters.
     public var hex: String { Hex.encode(bytes) }
 
-    /// First 8 hex characters, for logs and debug UI only.
+    /// First 8 hex characters, for logs and debug UI only. Too short to tell
+    /// people apart on a consent sheet: a peer can grind a key to match it.
     public var short: String { String(hex.prefix(8)) }
+
+    /// First 16 hex characters in groups of four ("a1b2 c3d4 e5f6 7a8b"),
+    /// for showing people who identifies whom. 64 bits: matching it would
+    /// take grinding about 2^64 keys.
+    public var fingerprint: String {
+        let digits = Array(hex.prefix(16))
+        return stride(from: 0, to: 16, by: 4).map { String(digits[$0..<$0 + 4]) }.joined(separator: " ")
+    }
 
     public var description: String { "PeerID(\(short))" }
 

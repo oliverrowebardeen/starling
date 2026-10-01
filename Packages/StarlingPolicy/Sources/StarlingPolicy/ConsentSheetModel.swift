@@ -111,7 +111,7 @@ public struct ConsentSheetModel: Hashable, Sendable {
         // Everyone whose ID leaves the phone, by the owner's name for them
         // or, for someone not paired with this phone, a short ID.
         case .peers(let peers):
-            return peers.map { peerName($0) ?? "Someone you haven't paired with (\($0.short))" }.joined(separator: "\n")
+            return RosterLabels.labels(for: peers, name: peerName).joined(separator: "\n")
         }
     }
 
