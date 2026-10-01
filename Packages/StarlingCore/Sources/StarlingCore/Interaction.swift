@@ -354,6 +354,11 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     /// reopened or replayed, including after a restart.
     public private(set) var questionWatermark: UInt32
     public private(set) var consentWatermark: UInt32
+    /// For an invitee: the conversation a friend's request said it continues
+    /// (`Envelope.chainedFrom`), once the coordinator has checked it names a
+    /// plan this phone was in. Grouping on the timeline only: never a
+    /// `ChainLink`, which records the owner's own opt-in (ADR 0012).
+    public private(set) var friendChainHint: ConversationID?
 
     /// The revision of the proposal the owner is looking at or accepted.
     public var proposalRevision: UInt32? { proposal?.revision }
@@ -442,6 +447,16 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     }
 
     public mutating func setParticipants(_ peers: [PeerID]) { participants = peers }
+
+    /// Keeps a friend's chain hint. Only an invitee has one, and it cannot
+    /// name this interaction's own conversation.
+    public mutating func setFriendChainHint(_ hint: ConversationID?) throws {
+        guard hint == nil || role == .invitee else {
+            throw ValidationError("Interaction.friendChainHint", "only a friend's request carries one")
+        }
+        guard hint != conversation else { throw ValidationError("Interaction.friendChainHint", "cannot be its own conversation") }
+        friendChainHint = hint
+    }
 
     /// Records an artifact this interaction produced. A newer artifact of the
     /// same kind replaces the older one (a plan updated with a place).

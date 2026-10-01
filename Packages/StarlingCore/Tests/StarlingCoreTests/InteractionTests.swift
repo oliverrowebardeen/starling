@@ -191,6 +191,19 @@ import Testing
         #expect(restored.state == .proposed)
     }
 
+    /// Lane E's request 2: a friend's chained request is grouped on the
+    /// timeline, kept across a restart, and never becomes a ChainLink.
+    @Test func aFriendsChainHintIsKeptOnTheInviteeOnly() throws {
+        let parent = ConversationID()
+        var invitee = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
+        try invitee.setFriendChainHint(parent)
+        let restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(invitee))
+        #expect(restored.friendChainHint == parent && restored.chain == nil)
+        #expect(throws: ValidationError.self) { try invitee.setFriendChainHint(invitee.conversation) }
+        var mine = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        #expect(throws: ValidationError.self) { try mine.setFriendChainHint(parent) }
+    }
+
     /// Lane E's request 2b (review of PR #51, item 3).
     @Test func egressRecordsAreIdempotentAndMarkUnknownItems() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
