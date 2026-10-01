@@ -105,9 +105,12 @@ struct RestoreTests {
         _ = try await a.waitForProposal(revision: 1)
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)
+        try await b.accept(bCard, revision: 1)
+        try await eventually("Ben's acceptance reached Ana") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept } }
         await a.restart()
         try await a.greetAgain(world)
         try await c.service.answer(cCard, with: .pass)
+        world.clock.advance(hours: 2)
         _ = try await a.waitForProposal(revision: 2)
         _ = try await b.waitForProposal(revision: 2)
         try await a.accept(started, revision: 2)
@@ -227,6 +230,8 @@ struct CrashWindowTests {
         let (cCard, _) = try await c.waitForProposal(revision: 1)
         try await b.accept(bCard, revision: 1)
         try await c.service.answer(cCard, with: .pass)
+        try await eventually("Ben's acceptance reached Ana") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept } }
+        world.clock.advance(hours: 2)
         let (_, second) = try await b.waitForProposal(revision: 2)
         await b.service.flushCheckpoints()
 
@@ -267,7 +272,10 @@ struct CrashWindowTests {
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)
         try await a.accept(started, revision: 1)
+        try await b.accept(bCard, revision: 1)
         try await c.service.answer(cCard, with: .pass)
+        try await eventually("Ben's acceptance reached Ana") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept } }
+        world.clock.advance(hours: 2)
         _ = try await a.waitForProposal(revision: 2)
         await a.service.flushCheckpoints()
 

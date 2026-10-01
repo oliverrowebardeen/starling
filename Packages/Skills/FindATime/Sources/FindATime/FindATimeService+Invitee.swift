@@ -6,16 +6,14 @@ import StarlingCore
 // friend's query creates at most an invitee interaction. It never starts a
 // skill, asks for a permission, or skips Consent (ARCHITECTURE rule 8).
 //
-// What the starter can learn from a no (ADR 0221, review of PR #53):
-// - While answering, every no is silence. No free time, a standing limit,
-//   a policy refusal, a pass, a declined sheet, and an expired request all
-//   send nothing, so neither the count nor the timing of envelopes says
-//   which it was. The starter takes silence at its answer deadline as no.
-// - Once a proposal card is up, a "no plan" is sent only as the direct
-//   result of the owner's tap on it (a pass, a declined sheet, or a refused
-//   acceptance), always naming that proposal's latest envelope. A no the
-//   agent reaches by itself (a standing limit) is silent, like an owner
-//   who never answered.
+// What the starter can learn from a no (ADR 0221, reviews of PR #53):
+// nothing. Every no this phone reaches is silence, while answering and at
+// a proposal: no free time, a standing limit, a policy refusal, a pass, a
+// declined sheet, a refused acceptance, a withdrawal, an expired request.
+// The conversation is closed and retired here, and nothing is sent, so
+// neither the count nor the timing of envelopes says why. The starter
+// takes silence as no at its own deadlines. "If you pass, they just won't
+// see it" (ADR 0017).
 
 extension FindATimeService {
     func receiveQuery(_ envelope: Envelope, _ query: Query) {
@@ -129,9 +127,7 @@ extension FindATimeService {
             inviteeResendAcceptance(id)
 
         case (.proposed, .pass):
-            // The same "no plan", naming the same proposal, as a declined
-            // sheet or a refused acceptance after the same tap (ADR 0019).
-            tellAskerNoPlan(id)
+            // Silent, exactly like a card nobody touched.
             close(id, reporting: .ownerPassed)
 
         case (.accepted, .accept(let revision)) where value.offer?.revision == revision:
@@ -144,9 +140,8 @@ extension FindATimeService {
     }
 
     func inviteeWithdraw(_ id: ConversationID) {
-        guard let value = invited[id] else { return }
-        // Like a pass: silent while answering, "no plan" once a card is up.
-        if value.phase != .planned, value.offer != nil { tellAskerNoPlan(id) }
+        guard invited[id] != nil else { return }
+        // Like a pass: silent.
         close(id, reporting: .withdrawn)
     }
 
@@ -178,7 +173,7 @@ extension FindATimeService {
             // A lost answer is recovered when the starter retries its query.
             return
         case .declined, .denied, .refused:
-            inviteeRefused(id, outcome, tellAsker: false)
+            inviteeRefused(id, outcome)
         }
     }
 
@@ -254,34 +249,22 @@ extension FindATimeService {
             if let held = value.heldConfirmation { confirm(id, with: held) }
         case .failed:
             return
-        case .declined, .denied:
-            inviteeRefused(id, outcome, tellAsker: true)
-        case .refused:
-            // The ledger refused: the conversation is over here; say nothing.
-            inviteeRefused(id, outcome, tellAsker: false)
+        case .declined, .denied, .refused:
+            inviteeRefused(id, outcome)
         }
     }
 
-    /// A send for the current step was refused. A declined sheet adds no
-    /// event (the coordinator applies the pass); a denial is blocked by
-    /// privacy. The starter hears "no plan" only for a refused acceptance,
-    /// which follows the owner's tap like a pass does.
-    private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome, tellAsker: Bool) {
+    /// A send for the current step was refused, and the starter hears
+    /// nothing. A declined sheet adds no event (the coordinator applies the
+    /// pass); a denial is blocked by privacy; a ledger refusal is a failure.
+    private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome) {
         guard invited[id] != nil else { return }
         let event: InteractionEvent? = switch outcome {
         case .denied: .blockedByPrivacy
         case .refused: .failed
         default: nil
         }
-        if tellAsker { tellAskerNoPlan(id) }
         close(id, reporting: event)
-    }
-
-    /// "No plan" for the proposal on the card, naming its latest envelope:
-    /// the same message whatever the owner's tap led to.
-    private func tellAskerNoPlan(_ id: ConversationID) {
-        guard let value = invited[id], let offer = value.offer else { return }
-        sendNoPlan(about: offer.latest, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
     }
 
     /// The starter's confirmation: everyone said "That works".

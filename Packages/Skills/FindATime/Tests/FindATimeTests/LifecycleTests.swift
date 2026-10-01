@@ -10,8 +10,9 @@ import Testing
 /// Revisions, deadlines, retries, and endings.
 @Suite(.serialized)
 struct LifecycleTests {
-    /// A pass in a group: the others get a new proposal (revision 2) for
-    /// the same time, and an "I'm in" on the old card never accepts it.
+    /// A pass in a group is silent. At the confirm deadline, the friends who
+    /// said "That works" get a new proposal (revision 2) for the same time
+    /// without the others, and an "I'm in" on the old card never accepts it.
     @Test func aPassInAGroupGivesANewRevisionAndOldCardsAreStale() async throws {
         let world = World()
         let a = world.phone("Ana")
@@ -24,7 +25,11 @@ struct LifecycleTests {
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)
         try await a.accept(started, revision: 1)
+        try await b.accept(bCard, revision: 1)
         try await c.service.answer(cCard, with: .pass)
+        try await eventually("Ben's acceptance reached Ana") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept } }
+        #expect(!world.envelopes.contains { $0.sender == c.id && $0.body.kind == .reject })
+        world.clock.advance(hours: 2)
 
         let (_, second) = try await a.waitForProposal(revision: 2)
         #expect(second.plan?.attendees.peers == [a.id, b.id].sorted())
@@ -254,7 +259,9 @@ struct LifecycleTests {
         let (bCard, _) = try await b.waitForProposal()
         try await b.accept(bCard)
         try await b.waitForState(bCard, .ended(.blockedByPrivacy))
-        try await a.waitForState(started, .ended(.nobodyUp))
+        // Silent, like any no: Ana's request expires at its deadline.
+        world.clock.advance(hours: 2)
+        try await a.waitForState(started, .ended(.expired))
         #expect(!world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept })
         #expect(await b.coordinator.rejected.isEmpty)
         await world.stop()
@@ -281,7 +288,13 @@ struct LifecycleTests {
         let (cCard, _) = try await c.waitForProposal(revision: 1)
         try await b.accept(bCard, revision: 1)
         try await eventually("Ben's acceptance is held") { await policy.held == 1 }
-        try await c.service.answer(cCard, with: .pass)
+        // Cy's build is an older one that still says no out loud, so Ana
+        // replaces proposal 1 at once (a silent pass would wait for the
+        // deadline, after Ben's held acceptance).
+        let conversation = await a.coordinator.interaction(started)!.conversation
+        let toCy = world.envelopes.last { $0.sender == a.id && $0.recipient == c.id && $0.body.kind == .propose }!
+        try await c.send(.reject(Rejection(proposal: toCy.id, reason: .noOverlap)), to: a, conversation: conversation)
+        _ = cCard
         _ = try await b.waitForProposal(revision: 2)
         try await b.accept(bCard, revision: 2)
         try await eventually("Ana has Ben's acceptance") {
@@ -317,7 +330,11 @@ struct LifecycleTests {
         let started = try await a.findATime(with: [b, c])
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         try await eventually("the proposal to Cy is held") { await policy.held == 1 }
-        try await b.service.answer(bCard, with: .pass)
+        // Ben's build is an older one that still says no out loud.
+        let conversation = await a.coordinator.interaction(started)!.conversation
+        let toBen = world.envelopes.last { $0.sender == a.id && $0.recipient == b.id && $0.body.kind == .propose }!
+        try await b.send(.reject(Rejection(proposal: toBen.id, reason: .noOverlap)), to: a, conversation: conversation)
+        _ = bCard
         let (cCard, _) = try await c.waitForProposal(revision: 1)
         try await a.waitForState(started, .proposed)
         await policy.release()

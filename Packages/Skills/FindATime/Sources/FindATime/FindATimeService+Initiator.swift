@@ -446,7 +446,7 @@ extension FindATimeService {
             // Friends who have not answered are treated as having no time.
             decide(id)
         case .proposing where expired(value.confirmDeadline):
-            endWithoutPlan(id, .expired)
+            confirmDeadlinePassed(id)
         case .confirming where expired(value.confirmDeadline):
             endWithoutPlan(id, .expired)
         case .collecting, .proposing, .confirming:
@@ -454,6 +454,17 @@ extension FindATimeService {
         case .resolving, .askingOwner:
             break
         }
+    }
+
+    /// Friends who have not said "That works" by the deadline count as no
+    /// (a friend's no is silent, ADR 0221). If some did, the same time goes
+    /// to them again as a new revision without the others; if none did, the
+    /// request expires.
+    private func confirmDeadlinePassed(_ id: ConversationID) {
+        guard let value = initiating[id], let draft = value.draft else { return }
+        let agreed = draft.members.filter { value.accepted[$0] != nil }
+        guard !agreed.isEmpty, agreed.count < draft.members.count else { return endWithoutPlan(id, .expired) }
+        propose(id, slot: draft.slot, members: agreed)
     }
 
     func initiatorResend(_ id: ConversationID, to peers: [PeerID]) {
