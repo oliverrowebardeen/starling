@@ -26,6 +26,11 @@ public enum ProtocolLimits {
     public static let maxCapabilities = 16
     /// Skills one agent card may advertise (ADR 0010).
     public static let maxSkillsAdvertised = 32
+    /// A venue name's length, in characters (ADR 0012).
+    public static let maxPlaceNameCharacters = 64
+    public static let maxMapItemIDCharacters = 128
+    /// People in one plan, the owner included.
+    public static let maxAttendees = 16
     public static let maxProviderNameCharacters = 32
     public static let maxPSIPayloadBytes = 32 * 1024
     public static let maxOwnerUtteranceCharacters = 500
