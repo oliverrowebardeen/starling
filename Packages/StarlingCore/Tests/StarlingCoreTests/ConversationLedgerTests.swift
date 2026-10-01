@@ -165,6 +165,30 @@ import Testing
         #expect(await transport.sent.isEmpty)
     }
 
+    /// Re-review of PR #60: a send cleared before retirement and waiting in
+    /// the transport's own queue (behind another conversation's stalled
+    /// send) must not leave once the conversation is retired.
+    @Test func retiringCancelsASendWaitingInTheTransportsQueue() async throws {
+        let ledger = InMemoryConversationLedger()
+        let transport = SerialStallingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            ledger: ledger, now: { Fixtures.now })
+        let other = ConversationID()
+        await transport.stall()
+        let blocking = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: other) }
+        try await waitUntil { await transport.waiting == 1 }
+        let doomed = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await waitUntil { await transport.waiting == 2 }
+        try await outbox.retire(Fixtures.conversation)
+        await transport.release()
+        _ = try await blocking.value
+        await #expect(throws: CancellationError.self) { try await doomed.value }
+        #expect(await transport.delivered == [other])
+        await #expect(throws: OutboxError.conversationRetired) {
+            try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        }
+    }
+
     func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
         for _ in 0..<400 {
             if await condition() { return }
@@ -220,4 +244,35 @@ actor GatedObserver: OutboxObserver {
     }
 
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+}
+
+/// One queue for every send, like SecureTransport: while stalled, sends
+/// wait in order; a send cancelled while waiting is dropped before it goes.
+actor SerialStallingTransport: Transport {
+    nonisolated let kind = TransportKind.loopback
+    nonisolated let localPeer: PeerID
+    nonisolated let events: AsyncStream<TransportEvent>
+    private(set) var delivered: [ConversationID] = []
+    private(set) var waiting = 0
+    private var stalled = false
+    private var gates: [CheckedContinuation<Void, Never>] = []
+
+    init(localPeer: PeerID) {
+        self.localPeer = localPeer
+        events = AsyncStream { _ in }
+    }
+
+    func stall() { stalled = true }
+    func release() { stalled = false; for gate in gates { gate.resume() }; gates = [] }
+    func start() async throws {}
+    func stop() async {}
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        if stalled {
+            waiting += 1
+            await withCheckedContinuation { gates.append($0) }
+        }
+        try Task.checkCancellation()
+        delivered.append(try EnvelopeCodec().decode(frame.bytes).conversation)
+    }
 }

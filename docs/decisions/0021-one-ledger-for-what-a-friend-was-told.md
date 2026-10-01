@@ -20,7 +20,7 @@ The review of PR #51 found a related gap in the audit: an `OutboxObserver` heard
 ## Decision
 
 1. **`ConversationLedger`** (StarlingCore) is one persistent, fail-closed record per phone:
-   - **Retired conversations, kept for good.** `retire(_:)` on every ending, withdrawal included. Nothing is sent in a retired conversation again, and a skill opens nothing for one.
+   - **Retired conversations, kept for good.** Retired on every ending, withdrawal included, through `Outbox.retire(_:)` (decision 10). Nothing is sent in a retired conversation again, and a skill opens nothing for one.
    - **Distinct candidates answered**, per friend, conversation, and issue. `reserve(_:issue:to:in:)` adds the candidates an answer covers, and refuses, reserving nothing, past the limit or in a retired conversation. Asking again about a candidate already reserved costs nothing.
    - Every change is durable before it returns, and a ledger that cannot read or write throws.
 2. **Outbox enforces it** when the app passes one (`Outbox(ledger:)`):
@@ -45,6 +45,9 @@ The review of PR #51 found a related gap in the audit: an `OutboxObserver` heard
    - If the transport drops a send as cancelled before it leaves, the number is given back.
    - Retirement is checked again at that last moment.
    - A skill that withdraws cancels its in-flight sends first (ADR 0011), so nothing waiting goes out after a withdrawal.
+
+10. **Skills retire through `Outbox.retire(_:)`** (second review of PR #60). It records the conversation in the ledger, then cancels every send of it still in flight, including one waiting inside the transport's queue behind another conversation's send. Queued encrypted sends honor cancellation (decision 5), so none of them leaves. A send the transport has already sealed may still complete.
+11. **Accepted limit.** A number given back after a cancelled send is not taken back in the `SentSequenceStore`. Recording before sending is what keeps relaunches from reusing a number. So if the app relaunches with its clock moved back, the friend can see a one-number gap, which says only that some send was cancelled before the relaunch.
 
 ## Consequences
 

@@ -80,6 +80,8 @@ public actor Outbox {
     /// Each key's sends are numbered and handed to the transport one at a
     /// time, so a send cancelled while it waits takes no number.
     private var tails: [SequenceKey: Task<Void, Never>] = [:]
+    /// Sends not yet finished, by conversation, so `retire(_:)` can stop them.
+    private var inFlight: [ConversationID: [UUID: Task<Envelope, any Error>]] = [:]
 
     public init(
         transport: any Transport,
@@ -193,6 +195,12 @@ public actor Outbox {
             return try await self.numberAndSend(draft, key: key)
         }
         tails[key] = Task { _ = await work.result }
+        let workID = UUID()
+        inFlight[conversation, default: [:]][workID] = work
+        defer {
+            inFlight[conversation]?[workID] = nil
+            if inFlight[conversation]?.isEmpty == true { inFlight[conversation] = nil }
+        }
         let envelope = try await withTaskCancellationHandler {
             try await work.value
         } onCancel: {
@@ -200,6 +208,16 @@ public actor Outbox {
         }
         await observer?.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
         return envelope
+    }
+
+    /// Ends `conversation` for good (ADR 0021): records it in the ledger,
+    /// then cancels every send of it still in flight, wherever it waits,
+    /// including inside the transport's queue. Skills retire through here,
+    /// not the ledger directly, so nothing already cleared slips out after.
+    /// A send already sealed by the transport may still complete.
+    public func retire(_ conversation: ConversationID) async throws {
+        try await ledger?.retire(conversation)
+        for work in inFlight[conversation]?.values ?? [:].values { work.cancel() }
     }
 
     /// Numbers `draft` and hands it to the transport. Runs once this key's
