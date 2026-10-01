@@ -186,7 +186,11 @@ actor GatedSettingsStore: OwnerSettingsStore {
     private var held: [CheckedContinuation<Void, Never>] = []
     var waiting: Int { held.count }
 
-    init(_ saved: OwnerSettings? = nil) { self.saved = saved }
+    private var unreadable: Bool
+    init(_ saved: OwnerSettings? = nil, unreadable: Bool = false) {
+        self.saved = saved
+        self.unreadable = unreadable
+    }
 
     func block() { blocked = true }
     func release() {
@@ -196,11 +200,15 @@ actor GatedSettingsStore: OwnerSettingsStore {
     }
     func failSaves(_ fail: Bool = true) { failing = fail }
 
-    func load() async throws -> OwnerSettings? { saved }
+    func load() async throws -> OwnerSettings? {
+        if unreadable { throw Failure() }
+        return saved
+    }
     func save(_ settings: OwnerSettings) async throws {
         if blocked { await withCheckedContinuation { held.append($0) } }
         if failing { throw Failure() }
         saved = settings
+        unreadable = false
     }
     func keepCopyAside() async throws {}
 }
@@ -260,6 +268,27 @@ actor GatedSettingsStore: OwnerSettingsStore {
         await store.release()
         #expect(await editing.value)
         #expect(model.rule(for: jake) == .neverInclude)
+    }
+
+    /// Final review of PR #54: recovery and audience edits run one at a
+    /// time, so an edit made while recovery saves is saved after it, never
+    /// confirmed and then lost.
+    @Test func recoveryAndAnAudienceEditRunOneAtATime() async throws {
+        let store = GatedSettingsStore(unreadable: true)
+        let model = SettingsModel(store: store, flags: .phase1_5)
+        await model.load()
+        #expect(model.loadFailed)
+        await store.block()
+        let recovering = Task { await model.recover() }
+        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        let editing = Task { await model.setRule(.neverInclude, for: jake) }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(model.rule(for: jake) == nil, "the edit waits for recovery")
+        await store.release()
+        await recovering.value
+        #expect(await editing.value)
+        #expect(!model.loadFailed)
+        #expect(await store.saved?.audience.rules[jake] == .neverInclude, "saved durably, not only in memory")
     }
 
     @Test func aFailedLooseningGoesBackAndAFailedTighteningStays() async throws {

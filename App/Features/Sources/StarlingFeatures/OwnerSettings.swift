@@ -88,6 +88,11 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
         return result
     }
 
+    /// Whether `next` keeps something on the phone that `previous` let out.
+    public static func tightens(_ previous: OwnerSettings, to next: OwnerSettings) -> Bool {
+        loosens(next, to: previous)
+    }
+
     /// Whether `next` lets anything out that `previous` did not.
     static func loosens(_ previous: OwnerSettings, to next: OwnerSettings) -> Bool {
         let interim = strictest(previous, next)
@@ -284,6 +289,10 @@ public final class SettingsModel {
     /// commits, so a failure or an exit midway leaves the next launch as
     /// blocked as this one, never on defaults (re-review of PR #54).
     public func recover() async {
+        // One at a time with every other change, so an audience edit made
+        // meanwhile is never confirmed and then lost (final review of PR #54).
+        await acquire()
+        defer { isUpdating = false }
         guard loadFailed else { return }
         do {
             try await store.keepCopyAside()
@@ -295,6 +304,12 @@ public final class SettingsModel {
         loadFailed = false
         notice = nil
         await onChange()
+    }
+
+    /// Waits for any change or recovery in progress, then claims the turn.
+    private func acquire() async {
+        while isUpdating { try? await Task.sleep(for: .milliseconds(5)) }
+        isUpdating = true
     }
 
     /// Applies one change. Changes run one at a time, so none is computed
@@ -312,8 +327,7 @@ public final class SettingsModel {
     /// is ignored. Returns whether the change took effect.
     @discardableResult
     private func update(confirmFirst: Bool = false, _ change: (inout OwnerSettings) throws -> Void) async -> Bool {
-        while isUpdating { try? await Task.sleep(for: .milliseconds(5)) }
-        isUpdating = true
+        await acquire()
         defer { isUpdating = false }
         var next = settings
         do { try change(&next) } catch { return false }
