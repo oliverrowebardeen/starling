@@ -185,6 +185,19 @@ public final class DownModel {
         phase = .reviewing
     }
 
+    static let standingChangedNotice = "Your saved sharing rules changed. Check \"What may leave your phone\" again, then go down."
+
+    /// Reloads the saved rules while a review is open, for example when the
+    /// Down screen reappears after the owner edited the Rules tab. If their
+    /// sharing changed, the rows update and the owner is told to look again.
+    public func refreshStandingRules() async {
+        guard phase == .reviewing else { return }
+        let current = (try? await rules.load())?.rules.disclosure ?? []
+        guard Set(current) != Set(standingSharing) else { return }
+        standingSharing = current
+        notice = Self.standingChangedNotice
+    }
+
     private func loadStanding() async {
         standingSharing = (try? await rules.load())?.rules.disclosure ?? []
     }
@@ -208,6 +221,14 @@ public final class DownModel {
         notice = nil
         do {
             let standing = try await rules.load()?.rules ?? .empty
+            // The saved rules may have changed in the Rules tab since this
+            // review opened. Publish only what the owner has seen.
+            if Set(standing.disclosure) != Set(standingSharing) {
+                standingSharing = standing.disclosure
+                notice = Self.standingChangedNotice
+                phase = .reviewing
+                return
+            }
             guard let merged = try? RulesMerge.intent(intentRules, standing: standing) else {
                 notice = "Together with your saved rules, this has too many rules on one topic. Remove some."
                 phase = .reviewing

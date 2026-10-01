@@ -39,6 +39,8 @@ struct DownView: View {
             }
         }
         .navigationTitle("Down?")
+        // The owner may have edited saved rules in the Rules tab meanwhile.
+        .onAppear { Task { await model.refreshStandingRules() } }
     }
 
     @ViewBuilder private var compose: some View {

@@ -142,3 +142,56 @@ import Testing
         }
     }
 }
+
+/// Re-review finding 1 on PR #15: saved rules changed in the Rules tab
+/// while a Down review was open must not publish unseen.
+@MainActor
+@Suite struct StaleStandingRulesTests {
+    @Test func changedSavedSharingStopsThePublishAndRefreshesTheRows() async throws {
+        let service = ScriptedDownService()
+        let store = InMemoryRulesStore(SavedRules(rules: OwnerRules(constraints: .empty, disclosure: [
+            DisclosureRule(issue: .place, action: .never),
+        ]), savedAt: Fixtures.noon))
+        let model = DownModel(
+            service: service,
+            interpreter: RulesInterpreter(agent: nil, issues: RulesInterpreter.intentIssues),
+            rules: store,
+            peers: InMemoryPairedPeerStore(),
+            notifier: RecordingNotifier()
+        )
+        await model.editByHand()
+        #expect(model.sharingRows.first { $0.issue == .place }?.action == .never)
+
+        // The owner loosens Place in the Rules tab while the review is open.
+        let loosened = OwnerRules(constraints: .empty, disclosure: [DisclosureRule(issue: .place, action: .allowOnDevicePeers)])
+        try await store.save(SavedRules(rules: loosened, savedAt: Fixtures.noon))
+
+        await model.goDown()
+        #expect(await service.intents.isEmpty, "nothing publishes on rules the owner has not seen")
+        #expect(model.phase == .reviewing)
+        #expect(model.notice != nil)
+        #expect(model.sharingRows.first { $0.issue == .place }?.action == .allowOnDevicePeers, "the rows now show the new rules")
+
+        await model.goDown()
+        let intent = try #require(await service.intents.first)
+        #expect(intent.rules.disclosure == loosened.disclosure)
+    }
+
+    @Test func returningToTheReviewRefreshesTheRows() async throws {
+        let store = InMemoryRulesStore()
+        let model = DownModel(
+            service: ScriptedDownService(),
+            interpreter: RulesInterpreter(agent: nil, issues: RulesInterpreter.intentIssues),
+            rules: store,
+            peers: InMemoryPairedPeerStore(),
+            notifier: RecordingNotifier()
+        )
+        await model.editByHand()
+        try await store.save(SavedRules(rules: OwnerRules(constraints: .empty, disclosure: [DisclosureRule(issue: .budget, action: .never)]), savedAt: Fixtures.noon))
+
+        await model.refreshStandingRules()
+
+        #expect(model.sharingRows.first { $0.issue == .budget }?.action == .never)
+        #expect(model.notice != nil)
+    }
+}
