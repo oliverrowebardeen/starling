@@ -302,6 +302,7 @@ public final class AppModel {
         lifecycle.beforeRestore = { [weak self] in await self?.recoverEgress() }
         let notes = notes
         lifecycle.onPassedChange = { notes.setPassed($0) }
+        lifecycle.onRequestGroupsChange = { notes.setRequestGroups($0) }
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
@@ -319,7 +320,7 @@ public final class AppModel {
         syncNames()
         // A passed card is gone from this phone at once (ADR 0011 amendment 16).
         let passed = lifecycle.passed
-        return HomeContent(lifecycle.interactions.filter { !passed.contains($0.id) }, words: words)
+        return HomeContent(lifecycle.interactions.filter { !passed.contains($0.id) }, words: words, groups: lifecycle.requestGroups)
     }
 
     /// The card this agent sends in each `hello`: where its model runs and
@@ -394,6 +395,7 @@ public final class AppModel {
         cards.load()
         notes.load()
         lifecycle.restorePassed(notes.passed)
+        lifecycle.restoreRequestGroups(notes.requestGroups)
         refreshCard()
         // Recovers the egress journal between loading and restoring.
         await lifecycle.start()

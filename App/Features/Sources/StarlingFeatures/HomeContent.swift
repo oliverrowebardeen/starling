@@ -227,11 +227,14 @@ public struct HomeContent: Hashable, Sendable {
     public let headline: String
     public let pose: StatusPose
 
-    public init(_ interactions: [Interaction], words: InteractionWords) {
+    /// - Parameter groups: the quiet ask each one-to-one interaction came
+    ///   from (ADR 0011 amendment 17). Siblings still in progress show as
+    ///   one request; each match shows as its own card.
+    public init(_ interactions: [Interaction], words: InteractionWords, groups: [InteractionID: UUID] = [:]) {
         let visible = interactions.filter(words.isVisible).compactMap(words.summary)
         needsYou = visible.filter { $0.interaction.state.homeSection == .needsYou }
             .sorted { $0.interaction.updatedAt > $1.interaction.updatedAt }
-        inProgress = visible.filter { $0.interaction.state.homeSection == .inProgress }
+        inProgress = Self.grouped(visible.filter { $0.interaction.state.homeSection == .inProgress }, groups: groups, words: words)
             .sorted { $0.interaction.updatedAt > $1.interaction.updatedAt }
         comingUp = visible.filter { $0.interaction.state.homeSection == .comingUp }
             .sorted { Self.startsAt($0.interaction) < Self.startsAt($1.interaction) }
@@ -252,6 +255,22 @@ public struct HomeContent: Hashable, Sendable {
     }
 
     public var isEmpty: Bool { needsYou.isEmpty && inProgress.isEmpty && comingUp.isEmpty }
+
+    /// One row per quiet ask: the first sibling, with every sibling's friend.
+    static func grouped(_ summaries: [InteractionSummary], groups: [InteractionID: UUID], words: InteractionWords) -> [InteractionSummary] {
+        var seen: Set<UUID> = []
+        return summaries.compactMap { summary in
+            guard let group = groups[summary.id] else { return summary }
+            guard seen.insert(group).inserted else { return nil }
+            let siblings = summaries.filter { groups[$0.id] == group }
+            guard siblings.count > 1 else { return summary }
+            var combined = siblings.min { $0.interaction.createdAt < $1.interaction.createdAt }!.interaction
+            var friends: [PeerID] = []
+            for sibling in siblings { for peer in sibling.interaction.participants where !friends.contains(peer) { friends.append(peer) } }
+            combined.setParticipants(friends)
+            return words.summary(combined) ?? summary
+        }
+    }
 
     static func startsAt(_ interaction: Interaction) -> Date {
         interaction.plan?.time?.start ?? interaction.updatedAt.date

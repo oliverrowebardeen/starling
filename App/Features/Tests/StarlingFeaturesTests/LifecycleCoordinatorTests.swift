@@ -228,6 +228,51 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.isEmpty)
     }
 
+    /// ADR 0011 amendment 17: a quiet ask is one interaction per friend, each
+    /// in its own conversation with the same intent, started separately.
+    @Test func aQuietAskGoesOneToOne() async throws {
+        let lifecycle = coordinator()
+        var groups: [[InteractionID: UUID]] = []
+        lifecycle.onRequestGroupsChange = { groups.append($0) }
+        let quiet = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .picked([maya, jake]), mode: .askQuietly,
+                                expiresAt: Timestamp(clock.now.addingTimeInterval(3600))),
+            participants: [maya, jake]
+        )
+        let ids = try await lifecycle.send(quiet, settings: Self.settings)
+        #expect(ids.count == 2)
+        #expect(ids.first == quiet.interaction)
+        let made = ids.compactMap(lifecycle.interaction)
+        #expect(made.map(\.participants) == [[maya], [jake]])
+        #expect(made.allSatisfy { $0.role == .initiator && $0.state == .negotiating })
+        #expect(Set(made.map(\.conversation)).count == 2)
+        #expect(made.first?.conversation == quiet.conversation)
+
+        let started = await down.started
+        #expect(started.map(\.interaction) == ids)
+        #expect(started.map(\.participants) == [[maya], [jake]])
+        #expect(started.allSatisfy { $0.intent == quiet.intent })
+        // One local group, recorded before anything started, never sent.
+        let group = try #require(lifecycle.requestGroups[ids[0]])
+        #expect(lifecycle.requestGroups[ids[1]] == group)
+        #expect(groups.count == 1)
+    }
+
+    @Test func anInviteStaysOneInteraction() async throws {
+        let lifecycle = coordinator()
+        let invite = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .picked([maya, jake]), mode: .invite,
+                                expiresAt: Timestamp(clock.now.addingTimeInterval(3600))),
+            participants: [maya, jake]
+        )
+        #expect(try await lifecycle.send(invite, settings: Self.settings) == [invite.interaction])
+        #expect(lifecycle.interaction(invite.interaction)?.participants == [maya, jake])
+        #expect(await down.started.count == 1)
+        #expect(lifecycle.requestGroups.isEmpty)
+    }
+
     /// ADR 0011 amendment 16: a pass hides the card and goes to the
     /// service; the record ends only when the service reports the pass.
     @Test func aPassHidesTheCardAndEndsOnlyWhenTheSkillReportsIt() async throws {

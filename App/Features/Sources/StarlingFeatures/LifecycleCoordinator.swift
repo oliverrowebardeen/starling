@@ -80,6 +80,13 @@ public final class LifecycleCoordinator {
     /// Called whenever `passed` changes, so the app can keep it across a
     /// relaunch.
     public var onPassedChange: @MainActor (Set<InteractionID>) -> Void = { _ in }
+    /// The quiet ask each one-to-one interaction came from (ADR 0011
+    /// amendment 17), so Home can show them under one request. A local ID
+    /// for display only; it is never sent.
+    public private(set) var requestGroups: [InteractionID: UUID] = [:]
+    /// Called whenever `requestGroups` changes, so the app can keep it
+    /// across a relaunch.
+    public var onRequestGroupsChange: @MainActor ([InteractionID: UUID]) -> Void = { _ in }
     /// A plain sentence when the store could not be read or written.
     public private(set) var notice: String?
 
@@ -178,6 +185,12 @@ public final class LifecycleCoordinator {
             }
         }
         await beforeRestore()
+        // Groups only for interactions still on the phone.
+        let known = Set(interactions.map(\.id))
+        if requestGroups.keys.contains(where: { !known.contains($0) }) {
+            requestGroups = requestGroups.filter { known.contains($0.key) }
+            onRequestGroupsChange(requestGroups)
+        }
         // A pass the skill reported while the app was closed has ended its
         // interaction; nothing else is hidden any more.
         let open = Set(interactions.filter { !$0.state.isFinal }.map(\.id))
@@ -262,6 +275,65 @@ public final class LifecycleCoordinator {
     }
 
     // MARK: Owner steps
+
+    /// Groups from an earlier launch. Call before `start()`.
+    public func restoreRequestGroups(_ groups: [InteractionID: UUID]) {
+        requestGroups.merge(groups) { current, _ in current }
+    }
+
+    /// Sends a request the owner composed. A quiet ask is one-to-one (ADR
+    /// 0011 amendment 17): one initiator interaction per friend, each in its
+    /// own conversation with the same intent, started separately, so no
+    /// friend's messages depend on another's answers. They share a local
+    /// group ID for Home only. Anything else is one interaction. Returns
+    /// the interactions started, the first being `request.interaction`.
+    @discardableResult
+    public func send(_ request: SkillRequest, chain: ChainLink? = nil, settings: SkillSettings) async throws(StartRefusal) -> [InteractionID] {
+        guard request.intent.mode == .askQuietly, request.participants.count > 1 else {
+            return [try await start(request, chain: chain, settings: settings)]
+        }
+        let siblings = request.participants.enumerated().map { index, friend in
+            SkillRequest(
+                interaction: index == 0 ? request.interaction : InteractionID(),
+                conversation: index == 0 ? request.conversation : ConversationID(),
+                intent: request.intent, participants: [friend], inputs: request.inputs, chainedFrom: request.chainedFrom
+            )
+        }
+        // Loaded first, so the launch's pruning cannot drop the new group.
+        await start()
+        // Grouped before any starts, so Home never shows them apart.
+        let group = UUID()
+        for sibling in siblings { requestGroups[sibling.interaction] = group }
+        onRequestGroupsChange(requestGroups)
+        var started: [InteractionID] = []
+        var firstRefusal: StartRefusal?
+        for sibling in siblings {
+            do {
+                started.append(try await start(sibling, chain: chain, settings: settings))
+            } catch {
+                switch error {
+                // The same for every friend: stop at the first.
+                case .notInThisBuild, .blockedByPrivacy:
+                    if started.isEmpty { forgetGroup(siblings); throw error }
+                    return started
+                default:
+                    firstRefusal = firstRefusal ?? error
+                }
+            }
+        }
+        if started.isEmpty, let firstRefusal { forgetGroup(siblings); throw firstRefusal }
+        return started
+    }
+
+    /// Drops the group of a quiet ask none of whose interactions started and
+    /// none of which is on the phone.
+    private func forgetGroup(_ siblings: [SkillRequest]) {
+        var changed = false
+        for sibling in siblings where interaction(sibling.interaction) == nil {
+            changed = requestGroups.removeValue(forKey: sibling.interaction) != nil || changed
+        }
+        if changed { onRequestGroupsChange(requestGroups) }
+    }
 
     /// Sends a request the owner composed. Creates the initiator
     /// interaction, applies `started`, then starts the service. A request

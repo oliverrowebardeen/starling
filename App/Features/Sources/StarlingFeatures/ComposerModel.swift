@@ -601,7 +601,8 @@ public final class ComposerModel {
         }
         if let places { await self.places?.stage(places, for: outgoing.interaction) }
         do {
-            let id = try await lifecycle.start(outgoing, chain: link, settings: settings.skillSettings)
+            // A quiet ask goes to each friend separately (amendment 17).
+            let id = try await lifecycle.send(outgoing, chain: link, settings: settings.skillSettings).first ?? outgoing.interaction
             clear()
             notice = fallback
             if !settings.settings.notificationsOffered { offerNotifications = true }

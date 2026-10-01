@@ -38,6 +38,32 @@ import Testing
         return SkillProposal(revision: revision, participants: [me, maya, jake], terms: try Terms(terms))
     }
 
+    /// ADR 0011 amendment 17: a quiet ask's one-to-one interactions show as
+    /// one request while they wait, and each match as its own card.
+    @Test func aQuietAsksSiblingsShowAsOneRequestAndEachMatchAsItsOwnCard() throws {
+        let toMaya = try make(SampleSkills.downFor, with: [maya], [.started])
+        let toJake = try make(SampleSkills.downFor, with: [jake], [.started])
+        let group = UUID()
+        let groups = [toMaya.id: group, toJake.id: group]
+
+        let waiting = HomeContent([toMaya, toJake], words: words, groups: groups)
+        #expect(waiting.inProgress.count == 1)
+        #expect(waiting.inProgress.first?.status == "Checking with 2 friends")
+        #expect(waiting.headline == "Your agent is working on 1 thing")
+
+        var matched = toMaya
+        let start = Fixtures.noon.addingTimeInterval(6 * 3600)
+        try matched.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([
+            .activity: .keywords([try Keyword("boba")]),
+            .time: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(3600))]),
+        ]))), at: at)
+        let oneMatch = HomeContent([matched, toJake], words: words, groups: groups)
+        #expect(oneMatch.needsYou.map(\.id) == [matched.id])
+        #expect(oneMatch.needsYou.first?.title == "Boba with Maya")
+        #expect(oneMatch.inProgress.map(\.id) == [toJake.id])
+        #expect(oneMatch.inProgress.first?.status == "Checking with 1 friend")
+    }
+
     @Test func interactionsLandInTheirSectionsWithAHeadline() throws {
         let proposed = try make(SampleSkills.downFor, with: [maya, jake], [.started, .proposalReady(try bobaProposal())])
         let checking = try make(SampleSkills.downFor, with: [maya, jake, priya], [.started])

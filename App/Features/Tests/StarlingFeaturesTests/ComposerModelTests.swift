@@ -205,9 +205,14 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         await h.model.understand()
         let id = try #require(await h.model.send())
 
-        let sent = try #require(await h.down.started.first)
+        // Ask quietly goes one-to-one (ADR 0011 amendment 17): one request
+        // per friend, each in its own conversation, with the same intent.
+        let all = await h.down.started
+        #expect(all.map(\.participants) == [[h.maya.id], [h.leo.id]])
+        #expect(Set(all.map(\.conversation)).count == 2)
+        #expect(all.allSatisfy { $0.intent == all[0].intent })
+        let sent = try #require(all.first)
         #expect(sent.interaction == id)
-        #expect(sent.participants == [h.maya.id, h.leo.id])
         #expect(sent.intent.audience == .allFriends)
         #expect(sent.intent.rules.constraints.constraints.keys.sorted() == [.activity, .budget, .time])
         #expect(sent.intent.rules.disclosure.contains(DisclosureRule(issue: .budget, action: .never)))

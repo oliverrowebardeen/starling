@@ -35,8 +35,9 @@ public struct ContactLink: Hashable, Sendable, Codable {
 }
 
 /// What the owner keeps about plans and friends on this phone beyond the
-/// interactions themselves: hand-offs made, contact links, and cards passed
-/// whose skill has not ended them yet (ADR 0011 amendment 16). One JSON
+/// interactions themselves: hand-offs made, contact links, cards passed
+/// whose skill has not ended them yet (ADR 0011 amendment 16), and which
+/// one-to-one interactions came from one quiet ask (amendment 17). One JSON
 /// file (ADR 0204), never sent.
 @MainActor
 @Observable
@@ -45,11 +46,14 @@ public final class PlanNotes {
         var handOffs: [String: [HandOffRecord]] = [:]
         var contactLinks: [String: ContactLink] = [:]
         var passed: [String]? = nil
+        var requestGroups: [String: String]? = nil
     }
 
     public private(set) var handOffs: [InteractionID: [HandOffRecord]] = [:]
     public private(set) var contactLinks: [PeerID: ContactLink] = [:]
     public private(set) var passed: Set<InteractionID> = []
+    /// Quiet asks' one-to-one interactions by request, for Home only.
+    public private(set) var requestGroups: [InteractionID: UUID] = [:]
     private let file: JSONFile?
     private let now: @Sendable () -> Date
 
@@ -67,6 +71,15 @@ public final class PlanNotes {
             if let peer = try? PeerID(hex: hex) { contactLinks[peer] = link }
         }
         passed = Set((document.passed ?? []).compactMap { UUID(uuidString: $0).map(InteractionID.init) })
+        for (key, value) in document.requestGroups ?? [:] {
+            if let id = UUID(uuidString: key), let group = UUID(uuidString: value) { requestGroups[InteractionID(id)] = group }
+        }
+    }
+
+    public func setRequestGroups(_ groups: [InteractionID: UUID]) {
+        guard groups != requestGroups else { return }
+        requestGroups = groups
+        save()
     }
 
     public func setPassed(_ ids: Set<InteractionID>) {
@@ -95,7 +108,8 @@ public final class PlanNotes {
         try? file.write(Document(
             handOffs: Dictionary(uniqueKeysWithValues: handOffs.map { ($0.key.description, $0.value) }),
             contactLinks: Dictionary(uniqueKeysWithValues: contactLinks.map { ($0.key.hex, $0.value) }),
-            passed: passed.map(\.description).sorted()
+            passed: passed.map(\.description).sorted(),
+            requestGroups: Dictionary(uniqueKeysWithValues: requestGroups.map { ($0.key.description, $0.value.uuidString) })
         ))
     }
 }
