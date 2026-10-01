@@ -46,7 +46,8 @@ final class DebugHarness {
     func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
         let agent: any AgentModel = usesScriptedModel ? Self.scriptedModel() : FoundationModelsAgent()
-        let card = LiveServices.agentCard(locality: agent.descriptor.locality)
+        // The simulated friend runs Down, so its card offers it.
+        let card = AgentCard.offering(down: true, locality: .onDevice)
 
         let me = try PairedPeer(publicKey: identity.publicKey, nickname: "This phone", pairedAt: Timestamp(Date()))
         let simFriend = SimulatedFriend(hub: hub, owner: me, card: card)
@@ -82,7 +83,7 @@ final class DebugHarness {
             auditLog: LiveServices.auditLog,
             transport: links.transport,
             afterStart: links.startPairing,
-            agentCard: card,
+            agentLocality: agent.descriptor.locality,
             downMatchingIsPrivate: InsecurePSIStub().descriptor.isPrivate,
             describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
@@ -113,7 +114,7 @@ final class DebugHarness {
             unpair: { id in try await peers.remove(id) },
             makePolicy: LiveServices.policy(peers: peers),
             transport: RecordingTransport(),
-            agentCard: LiveServices.agentCard(locality: .onDevice),
+            agentLocality: .onDevice,
             presentConsent: LiveServices.presentConsent,
             notifier: PreviewSupport.SilentNotifier(),
             localNetwork: PreviewSupport.SilentPrompter()

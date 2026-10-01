@@ -42,9 +42,10 @@ public struct AppServices: Sendable {
     /// Runs once the transport has started, for example lane E1's pairing
     /// services, which must start after their secure transports.
     public var afterStart: (@Sendable () async -> Void)?
-    /// This agent's card, sent in a `hello` to each peer that becomes
-    /// available. Down reads peers' cards; it does not send its own.
-    public var agentCard: AgentCard?
+    /// Where this agent's model runs, for its card. AppModel builds the card
+    /// itself from what the build actually runs. Nil means no card and no
+    /// link layer.
+    public var agentLocality: ModelLocality?
     /// Whether Down's PSI provider hides the owner's free times.
     public var downMatchingIsPrivate: Bool
     /// Plain words for the Down service's own errors.
@@ -69,7 +70,7 @@ public struct AppServices: Sendable {
         auditLog: (any OutboxObserver)? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
-        agentCard: AgentCard? = nil,
+        agentLocality: ModelLocality? = nil,
         downMatchingIsPrivate: Bool = false,
         describeDownError: @escaping @Sendable (any Error) -> String? = { _ in nil },
         presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)? = nil,
@@ -90,7 +91,7 @@ public struct AppServices: Sendable {
         self.auditLog = auditLog
         self.transport = transport
         self.afterStart = afterStart
-        self.agentCard = agentCard
+        self.agentLocality = agentLocality
         self.downMatchingIsPrivate = downMatchingIsPrivate
         self.describeDownError = describeDownError
         self.presentConsent = presentConsent
@@ -111,6 +112,10 @@ public final class AppModel {
     /// Nil until a `DownService` and a paired-peer store are in the build.
     public let down: DownModel?
     public let friends: FriendsModel?
+    /// The card this agent sends in each `hello`, built from what the build
+    /// runs: `.down` and `.psi` only when a Down service exists, so a friend's
+    /// Down never starts a negotiation this phone cannot answer.
+    public let agentCard: AgentCard?
     /// The app's link layer: greets peers, answers hellos, and shows each
     /// peer's connection and round trips. Nil without an Outbox and a card.
     public let link: LinkTestModel?
@@ -156,7 +161,9 @@ public final class AppModel {
             down = nil
         }
         friends = services.peers.map { FriendsModel(store: $0, unpair: services.unpair, rename: services.rename) }
-        if let outbox, let card = services.agentCard {
+        let offersDown = downService != nil
+        agentCard = services.agentLocality.map { AgentCard.offering(down: offersDown, locality: $0) }
+        if let outbox, let card = agentCard {
             let friends = friends
             link = LinkTestModel(outbox: outbox, card: card, name: { peer in friends?.friends.first { $0.id == peer }?.nickname })
         } else {
@@ -252,5 +259,14 @@ public final class AppModel {
     public func makePairing() -> PairingModel? {
         guard let directory = services.pairing, services.peers != nil else { return nil }
         return PairingModel(directory: directory)
+    }
+}
+
+extension AgentCard {
+    /// The card for a build: always the model's location; `.down` and `.psi`
+    /// only if this build runs Down (Codex review of PR #42, finding 2).
+    public static func offering(down: Bool, locality: ModelLocality) -> AgentCard {
+        // Cannot throw: one protocol version and at most two capabilities.
+        try! AgentCard(model: locality, capabilities: down ? [.down, .psi] : [])
     }
 }

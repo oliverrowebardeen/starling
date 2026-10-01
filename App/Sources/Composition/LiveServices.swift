@@ -34,7 +34,7 @@ extension AppServices {
             auditLog: LiveServices.auditLog,
             transport: links.transport,
             afterStart: links.startPairing,
-            agentCard: LiveServices.agentCard(locality: .onDevice),
+            agentLocality: .onDevice,
             describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
@@ -55,13 +55,6 @@ enum LiveServices {
     /// paired friends only; without a store the policy asks.
     static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules) -> any PolicyEngine {
         { rules in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: false, pairedPeers: peers) }
-    }
-
-    /// This agent's card, sent in a hello to each peer that becomes
-    /// available. Down is the feature it offers; PSI is how Down matches.
-    static func agentCard(locality: ModelLocality) -> AgentCard {
-        // Cannot throw: one protocol version and two capabilities are within limits.
-        try! AgentCard(model: locality, capabilities: [.down, .psi])
     }
 
     /// Plain words for lane F's own setIntent errors (docs/requests/F.md).
