@@ -27,7 +27,7 @@ import Testing
         await #expect(throws: OutboxError.denied(PolicyViolation(rule: PolicyRuleID.never, issue: .budget))) {
             try await send(secret)
         }
-        #expect(store.highestSent(in: conversation) == first.sequence)
+        #expect(store.highestSent(in: conversation, to: P15.bob) == first.sequence)
         let asks = try P15.bodies(issue: .place, value: P15.value(.place))[0]
         for cancel in [false, true] {
             let task = Task { try await send(asks) }
@@ -37,7 +37,7 @@ import Testing
             if cancel { task.cancel() } else { consent.answer(.declined, to: sheet.id) }
             await #expect(throws: OutboxError.consentDeclined) { try await task.value }
             #expect(consent.current == nil)
-            #expect(store.highestSent(in: conversation) == first.sequence)
+            #expect(store.highestSent(in: conversation, to: P15.bob) == first.sequence)
         }
         let after = try await send(ordinaryNo)
         #expect(after.sequence == first.sequence + 1)
@@ -75,7 +75,7 @@ import Testing
     @Test func sequenceExhaustionAndStorageFailureCannotSendOrAudit() async throws {
         for brokenDisk in [false, true] {
             let conversation = ConversationID()
-            let store = InMemorySentSequenceStore(brokenDisk ? [:] : [conversation: UInt64.max - 1])
+            let store = InMemorySentSequenceStore(brokenDisk ? [:] : [conversation: [P15.bob: UInt64.max - 1]])
             if brokenDisk { store.failWrites() }
             let wire = RecordingTransport(localPeer: P15.alice)
             let observer = RecordingOutboxObserver()
