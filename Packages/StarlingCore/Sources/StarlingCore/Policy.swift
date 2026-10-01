@@ -45,7 +45,7 @@ public struct OutboundMessage: Hashable, Sendable {
 }
 
 /// One item a consent sheet shows: exactly what will leave the phone.
-public struct DisclosedItem: Hashable, Sendable {
+public struct DisclosedItem: Hashable, Sendable, Codable {
     public enum Category: String, Hashable, Sendable, Codable {
         case terms, availability, interest, psi, agentCard
     }
