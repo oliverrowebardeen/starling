@@ -411,7 +411,7 @@ extension DownForService {
         case .askQuietly:
             guard acceptance.terms == terms else { return }
         case .invite:
-            guard Self.confirms(acceptance.terms, invitation: terms),
+            guard Self.confirms(acceptance.terms, invitation: terms, from: key.peer, to: localPeer),
                   request.profile.permits(acceptance.terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now())
             else { return }
         }

@@ -3,7 +3,8 @@ import StarlingCore
 import StarlingNegotiation
 
 // Invite mode (ADR 0020, ADR 0210 decisions 18 to 21): the starter's plan
-// goes straight to each friend as a card. No mutual reveal: an invitation is
+// goes straight to each friend as a card, with the roster of everyone
+// invited when there are two or more. No mutual reveal: an invitation is
 // meant to be seen. The starter keeps whoever said I'm in, then confirms.
 
 extension DownForService {
@@ -14,9 +15,10 @@ extension DownForService {
     // MARK: - Starter
 
     /// The plan an invitation offers: the first block of the starter's own
-    /// free time, up to two hours, and its first activity. Nothing the
-    /// starter keeps on the phone (budget, place) goes in it.
-    func invitationTerms(for profile: DownForProfile, now: Date) -> Terms? {
+    /// free time, up to two hours, its first activity, and for two or more
+    /// friends the roster, starter first. Nothing the starter keeps on the
+    /// phone (budget, place) goes in it.
+    func invitationTerms(for profile: DownForProfile, inviting friends: [PeerID], now: Date) -> Terms? {
         guard let activity = profile.liked.first else { return nil }
         let slots = profile.tokens(now: now).slots
         guard let first = slots.first else { return nil }
@@ -25,7 +27,9 @@ extension DownForService {
             end = slot.endMinute
         }
         guard let time = try? TimeSlot(startMinute: first.startMinute, endMinute: end) else { return nil }
-        return try? Terms([.time: .slots([time]), .activity: .keywords([activity])])
+        var values: [IssueKey: IssueValue] = [.time: .slots([time]), .activity: .keywords([activity])]
+        if friends.count >= 2 { values[.people] = .peers([localPeer] + friends) }
+        return try? Terms(values)
     }
 
     /// Sends the invitation to one friend, as the starter.
@@ -85,7 +89,7 @@ extension DownForService {
     func showInvitation(to members: [PeerID], in id: InteractionID) {
         guard let request = requests[id], let invitation = request.invitation, let first = members.first else { return }
         var values = invitation.values
-        if members.count >= 2 { values[.people] = .peers([localPeer] + members) }
+        values[.people] = members.count >= 2 ? .peers([localPeer] + members) : nil
         guard let terms = try? Terms(values), let roster = DownForProfile.roster(of: terms, hub: localPeer, member: first) else { return }
         let revision = (request.mirror.proposalRevision ?? 0) + 1
         let card = SkillProposal(revision: revision, participants: roster, terms: terms, plan: DownForProfile.plan(from: terms, origin: request.conversation, hub: localPeer, member: first))
@@ -102,7 +106,7 @@ extension DownForService {
     func receiveInvitation(_ proposal: Proposal, envelope: Envelope) async {
         let key = RunKey(conversation: envelope.conversation, peer: envelope.sender)
         let now = clock.now()
-        guard envelope.mode == .invite, proposal.round == 0, Self.isInvitation(proposal.terms),
+        guard envelope.mode == .invite, proposal.round == 0, Self.isInvitation(proposal.terms, from: key.peer, to: localPeer),
               let slot = DownForProfile.slot(of: proposal.terms), DownForProfile.hasNotStarted(slot, now: now),
               runs.values.filter({ $0.key.peer == key.peer && $0.mode == .invite && $0.role == .member }).count < Self.maxInvitationsPerFriend
         else { return }
@@ -125,7 +129,7 @@ extension DownForService {
         runs[key] = run
         continuation.yield(.incoming(id, conversation: key.conversation, from: key.peer, chainedFrom: envelope.chainedFrom))
         let card = SkillProposal(
-            revision: 1, participants: [key.peer, localPeer], terms: proposal.terms,
+            revision: 1, participants: DownForProfile.roster(of: proposal.terms, hub: key.peer, member: localPeer) ?? [key.peer, localPeer], terms: proposal.terms,
             plan: DownForProfile.plan(from: proposal.terms, origin: key.conversation, hub: key.peer, member: localPeer)
         )
         report(id, .proposalReady(card))
@@ -133,17 +137,35 @@ extension DownForService {
         beginStep(key, attemptLimit: silenceLimit, backsOff: true)
     }
 
-    /// An invitation offers a time and an activity, nothing else.
-    static func isInvitation(_ terms: Terms) -> Bool {
-        Set(terms.values.keys) == [.time, .activity] && DownForProfile.slot(of: terms) != nil
-            && DownForProfile.activity(of: terms) != nil
+    /// An invitation offers a time and an activity, and for a group the
+    /// roster of everyone invited, `starter` first and naming `me`.
+    static func isInvitation(_ terms: Terms, from starter: PeerID, to me: PeerID) -> Bool {
+        var keys: Set<IssueKey> = [.time, .activity]
+        if case .peers(let roster)? = terms[.people] {
+            guard roster.count >= 3, roster.first == starter, roster.contains(me), Set(roster).count == roster.count else { return false }
+            keys.insert(.people)
+        }
+        return Set(terms.values.keys) == keys && DownForProfile.slot(of: terms) != nil && DownForProfile.activity(of: terms) != nil
     }
 
     /// The starter's confirmation of an invitation: the invitation the owner
-    /// accepted, plus a roster for a group of three or more.
-    static func confirms(_ confirmed: Terms, invitation: Terms) -> Bool {
+    /// accepted, with the roster of whoever said I'm in, starter first and
+    /// naming `me`, and nobody who was not invited. Nothing else may differ.
+    static func confirms(_ confirmed: Terms, invitation: Terms, from starter: PeerID, to me: PeerID) -> Bool {
         var values = confirmed.values
         values[.people] = nil
-        return values == invitation.values
+        var offered = invitation.values
+        let invited = offered.removeValue(forKey: .people)
+        guard values == offered else { return false }
+        switch confirmed[.people] {
+        case nil:
+            return true
+        case .peers(let roster)?:
+            guard roster.count >= 3, roster.first == starter, roster.contains(me) else { return false }
+            if case .peers(let everyone)? = invited { return Set(roster).isSubset(of: Set(everyone)) }
+            return true
+        default:
+            return false
+        }
     }
 }

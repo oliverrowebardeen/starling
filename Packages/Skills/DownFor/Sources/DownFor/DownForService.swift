@@ -226,7 +226,7 @@ public actor DownForService: SkillService {
         var state = Request(record: record, profile: profile, mirror: mirror)
         state.unsupported = Set(Self.unsupported(among: participants, cards: cards).keys)
         if record.mode == .invite {
-            guard let terms = invitationTerms(for: profile, now: now) else { throw DownForError.noAvailableTime }
+            guard let terms = invitationTerms(for: profile, inviting: participants, now: now) else { throw DownForError.noAvailableTime }
             state.invitation = terms
         }
         requests[request.interaction] = state

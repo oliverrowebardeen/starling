@@ -132,6 +132,8 @@ import Testing
         }
         let theirs = try #require(await b.lifecycle.invitations.first)
         try await b.waitForProposal(theirs)
+        // The invitation names everyone invited.
+        #expect(await b.lifecycle.interaction(theirs)?.proposal?.participants == [a.id, b.id, c.id])
         try await b.imIn(theirs)
         // C looks away. At the window, A's card lists A and B only.
         try await a.waitForProposal(mine)
