@@ -120,4 +120,113 @@ import Testing
         // Query context holds no peer, conversation, or MessageID. Its provenance
         // and the cumulative 16-candidate limit must be checked by each service.
     }
+
+    @Test(arguments: Shape.allCases, SharingChoice.allCases)
+    func exactOfferAcceptanceRepeatsOnlyOfferedValuesUnderEveryChoice(shape: Shape, choice: SharingChoice) async throws {
+        let (issue, candidates, _, _) = try shape.values()
+        let offered = try Proposal(round: 1, terms: Terms([issue: candidates, .activity: .keywords([Keyword("boba")])]))
+        let acceptance = Acceptance(proposal: MessageID(), terms: offered.terms)
+        let friend = try PairedPeer(publicKey: IdentityPublicKey(hex: String(repeating: "bb", count: 32)), nickname: "Sam", pairedAt: P15.now)
+        let privacy = try PrivacySettings([try #require(PrivacyTopic(issue: issue)): choice])
+        let engine = DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: privacy.disclosureRules),
+                                              pairedPeers: InMemoryPairedPeerStore([friend]))
+        let wire = RecordingTransport(localPeer: P15.alice)
+        let consent = ScriptedConsentProvider(.declined)
+        let observer = RecordingOutboxObserver()
+        let outbox = Outbox(transport: wire, policy: engine, consent: consent, observer: observer, now: { P15.date })
+        let localID = InteractionID()
+        let context = OutboundContext(interaction: localID, accepting: offered)
+        let envelope = try await outbox.send(.accept(acceptance), to: friend.id, conversation: ConversationID(),
+            recipientCard: P15.card([SampleSkills.pickAPlace.ref]), context: context,
+            skill: SampleSkills.pickAPlace.ref, mode: .invite)
+        #expect(await consent.requests.isEmpty)
+        #expect(await wire.sent.count == 1)
+        #expect(try EnvelopeCodec().decode(await wire.sent[0].frame.bytes) == envelope)
+        let record = try #require(await observer.records.first)
+        let items = try #require(record.disclosed)
+        let issues = offered.terms.values.keys.sorted()
+        #expect(items.map(\.issue) == issues.map { Optional($0) })
+        #expect(items.map(\.value) == issues.map { offered.terms.values[$0] })
+        #expect(record.context == context)
+        let encoded = String(decoding: try EnvelopeCodec().encode(envelope), as: UTF8.self)
+        #expect(!encoded.contains("accepting") && !encoded.contains(localID.description))
+
+        // Exact acceptance bypasses topic choices, not cloud consent.
+        for model in [ModelLocality.privateCloudCompute, .thirdPartyCloud(provider: "example")] {
+            let cloud = try AgentCard(model: model, capabilities: [], skills: [SampleSkills.pickAPlace.ref])
+            await #expect(throws: OutboxError.consentDeclined) {
+                try await outbox.send(.accept(acceptance), to: friend.id, conversation: ConversationID(),
+                    recipientCard: cloud, context: context, skill: SampleSkills.pickAPlace.ref, mode: .invite)
+            }
+        }
+        #expect(await consent.requests.count == 2)
+        #expect(await wire.sent.count == 1)
+        #expect(await observer.records.count == 1)
+    }
+
+    @Test(arguments: Shape.allCases, SharingChoice.allCases)
+    func changedOrUnboundAcceptanceStillUsesTopicPolicy(shape: Shape, choice: SharingChoice) async throws {
+        let (issue, candidates, subset, secret) = try shape.values()
+        let offered = try Proposal(round: 1, terms: Terms([issue: candidates, .activity: .keywords([Keyword("boba")])]))
+        let context = OutboundContext(accepting: offered)
+        var changed = offered.terms.values
+        changed[issue] = secret
+        var changedActivity = offered.terms.values
+        changedActivity[.activity] = .keywords([try Keyword("walk")])
+        var added = offered.terms.values
+        added[issue == .budget ? .diet : .budget] = .count(42)
+        var cases: [(Terms, OutboundContext)] = [
+            (offered.terms, .empty),
+            (offered.terms, OutboundContext(answering: try Query(issue: issue, candidates: candidates))),
+            (offered.terms, OutboundContext(accepting: try Proposal(round: 1, terms: Terms(changed)))),
+            (try Terms(changed), context),
+            // Changing a public term cannot retain an exemption for the private terms.
+            (try Terms(changedActivity), context),
+            (try Terms([issue: candidates]), context),
+            (try Terms(added), context),
+        ]
+        if subset != candidates {
+            var reduced = offered.terms.values
+            reduced[issue] = subset
+            cases.append((try Terms(reduced), context))
+        }
+        let privacy = try PrivacySettings(Dictionary(uniqueKeysWithValues:
+            PrivacyTopic.allCases.filter(\.allowsNever).map { ($0, choice) }))
+        let friend = try PairedPeer(publicKey: IdentityPublicKey(hex: String(repeating: "bb", count: 32)), nickname: "Sam", pairedAt: P15.now)
+        let engine = DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: privacy.disclosureRules),
+                                              pairedPeers: InMemoryPairedPeerStore([friend]))
+        let wire = RecordingTransport(localPeer: P15.alice)
+        let consent = ScriptedConsentProvider(.declined)
+        let observer = RecordingOutboxObserver()
+        let outbox = Outbox(transport: wire, policy: engine, consent: consent, observer: observer, now: { P15.date })
+        for (terms, sendContext) in cases {
+            let body = MessageBody.accept(Acceptance(proposal: MessageID(), terms: terms))
+            func send() async throws -> Envelope {
+                try await outbox.send(body, to: friend.id, conversation: ConversationID(),
+                    recipientCard: P15.card([SampleSkills.pickAPlace.ref]), context: sendContext,
+                    skill: SampleSkills.pickAPlace.ref, mode: .invite)
+            }
+            switch choice {
+            case .never:
+                do {
+                    _ = try await send()
+                    Issue.record("Altered or unbound acceptance bypassed Never")
+                } catch OutboxError.denied(let violation) {
+                    #expect(violation.rule == PolicyRuleID.never)
+                    let blockedIssue = try #require(violation.issue)
+                    #expect(terms.values[blockedIssue] != nil)
+                    #expect(PrivacyTopic(issue: blockedIssue)?.allowsNever == true)
+                }
+            case .askMe:
+                await #expect(throws: OutboxError.consentDeclined) { try await send() }
+            case .share:
+                #expect(try await send().body == body)
+            }
+        }
+        #expect(await wire.sent.count == (choice == .share ? cases.count : 0))
+        #expect(await observer.records.count == (choice == .share ? cases.count : 0))
+        #expect(await consent.requests.count == (choice == .askMe ? cases.count : 0))
+        // Proposal carries terms and round, not its envelope ID or sender. The
+        // service must bind accepting context to the live proposal; see #49.
+    }
 }
