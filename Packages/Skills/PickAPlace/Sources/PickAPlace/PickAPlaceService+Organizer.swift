@@ -263,6 +263,14 @@ extension PickAPlaceService {
             guard await service.sleep(until: deadline) else { return }
             service.confirmWindowClosed(conversation)
         }
+        // The owner gets one more confirm window after the deadline. A
+        // request still unconfirmed then is over, and everyone hears so, so
+        // a friend's phone never keeps waiting on a yes that is not coming.
+        let ownerDeadline = deadline.addingTimeInterval(Self.seconds(configuration.confirmWindow))
+        spawn(conversation) { service in
+            guard await service.sleep(until: ownerDeadline) else { return }
+            service.endOrganizer(conversation, event: .expired, reason: .expired)
+        }
     }
 
     func keepProposing(_ conversation: ConversationID, _ friend: PeerID) async {

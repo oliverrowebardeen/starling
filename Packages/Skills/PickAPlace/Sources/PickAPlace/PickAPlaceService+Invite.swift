@@ -66,12 +66,15 @@ extension PickAPlaceService {
         spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
     }
 
-    /// Ends a request the organizer stops answering: an honest organizer
-    /// settles it within its answer and confirm windows, so a request still
-    /// open well after that is over. Without this, a silent or crashed
-    /// organizer would hold a live slot, and Home's row, forever.
+    /// Ends a request the organizer stops answering. An honest organizer
+    /// settles it within its answer window, a confirm window for friends,
+    /// and one more for its own owner, so a request still open after a
+    /// further confirm window is over. Without this, a silent or crashed
+    /// organizer would hold a live slot, and Home's row, forever. A friend
+    /// who said yes waits this long too, so it never gives up on a plan
+    /// the organizer can still confirm.
     func spawnInviteDeadline(_ conversation: ConversationID) {
-        let limit = configuration.answerWindow + configuration.confirmWindow * 2
+        let limit = configuration.answerWindow + configuration.confirmWindow * 3
         spawn(conversation) { service in
             guard (try? await service.clock.sleep(limit)) != nil, !Task.isCancelled else { return }
             service.endInvite(conversation, event: .expired, reply: nil)
@@ -307,18 +310,14 @@ extension PickAPlaceService {
     }
 
     /// Repeats the yes until the organizer confirms, in case either message
-    /// was lost; gives up when the confirm window closes.
+    /// was lost. The request's own deadline ends it if the organizer never
+    /// does.
     func spawnWaitForConfirmation(_ conversation: ConversationID) {
-        let deadline = clock.now().addingTimeInterval(Self.seconds(configuration.confirmWindow))
         spawn(conversation) { service in
             var interval = service.configuration.retryInterval
             while let invite = service.invites[conversation], !invite.isFinished, invite.accepted {
                 guard let next = await service.pause(interval) else { return }
                 interval = next
-                guard service.clock.now() < deadline else {
-                    service.endInvite(conversation, event: .expired, reply: nil)
-                    return
-                }
                 guard let invite = service.invites[conversation], !invite.isFinished, invite.accepted else { return }
                 service.spawnAcceptance(conversation)
             }

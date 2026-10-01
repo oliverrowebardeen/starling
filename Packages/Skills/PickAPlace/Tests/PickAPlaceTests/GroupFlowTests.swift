@@ -177,6 +177,21 @@ struct GroupFlowTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    @Test func anOwnerWhoNeverConfirmsEndsItForEveryone() async throws {
+        let quick = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                            answerWindow: .seconds(3), confirmWindow: .milliseconds(300))
+        let (group, oliver, maya, jake) = try await threeFriends(configuration: quick)
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        try await maya.accept(in: conversation)
+        try await jake.accept(in: conversation)
+        // Oliver never taps: after the deadline and one more window, the
+        // request ends on every phone, and nobody holds a plan.
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.ended(.expired), in: conversation, within: 3), "\(phone.name)") }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aFriendWhomNothingFitsSaysAnOrdinaryNo() async throws {
         let (group, oliver, maya, jake) = try await threeFriends(jakeLimits: limits(budget: 5, needs: ["halal"], avoid: ["boba"]))
         defer { Task { await group.stop() } }
