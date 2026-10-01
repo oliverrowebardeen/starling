@@ -30,18 +30,27 @@ struct SkillTag: View {
     }
 }
 
-/// Friends' pair symbols in a row, decorative beside their names.
+/// Friends' pair symbols in a row, decorative beside their names. Anyone
+/// not paired gets a question mark: their symbol would be chosen by
+/// whoever sent their ID.
 struct PairSymbolRow: View {
     let peers: [PeerID]
+    let isFriend: (PeerID) -> Bool
     var size: CGFloat = 28
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(peers.prefix(5), id: \.self) { peer in
-                PairSymbol(seed: peer.bytes)
-                    .frame(width: size, height: size)
-                    .padding(4)
-                    .background(.fill.tertiary, in: .rect(cornerRadius: 8))
+                Group {
+                    if isFriend(peer) {
+                        PairSymbol(seed: peer.bytes)
+                    } else {
+                        Image(systemName: "questionmark").foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: size, height: size)
+                .padding(4)
+                .background(.fill.tertiary, in: .rect(cornerRadius: 8))
             }
         }
         .accessibilityHidden(true)
@@ -74,6 +83,8 @@ struct StatusCard: View {
 struct ProposalCard: View {
     let summary: InteractionSummary
     let text: (headline: String, detail: String?)?
+    let isFriend: (PeerID) -> Bool
+    let localPeer: PeerID?
     let answer: (OwnerAnswer) async -> Void
     @State private var isAnswering = false
 
@@ -82,7 +93,7 @@ struct ProposalCard: View {
             HStack {
                 SkillTag(text: summary.tag)
                 Spacer()
-                PairSymbolRow(peers: summary.interaction.proposal?.participants ?? summary.interaction.participants, size: 20)
+                PairSymbolRow(peers: (summary.interaction.proposal?.participants ?? summary.interaction.participants).filter { $0 != localPeer }, isFriend: isFriend, size: 20)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(text?.headline ?? summary.title).font(.title3.weight(.semibold))

@@ -53,11 +53,24 @@ public struct InteractionWords: Sendable {
     }
 
     /// Friends' names for `peers`, without the owner, labeled with
-    /// `RosterLabels` so a shared nickname is told apart.
+    /// `RosterLabels` so a shared nickname is told apart. Titles and
+    /// sentences call anyone not paired "someone you're not paired with";
+    /// their full identifier belongs on the consent sheet and the
+    /// interaction's people list, where the owner checks who it is.
     public func friendNames(_ peers: [PeerID]) -> [String] {
         let others = peers.filter { $0 != localPeer }
-        return RosterLabels.labels(for: others, friends: names())
+        let known = names()
+        let labels = zip(others, RosterLabels.labels(for: others, friends: known)).compactMap { peer, label in
+            known[peer] == nil ? nil : label
+        }
+        let unpaired = others.filter { known[$0] == nil }.count
+        return labels + (unpaired == 0 ? [] : [unpaired == 1 ? Self.unpaired : "\(unpaired) people you're not paired with"])
     }
+
+    public static let unpaired = "someone you're not paired with"
+
+    /// Whether `peer` is a paired friend now, for drawing their symbol.
+    public func isFriend(_ peer: PeerID) -> Bool { names()[peer] != nil }
 
     /// "You, Maya and Jake".
     public func everyone(_ peers: [PeerID]) -> String {

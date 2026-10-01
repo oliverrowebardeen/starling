@@ -71,7 +71,7 @@ struct HomeView: View {
     @ViewBuilder private func needsYou(_ summary: InteractionSummary) -> some View {
         switch summary.interaction.state {
         case .proposed:
-            ProposalCard(summary: summary, text: app.proposals.text(for: summary.interaction, words: app.words)) { answer in
+            ProposalCard(summary: summary, text: app.proposals.text(for: summary.interaction, words: app.words), isFriend: app.words.isFriend, localPeer: app.localPeer) { answer in
                 await app.lifecycle.answer(summary.id, with: answer)
             }
         case .awaitingOwner:
@@ -85,7 +85,7 @@ struct HomeView: View {
     private func comingUp(_ summary: InteractionSummary) -> some View {
         let plan = summary.interaction.plan
         return HStack(spacing: 12) {
-            PairSymbolRow(peers: plan?.attendees.peers.filter { $0 != app.localPeer } ?? [], size: 20)
+            PairSymbolRow(peers: plan?.attendees.peers.filter { $0 != app.localPeer } ?? [], isFriend: app.words.isFriend, size: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.title).font(.headline)
                 if let time = plan?.time {

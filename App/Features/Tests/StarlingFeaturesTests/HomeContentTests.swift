@@ -96,6 +96,18 @@ import Testing
         #expect(pairText.detail == nil)
     }
 
+    /// A plan with someone no longer paired never prints a 64-hex ID in a
+    /// title; the full ID stays for the people list and consent sheet.
+    @Test func unpairedPeopleReadPlainlyInTitles() throws {
+        let stranger = PeerID.random()
+        let proposal = SkillProposal(revision: 1, participants: [me, maya, stranger], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        let item = try make(SampleSkills.downFor, with: [maya, stranger], [.started, .proposalReady(proposal)])
+        #expect(words.summary(item)?.title == "Boba with Maya and someone you're not paired with")
+        #expect(words.friendNames([me, stranger, maya, .random()]) == ["Maya", "2 people you're not paired with"])
+        #expect(!words.isFriend(stranger))
+        #expect(words.isFriend(maya))
+    }
+
     @Test func endingsAreQuietAndPlain() throws {
         let reasons: [(InteractionEvent, String)] = [
             (.noAgreement, "No plan this time"), (.ownerPassed, "You passed"), (.expired, "Expired"),
