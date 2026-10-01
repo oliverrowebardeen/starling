@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import PickAPlace
+import StarlingChaining
 import StarlingCore
 
 /// How long a request stays out.
@@ -83,6 +84,9 @@ public final class ComposerModel {
         /// (ADR 0020 decision 9.3), whatever artifacts the next skill
         /// accepts: Down for… after Find a time takes only the time slot.
         public let allowed: Set<PeerID>
+        /// Lane E's "Keep it going" row this step came from. Start checks it
+        /// again with `ChainPlanner.begin` (ADR 0240).
+        public let suggestion: ChainSuggestion
     }
 
     /// Every edit the owner makes to the draft bumps `generation`, so a
@@ -565,9 +569,39 @@ public final class ComposerModel {
         }
 
         // Candidates exist before anything is sent (P15-D request 2).
-        if let places { await self.places?.stage(places, for: request.interaction) }
+        // A chained step: lane E checks the row is still offered and that
+        // the owner approved what it adds, then builds the link (ADR 0240).
+        // The owner's tap on Start, with the additions shown above it, is
+        // the approval.
+        var outgoing = request
+        var link = chain?.link
+        if let chain {
+            guard let me = localPeer else {
+                notice = "This step can't start in this build."
+                return nil
+            }
+            let tap = Timestamp(now())
+            do {
+                let start = try ChainPlanner(registry: registry, me: me).begin(
+                    chain.suggestion, in: lifecycle.interactions, settings: settings.skillSettings, cards: cards.cards,
+                    tap: OwnerTap(at: tap), consent: chain.suggestion.needsConsent ? chain.suggestion.consent(approvedAt: tap) : nil,
+                    rules: rules, expiresAt: Timestamp(expiresAt)
+                )
+                outgoing = SkillRequest(
+                    interaction: start.interaction.id, conversation: start.interaction.conversation,
+                    intent: request.intent,
+                    participants: request.participants.filter(chain.allowed.contains),
+                    inputs: start.request.inputs, chainedFrom: start.request.chainedFrom
+                )
+                link = start.interaction.chain
+            } catch {
+                notice = "This step can't start now: the plan, a friend's Starling, or your settings changed. Open the plan again."
+                return nil
+            }
+        }
+        if let places { await self.places?.stage(places, for: outgoing.interaction) }
         do {
-            let id = try await lifecycle.start(request, chain: chain?.link, settings: settings.skillSettings)
+            let id = try await lifecycle.start(outgoing, chain: link, settings: settings.skillSettings)
             clear()
             notice = fallback
             if !settings.settings.notificationsOffered { offerNotifications = true }
@@ -611,25 +645,32 @@ public final class ComposerModel {
     /// Opens New on a chained step from a plan (ADR 0012): the plan's
     /// people, the plan as input, and what the step adds shown before the
     /// owner taps start. Nothing runs without that tap.
-    public func continuePlan(_ parent: Interaction, with next: SkillDescriptor) {
-        guard let plan = parent.plan, let parentSkill = registry.descriptor(for: parent.skill.id) else { return }
+    public func continuePlan(_ parent: Interaction, with suggestion: ChainSuggestion) {
+        guard let plan = parent.plan, parent.id == suggestion.parent else { return }
         clear()
-        var inputs: [Artifact] = []
-        if next.accepts.contains(.plan) { inputs.append(.plan(plan)) }
-        if next.accepts.contains(.timeSlot), let time = plan.time { inputs.append(.timeSlot(time)) }
+        let next = suggestion.skill
+        let inputs: [Artifact] = suggestion.consumes.compactMap { kind in
+            switch kind {
+            case .plan: .plan(plan)
+            case .timeSlot: plan.time.map(Artifact.timeSlot)
+            case .attendees: .attendees(plan.attendees)
+            case .placeChoice: plan.place.map(Artifact.placeChoice)
+            }
+        }
         chain = ChainDraft(
             link: ChainLink(
                 parent: parent.id, parentConversation: parent.conversation,
-                consumed: inputs.map(\.kind), trigger: next.chainTrigger, optedInAt: Timestamp(now())
+                consumed: suggestion.consumes, trigger: next.chainTrigger, optedInAt: Timestamp(now())
             ),
             inputs: inputs,
             parentSkill: parent.skill,
-            adds: next.exposure.adding(over: parentSkill.exposure),
-            allowed: Set(plan.attendees.peers).subtracting(localPeer.map { [$0] } ?? [])
+            adds: suggestion.adds,
+            allowed: Set(suggestion.participants),
+            suggestion: suggestion
         )
         skill = next.id
         audience = .pick
-        picked = Set(plan.attendees.peers.filter { $0 != localPeer })
+        picked = Set(suggestion.participants)
     }
 }
 

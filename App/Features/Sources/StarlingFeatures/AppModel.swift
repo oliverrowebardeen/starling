@@ -281,6 +281,7 @@ public final class AppModel {
         let words = words
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
+            self?.updateParent(of: after)
             guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
             Task { await notifier.post(notice) }
         }
@@ -432,6 +433,15 @@ public final class AppModel {
         }
     }
 
+    /// A chained Pick a place that agreed on a place moves its parent's plan
+    /// there (lane E's `ChainPlanner.parent(_:updatedBy:)`, P15-E 4.6).
+    private func updateParent(of link: Interaction) {
+        guard let me = localPeer, let parentID = link.chain?.parent, let parent = lifecycle.interaction(parentID),
+              let updated = ChainPlanner(registry: services.registry, me: me).parent(parent, updatedBy: link)
+        else { return }
+        lifecycle.update(updated)
+    }
+
     /// Reads the recorder's view of which egress logs may be incomplete, and
     /// retries any record still waiting. Plan detail calls it when it opens.
     public func refreshAudit() async {
@@ -477,17 +487,17 @@ public final class AppModel {
                           unconfirmed: unconfirmedConversations, journalUnreadable: egressJournalUnreadable)
     }
 
-    /// "Keep it going" after a plan: skills that accept what it produced,
-    /// can run now, are in the build, and every friend in it supports
-    /// (`SkillRegistry.chainSuggestions`, ADR 0012). A friend with no card
-    /// yet hides the suggestion, since support cannot be shown.
-    public func chainSuggestions(after plan: Interaction) -> [SkillDescriptor] {
-        let peers = (plan.plan?.attendees.peers ?? plan.participants).filter { $0 != localPeer }
-        let peerCards = peers.compactMap(cards.card(for:))
-        guard peerCards.count == peers.count else { return [] }
+    /// "Keep it going" after a plan: lane E's rows (P15-E request 4.4),
+    /// only skills that accept what the plan produced, can run now, are in
+    /// the build, and every friend in it supports. A friend whose card is
+    /// not here hides the row. Rows that wait for the plan to end appear
+    /// only while their skill's flag is on.
+    public func chainSuggestions(after plan: Interaction) -> [ChainSuggestion] {
+        guard let me = localPeer else { return [] }
         let inBuild = lifecycle.skillsInBuild
-        return services.registry.chainSuggestions(after: plan.skill.id, in: settings.skillSettings, peers: peerCards)
-            .filter { inBuild.contains($0.id) && $0.chainTrigger == .atConfirm }
+        return ChainPlanner(registry: services.registry, me: me)
+            .suggestions(after: plan.id, in: lifecycle.interactions, settings: settings.skillSettings, cards: cards.cards)
+            .filter { inBuild.contains($0.id) && settings.flags.enabled.contains($0.id) && $0.trigger == .atConfirm }
     }
 }
 

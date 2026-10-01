@@ -1,3 +1,4 @@
+import StarlingChaining
 import StarlingCore
 import StarlingDesign
 import StarlingFeatures
@@ -92,7 +93,7 @@ struct KeepItGoingList: View {
     let app: AppModel
     let root: Interaction
     let detail: PlanDetail
-    let continueWith: (SkillDescriptor) -> Void
+    let continueWith: (ChainSuggestion) -> Void
     @State private var addingToCalendar = false
     @State private var messaging = false
 
@@ -115,17 +116,17 @@ struct KeepItGoingList: View {
                     .ignoresSafeArea()
                 }
             }
-            ForEach(app.chainSuggestions(after: root)) { next in
+            ForEach(app.chainSuggestions(after: root)) { row in
                 Button {
-                    continueWith(next)
+                    continueWith(row)
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
-                                Text(Self.prompt(for: next)).foregroundStyle(.primary)
-                                SkillTag(text: next.wording.name)
+                                Text(Self.prompt(for: row.skill)).foregroundStyle(.primary)
+                                SkillTag(text: row.skill.wording.name)
                             }
-                            Text(Self.subtitle(for: next)).font(.subheadline).foregroundStyle(.secondary)
+                            Text(Self.subtitle(for: row.skill)).font(.subheadline).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Image(systemName: "chevron.right").foregroundStyle(.tertiary)
@@ -259,7 +260,7 @@ struct ContactLinksView: View {
 struct ItsAPlanView: View {
     let app: AppModel
     let root: Interaction
-    let continueWith: (SkillDescriptor) -> Void
+    let continueWith: (ChainSuggestion) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -298,7 +299,7 @@ struct ItsAPlanView: View {
 struct PlanDetailView: View {
     let app: AppModel
     let root: Interaction
-    let continueWith: (SkillDescriptor) -> Void
+    let continueWith: (ChainSuggestion) -> Void
 
     var body: some View {
         let detail = app.planDetail(root)

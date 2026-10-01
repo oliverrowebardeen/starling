@@ -1,3 +1,4 @@
+import StarlingChaining
 import StarlingCore
 import StarlingFeatures
 import SwiftUI
@@ -66,7 +67,7 @@ struct RootView<Developer: View>: View {
     }
 
     /// Keep it going: New opens on the chained step (ADR 0012).
-    private func continuePlan(_ root: Interaction, _ next: SkillDescriptor) {
+    private func continuePlan(_ root: Interaction, _ next: ChainSuggestion) {
         app.composer.continuePlan(root, with: next)
         tab = .new
     }

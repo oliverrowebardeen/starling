@@ -295,19 +295,62 @@ import Testing
         #expect(app.ledgerNotice != nil)
     }
 
+    /// P15-E request 4.6: a chained Pick a place that agrees on a place
+    /// moves the parent plan there.
+    @Test func aChainedPlaceMovesTheParentPlan() async throws {
+        let maya = Fixtures.peer("Maya")
+        let transport = RecordingTransport()
+        let me = transport.localPeer
+        var parent = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try parent.apply(event, at: Timestamp(Date()))
+        }
+        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: nil)))
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        var services = Self.services(peers: InMemoryPairedPeerStore([maya]), transport: transport)
+        services.makeSkills = { _ in [pick] }
+        services.interactions = InMemoryInteractionStore([parent])
+        let app = AppModel(services: services)
+        await app.start()
+
+        let link = ChainLink(parent: parent.id, parentConversation: parent.conversation, consumed: [.plan], trigger: .atConfirm, optedInAt: Timestamp(Date()))
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.pickAPlace.ref, rules: .empty, audience: .picked([maya.id]), mode: .invite, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [maya.id], chainedFrom: parent.conversation
+        )
+        let id = try await app.lifecycle.start(request, chain: link, settings: app.settings.skillSettings)
+        let place = try PlaceChoice(name: PlaceName("Boba Guys"))
+        let offer = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.place: .places([place])]))
+        await pick.emit(.lifecycle(id, .proposalReady(offer)))
+        await eventually { app.lifecycle.interaction(id)?.state == .proposed }
+        await app.lifecycle.answer(id, with: .accept(proposal: 1))
+        await pick.emit(.lifecycle(id, .everyoneConfirmed(revision: 1)))
+        await pick.emit(.produced(id, .placeChoice(place)))
+        await eventually { app.lifecycle.interaction(parent.id)?.plan?.place == place }
+        #expect(app.lifecycle.interaction(parent.id)?.plan?.place == place)
+        #expect(app.lifecycle.interaction(parent.id)?.state == .planned)
+    }
+
     @Test func keepItGoingHidesChainsAFriendCannotRun() async throws {
         let maya = Fixtures.peer("Maya")
         let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
-        var services = Self.services(peers: InMemoryPairedPeerStore([maya]))
+        let transport = RecordingTransport()
+        let me = transport.localPeer
+        var planned = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try planned.apply(event, at: Timestamp(Date()))
+        }
+        planned.record(.plan(try Plan(origin: planned.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: nil)))
+        var services = Self.services(peers: InMemoryPairedPeerStore([maya]), transport: transport)
         services.makeSkills = { _ in [ScriptedSkillService(descriptor: SampleSkills.downFor), pick] }
+        services.interactions = InMemoryInteractionStore([planned])
         let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
         services.inboxEvents = inbox
         let app = AppModel(services: services)
         await app.start()
-        let me = try #require(app.localPeer)
-
-        var planned = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
-        planned.record(.plan(try Plan(origin: planned.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: nil)))
         // No card from Maya yet: nothing is offered.
         #expect(app.chainSuggestions(after: planned).isEmpty)
 

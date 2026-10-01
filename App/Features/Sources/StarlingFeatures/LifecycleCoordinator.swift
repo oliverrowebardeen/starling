@@ -368,6 +368,15 @@ public final class LifecycleCoordinator {
         }
     }
 
+    /// Saves a change made from another interaction, such as lane E moving a
+    /// plan to the place its chained link agreed on. Only for an interaction
+    /// already on the phone; its state machine is untouched.
+    public func update(_ changed: Interaction) {
+        guard let current = interaction(changed.id), current != changed,
+              current.state == changed.state, current.conversation == changed.conversation else { return }
+        replace(changed, before: current)
+    }
+
     /// Ends plans whose time has passed (`planEnded`). The app calls this at
     /// launch and when it comes to the foreground.
     public func tick() {

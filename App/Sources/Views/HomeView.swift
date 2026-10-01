@@ -1,3 +1,4 @@
+import StarlingChaining
 import StarlingCore
 import StarlingDesign
 import StarlingFeatures
@@ -8,7 +9,7 @@ import SwiftUI
 struct HomeView: View {
     let app: AppModel
     let startNew: () -> Void
-    let continueWith: (Interaction, SkillDescriptor) -> Void
+    let continueWith: (Interaction, ChainSuggestion) -> Void
     @State private var question: Interaction?
 
     var body: some View {

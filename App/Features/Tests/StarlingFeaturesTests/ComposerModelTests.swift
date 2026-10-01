@@ -1,4 +1,5 @@
 import Foundation
+import StarlingChaining
 import StarlingCore
 import StarlingFakes
 @testable import StarlingFeatures
@@ -46,6 +47,26 @@ final class ComposerHarness {
     func give(_ peer: PeerID, _ skills: [SkillRef]) throws {
         cards.handle(.message(try Envelope(conversation: ConversationID(), sender: peer, recipient: me, sequence: 0, sentAt: Timestamp(Date()),
                                            body: .hello(AgentCard.forBuild(skills: skills, usesPSI: true, locality: .onDevice)))))
+    }
+
+    /// A plan made by `skill` with `attendees` (the owner included), as the
+    /// coordinator stores it once everyone said yes.
+    func plannedParent(_ skill: SkillDescriptor, attendees: [PeerID], activity: Keyword? = nil, time: TimeSlot? = nil, extra: [Artifact] = []) throws -> Interaction {
+        var parent = Interaction(skill: skill.ref, role: .initiator, participants: attendees.filter { $0 != me }, createdAt: Timestamp(clock.now))
+        let proposal = SkillProposal(revision: 1, participants: attendees, terms: try Terms([.time: .slots([try TimeSlot(start: clock.now, end: clock.now.addingTimeInterval(3600))])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try parent.apply(event, at: Timestamp(clock.now))
+        }
+        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees(attendees), activity: activity, time: time)))
+        for artifact in extra { parent.record(artifact) }
+        return parent
+    }
+
+    /// Lane E's "Keep it going" row for `next` after `parent`.
+    func suggestion(after parent: Interaction, _ next: SkillID, registry: SkillRegistry = SampleSkills.registry) -> ChainSuggestion? {
+        ChainPlanner(registry: registry, me: me)
+            .suggestions(after: parent.id, in: [parent], settings: settings.skillSettings, cards: cards.cards)
+            .first { $0.id == next }
     }
 
     /// "boba tonight with Maya" → Down for… · Boba · Tonight after 7 PM.
@@ -216,22 +237,23 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
 
     @Test func aChainedStepCarriesThePlanItsPeopleAndWhatItAdds() async throws {
         let h = try await ComposerHarness()
+        try h.give(h.maya.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
+        let slot = try TimeSlot(start: h.clock.now, end: h.clock.now.addingTimeInterval(3600))
+        let parent = try h.plannedParent(SampleSkills.downFor, attendees: [h.me, h.maya.id], activity: try Keyword("boba"), time: slot)
+        let plan = try #require(parent.plan)
         let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
-        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore(), now: h.clock.closure)
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore([parent]), now: h.clock.closure)
+        await lifecycle.start()
         let model = ComposerModel(
             skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
             friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure
         )
-        try h.give(h.maya.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
+        let row = try #require(h.suggestion(after: parent, .pickAPlace))
 
-        var parent = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [h.maya.id], createdAt: Timestamp(h.clock.now))
-        let plan = try Plan(origin: parent.conversation, attendees: Attendees([h.me, h.maya.id]), activity: Keyword("boba"), time: TimeSlot(start: h.clock.now, end: h.clock.now.addingTimeInterval(3600)))
-        parent.record(.plan(plan))
-
-        model.continuePlan(parent, with: SampleSkills.pickAPlace)
+        model.continuePlan(parent, with: row)
         #expect(model.skill == .pickAPlace)
         #expect(model.participants == [h.maya.id])
-        #expect(model.chain?.inputs == [.plan(plan), .timeSlot(plan.time!)])
+        #expect(model.chain?.inputs == [.plan(plan)])
         #expect(model.chain?.link.parent == parent.id)
         #expect(model.chain?.adds == SkillExposure(topics: [.location, .diet], permissions: [.locationWhenInUse]))
         #expect(model.chainAddsNote == "This step also uses your exact location and diet and may ask for your location.")
@@ -239,8 +261,31 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         let id = try #require(await model.send())
         let sent = try #require(await pick.started.first)
         #expect(sent.chainedFrom == parent.conversation)
-        #expect(sent.inputs == [.plan(plan), .timeSlot(plan.time!)])
+        #expect(sent.inputs == [.plan(plan)])
         #expect(lifecycle.interaction(id)?.chain?.parent == parent.id)
+        #expect(lifecycle.interaction(id)?.chain?.optedInAt != nil)
+    }
+
+    /// Lane E's begin checks the row again at Start: a row no longer offered
+    /// (here, the plan ended while New was open) starts nothing.
+    @Test func aRowThatIsNoLongerOfferedStartsNothing() async throws {
+        let h = try await ComposerHarness()
+        try h.give(h.maya.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
+        let slot = try TimeSlot(start: h.clock.now, end: h.clock.now.addingTimeInterval(600))
+        let parent = try h.plannedParent(SampleSkills.downFor, attendees: [h.me, h.maya.id], activity: try Keyword("boba"), time: slot)
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore([parent]), now: h.clock.closure)
+        await lifecycle.start()
+        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
+                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
+        model.continuePlan(parent, with: try #require(h.suggestion(after: parent, .pickAPlace)))
+        h.clock.advance(3600)
+        lifecycle.tick()
+        #expect(lifecycle.interaction(parent.id)?.state == .done)
+        #expect(model.blocker == nil, "New itself sees nothing wrong")
+        #expect(await model.send() == nil)
+        #expect(await pick.started.isEmpty)
+        #expect(model.notice?.contains("can't start now") == true)
     }
 
     // MARK: Review of PR #54, finding 5
@@ -408,15 +453,15 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
     /// people, whatever the owner taps.
     @Test func aChainedStepCanOnlyAskThePlansPeople() async throws {
         let h = try await ComposerHarness()
-        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
-        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore(), now: h.clock.closure)
-        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
-                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
         try h.give(h.maya.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
         try h.give(h.leo.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
-        var parent = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [h.maya.id], createdAt: Timestamp(h.clock.now))
-        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees([h.me, h.maya.id]), activity: Keyword("boba"), time: nil)))
-        model.continuePlan(parent, with: SampleSkills.pickAPlace)
+        let parent = try h.plannedParent(SampleSkills.downFor, attendees: [h.me, h.maya.id], activity: try Keyword("boba"))
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore([parent]), now: h.clock.closure)
+        await lifecycle.start()
+        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
+                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
+        model.continuePlan(parent, with: try #require(h.suggestion(after: parent, .pickAPlace)))
         #expect(model.audienceFriends.map(\.id) == [h.maya.id])
         model.audience = .allFriends
         #expect(model.participants == [h.maya.id])
@@ -434,24 +479,25 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         await h.settings.saveGroup(group)
         await h.settings.setRule(.alwaysInclude, for: h.leo.id)
 
-        var parent = Interaction(skill: SampleSkills.findATime.ref, role: .initiator, participants: [h.maya.id], createdAt: Timestamp(h.clock.now))
         let slot = try TimeSlot(start: h.clock.now, end: h.clock.now.addingTimeInterval(3600))
-        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees([h.me, h.maya.id]), activity: nil, time: slot)))
-        h.model.continuePlan(parent, with: SampleSkills.downFor)
-        #expect(h.model.chain?.inputs == [.timeSlot(slot)], "Down for… accepts the slot only")
+        let parent = try h.plannedParent(SampleSkills.findATime, attendees: [h.me, h.maya.id], time: slot, extra: [.timeSlot(slot)])
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, h.time], store: InMemoryInteractionStore([parent]), now: h.clock.closure)
+        await lifecycle.start()
+        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
+                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
+        model.continuePlan(parent, with: try #require(h.suggestion(after: parent, .downFor)))
+        #expect(model.chain?.inputs == [.timeSlot(slot)], "Down for… accepts the slot only")
 
-        h.model.audience = .allFriends
-        #expect(h.model.participants == [h.maya.id])
-        h.model.audience = .group(group.id)
-        #expect(h.model.participants == [h.maya.id])
-        h.model.audience = .everyoneExcept
-        #expect(h.model.participants == [h.maya.id])
+        model.audience = .allFriends
+        #expect(model.participants == [h.maya.id])
+        model.audience = .group(group.id)
+        #expect(model.participants == [h.maya.id])
+        model.audience = .everyoneExcept
+        #expect(model.participants == [h.maya.id])
 
-        h.model.audience = .allFriends
-        h.model.text = "boba"
-        let constraints = try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []))]])
-        h.model.constraints = constraints
-        _ = try #require(await h.model.send())
+        model.audience = .allFriends
+        model.constraints = try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []))]])
+        _ = try #require(await model.send())
         let sent = try #require(await h.down.started.first)
         #expect(sent.participants == [h.maya.id])
         #expect(sent.chainedFrom == parent.conversation)
