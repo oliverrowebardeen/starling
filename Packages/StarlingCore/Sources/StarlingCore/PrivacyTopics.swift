@@ -13,11 +13,18 @@ extension IssueKey {
     public static let photos = IssueKey(known: "photos")
     /// Standing interests, as keywords, beyond the current activity.
     public static let interests = IssueKey(known: "interests")
+    /// Where the owner is, as coordinates or a distance (ADR 0019). Venue
+    /// options a skill sends are `place`.
+    public static let location = IssueKey(known: "location")
+    /// Event titles, places, notes, and attendees from the owner's calendar
+    /// (ADR 0019). Free and busy times are `time`.
+    public static let calendarDetails = IssueKey(known: "calendar_details")
 }
 
-/// One thing the owner can choose to share, ask about, or never share.
+/// One thing the owner can choose to share, ask about, or never share, in
+/// the order You shows them.
 public enum PrivacyTopic: String, Hashable, Sendable, Codable, CaseIterable, Comparable {
-    case time, activity, place, budget, diet, people, photos, interests
+    case time, activity, place, location, budget, diet, people, photos, interests, calendarDetails
 
     /// Time and activity are always shared as the overlap: nothing can line
     /// up without them, so they offer Share and Ask me but never Never.
@@ -29,11 +36,13 @@ public enum PrivacyTopic: String, Hashable, Sendable, Codable, CaseIterable, Com
         case .time: [.time]
         case .activity: [.activity, .downLevel]
         case .place: [.place]
+        case .location: [.location]
         case .budget: [.budget]
         case .diet: [.diet]
         case .people: [.people, .partySize]
         case .photos: [.photos]
         case .interests: [.interests]
+        case .calendarDetails: [.calendarDetails]
         }
     }
 
@@ -57,7 +66,9 @@ public enum SharingChoice: String, Hashable, Sendable, Codable, CaseIterable {
     case share
     /// Show a consent sheet for every exchange that includes the topic.
     case askMe
-    /// Never send any value for the topic. Not offered for time or activity.
+    /// The value never leaves the phone. The agent still uses it locally to
+    /// judge a friend's candidates and answer yes or no (ADR 0019). Not
+    /// offered for time or activity.
     case never
 
     /// The policy action this choice maps to.
@@ -75,10 +86,15 @@ public enum SharingChoice: String, Hashable, Sendable, Codable, CaseIterable {
 public struct PrivacySettings: Hashable, Sendable, Codable {
     public private(set) var choices: [PrivacyTopic: SharingChoice]
 
-    /// Time and activity default to Share because they leave only as the
-    /// overlap; every other topic defaults to Ask me.
+    /// Privacy-protective defaults (ADR 0019): time and activity leave only
+    /// as the overlap, budget and calendar details stay on the phone,
+    /// interests are shared, and everything else asks.
     public static func defaultChoice(for topic: PrivacyTopic) -> SharingChoice {
-        topic.allowsNever ? .askMe : .share
+        switch topic {
+        case .time, .activity, .interests: .share
+        case .budget, .calendarDetails: .never
+        case .place, .location, .diet, .people, .photos: .askMe
+        }
     }
 
     public static let defaults = PrivacySettings()

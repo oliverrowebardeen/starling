@@ -21,16 +21,29 @@ import Testing
         var settings = PrivacySettings.defaults
         #expect(throws: ValidationError.self) { try settings.set(.never, for: .activity) }
         try settings.set(.never, for: .place)
-        #expect(settings.neverTopics == [.place])
+        #expect(settings.neverTopics == [.place, .budget, .calendarDetails])
     }
 
-    @Test func defaultsShareTheOverlapAndAskForTheRest() {
-        let settings = PrivacySettings.defaults
-        #expect(settings.choice(for: .time) == .share)
-        #expect(settings.choice(for: .activity) == .share)
-        for topic in PrivacyTopic.allCases where topic.allowsNever {
-            #expect(settings.choice(for: topic) == .askMe)
+    /// Oliver's defaults, 2026-10-01 (ADR 0019).
+    @Test func defaultsProtectPrivacy() {
+        let expected: [PrivacyTopic: SharingChoice] = [
+            .time: .share, .activity: .share, .place: .askMe, .location: .askMe, .budget: .never,
+            .diet: .askMe, .people: .askMe, .photos: .askMe, .interests: .share, .calendarDetails: .never,
+        ]
+        #expect(Set(expected.keys) == Set(PrivacyTopic.allCases))
+        for (topic, choice) in expected {
+            #expect(PrivacySettings.defaults.choice(for: topic) == choice, "\(topic)")
         }
+        // A stored choice wins over the default.
+        let chosen = try? PrivacySettings([.budget: .share])
+        #expect(chosen?.choice(for: .budget) == .share)
+    }
+
+    @Test func locationIsItsOwnTopicApartFromPlace() {
+        #expect(PrivacyTopic(issue: .location) == .location)
+        #expect(PrivacyTopic(issue: .place) == .place)
+        #expect(PrivacyTopic(issue: .calendarDetails) == .calendarDetails)
+        #expect(PrivacyTopic.allCases.last == .calendarDetails)
     }
 
     @Test func choicesExpandToOneRulePerIssue() throws {
@@ -40,6 +53,8 @@ import Testing
         #expect(rules[.budget] == .never)
         #expect(rules[.place] == .allowOnDevicePeers)
         #expect(rules[.diet] == .askEachTime)
+        #expect(rules[.calendarDetails] == .never)
+        #expect(rules[.interests] == .allowOnDevicePeers)
         #expect(rules[.downLevel] == .allowOnDevicePeers)
         #expect(rules[.partySize] == .askEachTime)
     }

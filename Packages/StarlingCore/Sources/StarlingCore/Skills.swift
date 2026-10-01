@@ -222,9 +222,12 @@ public struct SkillDescriptor: Hashable, Sendable, Identifiable {
     public let ref: SkillRef
     public let wording: SkillWording
     public let buildingBlock: BuildingBlock
-    /// Every topic the skill may send a value for.
+    /// Every topic the skill may send a value for or use on the phone.
     public let topicsUsed: Set<PrivacyTopic>
-    /// Topics without which the skill cannot run. A subset of `topicsUsed`.
+    /// Topics whose own values must leave the phone for the skill to run at
+    /// all, such as photos for Swap photos. A topic the skill only uses
+    /// locally is not required: Never keeps its value on the phone but does
+    /// not stop the skill (ADR 0019). A subset of `topicsUsed`.
     public let topicsRequired: Set<PrivacyTopic>
     public let permissions: Set<SystemPermission>
     public let accepts: Set<ArtifactKind>
@@ -269,7 +272,8 @@ public struct SkillDescriptor: Hashable, Sendable, Identifiable {
     public var exposure: SkillExposure { SkillExposure(topics: topicsUsed, permissions: permissions) }
 
     /// Required topics the owner set to Never. Non-empty means the skill must
-    /// explain why it cannot run instead of failing silently (ADR 0014).
+    /// explain why it cannot run instead of failing silently (ADR 0014,
+    /// narrowed by ADR 0019 to values that must leave).
     public func blockingTopics(in settings: PrivacySettings) -> Set<PrivacyTopic> {
         topicsRequired.intersection(settings.neverTopics)
     }
