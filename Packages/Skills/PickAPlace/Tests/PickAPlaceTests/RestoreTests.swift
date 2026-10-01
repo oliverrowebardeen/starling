@@ -240,6 +240,62 @@ struct RestoreTests {
         #expect(reloaded[peer]?.count == 2)
     }
 
+    /// Re-review of PR #55, finding 2: a restored organizer keeps its
+    /// original deadlines.
+    func threeWithWindow(_ confirm: Duration) async throws -> (Group, oliver: Phone, maya: Phone, jake: Phone) {
+        let window = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                             answerWindow: .seconds(3), confirmWindow: confirm)
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: window)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: window)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: window)
+        return (try await Group([oliver, maya, jake], hub: hub), oliver, maya, jake)
+    }
+
+    @Test func aRestartPastTheConfirmDeadlineEndsTheRequest() async throws {
+        let (group, oliver, maya, jake) = try await threeWithWindow(.milliseconds(600))
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        try await maya.accept(in: conversation)
+        let deadline = try #require(await oliver.service.organized[conversation]?.confirmDeadline)
+
+        // Oliver's app is gone past the deadline, and back before his own
+        // cutoff would have passed.
+        try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow) + 0.15))
+        await oliver.restart()
+        #expect(await oliver.reaches(.ended(.expired), in: conversation, within: 0.2))
+        await #expect(throws: PickAPlaceError.notWaitingForYou) { try await oliver.accept(in: conversation) }
+        #expect(await maya.reaches(.ended(.expired), in: conversation))
+        for phone in [oliver, maya, jake] { #expect(await phone.agreedPlace(in: conversation) == nil) }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func aRestartBeforeTheDeadlineKeepsIt() async throws {
+        let (group, oliver, maya, jake) = try await threeWithWindow(.seconds(1))
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        let deadline = try #require(await oliver.service.organized[conversation]?.confirmDeadline)
+        #expect(try await oliver.ledger.deadlines(for: conversation)?.confirmDeadline == deadline)
+
+        await oliver.restart()
+        #expect(await oliver.service.organized[conversation]?.confirmDeadline == deadline)
+        for phone in [maya, jake, oliver] { try await phone.accept(in: conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation)) }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func aRequestIsNotSentWhenItsDeadlinesCannotBeKept() async throws {
+        let (group, oliver, maya) = try await oliverAndMaya()
+        defer { Task { await group.stop() } }
+        await oliver.ledger.setFailing(true)
+        await #expect(throws: PickAPlaceError.ledgerUnavailable) { try await oliver.organize(Venues.all, with: [maya]) }
+        #expect(await group.wire.sent(by: oliver.id).isEmpty)
+        #expect(await oliver.coordinator.interactions.values.allSatisfy { $0.state == .ended(.failed) })
+    }
+
     @Test func anOrganizerStillAskingIsReportedFailed() async throws {
         let (group, oliver, maya) = try await oliverAndMaya()
         defer { Task { await group.stop() } }

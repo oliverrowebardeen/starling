@@ -103,14 +103,21 @@ extension PickAPlaceService {
         organizer.ownerAccepted = step == .confirmed
         conversationOf[interaction.id] = conversation
         organized[conversation] = organizer
-        startProposing(conversation)
-        // The intent's expiry was not stored: give up after two confirm
-        // windows if nobody settles it.
-        let limit = configuration.confirmWindow * 2
-        spawn(conversation) { service in
-            guard (try? await service.clock.sleep(limit)) != nil, !Task.isCancelled else { return }
-            service.endOrganizer(conversation, event: .expired, reason: .expired)
+        // The original deadlines, from the ledger (re-review of PR #55,
+        // finding 2). A request past its expiry or its confirm deadline, or
+        // whose deadlines cannot be read, ends before anything is sent
+        // again: who said yes in time did not survive the restart.
+        let now = clock.now()
+        guard let deadlines = try? await ledger.deadlines(for: conversation), let confirmDeadline = deadlines.confirmDeadline,
+              now < deadlines.expiresAt, now < confirmDeadline
+        else {
+            endOrganizer(conversation, event: .expired, reason: .expired)
+            return true
         }
+        organized[conversation]?.confirmDeadline = confirmDeadline
+        organized[conversation]?.expiresAt = deadlines.expiresAt
+        startProposing(conversation)
+        spawnExpiry(conversation, at: deadlines.expiresAt)
         return true
     }
 

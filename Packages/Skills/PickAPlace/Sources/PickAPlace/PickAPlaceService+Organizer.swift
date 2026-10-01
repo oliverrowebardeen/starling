@@ -47,6 +47,8 @@ struct Organizer {
     /// When friends who have not answered the proposal are left out. An
     /// absolute time, so it holds whether or not the owner has tapped yet.
     var confirmDeadline: Date?
+    /// When the request expires; kept in the ledger with the deadline.
+    var expiresAt: Date?
     var ownerAccepted = false
     var finalTerms: Terms?
     var confirmationsRepeated: [PeerID: Int] = [:]
@@ -117,6 +119,17 @@ extension PickAPlaceService {
             emit(request.interaction, .unsupported)
             return
         }
+        // The request's expiry is in the ledger before anything is sent, so
+        // a relaunch keeps it (re-review of PR #55, finding 2).
+        let expiry = request.intent.expiresAt.date
+        organized[conversation]?.expiresAt = expiry
+        do {
+            try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry), for: conversation)
+        } catch {
+            organized[conversation] = nil
+            conversationOf[request.interaction] = nil
+            throw PickAPlaceError.ledgerUnavailable
+        }
         // The coordinator applied `.started` before calling `start` (ADR
         // 0011, amendment 13); the service never reports it.
         for friend in friends {
@@ -127,11 +140,21 @@ extension PickAPlaceService {
             guard (try? await service.clock.sleep(window)) != nil, !Task.isCancelled else { return }
             service.decide(conversation)
         }
-        let expiry = request.intent.expiresAt.date
+        spawnExpiry(conversation, at: expiry)
+    }
+
+    func spawnExpiry(_ conversation: ConversationID, at expiry: Date) {
         spawn(conversation) { service in
             guard await service.sleep(until: expiry) else { return }
             service.endOrganizer(conversation, event: .expired, reason: .expired)
         }
+    }
+
+    /// When the owner's own chance to confirm runs out: one confirm window
+    /// after the deadline, or at the request's expiry, whichever is first.
+    func ownerDeadline(of organizer: Organizer) -> Date? {
+        let confirm = organizer.confirmDeadline.map { $0.addingTimeInterval(Self.seconds(configuration.confirmWindow)) }
+        return [confirm, organizer.expiresAt].compactMap { $0 }.min()
     }
 
     private func isNew(_ request: SkillRequest) -> Bool {
@@ -259,8 +282,18 @@ extension PickAPlaceService {
                                       conversation: conversation, chainedFrom: chainedFrom)
             }
         }
-        emit(organizer.id, .proposalReady(proposal))
-        startProposing(conversation)
+        // The confirm deadline is fixed now and kept in the ledger before
+        // the proposal goes out, so a relaunch keeps it.
+        let deadline = clock.now().addingTimeInterval(Self.seconds(configuration.confirmWindow))
+        organized[conversation]?.confirmDeadline = deadline
+        let record = organizer.expiresAt.map { RequestDeadlines(expiresAt: $0, confirmDeadline: deadline) }
+        let id = organizer.id
+        spawn(conversation) { service in
+            if let record { try? await service.ledger.recordDeadlines(record, for: conversation) }
+            guard service.organized[conversation]?.phase == .proposing else { return }
+            service.emit(id, .proposalReady(proposal))
+            service.startProposing(conversation)
+        }
     }
 
     func startProposing(_ conversation: ConversationID) {
@@ -278,10 +311,11 @@ extension PickAPlaceService {
         // The owner gets one more confirm window after the deadline. A
         // request still unconfirmed then is over, and everyone hears so, so
         // a friend's phone never keeps waiting on a yes that is not coming.
-        let ownerDeadline = deadline.addingTimeInterval(Self.seconds(configuration.confirmWindow))
-        spawn(conversation) { service in
-            guard await service.sleep(until: ownerDeadline) else { return }
-            service.endOrganizer(conversation, event: .expired, reason: .expired)
+        if let cutoff = ownerDeadline(of: organizer) {
+            spawn(conversation) { service in
+                guard await service.sleep(until: cutoff) else { return }
+                service.endOrganizer(conversation, event: .expired, reason: .expired)
+            }
         }
     }
 
@@ -313,6 +347,12 @@ extension PickAPlaceService {
 
     func organizerAnswer(_ conversation: ConversationID, _ answer: OwnerAnswer) async throws {
         guard let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal else {
+            throw PickAPlaceError.notWaitingForYou
+        }
+        // A tap after the owner's own deadline does not count: the request
+        // is over.
+        if let cutoff = ownerDeadline(of: organizer), clock.now() >= cutoff {
+            endOrganizer(conversation, event: .expired, reason: .expired)
             throw PickAPlaceError.notWaitingForYou
         }
         switch answer {

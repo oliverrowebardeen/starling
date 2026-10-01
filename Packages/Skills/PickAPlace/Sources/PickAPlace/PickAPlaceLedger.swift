@@ -21,6 +21,22 @@ public protocol PickAPlaceLedger: Sendable {
     /// decision 6). Recorded before an answer leaves.
     func answeredCandidates(in conversation: ConversationID) async throws -> Set<PlaceChoice>
     func recordAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) async throws
+    /// An organizer's clock: when its request expires, and its confirm
+    /// deadline once it has proposed. A restored organizer keeps them.
+    func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines?
+    func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws
+}
+
+/// When an organizer's request expires, and when friends who have not
+/// said yes are left out.
+public struct RequestDeadlines: Codable, Hashable, Sendable {
+    public var expiresAt: Date
+    public var confirmDeadline: Date?
+
+    public init(expiresAt: Date, confirmDeadline: Date? = nil) {
+        self.expiresAt = expiresAt
+        self.confirmDeadline = confirmDeadline
+    }
 }
 
 /// Candidates answered in one conversation.
@@ -57,6 +73,7 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     public var admissions: [PeerID: [Date]] = [:]
     public var withdrawals: [ConversationID: PendingWithdrawal] = [:]
     public var answered: [ConversationID: AnsweredCandidates] = [:]
+    public var deadlines: [ConversationID: RequestDeadlines] = [:]
 
     public init() {}
 
@@ -67,13 +84,14 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     /// How long a withdrawal is retried before the organizer is assumed gone.
     public static let withdrawalLifetime: TimeInterval = 24 * 3_600
 
-    private enum CodingKeys: String, CodingKey { case admissions, withdrawals, answered }
+    private enum CodingKeys: String, CodingKey { case admissions, withdrawals, answered, deadlines }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         admissions = try c.decodeIfPresent([PeerID: [Date]].self, forKey: .admissions) ?? [:]
         withdrawals = try c.decodeIfPresent([ConversationID: PendingWithdrawal].self, forKey: .withdrawals) ?? [:]
         answered = try c.decodeIfPresent([ConversationID: AnsweredCandidates].self, forKey: .answered) ?? [:]
+        deadlines = try c.decodeIfPresent([ConversationID: RequestDeadlines].self, forKey: .deadlines) ?? [:]
     }
 
     mutating func addAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) {
@@ -91,6 +109,7 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
         admissions = admissions.mapValues { $0.filter { $0 > hourAgo } }.filter { !$0.value.isEmpty }
         withdrawals = withdrawals.filter { now.timeIntervalSince($0.value.since) < Self.withdrawalLifetime }
         answered = answered.filter { now.timeIntervalSince($0.value.since) < Self.answeredLifetime }
+        deadlines = deadlines.filter { now.timeIntervalSince($0.value.expiresAt) < Self.answeredLifetime }
     }
 }
 
@@ -106,6 +125,16 @@ public actor InMemoryPickAPlaceLedger: PickAPlaceLedger {
 
     public func setFailing(_ failing: Bool) { self.failing = failing }
     public func setFailingAnswered(_ failing: Bool) { failingAnswered = failing }
+
+    public func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines? {
+        guard !failing else { throw LedgerUnavailable() }
+        return state.deadlines[conversation]
+    }
+
+    public func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws {
+        guard !failing else { throw LedgerUnavailable() }
+        state.deadlines[conversation] = deadlines
+    }
 
     public func answeredCandidates(in conversation: ConversationID) async throws -> Set<PlaceChoice> {
         guard !failing, !failingAnswered else { throw LedgerUnavailable() }
@@ -169,6 +198,14 @@ public actor UserDefaultsPickAPlaceLedger: PickAPlaceLedger {
 
     public func answeredCandidates(in conversation: ConversationID) async throws -> Set<PlaceChoice> {
         try read().answered[conversation]?.candidates ?? []
+    }
+
+    public func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines? {
+        try read().deadlines[conversation]
+    }
+
+    public func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws {
+        try update(now: Date()) { $0.deadlines[conversation] = deadlines }
     }
 
     public func recordAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) async throws {

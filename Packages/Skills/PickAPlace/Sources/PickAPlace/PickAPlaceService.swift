@@ -14,6 +14,9 @@ public enum PickAPlaceError: Error, Hashable, Sendable {
     case notWaitingForYou
     /// The answer names a proposal revision that is not the current one.
     case staleProposal
+    /// The ledger could not record the request's deadlines, so it was not
+    /// sent.
+    case ledgerUnavailable
 }
 
 /// Wall time and timers, injectable so tests run retries in milliseconds.
