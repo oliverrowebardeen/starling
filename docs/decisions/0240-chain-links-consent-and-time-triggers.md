@@ -17,7 +17,7 @@ Core v2 leaves four things open:
 
 ## Decision
 
-1. **Granted means what the owner said yes to in this plan.** `ChainPlanner.grantedExposure` is the union of `SkillDescriptor.exposure` (topics used and permissions) over every interaction in the plan's chain whose history reached confirmed, planned, or done. A link the owner declined, or one still waiting for a yes, grants nothing. A row's `adds` is `next.exposure.adding(over: granted)`.
+1. **Granted means what the owner said yes to in this plan.** `ChainPlanner.grantedExposure` is the union of `SkillDescriptor.exposure` (topics used and permissions) over every interaction in the plan's chain whose history reached confirmed, planned, or done. A link the owner declined, or one still waiting for a yes, grants nothing. Only the exact `SkillRef` that ran counts: if this build registers another version of the skill, what the owner approved is unknown, so that interaction grants nothing and a link that adds anything asks again. A row's `adds` is `next.exposure.adding(over: granted)`.
    - Down for… then Pick a place adds Diet and Location When In Use, so it needs a fresh Consent. A second "Somewhere else?" after a finished Pick a place adds nothing and starts on the tap alone.
    - This uses declared exposure, not what actually left. A topic a skill declares but never sent still counts as granted. The alternative, granting only topics in the egress log, would ask again for topics the owner already approved in principle, and permissions never appear in the egress log at all.
 2. **"Keep it going" rows are conservative.** `ChainPlanner.suggestions` returns rows only for a planned interaction, and hides a row when:
