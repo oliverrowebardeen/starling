@@ -81,16 +81,29 @@ extension ChainPlanner {
         return waiting.id
     }
 
-    /// The parent with its plan moved to the place a finished Pick a place
-    /// link agreed on ("Somewhere else?"), or nil if the link is not a
-    /// planned link of this parent with a place. The app saves the result.
+    /// The parent with its plan updated by what a finished link agreed:
+    /// the place ("Somewhere else?") and the people who agreed to it. A
+    /// friend who passed on the link drops out of the plan, so no later chain
+    /// reaches them (ADR 0020 decision 9.3). A link can only narrow the
+    /// roster: attendees outside the plan, or a roster without this phone,
+    /// are ignored. Nil if the link is not a planned link of this parent or
+    /// agreed nothing new. The app saves the result.
     public func parent(_ parent: Interaction, updatedBy link: Interaction) -> Interaction? {
         guard link.chain?.parent == parent.id, link.state == .planned || link.state == .done,
-              let plan = parent.plan,
-              let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
+              let plan = parent.plan
+        else { return nil }
+        let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
+        var agreed: Attendees?
+        if let attendees = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).first,
+           attendees.peers.contains(me), Set(attendees.peers).isSubset(of: plan.attendees.peers) {
+            agreed = attendees
+        }
+        guard place != nil || (agreed != nil && agreed != plan.attendees) else { return nil }
+        guard let updatedPlan = try? Plan(id: plan.id, origin: plan.origin, attendees: agreed ?? plan.attendees,
+                                          activity: plan.activity, time: plan.time, place: place ?? plan.place)
         else { return nil }
         var updated = parent
-        updated.record(.plan(plan.updating(place: place)))
+        updated.record(.plan(updatedPlan))
         return updated
     }
 

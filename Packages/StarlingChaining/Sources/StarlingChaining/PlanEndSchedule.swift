@@ -10,6 +10,9 @@ import StarlingCore
 
 /// An after-plan-ends link whose plan has ended, ready to start.
 public struct DueChain: Hashable, Sendable {
+    /// The waiting link, its participants narrowed to the plan's attendees
+    /// as they stand now. The coordinator saves this copy when it applies
+    /// `.started`.
     public let link: Interaction
     public let parent: Interaction
     public let plan: Plan
@@ -82,8 +85,10 @@ public struct PlanEndSchedule: Sendable {
               parent.conversation == chain.parentConversation,
               let plan = parent.plan, let end = plan.endsAt
         else { return .cancel(link, .withdrawn) }
-        // Only the plan's own people (ADR 0020 decision 9.3).
-        guard Set(link.participants).isSubset(of: plan.attendees.peers) else { return .cancel(link, .withdrawn) }
+        // Only the plan's people as they stand now (ADR 0020 decision 9.3):
+        // someone who dropped out of the plan since the opt-in is left out.
+        let remaining = link.participants.filter(plan.attendees.peers.contains)
+        guard !remaining.isEmpty else { return .cancel(link, .withdrawn) }
         // The plan was called off before it happened.
         guard parent.state == .planned || parent.state == .done else { return .cancel(link, .withdrawn) }
         // Opted in at Confirm: the parent was already a plan when the owner
@@ -98,10 +103,12 @@ public struct PlanEndSchedule: Sendable {
         }
         // What the owner approved was this skill at this version.
         guard let descriptor = planner.registry.descriptor(for: link.skill.id), descriptor.ref == link.skill else { return .cancel(link, .withdrawn) }
-        for peer in link.participants {
+        for peer in remaining {
             guard let card = cards[peer], card.support(for: link.skill).isSupported else { return .cancel(link, .unsupported) }
         }
-        return .start(DueChain(link: link, parent: parent, plan: plan, mode: descriptor.defaultSendMode))
+        var narrowed = link
+        narrowed.setParticipants(remaining)
+        return .start(DueChain(link: narrowed, parent: parent, plan: plan, mode: descriptor.defaultSendMode))
     }
 }
 

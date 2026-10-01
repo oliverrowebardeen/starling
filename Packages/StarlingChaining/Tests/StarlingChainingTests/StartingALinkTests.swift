@@ -153,4 +153,37 @@ import Testing
         let other = try Fixtures.plannedDownFor()
         #expect(planner.parent(other, updatedBy: link) == nil)
     }
+
+    @Test func theRosterAPlaceLinkAgreedCarriesIntoThePlanAndLaterChains() throws {
+        // Issue #66: Jake passed on the place; Maya and you agreed.
+        let plan = try Fixtures.plannedDownFor()
+        var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        link.record(.attendees(try Attendees([Fixtures.me, Fixtures.maya])))
+        let updated = try #require(planner.parent(plan, updatedBy: link))
+        #expect(updated.plan?.attendees.peers == [Fixtures.me, Fixtures.maya])
+        #expect(updated.plan?.place == Fixtures.place("Boba Guys on Franklin"))
+        #expect(updated.plan?.id == plan.plan?.id)
+        // The next chain goes only to Maya.
+        let swapOn = SkillSettings(flags: Fixtures.flagsWithSwapPhotos)
+        let row = try #require(planner.suggestions(after: updated.id, in: [updated, link], settings: swapOn, cards: Fixtures.cards()).first { $0.id == .swapPhotos })
+        #expect(row.participants == [Fixtures.maya])
+    }
+
+    @Test func aLinkCanOnlyNarrowTheRoster() throws {
+        let plan = try Fixtures.plannedDownFor()
+        // A roster with someone the plan never had, or without this phone, is ignored.
+        for roster in [[Fixtures.me, Fixtures.maya, Fixtures.stranger], [Fixtures.maya, Fixtures.jake]] {
+            var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+            link.record(.attendees(try Attendees(roster)))
+            #expect(planner.parent(plan, updatedBy: link) == nil)
+            link.record(.placeChoice(Fixtures.place()))
+            #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees == plan.plan?.attendees)
+        }
+        // A narrower roster alone, with no new place, still updates the plan.
+        var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        link.record(.attendees(try Attendees([Fixtures.me, Fixtures.jake])))
+        #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees.peers == [Fixtures.me, Fixtures.jake])
+        #expect(planner.parent(plan, updatedBy: link)?.plan?.place == nil)
+    }
 }
