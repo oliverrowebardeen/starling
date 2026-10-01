@@ -388,13 +388,15 @@ public actor FindATimeService: SkillService {
         }
     }
 
-    /// "No plan", which is all a friend learns from any ending (ADR 0221).
-    func sendNoPlan(_ reason: Rejection.Reason = .noOverlap, about message: MessageID, to peers: [PeerID], in conversation: ConversationID, chainedFrom: ConversationID?) {
+    /// "No plan", which is all a friend learns from any ending (ADR 0221):
+    /// always `noOverlap`, whether the cause was no time, a pass, a declined
+    /// sheet, or a Never setting (ADR 0019, decision 5).
+    func sendNoPlan(about message: MessageID, to peers: [PeerID], in conversation: ConversationID, chainedFrom: ConversationID?) {
         guard !peers.isEmpty else { return }
         // Not tied to the conversation: it is what is sent as it ends.
         spawn(for: nil) {
             for peer in peers {
-                _ = await self.send(.reject(Rejection(proposal: message, reason: reason)), to: peer, conversation: conversation, chainedFrom: chainedFrom)
+                _ = await self.send(.reject(Rejection(proposal: message, reason: .noOverlap)), to: peer, conversation: conversation, chainedFrom: chainedFrom)
             }
         }
     }

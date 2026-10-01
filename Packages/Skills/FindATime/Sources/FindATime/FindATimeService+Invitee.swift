@@ -121,7 +121,9 @@ extension FindATimeService {
         case (.proposed, .pass):
             emit(.ownerPassed, to: &value.interaction)
             invited[id] = value
-            sendNoPlan(.declinedByOwner, about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
+            // The same "no plan" as a refused send at this step, so the
+            // starter cannot tell a pass from a Never setting (ADR 0019).
+            sendNoPlan(about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
             finish(id)
 
         case (.accepted, .accept(let revision)) where value.offer?.revision == revision:
