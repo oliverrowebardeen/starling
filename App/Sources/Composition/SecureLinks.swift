@@ -76,6 +76,14 @@ struct SecureLinks: Sendable {
         return { try await authority.unpair($0) }
     }
 
+    /// Renames through the one authority (lane E1, #36): under the pin lock,
+    /// refusing a friend that is being unpaired, so it can never write back
+    /// a pin an unpair removed.
+    var rename: @Sendable (PeerID, String) async throws -> Void {
+        let authority = authority
+        return { try await authority.rename($0, to: $1) }
+    }
+
     var pairingDirectory: PairingDirectory {
         let links = links
         var peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)?

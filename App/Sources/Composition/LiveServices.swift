@@ -26,9 +26,7 @@ extension AppServices {
             makeDownService: nil,
             pairing: links.pairingDirectory,
             unpair: links.unpair,
-            // No rename: lane E1 has no rename through the PinAuthority, and a
-            // direct store write could race an unpair (docs/requests/H.md 6).
-            rename: nil,
+            rename: links.rename,
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
