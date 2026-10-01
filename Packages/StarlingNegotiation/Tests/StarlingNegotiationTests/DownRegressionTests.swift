@@ -119,9 +119,11 @@ import Testing
         let clock = ContinuousClock()
         let start = clock.now
         var index = 0
-        // 25 distinct activity queries and 25 distinct budget queries over
-        // more than twice the details deadline (2 x 5 x 20 ms).
-        while clock.now - start < .milliseconds(500) {
+        // Distinct activity and budget queries every 10 ms until Ben's
+        // conversation ends, or 2 s (ten times the 2 x 5 x 20 ms details
+        // deadline). Before the fix, each answer reset the deadline, so the
+        // flood kept the conversation alive indefinitely.
+        while clock.now - start < .seconds(2), await !ben.negotiator.conversations.isEmpty || index == 0 {
             let query = index.isMultiple(of: 2)
                 ? try Query(issue: .activity, candidates: .keywords([T.keyword("food"), T.keyword("item \(index)")]))
                 : try Query(issue: .budget, candidates: .amount(T.usd(Int64(index + 1))))
