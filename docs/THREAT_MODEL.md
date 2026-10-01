@@ -113,7 +113,13 @@ The fifth Codex review (2026-10-01, at b6f2fac) found that the redesign held, an
 | 2 (high) | A frame checked against the epoch, then delivered (or sealed) after another transport's revocation | "Unpairing and disconnecting take effect immediately, on every transport" | The final check, state commit, and publishing (or nonce and sealing) are one section under the authority |
 | 3 (medium) | Reconnects admitted before an await installed sessions without rechecking, evicting one the peer used | Availability only | Admission after the lookup, immediately before install; concurrent attempts coalesce |
 
-ADR 0100 decision 11 now lists every read of revocation state and the section that covers its action. A sixth review is pending. The warning at the top of this document stands until a review passes.
+ADR 0100 decision 11 now lists every read of revocation state and the section that covers its action.
+
+The sixth Codex review (2026-10-01, at 1ca5ca3) found no high findings and confirmed the audit table. It found one medium, tracked as issue #32 and fixed in a follow-up PR:
+
+| Finding | Class | Guarantee affected | Fix |
+|---------|-------|--------------------|-----|
+| #32 (medium) | Unpair stalling on the network: unpair awaited revocation observers before deleting the pin, and one observer's work includes the ceremony's cancel notice, a network send. A stalled send kept the pin stored indefinitely, and a restart while hung reloaded it. | "No pin survives an unpair" held only once the unpair finished, and a stalled link could keep it from finishing. Sessions were already dead (epoch). | Observers are notified after the delete and never awaited; an unpair awaits only Keychain I/O (ADR 0100 decision 11) |
 
 ## 7. Assumptions
 
@@ -127,7 +133,7 @@ ADR 0100 decision 11 now lists every read of revocation state and the section th
 
 | Item | Owner |
 |------|-------|
-| Codex review of the fifth round of section 6 fixes (ADR 0003 care requirement 7) | Orchestrator |
+| Codex review of the issue #32 follow-up (ADR 0003 care requirement 7) | Orchestrator |
 | Wi-Fi Aware pairing binding with `deriveSharedSecret` and XXpsk3 (ADR 0102) | Owner decision, then E1 and E2 |
 | Padding to hide message sizes, before the relay | Phase 2 |
 | Rotating link-visible `PeerID`s, or hiding them in hellos | Phase 2 or later |
