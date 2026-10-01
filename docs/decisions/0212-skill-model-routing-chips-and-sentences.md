@@ -1,0 +1,54 @@
+# ADR 0212: SkillModel: routing, chips, and proposal sentences
+
+- Status: Proposed
+- Date: 2026-10-01
+- Owner: P15-B. Down for... skill and the model
+
+## Context
+
+ADR 0016 gives the model three new jobs behind `SkillModel` (StarlingCore), implemented in StarlingAgent: route New's free text to a skill, read the chips for that skill, and write a proposal card's sentence. ADR 0010 decision 2 makes a skill's intent schema data (`IntentSchema`), turned into a guided-generation schema at runtime. ADR 0161's grounding applies to every slot. ADR 0012 keeps venue names out of prompts.
+
+Verified against the Xcode 27.0 macOS SDK interface (`FoundationModels.swiftmodule`, 2026-10-01): `DynamicGenerationSchema` has `init(name:description:anyOf: [String])`, `init(arrayOf:minimumElements:maximumElements:)`, `init(type:guides:)`, and `GeneratedContent(json:)`; these are the 26.0 APIs ADR 0162 already uses, so they run on the macOS 26.7 host and every iOS 27 device.
+
+## Decision
+
+1. **`FoundationModelsAgent` conforms to `SkillModel`.** Each call runs in a fresh session with greedy sampling, like `AgentModel`'s jobs, and maps framework errors to `AgentModelError`.
+2. **Routing is a runtime enum.** `RouteSchema` offers the ids of the skills that can run now (`SkillRegistry.available`), then `none`, so the model cannot name a skill that is switched off, blocked, or not in the build. The prompt describes each skill from its descriptor only: name, summary, what its building block does, and every slot hint. Nothing is written per skill, so a new skill routes from its descriptor.
+3. **Chips come from a schema built from the skill's slots.** `IntentGenerationSchema` adds fields only for the skill's slots, in its order: wants and avoids for activity; day, hours, and part of day for time; whole dollars for budget; up to three words for any other slot (place, diet, photos); and audience and names when the skill asks for an audience. ADR 0161's lessons carry over: enums lead with `none`, and hours and budget use sentinels for "not stated".
+4. **Code grounds every chip in the owner's words** (ADR 0161, extended):
+   - time, activity, and budget go through `Grounding.check` and `OutputMapping.rules`, as in Phase 1;
+   - a day or a group word ("friends") is never an activity;
+   - another slot's word survives only if the message uses it, with one rule: "nearby" stands for "far" or "near";
+   - a name survives only if it appears in the message, is not a word for a group, an activity, or a place, and keeps the owner's spelling;
+   - the audience is everyone or close friends only if the message says so; a named friend makes the audience the app's to resolve;
+   - sharing is never set by a request: privacy topics are global (ADR 0014);
+   - the request expires when its time window ends, or in three hours.
+5. **Proposal sentences see typed facts only.** The prompt lists the owner's nicknames for friends, the activity keyword, and a time phrase code computed ("tonight at 8:30 PM"). A place is the placeholder `{place}`, and code puts the venue name in afterwards, so a peer-supplied name never reaches the model.
+6. **Code checks every sentence and falls back to the template.** A sentence is kept only if it is one line within 200 characters, names every friend, says the activity, says the time, has the placeholder exactly when there is a place, and contains no number the facts lack. With no activity, it must not say "down" (ADR 0017). Dashes become commas. Anything else throws, and the app shows the skill's template sentence (`ProposalTemplate` in Down for...).
+7. **Measured the ADR 0160 way.** `StarlingAgentBench` holds a routing set (40 tuning, 20 held-out) and a Down for... chip set (20 tuning, 10 held-out), with scorers that run against `ScriptedSkillModel` in CI and the real model with `agent-bench --routing` or `--chips`, or `STARLING_MODEL_TESTS=1` on a device.
+
+## Consequences
+
+Measured on the macOS 26.7 model (`Packages/StarlingAgent/Reports/phase-1.5-skill-model.md`):
+
+| Set | Result |
+|---|---|
+| Routing, tuning | 32 / 40, then 36 / 40 after decision 2's prompt |
+| Routing, held-out | 19 / 20 |
+| Requests routed to none | 0 on both sets |
+| Chips all right, tuning | 12 / 20, then 16 / 20 after decision 4's rules |
+| Chips all right, held-out | 6 / 10 |
+| Worst call | 1,811 tokens (chips), within ADR 0002's 2,048 |
+
+- Routing failures go the safe way: no request was routed to none, and two to three non-requests were routed to a skill, which shows chips the owner dismisses. Nothing is sent before the owner taps the start button.
+- Audience is the weakest chip (80 to 90%). Core v2.1 (ADR 0020) adds send modes and new audience cases; audience and mode parsing are redone with it, so they were not tuned further here.
+- The sets are small and written by one author; two tuning labels were widened after the first run, which the report states. These are evidence, not population estimates.
+- The iOS 27 model is new and may score differently. The device checklist (part A) runs the same sets on an iPhone and asks for New to lead with tiles if routing is under 80% there.
+- The word lists are English only, like ADR 0161's.
+
+## Sources
+
+- `DynamicGenerationSchema`: https://developer.apple.com/documentation/foundationmodels/dynamicgenerationschema
+- Xcode 27.0 SDK: `FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface` (initializers listed above)
+- TN3193, on schema token cost: https://developer.apple.com/documentation/technotes/tn3193-managing-the-on-device-foundation-model-s-context-window
+- ADRs 0002, 0009, 0010, 0012, 0014, 0016, 0017, 0160, 0161, 0162
