@@ -101,20 +101,16 @@ struct ChainingIntegrationTests {
         }
         let finished = try #require(await a.events.interaction(interaction.conversation))
         let updated = try #require(planner.parent(parent, updatedBy: finished))
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/66") {
-            #expect(updated.plan?.attendees.peers == [a.id, b.id])
-        }
+        #expect(updated.plan?.attendees.peers == [a.id, b.id])
         let photos = try #require(planner.suggestions(after: updated.id, in: [updated, finished], settings: ChainFixture.settings, cards: cards).first { $0.id == .swapPhotos })
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/66") { #expect(photos.participants == [b.id]) }
+        #expect(photos.participants == [b.id])
     }
 
     @Test func anExcludedOriginalInviteeCannotAttachARequestToThePlan() throws {
         let parent = try ChainFixture.parent(me: P15.alice, attendees: [P15.alice, P15.bob], asked: [P15.bob, P15.eve])
         #expect(IncomingChain.timelineParent(chainedFrom: parent.conversation, sender: P15.bob, interactions: [parent]) == parent.conversation)
         #expect(IncomingChain.timelineParent(chainedFrom: ConversationID(), sender: P15.bob, interactions: [parent]) == nil)
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/67") {
-            #expect(IncomingChain.timelineParent(chainedFrom: parent.conversation, sender: P15.eve, interactions: [parent]) == nil)
-        }
+        #expect(IncomingChain.timelineParent(chainedFrom: parent.conversation, sender: P15.eve, interactions: [parent]) == nil)
     }
 
     @Test func scheduledOptOutAndChangedCapabilitiesSurviveStoreReplacement() async throws {

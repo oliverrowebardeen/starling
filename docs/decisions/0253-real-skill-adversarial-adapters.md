@@ -41,10 +41,14 @@ The app wiring is a follow-up. Issue #49 separates those evidence boundaries.
 
 ## Consequences
 
-The integrated suite finds missing query binding in both organizer services,
+The initial integration pass found missing query binding in both organizer services,
 missing version validation in an open place conversation, failed place admission
 writes that do not stop answers, and two chain membership defects (#63 to #68).
-Passing component contracts had not established those properties. The remaining
+Passing component contracts had not established those properties. PRs #70 to #72
+fix all six findings; on main `c76fb24`, the original reproductions pass ordinary
+assertions, including the shorter-roster handoff. The seven known-issue markers
+are removed. Genuine query IDs and a compatible proposal still advance, while
+failed admissions retire without any venue lookup, interaction, or send. The remaining
 Down for and app-wiring cases stay open rather than being represented by fakes.
 
 The calendar, Maps, picker UI, and real-model measurements still need their

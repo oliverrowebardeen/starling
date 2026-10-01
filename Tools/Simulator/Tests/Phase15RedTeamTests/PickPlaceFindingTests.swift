@@ -25,7 +25,7 @@ struct PickPlaceFindingTests {
         let forged = try await b.send(.answer(answer), to: a.id, conversation: request.conversation, context: OutboundContext(answering: query))
         try await world.delivered(forged, to: a)
         let proposed = try await a.events.interaction(request.conversation)?.proposal
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/63") { #expect(proposed == nil) }
+        #expect(proposed == nil)
         // A genuine answer is the control, and should be the first to propose.
         let genuine = try #require(queries.first { $0.body.kind == .query })
         let good = try Answer(query: genuine.id, issue: .place, status: .answered, acceptable: .places([candidate.choice]))
@@ -46,13 +46,17 @@ struct PickPlaceFindingTests {
             conversation: invite.conversation, skill: incompatible)
         try await world.delivered(bad, to: b)
         let proposed = try await b.events.interaction(invite.conversation)?.proposal
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/64") { #expect(proposed == nil) }
+        #expect(proposed == nil)
         // A fresh incompatible query already fails closed.
         let fresh = ConversationID()
         let incompatibleQuery = try await a.send(.query(suite.query([candidate])), to: b.id, conversation: fresh, skill: incompatible)
         try await world.delivered(incompatibleQuery, to: b)
         #expect(try await b.events.interaction(fresh) == nil)
         #expect(await b.sent(fresh).isEmpty)
+        let compatible = try await a.send(.propose(suite.offer(candidate, from: a, to: b)), to: b.id,
+            conversation: invite.conversation)
+        try await world.delivered(compatible, to: b)
+        _ = try await b.wait(.proposed, in: invite.conversation)
     }
 
     @Test func aFailedAdmissionWriteCannotResetTheProbeLimitAfterRestart() async throws {
@@ -74,7 +78,12 @@ struct PickPlaceFindingTests {
         #expect(await ledger.attempts == 5)
         #expect(try await ledger.admissions(since: .distantPast).isEmpty)
         let sent = await b.observer.records.map(\.envelope).filter { conversations.contains($0.conversation) }
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/65") { #expect(sent.isEmpty) }
+        #expect(sent.isEmpty)
+        #expect(await b.maps.lookedUp.isEmpty)
+        for conversation in conversations {
+            #expect(try await b.conversations.isRetired(conversation))
+            #expect(try await b.events.interaction(conversation) == nil)
+        }
     }
 }
 

@@ -121,7 +121,14 @@ struct FindTimeIntegrationTests {
             context: OutboundContext(answering: query), skill: FindATimeSkill.ref)
         try await world.delivered(attack, to: a)
         let proposed = try await starter.events.interaction(request.conversation)?.proposal
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/68") { #expect(proposed == nil) }
+        #expect(proposed == nil)
+        let genuine = try Answer(query: envelope.id, issue: .time, status: .answered, acceptable: query.candidates)
+        let accepted = try await b.send(.answer(genuine), to: a.id, conversation: request.conversation,
+            context: OutboundContext(answering: query), skill: FindATimeSkill.ref)
+        try await world.delivered(accepted, to: a)
+        try await Simulation.eventually("genuine time answer advances the proposal") {
+            (try? await starter.events.interaction(request.conversation)?.state) == .proposed
+        }
     }
 
     @Test func sixteenTimeCandidatesSurviveLostInteractionsWithoutASeventeenthOracleAnswer() async throws {
