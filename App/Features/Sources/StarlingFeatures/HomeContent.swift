@@ -1,4 +1,5 @@
 import Foundation
+import PickAPlace
 import StarlingCore
 
 /// The status mark's pose, named like `StarlingDesign.MarkState`, which this
@@ -72,6 +73,9 @@ public struct InteractionWords: Sendable {
     }
 
     public static let unpaired = "someone you're not paired with"
+
+    /// The owner's own nickname for a paired friend, or nil.
+    public func nickname(_ peer: PeerID) -> String? { names()[peer] }
 
     /// Whether `peer` is a paired friend now, for drawing their symbol.
     public func isFriend(_ peer: PeerID) -> Bool { names()[peer] != nil }
@@ -305,6 +309,7 @@ public final class ProposalTexts {
 
     /// The headline and detail for the interaction's current proposal.
     public func text(for interaction: Interaction, words: InteractionWords) -> (headline: String, detail: String?)? {
+        if interaction.skill.id == .pickAPlace { return placeText(for: interaction, words: words) }
         guard let facts = words.facts(interaction), let revision = interaction.proposalRevision else { return nil }
         let template = words.template(facts)
         let key = Key(interaction: interaction.id, revision: revision)
@@ -321,4 +326,29 @@ public final class ProposalTexts {
         }
         return template
     }
+
+    /// Pick a place's card, in lane D's words (P15-D request 5): the model
+    /// may write the headline, but never sees the venue's name, which a
+    /// friend may have chosen (ADR 0231).
+    private func placeText(for interaction: Interaction, words: InteractionWords) -> (headline: String, detail: String?)? {
+        guard let proposal = interaction.proposal, let revision = interaction.proposalRevision else { return nil }
+        let facts = PickAPlaceCopy.facts(for: proposal, me: words.localPeer ?? PeerID.zero, nickname: words.nickname, timeZone: words.formatter.timeZone)
+        let detail = PickAPlaceCopy.detail(facts, locale: words.formatter.locale)
+        let key = Key(interaction: interaction.id, revision: revision)
+        if let headline = written[key] { return (headline, detail) }
+        if let model, !asked.contains(key) {
+            asked.insert(key)
+            Task {
+                let copy = await PickAPlaceCopy.proposal(facts, model: model, locale: words.formatter.locale)
+                written[key] = copy.headline
+            }
+        }
+        return (PickAPlaceCopy.templateHeadline(facts), detail)
+    }
+}
+
+extension PeerID {
+    /// Stands in for "this phone" where no transport is in the build, so no
+    /// friend is ever mistaken for the owner.
+    static let zero = try! PeerID(bytes: Data(repeating: 0, count: PeerID.byteCount))
 }
