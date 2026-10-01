@@ -215,6 +215,11 @@ public actor PickAPlaceService: SkillService {
     public func handle(_ event: InboxEvent) async {
         guard case .message(let envelope) = event else { return }
         guard envelope.skill?.id == descriptor.id || envelope.body.kind == .hello else { return }
+        // A skill envelope in a mode this skill does not offer is ignored
+        // like any unknown request (ADR 0020, decision 5).
+        if envelope.skill != nil {
+            guard let mode = envelope.mode, descriptor.sendModes.contains(mode) else { return }
+        }
         // Only paired friends. With the secure channel, the sender is
         // authenticated; the pairing store says whether it is a friend.
         guard (try? await pairedPeers.peer(for: envelope.sender)) != nil else { return }
@@ -280,11 +285,18 @@ public actor PickAPlaceService: SkillService {
         continuation.yield(.lifecycle(interaction, event))
     }
 
-    /// Sends one message of this skill through the Outbox.
+    /// Sends one message of this skill through the Outbox, always as an
+    /// invite (ADR 0020), naming the interaction it belongs to so the
+    /// consent sheet and the audit find it. `answering` is the friend's
+    /// query when the message only says which of its candidates work
+    /// (ADR 0019).
     @discardableResult
-    func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async throws -> Envelope {
-        try await outbox.send(body, to: peer, conversation: conversation, recipientCard: cards[peer],
-                              skill: descriptor.ref, chainedFrom: chainedFrom)
+    func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?,
+              answering: Query? = nil) async throws -> Envelope {
+        let interaction = organized[conversation]?.id ?? invites[conversation]?.id
+        return try await outbox.send(body, to: peer, conversation: conversation, recipientCard: cards[peer],
+                                     context: OutboundContext(answering: answering, interaction: interaction),
+                                     skill: descriptor.ref, mode: descriptor.defaultSendMode, chainedFrom: chainedFrom)
     }
 
     /// A send whose failure changes nothing, such as a goodbye.

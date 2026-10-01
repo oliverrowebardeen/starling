@@ -95,10 +95,10 @@ struct RestoreTests {
         let skill = PickAPlaceSkill.ref
         let conversation = ConversationID()
         try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
-                                      conversation: conversation, skill: skill)
+                                      conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
         let first = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
-        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: first)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: first)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.proposed, in: conversation))
 
         // Maya's app restarts, and Maps now prices Boba Guys over her budget.
@@ -106,7 +106,7 @@ struct RestoreTests {
         await maps.update(candidate("Boba Guys", id: "I.bobaguys", tier: .four, diets: ["vegan"], kinds: ["boba"]))
         let slot = try TimeSlot(start: Date(timeIntervalSince1970: 1_790_000_000), end: Date(timeIntervalSince1970: 1_790_003_600))
         let second = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id]), .time: .slots([slot])])
-        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
 
         // The new card never shows; the request ends without a word.
         #expect(await maya.reaches(.ended(.nobodyUp), in: conversation))
@@ -124,6 +124,7 @@ struct RestoreTests {
         let id = try #require(await maya.interaction(conversation)?.id)
         await maya.service.withdraw(id)
         #expect(await maya.reaches(.ended(.withdrawn), in: conversation))
+        #expect(await eventually { await maya.transport.lost.contains { $0.body.kind == .reject } })
 
         await maya.restart()
         await maya.transport.clearRules()
@@ -146,10 +147,10 @@ struct RestoreTests {
         func probe() async throws {
             let conversation = ConversationID()
             try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
-                                          conversation: conversation, skill: skill)
+                                          conversation: conversation, skill: skill, mode: .invite)
             try await Task.sleep(for: .milliseconds(40))
             try await mallory.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: maya.id,
-                                          conversation: conversation, skill: skill)
+                                          conversation: conversation, skill: skill, mode: .invite)
         }
         for _ in 0..<fastConfiguration.maxNewRequestsPerFriendPerHour { try await probe() }
         try await Task.sleep(for: .milliseconds(100))

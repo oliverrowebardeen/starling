@@ -146,9 +146,9 @@ struct GroupFlowTests {
         let proposals = await group.wire.envelopes.filter { $0.body.kind == .propose && $0.recipient == maya.id }
         let terms = try #require(await oliver.interaction(conversation)?.proposal?.terms)
         try await maya.outbox.send(.accept(Acceptance(proposal: try #require(proposals.last).id, terms: terms)), to: oliver.id,
-                                   conversation: conversation, skill: PickAPlaceSkill.ref)
+                                   conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite)
         try await jake.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: oliver.id,
-                                   conversation: conversation, skill: PickAPlaceSkill.ref)
+                                   conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite)
         try await Task.sleep(for: .milliseconds(100))
         #expect(await oliver.service.organized[conversation]?.accepted.isEmpty == true)
 
@@ -253,7 +253,7 @@ struct GroupFlowTests {
         let query = try Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))
         for _ in 0..<5 {
             try await oliver.outbox.send(.query(query), to: maya.id, conversation: ConversationID(), recipientCard: maya.card,
-                                         skill: SkillRef(.pickAPlace, SkillVersion(2, 0)))
+                                         skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), mode: .invite)
         }
         try await Task.sleep(for: .milliseconds(200))
         #expect(await group.wire.sent(by: maya.id).isEmpty)
@@ -331,7 +331,7 @@ struct GroupFlowTests {
         await #expect(throws: PickAPlaceError.unknownInteraction) { try await oliver.service.answer(InteractionID(), with: .pass) }
         await #expect(throws: PickAPlaceError.alreadyStarted) {
             try await oliver.service.start(SkillRequest(interaction: request.id, conversation: request.conversation,
-                                                        intent: SkillIntent(skill: PickAPlaceSkill.ref, rules: .empty, audience: .allFriends,
+                                                        intent: SkillIntent(skill: PickAPlaceSkill.ref, rules: .empty, audience: .allFriends, mode: .invite,
                                                                             expiresAt: Timestamp(Date().addingTimeInterval(60))),
                                                         participants: [maya.id]))
         }

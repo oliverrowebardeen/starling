@@ -30,7 +30,7 @@ struct AdversarialTests {
         let group = try await Group([maya], hub: hub)
         defer { Task { await group.stop(); await stranger.stop() } }
         try await stranger.start()
-        try await stranger.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(), skill: skill)
+        try await stranger.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(), skill: skill, mode: .invite)
         try await Task.sleep(for: .milliseconds(200))
         #expect(await maya.coordinator.incoming.isEmpty)
         #expect(await group.wire.sent(by: maya.id).isEmpty)
@@ -52,7 +52,7 @@ struct AdversarialTests {
             .query(try Query(issue: .budget, candidates: .amount(usd(5)))),
         ]
         for body in bodies {
-            try await mallory.outbox.send(body, to: maya.id, conversation: ConversationID(), skill: skill, chainedFrom: ConversationID())
+            try await mallory.outbox.send(body, to: maya.id, conversation: ConversationID(), skill: skill, mode: .invite, chainedFrom: ConversationID())
         }
         try await Task.sleep(for: .milliseconds(200))
         #expect(await maya.coordinator.incoming.isEmpty)
@@ -63,7 +63,7 @@ struct AdversarialTests {
         let (group, maya, mallory) = try await mayaAndMallory()
         defer { Task { await group.stop() } }
         let claimed = ConversationID()
-        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(), skill: skill, chainedFrom: claimed)
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(), skill: skill, mode: .invite, chainedFrom: claimed)
         #expect(await eventually { await maya.coordinator.incoming.count == 1 })
         // One invitee interaction, negotiating, with the hint as data. No
         // proposal, no question, no permission.
@@ -76,7 +76,7 @@ struct AdversarialTests {
         let (group, maya, mallory) = try await mayaAndMallory()
         defer { Task { await group.stop() } }
         for _ in 0..<10 {
-            try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(), skill: skill)
+            try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(), skill: skill, mode: .invite)
         }
         try await Task.sleep(for: .milliseconds(300))
         #expect(await maya.coordinator.incoming.count == fastConfiguration.maxLiveRequestsPerFriend)
@@ -89,10 +89,10 @@ struct AdversarialTests {
         // live limit never bites.
         for _ in 0..<12 {
             let conversation = ConversationID()
-            try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+            try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
             try await Task.sleep(for: .milliseconds(40))
             try await mallory.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: maya.id,
-                                          conversation: conversation, skill: skill)
+                                          conversation: conversation, skill: skill, mode: .invite)
         }
         try await Task.sleep(for: .milliseconds(200))
         let lists = await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }
@@ -110,11 +110,22 @@ struct AdversarialTests {
         defer { Task { await group.stop() } }
         // Mallory asks, gets Maya's list, and never says anything again.
         let conversation = ConversationID()
-        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.negotiating, in: conversation))
         #expect(await maya.reaches(.ended(.expired), in: conversation, within: 3))
         #expect(await eventually { await maya.service.tasks.isEmpty })
         #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func aRequestInAnotherModeIsIgnored() async throws {
+        let (group, maya, mallory) = try await mayaAndMallory()
+        defer { Task { await group.stop() } }
+        // Pick a place is invite only: a quiet ask never becomes a request.
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: ConversationID(),
+                                      skill: skill, mode: .askQuietly)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await maya.coordinator.incoming.isEmpty)
+        #expect(await group.wire.sent(by: maya.id).isEmpty)
     }
 
     @Test func aStrangersCardIsNotKept() async throws {
@@ -133,7 +144,7 @@ struct AdversarialTests {
         let (group, maya, mallory) = try await mayaAndMallory(limits: limits(budget: 20))
         defer { Task { await group.stop() } }
         let conversation = ConversationID()
-        try await mallory.outbox.send(query([Venues.fancy.choice, Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(query([Venues.fancy.choice, Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
 
         // Le Fancy breaks Maya's budget; a stranger's roster; a budget
@@ -147,7 +158,7 @@ struct AdversarialTests {
             [.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id])],
         ]
         for terms in hostile {
-            try await mallory.outbox.send(.propose(Proposal(round: 0, terms: Terms(terms))), to: maya.id, conversation: conversation, skill: skill)
+            try await mallory.outbox.send(.propose(Proposal(round: 0, terms: Terms(terms))), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         }
         try await Task.sleep(for: .milliseconds(200))
         #expect(await maya.state(in: conversation) == .negotiating)
@@ -158,20 +169,20 @@ struct AdversarialTests {
         let (group, maya, mallory) = try await mayaAndMallory()
         defer { Task { await group.stop() } }
         let conversation = ConversationID()
-        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
         let terms = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
-        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.proposed, in: conversation))
         try await maya.accept(in: conversation)
         #expect(await maya.reaches(.confirmed, in: conversation))
 
         let padded = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id, PeerID.random()])])
-        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: padded)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: padded)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         try await Task.sleep(for: .milliseconds(150))
         #expect(await maya.state(in: conversation) == .confirmed)
 
-        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.planned, in: conversation))
         #expect(await group.lifecyclesWereLegal())
     }
@@ -183,7 +194,7 @@ struct AdversarialTests {
         defer { Task { await group.stop() } }
         let disguised = try PlaceChoice(name: PlaceName("Green Garden Vegan"), mapItemID: Venues.fancy.choice.mapItemID)
         let conversation = ConversationID()
-        try await mallory.outbox.send(query([disguised, Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(query([disguised, Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
         let answer = try #require(await group.wire.sent(by: maya.id).first { $0.body.kind == .answer })
         guard case .answer(let body) = answer.body else { return }
@@ -205,7 +216,7 @@ struct AdversarialTests {
         let unasked = place("Mallory's Cousin's Bar", id: "I.cousin")
         let answer = try Answer(query: queryID, issue: .place, status: .answered, acceptable: .places([unasked, Venues.teaLab.choice]))
         let frame = try Frame(EnvelopeCodec().encode(Envelope(conversation: request.conversation, sender: mallory.id, recipient: oliver.id,
-                                                             sequence: 100, sentAt: Timestamp(Date()), body: .answer(answer), skill: skill)))
+                                                             sequence: 100, sentAt: Timestamp(Date()), body: .answer(answer), skill: skill, mode: .invite)))
         try await hub.inject(frame, claimedSender: mallory.id, to: oliver.id)
         #expect(await oliver.reaches(.proposed, in: request.conversation))
         #expect(await oliver.interaction(request.conversation)?.proposal?.terms[.place] == .places([Venues.teaLab.choice]))

@@ -37,7 +37,9 @@ public enum PickAPlaceSkill {
             IntentSlot(.place, required: false, hint: "the kind of place or area, such as dinner near Franklin"),
             IntentSlot(.budget, required: false, hint: "the most they want to spend each"),
             IntentSlot(.diet, required: false, hint: "what they need or can't eat, such as vegetarian or no pork"),
-        ])
+        ]),
+        // Friends see the request as a card (ADR 0020).
+        sendModes: [.invite]
     )
 
     /// The candidates `start` would ask friends about: those that fit the

@@ -297,12 +297,12 @@ struct OwnerTapTests {
 
         let conversation = ConversationID()
         try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice, Venues.teaLab.choice]))),
-                                      to: maya.id, conversation: conversation, skill: skill)
+                                      to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
         let older = try Terms([.place: .places([Venues.teaLab.choice]), .people: .peers([mallory.id, maya.id])])
         let newer = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
-        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: older)), to: maya.id, conversation: conversation, skill: skill)
-        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: newer)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: older)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: newer)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.proposed, in: conversation))
         try await maya.accept(in: conversation)
         #expect(await maya.reaches(.confirmed, in: conversation))
@@ -324,17 +324,17 @@ struct OwnerTapTests {
 
         let conversation = ConversationID()
         try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
-                                      conversation: conversation, skill: skill)
+                                      conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
         let first = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
-        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: first)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: first)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.proposed, in: conversation))
 
         let tap = Task { try await maya.accept(in: conversation) }
         #expect(await eventually { await gate.waiting >= 1 })
         let slot = try TimeSlot(start: Date(timeIntervalSince1970: 1_790_000_000), end: Date(timeIntervalSince1970: 1_790_003_600))
         let second = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id]), .time: .slots([slot])])
-        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         try await Task.sleep(for: .milliseconds(150))
         await gate.open()
         try await tap.value

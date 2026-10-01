@@ -38,6 +38,11 @@ struct DescriptorTests {
         #expect(descriptor.blockingTopics(in: privacy).isEmpty)
     }
 
+    @Test func sendsOnlyAsAnInvite() {
+        #expect(descriptor.sendModes == [.invite])
+        #expect(descriptor.defaultSendMode == .invite)
+    }
+
     @Test func registersBesideTheOtherSkills() throws {
         let registry = try SkillRegistry([SampleSkills.downFor, SampleSkills.findATime, descriptor])
         let settings = SkillSettings(flags: .phase1_5)

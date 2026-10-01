@@ -324,7 +324,7 @@ final class Phone: Sendable {
         await coordinator.add(interaction)
         await staged.stage(candidates, for: interaction.id)
         let intent = SkillIntent(skill: PickAPlaceSkill.ref, rules: OwnerRules(constraints: limits), audience: .picked(friends.map(\.id)),
-                                 expiresAt: Timestamp(Date().addingTimeInterval(expiresIn)))
+                                 mode: .invite, expiresAt: Timestamp(Date().addingTimeInterval(expiresIn)))
         await coordinator.apply(.lifecycle(interaction.id, .started))
         do {
             try await service.start(SkillRequest(interaction: interaction.id, conversation: interaction.conversation, intent: intent,
