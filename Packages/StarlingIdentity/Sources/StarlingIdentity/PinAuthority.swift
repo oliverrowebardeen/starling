@@ -113,9 +113,10 @@ public final class PinAuthority: Sendable {
     /// How many epochs are kept, for tests.
     var trackedTokenCount: Int { state.withLock { $0.epochs.count } }
 
-    /// Registers a handler run after every revocation and rollback. For
-    /// liveness only (ending sessions promptly, cancelling ceremonies):
-    /// correctness rests on the per-frame epoch check.
+    /// Registers a handler run after every revocation and rollback, in its
+    /// own task and never awaited by the revocation. For liveness only
+    /// (ending sessions promptly, cancelling ceremonies): correctness rests
+    /// on the per-frame epoch check.
     public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
         state.withLock { $0.observers.append(handler) }
     }
@@ -132,7 +133,7 @@ public final class PinAuthority: Sendable {
     /// Revokes `peer` without removing its pin.
     public func revoke(_ peer: PeerID) async {
         markRevoked(peer)
-        await notifyObservers(peer)
+        notifyObservers(peer)
     }
 
     /// `revoke`'s synchronous half: the epoch moves. Never awaits.
@@ -152,15 +153,19 @@ public final class PinAuthority: Sendable {
     /// `unpair`'s asynchronous half. Deletes the pin under the pin lock, then
     /// moves the epoch again and ends the removal. If the delete fails, the
     /// peer stays quarantined (lookups refused) and the error is rethrown.
+    /// The only thing it awaits is Keychain I/O: observers are notified
+    /// afterwards and not awaited, because a ceremony's cancel notice is a
+    /// network send that can stall (issue #32).
     func completeRemoval(_ peer: PeerID) async throws {
-        await notifyObservers(peer)
         do {
             try await serialized { try await self.store.remove(peer) }
         } catch {
             endRemoval(peer, deleted: false)
+            notifyObservers(peer)
             throw error
         }
         endRemoval(peer, deleted: true)
+        notifyObservers(peer)
     }
 
     private func endRemoval(_ peer: PeerID, deleted: Bool) {
@@ -173,9 +178,13 @@ public final class PinAuthority: Sendable {
         }
     }
 
-    func notifyObservers(_ peer: PeerID) async {
+    /// Tells every observer about a revocation of `peer` without waiting for
+    /// them, one task per observer so a stalled one cannot hold up another.
+    /// Observers are for liveness only (ending sessions promptly, cancelling
+    /// ceremonies), so nothing a revocation guarantees waits on them.
+    func notifyObservers(_ peer: PeerID) {
         let observers = state.withLock { $0.observers }
-        for observer in observers { await observer(peer) }
+        for observer in observers { Task { await observer(peer) } }
     }
 
     // MARK: Pairing
@@ -229,7 +238,7 @@ public final class PinAuthority: Sendable {
             deleted = true
             return .rolledBack
         }
-        if result == .rolledBack { await notifyObservers(id) }
+        if result == .rolledBack { notifyObservers(id) }
         return result == .committed
     }
 

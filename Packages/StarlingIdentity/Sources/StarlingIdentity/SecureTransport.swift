@@ -247,7 +247,7 @@ public actor SecureTransport: Transport {
     public func disconnect(_ peer: PeerID) async {
         authority.markRevoked(peer)
         endSessions(with: peer)
-        await authority.notifyObservers(peer)
+        authority.notifyObservers(peer)
     }
 
     /// Registers a handler run on every revocation of a peer.
