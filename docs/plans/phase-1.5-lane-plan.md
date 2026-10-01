@@ -44,3 +44,7 @@ The prompt's section 12, on two real iPhones, with criterion 7 changed by Oliver
 - **The iOS 27 on-device model is new.** Routing and chips are measured on the macOS 26.7 model first. The device numbers decide whether New leads with free text or with tiles.
 - **CI.** Six lanes push often. While hosted CI is not running, merges wait on the local gate, which runs one at a time.
 - **The device test needs two people.** Oliver and a friend run the checklists. Everything before that is covered by Loopback and the simulator.
+
+## 5. Queued for after Phase 1.5
+
+- **Pairing methods, as its own lane** (Oliver, 2026-10-01): in-person QR, links treated as unverified requests, and an App Clip. It builds on ADR 0102 (Wi-Fi Aware PIN first, with QR and tap fallbacks deferred) and brief open question 3, and it changes Identity, which the Orchestrator holds while Phase 1 lanes are closed. Planned after the Phase 1.5 exit, with its own ADRs and lane prompt.
