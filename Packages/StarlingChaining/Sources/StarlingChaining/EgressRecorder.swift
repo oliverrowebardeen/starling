@@ -27,9 +27,13 @@ public protocol EgressSink: Sendable {
 }
 
 /// Install with `Outbox(observer:)`.
+///
+/// Every send stays unresolved, and its conversation unconfirmed, from the
+/// moment Outbox reports it until the sink has put its record on the
+/// interaction: through a write under way, a failure, and a retry alike.
 public actor EgressRecorder: OutboxObserver {
-    /// At most this many failed writes wait for a retry; older ones are
-    /// dropped, and their conversations stay unconfirmed.
+    /// At most this many unresolved sends are kept for a retry; past that the
+    /// oldest is dropped, and its conversation stays unconfirmed for good.
     public static let maxPending = 256
 
     private struct Pending {
@@ -39,11 +43,14 @@ public actor EgressRecorder: OutboxObserver {
 
     private let sink: any EgressSink
     private let now: @Sendable () -> Date
-    private var pending: [Pending] = []
+    /// Sends not yet confirmed on their interaction, by envelope, oldest first.
+    private var pending: [MessageID: Pending] = [:]
+    private var order: [MessageID] = []
+    /// Sends whose sink call is under way, so two retries never write one
+    /// send at the same time.
+    private var attempting: Set<MessageID> = []
     /// Conversations that lost a record for good (the retry queue was full).
     private var lost: Set<ConversationID> = []
-    /// Writes under way, per conversation: not yet confirmed either.
-    private var writing: [ConversationID: Int] = [:]
 
     /// Sends for a conversation no interaction on this phone owns, such as a
     /// link-level `hello`. The policy's audit log still has them.
@@ -67,10 +74,12 @@ public actor EgressRecorder: OutboxObserver {
     public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
         if case .deny = decision { return }  // Outbox never reports a denied send.
         if disclosed == nil { unexplained += 1 }
-        await retryPending()
         let record = EgressRecord(at: Timestamp(now()), recipient: envelope.recipient, items: disclosed ?? [],
                                   message: envelope.id, itemsUnknown: disclosed == nil)
-        await write(Pending(conversation: envelope.conversation, record: record))
+        // Tracked before the first suspension, so the conversation is
+        // unconfirmed from the moment the send is reported.
+        track(envelope.id, Pending(conversation: envelope.conversation, record: record))
+        await retryPending()
     }
 
     /// For a caller that cannot pass the items: only a sheet's are known.
@@ -79,34 +88,49 @@ public actor EgressRecorder: OutboxObserver {
         await outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
     }
 
-    /// Retries every failed write, oldest first. The app calls it when the
-    /// store recovers; every new send also retries first.
+    /// Writes every unresolved send, oldest first, skipping any already being
+    /// written. Each stays unresolved until its own write lands. The app calls
+    /// it when the store recovers; every new send also runs it.
     public func retryPending() async {
-        let waiting = pending
-        pending = []
-        for item in waiting { await write(item) }
-    }
-
-    /// Conversations whose egress log may be missing a send: a write is under
-    /// way, waits for a retry, or was dropped. Pass to `WhatLeftYourPhone` and
-    /// `PlanTimeline` so they do not claim anything stayed on the phone there.
-    public var unconfirmedConversations: Set<ConversationID> {
-        lost.union(pending.map(\.conversation)).union(writing.keys)
-    }
-
-    private func write(_ item: Pending) async {
-        writing[item.conversation, default: 0] += 1
-        defer {
-            writing[item.conversation]? -= 1
-            if writing[item.conversation] == 0 { writing[item.conversation] = nil }
+        for message in order where pending[message] != nil && !attempting.contains(message) {
+            await attempt(message)
         }
+    }
+
+    /// Conversations whose egress log may be missing a send: one is being
+    /// written, waits for a retry, or was dropped. Pass to
+    /// `WhatLeftYourPhone` and `PlanTimeline` so they do not claim anything
+    /// stayed on the phone there.
+    public var unconfirmedConversations: Set<ConversationID> {
+        lost.union(pending.values.map(\.conversation))
+    }
+
+    private func track(_ message: MessageID, _ item: Pending) {
+        guard pending[message] == nil else { return }
+        pending[message] = item
+        order.append(message)
+        // Over the limit: drop the oldest send not being written.
+        if order.count > Self.maxPending, let oldest = order.first(where: { !attempting.contains($0) }) {
+            if let dropped = pending.removeValue(forKey: oldest) { lost.insert(dropped.conversation) }
+            order.removeAll { $0 == oldest }
+        }
+    }
+
+    private func attempt(_ message: MessageID) async {
+        guard let item = pending[message] else { return }
+        attempting.insert(message)
+        defer { attempting.remove(message) }
         do {
             if try await !sink.appendEgress(item.record, conversation: item.conversation) { unattributed += 1 }
+            resolve(message)
         } catch {
             failedWrites += 1
-            if pending.count == Self.maxPending { lost.insert(pending.removeFirst().conversation) }
-            pending.append(item)
         }
+    }
+
+    private func resolve(_ message: MessageID) {
+        pending[message] = nil
+        order.removeAll { $0 == message }
     }
 }
 

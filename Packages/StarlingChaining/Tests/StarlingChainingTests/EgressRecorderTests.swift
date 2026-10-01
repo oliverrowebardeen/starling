@@ -34,6 +34,30 @@ actor FlakySink: EgressSink {
     }
 }
 
+/// A sink that fails while `failing` is set, and can hold each call at a
+/// gate first.
+actor GatedSink: EgressSink {
+    struct Failure: Error {}
+    let gate = Gate()
+    private let store: StoreEgressSink
+    private var failing: Bool
+    private var gated = false
+
+    init(store: any InteractionStore, failing: Bool) {
+        self.store = StoreEgressSink(store: store)
+        self.failing = failing
+    }
+
+    func hold() { gated = true }
+    func setFailing(_ value: Bool) { failing = value }
+
+    func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
+        if gated { await gate.pass() }
+        if failing { throw Failure() }
+        return try await store.appendEgress(record, conversation: conversation)
+    }
+}
+
 @Suite struct EgressRecorderTests {
     struct Phone {
         let store: InMemoryInteractionStore
@@ -222,5 +246,43 @@ actor FlakySink: EgressSink {
         // The plan's record fell off the queue: it stays unconfirmed for good.
         #expect(await recorder.unconfirmedConversations == [plan.conversation])
         #expect(try await store.interaction(plan.id)?.egress.isEmpty == true)
+    }
+
+    @Test func everyUnresolvedSendStaysUnconfirmedThroughARetry() async throws {
+        let first = try Fixtures.plannedDownFor(), second = try Fixtures.plannedDownFor(), third = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([first, second, third])
+        let sink = GatedSink(store: store, failing: true)
+        let recorder = EgressRecorder(sink: sink)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let offer = MessageBody.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms()))
+        // Two sends whose writes failed: both unresolved.
+        try await outbox.send(offer, to: Fixtures.maya, conversation: first.conversation)
+        try await outbox.send(offer, to: Fixtures.maya, conversation: second.conversation)
+        #expect(await recorder.unconfirmedConversations == [first.conversation, second.conversation])
+
+        // The store recovers, but each write is held mid-call.
+        await sink.setFailing(false)
+        await sink.hold()
+        let retrying = Task { await recorder.retryPending() }
+        await sink.gate.arrived(1)
+        // The first is being written, the second waits its turn: both are
+        // still unconfirmed, not only the one in flight.
+        #expect(await recorder.unconfirmedConversations == [first.conversation, second.conversation])
+
+        // A new send during the retry is unconfirmed from the moment it is
+        // reported, before its own write starts.
+        let sending = Task { try await outbox.send(offer, to: Fixtures.maya, conversation: third.conversation) }
+        await sink.gate.arrived(2)
+        #expect(await recorder.unconfirmedConversations == [first.conversation, second.conversation, third.conversation])
+
+        await sink.gate.open()
+        await retrying.value
+        _ = try await sending.value
+        await recorder.retryPending()
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+        for plan in [first, second, third] {
+            #expect(try await store.interaction(plan.id)?.egress.count == 1)
+        }
     }
 }
