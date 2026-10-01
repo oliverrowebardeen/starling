@@ -181,6 +181,7 @@ package struct IntentGenerationSchema {
 /// (ADR 0012).
 package enum ProposalSentence {
     package static let placeholder = "{place}"
+    package static let timePlaceholder = "{time}"
     package static let maxCharacters = 200
 
     package static func schema() throws -> GenerationSchema {

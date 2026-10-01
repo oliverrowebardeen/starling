@@ -23,7 +23,8 @@ extension PromptRenderer {
 
     package static let proposalInstructions = """
         Write one short, friendly sentence telling the owner about a plan with friends, then ask if it works. \
-        Use only the facts given. Name every friend. Use the activity and time exactly as given. \
+        Use only the facts given. Name every friend. Use the activity exactly as given. \
+        If a time is given, write {time} where the time goes; it reads like "tonight at 8:30 PM". \
         If a place is given, write {place} where the place goes. No dashes.
         """
 
@@ -56,13 +57,15 @@ extension PromptRenderer {
         "Owner: \(utterance.text)"
     }
 
-    /// Typed facts only. A place is never named: the model writes the
-    /// placeholder and code fills it in.
+    /// Typed facts only. The place and the time are never written out: the
+    /// model writes placeholders and code fills them in, so the sentence
+    /// cannot get the day or the hour wrong (review of PR #56, finding 7)
+    /// and a venue name never reaches the model (ADR 0012).
     package static func proposal(_ facts: ProposalFacts, time: String?) -> String {
         var lines: [String] = []
         lines.append("Friends: " + (facts.friendNames.isEmpty ? "none" : facts.friendNames.joined(separator: ", ")))
         if let activity = facts.activity { lines.append("Activity: \(activity.value)") }
-        if let time { lines.append("Time: \(time)") }
+        if time != nil { lines.append("Time: \(ProposalSentence.timePlaceholder)") }
         if facts.place != nil { lines.append("Place: \(ProposalSentence.placeholder)") }
         return lines.joined(separator: "\n")
     }
@@ -193,10 +196,11 @@ package enum SkillOutputMapping {
     }
 
     /// Accepts the model's sentence only if it says what the facts say and
-    /// nothing more: every friend, the activity, the time, the place
-    /// placeholder when there is a place, and no number the facts do not
-    /// have. Dashes become commas (owner norm). Anything else throws, and
-    /// the caller shows the skill's template instead.
+    /// nothing more: every friend, the activity, each placeholder exactly
+    /// once when its fact is given and never otherwise, and no time of its
+    /// own (no digits, day, or part of day). Code then fills in the time and
+    /// the place. Dashes become commas (owner norm). Anything else throws,
+    /// and the caller shows the skill's template instead.
     package static func sentence(_ text: String, facts: ProposalFacts, time: String?) throws -> String {
         var sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
         for dash in [" \u{2014} ", "\u{2014}", " \u{2013} ", "\u{2013}"] { sentence = sentence.replacingOccurrences(of: dash, with: ", ") }
@@ -210,19 +214,22 @@ package enum SkillOutputMapping {
             // Never "down" without an activity (ADR 0017).
             throw reject("down without an activity")
         }
-        let allowed = Set((time ?? "").split(whereSeparator: { !$0.isNumber }).map(String.init))
-        let numbers = sentence.split(whereSeparator: { !$0.isNumber }).map(String.init)
-        guard numbers.allSatisfy(allowed.contains) else { throw reject("a number the facts do not have") }
-        if let time, let hour = time.split(separator: " ").first(where: { $0.first?.isNumber == true }) {
-            guard sentence.contains(hour) else { throw reject("missing the time") }
+        guard !sentence.contains(where: \.isNumber) else { throw reject("a number of its own") }
+        let own = Set(Grounding.words(lower))
+        guard own.isDisjoint(with: timeWords), own.isDisjoint(with: ["am", "pm", "noon", "midnight", "o'clock"]) else {
+            throw reject("a time of its own")
         }
-        let marks = sentence.components(separatedBy: ProposalSentence.placeholder).count - 1
-        if let place = facts.place {
-            guard marks == 1 else { throw reject("place placeholder") }
-            sentence = sentence.replacingOccurrences(of: ProposalSentence.placeholder, with: place.rawValue)
-        } else if marks > 0 || sentence.contains("{") || sentence.contains("}") {
-            throw reject("a place that was not given")
+        func count(_ mark: String) -> Int { sentence.components(separatedBy: mark).count - 1 }
+        guard count(ProposalSentence.timePlaceholder) == (time == nil ? 0 : 1) else { throw reject("time placeholder") }
+        guard count(ProposalSentence.placeholder) == (facts.place == nil ? 0 : 1) else { throw reject("place placeholder") }
+        if let time {
+            // The phrase brings its own preposition ("tonight at 8:30 PM").
+            for lead in ["at ", "At ", "on ", "On "] { sentence = sentence.replacingOccurrences(of: lead + ProposalSentence.timePlaceholder, with: ProposalSentence.timePlaceholder) }
+            sentence = sentence.replacingOccurrences(of: ProposalSentence.timePlaceholder, with: time)
         }
+        if let place = facts.place { sentence = sentence.replacingOccurrences(of: ProposalSentence.placeholder, with: place.rawValue) }
+        // Anything left in braces was not a placeholder we gave.
+        guard !sentence.contains("{"), !sentence.contains("}") else { throw reject("an unknown placeholder") }
         return sentence
     }
 }

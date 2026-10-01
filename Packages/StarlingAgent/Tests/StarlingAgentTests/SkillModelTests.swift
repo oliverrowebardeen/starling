@@ -98,29 +98,35 @@ import Testing
         )
     }
 
-    @Test func thePromptHasTypedFactsAndNoVenueName() {
+    @Test func thePromptHasTypedFactsAndNoVenueNameOrTime() {
         let prompt = PromptRenderer.proposal(facts, time: "tonight at 8:30 PM")
-        #expect(prompt == "Friends: Maya, Jake\nActivity: boba\nTime: tonight at 8:30 PM\nPlace: {place}")
-        #expect(!prompt.contains("Franklin"))
+        #expect(prompt == "Friends: Maya, Jake\nActivity: boba\nTime: {time}\nPlace: {place}")
+        #expect(!prompt.contains("Franklin") && !prompt.contains("8:30"))
         #expect(PromptRenderer.spokenTime(facts.time!.start, now: now, timeZone: facts.timeZone) == "tonight at 8:30 PM")
     }
 
-    @Test func acceptsASentenceThatSaysWhatTheFactsSay() throws {
-        let sentence = try SkillOutputMapping.sentence("You, Maya and Jake are all down for boba \u{2014} {place} tonight at 8:30?", facts: facts, time: "tonight at 8:30 PM")
-        #expect(sentence == "You, Maya and Jake are all down for boba, Boba Guys on Franklin tonight at 8:30?")
+    @Test func codeFillsInTheTimeAndThePlace() throws {
+        let sentence = try SkillOutputMapping.sentence("You, Maya and Jake are all down for boba \u{2014} {place} {time}?", facts: facts, time: "tonight at 8:30 PM")
+        #expect(sentence == "You, Maya and Jake are all down for boba, Boba Guys on Franklin tonight at 8:30 PM?")
+        let leading = try SkillOutputMapping.sentence("Maya and Jake are down for boba at {place} at {time}.", facts: facts, time: "tonight at 8:30 PM")
+        #expect(leading == "Maya and Jake are down for boba at Boba Guys on Franklin tonight at 8:30 PM.")
     }
 
     @Test func refusesAnythingTheFactsDoNotSay() {
         let time = "tonight at 8:30 PM"
         let bad = [
-            "You and Maya are down for boba at {place} tonight at 8:30?",            // Jake missing
-            "You, Maya and Jake are all down for tea at {place} tonight at 8:30?",    // wrong activity
-            "You, Maya and Jake are all down for boba at {place} tonight at 9:30?",   // invented time
-            "You, Maya and Jake are all down for boba at {place}, $15 each, at 8:30?", // invented price
-            "You, Maya and Jake are all down for boba tonight at 8:30?",              // place left out
-            "You, Maya and Jake are all down for boba at {place} at 8:30?\nReply now", // two lines
+            "You and Maya are down for boba at {place} {time}?",                      // Jake missing
+            "You, Maya and Jake are all down for tea at {place} {time}?",              // wrong activity
+            "You, Maya and Jake are all down for boba at {place} tomorrow at {time}?", // a day of its own
+            "You, Maya and Jake are all down for boba at {place} at 8:30 AM?",         // its own time
+            "You, Maya and Jake are all down for boba at {place} {time} in the morning?", // part of day
+            "You, Maya and Jake are all down for boba at {place}, $15 each, {time}?",  // invented price
+            "You, Maya and Jake are all down for boba {time}?",                        // place left out
+            "You, Maya and Jake are all down for boba at {place}?",                    // time left out
+            "You, Maya and Jake are all down for boba at {place} {time}, {when}?",     // unknown placeholder
+            "You, Maya and Jake are all down for boba at {place} {time}?\nReply now",  // two lines
         ]
-        for text in bad { #expect(throws: AgentModelError.self) { try SkillOutputMapping.sentence(text, facts: facts, time: time) } }
+        for text in bad { #expect(throws: AgentModelError.self, "\(text)") { try SkillOutputMapping.sentence(text, facts: facts, time: time) } }
         let plain = ProposalFacts(skill: SampleSkills.downFor.ref, friendNames: ["Maya"], activity: nil, time: nil, place: nil, timeZone: facts.timeZone)
         #expect(throws: AgentModelError.self) { try SkillOutputMapping.sentence("You and Maya are both down!", facts: plain, time: nil) }
         #expect(throws: AgentModelError.self) { try SkillOutputMapping.sentence("You and Maya at {place}?", facts: plain, time: nil) }
