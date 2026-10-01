@@ -51,8 +51,8 @@ extension PickAPlaceService {
                 resumed = interaction.role == .initiator ? await resumeOrganizer(interaction) : await resumeInvite(interaction)
             }
             if !resumed {
-                emit(interaction.id, .failed)
                 try? await outbox.retire(conversation)
+                emit(interaction.id, .failed)
             }
         }
     }

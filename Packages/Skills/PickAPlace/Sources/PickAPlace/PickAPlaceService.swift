@@ -142,6 +142,8 @@ public actor PickAPlaceService: SkillService {
     /// Ended invites and organizers, oldest first, for pruning.
     var endedInvites: [ConversationID] = []
     var endedOrganizers: [ConversationID] = []
+    /// Conversations whose retirement failed this launch: closed anyway.
+    var unretired: Set<ConversationID> = []
     /// Yeses taken back, retried until the organizer acknowledges them.
     var pendingWithdrawals: [ConversationID: PendingWithdrawal] = [:]
     /// When each friend started requests on this phone, within the last hour.
@@ -253,7 +255,7 @@ public actor PickAPlaceService: SkillService {
             organizerReceived(envelope)
         } else if invites[conversation] != nil {
             inviteReceived(envelope)
-        } else if pendingWithdrawals[conversation] != nil {
+        } else if pendingWithdrawals[conversation] != nil || unretired.contains(conversation) {
             // Taken back, waiting for the organizer to hear it: nothing
             // reopens it.
             return
@@ -274,16 +276,27 @@ public actor PickAPlaceService: SkillService {
         // would let a friend make this phone send without limit.
     }
 
-    /// Ends `conversation` for good (ADR 0021): sends the goodbyes first,
-    /// since retiring cancels sends still in flight, then retires it
-    /// through the Outbox, which records it in the ledger. Nothing is sent
-    /// in it, and nothing reopens it, ever again.
-    func retire(_ conversation: ConversationID, after goodbyes: [(PeerID, MessageBody)] = [], chainedFrom: ConversationID? = nil) {
+    /// Ends `conversation` for good (ADR 0021) and only then says how it
+    /// ended. Sends the goodbyes first, since retiring cancels sends in
+    /// flight, then awaits `Outbox.retire(_:)`, so a crash can never leave a
+    /// reported ending in a conversation still open to a new request. If
+    /// the retirement fails, the ending is reported as `.failed`, never as
+    /// a clean one, and the conversation stays closed for this launch
+    /// (`unretired`). `event` nil reports nothing, as when the coordinator
+    /// has already applied the owner's pass.
+    func finish(_ conversation: ConversationID, interaction: InteractionID?, event: InteractionEvent?,
+                goodbyes: [(PeerID, MessageBody)] = [], chainedFrom: ConversationID? = nil) {
         spawn(conversation) { service in
             for (peer, body) in goodbyes {
                 await service.trySend(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
             }
-            try? await service.outbox.retire(conversation)
+            do {
+                try await service.outbox.retire(conversation)
+                if let interaction, let event { service.emit(interaction, event) }
+            } catch {
+                service.unretired.insert(conversation)
+                if let interaction, event != nil { service.emit(interaction, .failed) }
+            }
         }
     }
 

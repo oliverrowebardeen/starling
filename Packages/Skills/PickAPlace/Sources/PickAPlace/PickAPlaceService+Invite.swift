@@ -420,8 +420,7 @@ extension PickAPlaceService {
             // other: the organizer shortens the roster for everyone left.
             guard invite.finalRoster != nil else { return }
             invites[conversation]?.finalRoster = nil
-            emit(invite.id, .withdrawn)
-            startWithdrawal(invite)
+            startWithdrawal(invite, event: .withdrawn)
             return
         }
         guard invite.accepted || invite.accepting else {
@@ -432,31 +431,57 @@ extension PickAPlaceService {
         // roster with someone who left: the no is kept in the ledger and
         // retried until the organizer acknowledges it, across relaunches,
         // and only then is the conversation retired.
-        endInvite(conversation, event: event, reply: nil, retiring: false)
-        startWithdrawal(invite)
+        endInvite(conversation, event: nil, reply: nil, retiring: false)
+        startWithdrawal(invite, event: event)
     }
 
-    func startWithdrawal(_ invite: Invite) {
-        let withdrawal = PendingWithdrawal(conversation: invite.conversation, organizer: invite.organizer, proposal: invite.proposeID,
+    /// Takes a yes back. Retiring would stop the no being retried, so the
+    /// ending's durability comes from the ledger instead: the withdrawal is
+    /// recorded before `event` is reported, the record blocks reopening
+    /// across relaunches until the conversation is retired, and it is
+    /// cleared only once the retirement has succeeded. If it cannot be
+    /// recorded, the no goes out once and the conversation is retired
+    /// before the ending is reported (ADR 0021; lane E's review).
+    func startWithdrawal(_ invite: Invite, event: InteractionEvent) {
+        let conversation = invite.conversation
+        let withdrawal = PendingWithdrawal(conversation: conversation, organizer: invite.organizer, proposal: invite.proposeID,
                                            chainedFrom: invite.chainedFrom, since: clock.now(), interaction: invite.id)
-        spawn(invite.conversation) { try? await $0.ledger.recordWithdrawal(withdrawal) }
-        retryWithdrawal(withdrawal)
+        pendingWithdrawals[conversation] = withdrawal
+        spawn(conversation) { service in
+            do {
+                try await service.ledger.recordWithdrawal(withdrawal)
+                service.emit(invite.id, event)
+                service.retryWithdrawal(withdrawal)
+            } catch {
+                service.pendingWithdrawals[conversation] = nil
+                let no = MessageBody.reject(Rejection(proposal: withdrawal.proposal ?? MessageID(), reason: .noOverlap))
+                service.finish(conversation, interaction: invite.id, event: event, goodbyes: [(invite.organizer, no)],
+                               chainedFrom: invite.chainedFrom)
+            }
+        }
     }
 
     /// The organizer withdrew a confirmed plan: it is over on this phone too.
     func planCalledOff(_ conversation: ConversationID) {
         guard let invite = invites[conversation], invite.finalRoster != nil else { return }
         invites[conversation]?.finalRoster = nil
-        emit(invite.id, .withdrawn)
-        retire(conversation)
+        finish(conversation, interaction: invite.id, event: .withdrawn)
     }
 
     /// The organizer heard this phone take its yes back: nothing more is
     /// owed, so the conversation is retired.
     func withdrawalAcknowledged(_ conversation: ConversationID) {
-        pendingWithdrawals[conversation] = nil
-        spawn(conversation) { try? await $0.ledger.clearWithdrawal(conversation) }
-        retire(conversation)
+        guard pendingWithdrawals.removeValue(forKey: conversation) != nil else { return }
+        // The record is cleared only once the retirement is durable; if it
+        // fails, the record stays and the next launch retires it.
+        spawn(conversation) { service in
+            do {
+                try await service.outbox.retire(conversation)
+                try? await service.ledger.clearWithdrawal(conversation)
+            } catch {
+                service.unretired.insert(conversation)
+            }
+        }
     }
 
     /// Sends the no again, with backoff, until the organizer acknowledges it
@@ -488,12 +513,11 @@ extension PickAPlaceService {
         guard let invite = invites[conversation], !invite.isFinished else { return }
         invites[conversation]?.finished = true
         cancelTasks(conversation)
-        if invite.announced, let event { emit(invite.id, event) }
         if retiring {
             let goodbye: [(PeerID, MessageBody)] = reply.map {
                 [(invite.organizer, .reject(Rejection(proposal: invite.proposeID ?? invite.lastQuery ?? MessageID(), reason: $0)))]
             } ?? []
-            retire(conversation, after: goodbye, chainedFrom: invite.chainedFrom)
+            finish(conversation, interaction: invite.announced ? invite.id : nil, event: event, goodbyes: goodbye, chainedFrom: invite.chainedFrom)
         }
         remember(conversation)
     }

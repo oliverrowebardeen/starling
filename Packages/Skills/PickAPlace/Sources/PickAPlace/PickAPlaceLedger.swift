@@ -90,7 +90,6 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     mutating func prune(now: Date) {
         let hourAgo = now.addingTimeInterval(-3_600)
         admissions = admissions.mapValues { $0.filter { $0 > hourAgo } }.filter { !$0.value.isEmpty }
-        withdrawals = withdrawals.filter { now.timeIntervalSince($0.value.since) < Self.withdrawalLifetime }
         deadlines = deadlines.filter { now.timeIntervalSince($0.value.expiresAt) < Self.deadlinesLifetime }
     }
 }

@@ -272,6 +272,9 @@ final class Phone: Sendable {
     private let current: Mutex<PickAPlaceService>
     private let makeService: @Sendable () -> PickAPlaceService
     private let tasks = Mutex<[Task<Void, Never>]>([])
+    /// Each terminal event the service reported, and whether its
+    /// conversation was already retired when it did (ADR 0021).
+    let endings = Mutex<[(event: InteractionEvent, retired: Bool, withdrawalRecorded: Bool)]>([])
 
     /// The service now running; `restart()` replaces it.
     var service: PickAPlaceService { current.withLock { $0 } }
@@ -303,11 +306,10 @@ final class Phone: Sendable {
         let inbox = Inbox(localPeer: id)
         let inboxEvents = inbox.events(from: transport)
         let service = service
-        let coordinator = coordinator
         tasks.withLock {
             // The app sees only the protocol.
             $0.append(Task { [self] in for await event in inboxEvents { await (self.service as any SkillService).handle(event) } })
-            $0.append(Task { for await event in service.events { await coordinator.apply(event) } })
+            $0.append(Task { [self] in for await event in service.events { await self.deliver(event) } })
         }
         try await transport.start()
     }
@@ -318,9 +320,28 @@ final class Phone: Sendable {
         await service.shutdown()
         let fresh = makeService()
         let coordinator = coordinator
-        tasks.withLock { $0.append(Task { for await event in fresh.events { await coordinator.apply(event) } }) }
+        tasks.withLock { $0.append(Task { [self] in for await event in fresh.events { await self.deliver(event) } }) }
         await fresh.restore(Array(await coordinator.interactions.values))
         current.withLock { $0 = fresh }
+    }
+
+    static func isTerminal(_ event: InteractionEvent) -> Bool {
+        switch event {
+        case .ownerPassed, .withdrawn, .noAgreement, .expired, .failed, .unsupported, .blockedByPrivacy: true
+        default: false
+        }
+    }
+
+    /// Hands an event to the coordinator, noting first whether a terminal
+    /// one arrived only after its conversation was retired.
+    func deliver(_ event: SkillEvent) async {
+        if case .lifecycle(let id, let lifecycle) = event, Self.isTerminal(lifecycle),
+           let conversation = await coordinator.interactions[id]?.conversation {
+            let retired = (try? await conversations.isRetired(conversation)) ?? false
+            let recorded = ((try? await ledger.pendingWithdrawals()) ?? []).contains { $0.conversation == conversation }
+            endings.withLock { $0.append((lifecycle, retired, recorded)) }
+        }
+        await coordinator.apply(event)
     }
 
     func stop() async {

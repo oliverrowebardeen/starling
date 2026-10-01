@@ -115,9 +115,8 @@ extension PickAPlaceService {
         guard !friends.isEmpty else {
             organized[conversation]?.phase = .ended
             rememberOrganizer(conversation)
-            retire(conversation)
             // Negotiating, so the state machine ends it as unsupported.
-            emit(request.interaction, .unsupported)
+            finish(conversation, interaction: request.interaction, event: .unsupported)
             return
         }
         // The request's expiry is in the ledger before anything is sent, so
@@ -453,11 +452,10 @@ extension PickAPlaceService {
         organizer.phase = .ended
         organized[conversation] = organizer
         cancelTasks(conversation)
-        emit(organizer.id, .withdrawn)
         let goodbyes: [(PeerID, MessageBody)] = roster.filter { $0 != localPeer }.map {
             ($0, .reject(Rejection(proposal: organizer.lastHeard[$0] ?? MessageID(), reason: .noOverlap)))
         }
-        retire(conversation, after: goodbyes, chainedFrom: organizer.chainedFrom)
+        finish(conversation, interaction: organizer.id, event: .withdrawn, goodbyes: goodbyes, chainedFrom: organizer.chainedFrom)
     }
 
     /// Takes a friend out of a confirmed plan: everyone left gets the
@@ -473,8 +471,7 @@ extension PickAPlaceService {
             // Nobody else is left to meet.
             organizer.phase = .ended
             organized[conversation] = organizer
-            emit(organizer.id, .failed)
-            retire(conversation)
+            finish(conversation, interaction: organizer.id, event: .failed)
             return
         }
         var values = terms.values
@@ -505,11 +502,10 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         cancelTasks(conversation)
         rememberOrganizer(conversation)
-        if let event { emit(organizer.id, event) }
         let goodbyes: [(PeerID, MessageBody)] = tell.map {
             ($0, .reject(Rejection(proposal: organizer.lastHeard[$0] ?? MessageID(), reason: reason)))
         }
-        retire(conversation, after: goodbyes, chainedFrom: organizer.chainedFrom)
+        finish(conversation, interaction: organizer.id, event: event, goodbyes: goodbyes, chainedFrom: organizer.chainedFrom)
     }
 
     /// Keeps a bounded number of finished requests, so late messages are

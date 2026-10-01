@@ -94,4 +94,88 @@ struct RetirementTests {
         #expect(await maya.service.pendingWithdrawals.isEmpty)
         #expect(await oliver.service.organized[conversation]?.passed.contains(maya.id) == true)
     }
+
+    /// Lane E's review (ADR 0021): a terminal event is reported only once
+    /// its conversation is retired, so a crash in between can never leave a
+    /// reported ending open to a new request.
+    @Test func everyEndingIsReportedOnlyOnceRetired() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: quick)
+        let group = try await Group([oliver, maya, jake], hub: hub)
+        defer { Task { await group.stop() } }
+
+        // Jake passes on a card; Maya and Oliver plan, then Oliver calls it off.
+        let first = try await oliver.organize(Venues.all, with: [maya, jake])
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: first.conversation)) }
+        try await jake.pass(in: first.conversation)
+        for phone in [maya, oliver] { try await phone.accept(in: first.conversation) }
+        #expect(await oliver.reaches(.planned, in: first.conversation, within: 3))
+        await oliver.service.withdraw(first.id)
+        #expect(await maya.reaches(.ended(.withdrawn), in: first.conversation))
+
+        // Oliver withdraws a request still being asked about.
+        let second = try await oliver.organize(Venues.all, with: [maya, jake])
+        #expect(await eventually { await maya.interaction(second.conversation) != nil })
+        await oliver.service.withdraw(second.id)
+        #expect(await maya.reaches(.ended(.nobodyUp), in: second.conversation))
+
+        // A request that expires.
+        let third = try await oliver.organize(Venues.all, with: [maya], expiresIn: 0.3)
+        #expect(await oliver.reaches(.ended(.expired), in: third.conversation))
+        #expect(await maya.reaches(.ended(.expired), in: third.conversation))
+
+        for phone in [oliver, maya, jake] {
+            let endings = phone.endings.withLock { $0 }
+            #expect(!endings.isEmpty, "\(phone.name)")
+            #expect(endings.allSatisfy { $0.retired }, "\(phone.name): \(endings.map(\.event))")
+        }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    /// A yes taken back keeps its conversation open for the retried no; its
+    /// ending is reported only once the withdrawal is durably recorded.
+    @Test func aYesTakenBackIsReportedOnlyOnceRecorded() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        let group = try await Group([oliver, maya], hub: hub)
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        await maya.transport.lose(.max) { $0.body.kind == .reject }
+        try await maya.pass(in: conversation)
+        #expect(await maya.reaches(.ended(.withdrawn), in: conversation))
+        let ending = try #require(maya.endings.withLock { $0 }.first { $0.event == .withdrawn })
+        #expect(ending.withdrawalRecorded)
+        #expect(!ending.retired)
+    }
+
+    @Test(arguments: [true, false])
+    func aRetirementThatFailsIsReportedAsFailed(organizerFails: Bool) async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        let group = try await Group([oliver, maya], hub: hub)
+        defer { Task { await group.stop() } }
+        let request = try await oliver.organize(Venues.all, with: [maya])
+        for phone in [oliver, maya] { #expect(await phone.reaches(.proposed, in: request.conversation)) }
+
+        let phone = organizerFails ? oliver : maya
+        await phone.conversations.failAll()
+        if organizerFails {
+            await oliver.service.withdraw(request.id)
+        } else {
+            try await maya.pass(in: request.conversation)
+        }
+        // Not a clean ending: failed, and closed for this launch.
+        #expect(await phone.reaches(.ended(.failed), in: request.conversation))
+        #expect(await phone.service.unretired.contains(request.conversation))
+    }
 }
+
