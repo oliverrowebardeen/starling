@@ -237,7 +237,11 @@ import Testing
     @Test func theOpeningOfferSkipsASlotThatStartedDuringTheExchange() async throws {
         let time = MovableClock()
         let consent = GatedConsentProvider()
-        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent, clock: time.clock)
+        // A consent wait is bounded by its step's deadline (ADR 0120, item
+        // 19). 200 ms retries give the owner a 1 s step, well past the pause
+        // below; the default 20 ms test retries would give only 100 ms.
+        let slow = DownConfiguration(retryInterval: .milliseconds(200), maxAttempts: 5)
+        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent, clock: time.clock, configuration: slow)
         let (starter, answerer) = Self.roles(world)
         try await world.start()
         try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
@@ -245,6 +249,9 @@ import Testing
         try await eventually("the activity query waits for consent") { await consent.pending == 1 }
 
         time.set(T.at(19).addingTimeInterval(60))
+        // The owner takes a moment over the sheet, as a loaded machine's
+        // scheduler also can.
+        try await Task.sleep(for: .milliseconds(150))
         await consent.answerAll(.approved)
         try await eventually("both matched") { await matchCounts(starter, answerer) == [1, 1] }
         #expect(await starter.log.matches.first?.terms[.time] == .slots([T.slot(19.5, 21.5)]))
