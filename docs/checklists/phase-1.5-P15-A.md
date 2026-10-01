@@ -1,6 +1,6 @@
 # Device checklist: Phase 1.5 lane A (Shell and IA)
 
-Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both first so first-run behavior shows. Until lanes B to D merge, the skills are scripted in Debug builds: a request gets a proposal after about two seconds, made from your own chips (You › Developer says so).
+Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both first so first-run behavior shows. Find a time (lane C) and Pick a place (lane D) are the real skills; their own checklists (`phase-1.5-P15-C.md`, `phase-1.5-P15-D.md`) cover them in depth, and the steps below cover how the app wires them. Until lane B merges, Down for… is scripted in Debug builds: a request gets a proposal after about two seconds, made from your own chips (You › Developer says so).
 
 ## First launch, nothing asked
 
@@ -35,29 +35,35 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 
 ## Chaining and permissions just in time
 
-20. Phone A: from the plan, Somewhere else? Expect: New on Pick a place, Maya picked, a line "This step also shares Diet and may ask for your location."
-21. Phone A: tap Suggest places near me. Expect: Starling's own sheet first ("Pick a place can suggest places near you", three rows, one Continue button, no Cancel); Continue. Expect: no real system alert in this Debug build (simulated, see You › Developer); "Nearby" appears as a chip.
-22. Phone A: New › tile Find a time, type "find a time next week", start it. Expect: Starling's calendar sheet ("Find a time works best with your calendar", Your agent reads / Never leaves your phone / "Maya sees: Only a few times you're free", one Continue). In You › Developer turn on "System alerts say Don't Allow" first to check the fallback: Expect "No problem, your agent will ask you instead." and the request still goes out; You shows Find a time set to Just ask me.
+20. Phone A: from the plan, Somewhere else? Expect: New on Pick a place, only the plan's people asked, a line naming what this step also shares.
+21. Phone A: turn on Near me, tap Find places. Expect: Starling's own location sheet first (lane D's title and three rows, one Continue button, no Cancel); Continue. Expect: the real system location alert with lane D's purpose string. Allow. Expect: a few places listed with switches; pick two and send.
+22. Phone B: answer with I'm in on a place; Phone A: I'm in. Expect: the parent plan's card and plan detail now show that place, and "How this came together" lists Pick a place under the plan.
+23. Phone A: New › Find a time, type "find a time tomorrow", start it. Expect: Starling's calendar sheet ("Find a time works best with your calendar", Your agent reads / Never leaves your phone / "Maya sees: Only a few times you're free", one Continue), no Ask quietly choice. Continue. Expect: the real system calendar alert, saying "Starling checks when you're busy so friends' agents can find a time without asking you. Event details stay on your iPhone." Tap Don't Allow. Expect: "No problem, your agent will ask you instead.", the request still goes out, and You shows Find a time set to Just ask me.
+24. Phone B (calendar never asked): receive step 23's request. Expect: no Starling sheet and no system calendar alert (a friend's request never asks for a permission), and "Phone A's agent asked when you're free" under Needs you.
 
 ## Privacy topics and skill switches
 
-23. Phone A: You › Privacy › Place: Never. Then New › Pick a place tile. Expect: the tile reads "Pick a place needs Place. You set Place to Never." and cannot start.
-24. Phone A: You › Skills › Find a time off. Expect: its tile reads "Turned off in You". Phone B (Friends › Phone A) after the next hello: Find a time "Doesn't do this yet".
+25. Phone A: You › Privacy › Place: Never. Then New › Pick a place tile. Expect: the tile reads "Pick a place needs Place. You set Place to Never." and cannot start.
+26. Phone A: You › Skills › Find a time off. Expect: its tile reads "Turned off in You". Phone B (Friends › Phone A) after the next hello: Find a time "Doesn't do this yet". Phone B: start Find a time with Phone A anyway (from an older card). Expect: nothing at all on Phone A.
 
 ## A friend's side (Developer)
 
-25. Phone A: You › Developer › "Maya's agent asks when you're free". Expect: Needs you "Maya's agent asked when you're free" with Review; Review shows three times; pick one, Send my answer. Expect: the card leaves Needs you.
-26. Phone A: Developer › "Maya is down for tacos too". Expect: a Needs you card "You and Maya are both down for tacos"; tap Not tonight. Expect: it leaves Home; Friends › Maya › History shows "You passed".
+27. Phone A: Developer › "Maya is down for tacos too". Expect: a Needs you card "You and Maya are both down for tacos"; tap Not tonight. Expect: it leaves Home; Friends › Maya › History shows "You passed".
+
+## What left your phone
+
+28. Phone A: open a plan made with Find a time, then What left your phone. Expect: Shared lists the time first, then any other topic, each once; Kept on your phone lists Calendar details.
+29. Phone A: start Down for…, and while the consent sheet is up, swipe Starling away; reopen and open that request's plan detail once it is a plan. Expect: no claim that something stayed on the phone it cannot confirm (a line saying it can't confirm everything, or no Kept list).
 
 ## Core v2.1: modes, audience, topics
 
-28. Phone A: New, type "boba tonight". Expect: an Ask quietly / Invite choice under Ask, Ask quietly selected, the line "Friends see nothing unless they're up for it too.", and under the button "If nobody's up for it, nobody sees you asked." Switch to Invite. Expect: "The friends you ask see this as an invite."
-29. Phone A: Friends › New group "Climbing" with Maya, Save. New › Ask menu. Expect: All friends, Close friends, Climbing, Everyone except…, Pick friends. Choose Everyone except…, tap Maya. Expect: Maya dimmed, a chip "Not Maya", and the line that nobody you leave out can tell.
-30. Phone A: Friends › Maya › When you ask friends: Only ask quietly. New › All friends with Invite. Expect: Maya dimmed (not asked); switch to Ask quietly: Maya asked again.
-31. Phone B (Maya), during steps 29 and 30: Expect nothing at all on Phone B for any request it was left out of: no notification, no card, nothing in Home.
-32. Phone A: You › Privacy. Expect: Place, Exact location, Budget (Never), Diet, People, Photos, Interests (Share), Calendar details (Never), each with a line explaining the selected choice; Calendar details set to Share says Share and Ask me aren't used by any skill yet.
-33. Phone A: quit Starling while a consent sheet is up, then reopen. Expect: no sheet, and the request back in progress, not ended.
+30. Phone A: New, type "boba tonight". Expect: an Ask quietly / Invite choice under Ask, Ask quietly selected, the line "Friends see nothing unless they're up for it too.", and under the button "If nobody's up for it, nobody sees you asked." Switch to Invite. Expect: "The friends you ask see this as an invite."
+31. Phone A: Friends › New group "Climbing" with Maya, Save. New › Ask menu. Expect: All friends, Close friends, Climbing, Everyone except…, Pick friends. Choose Everyone except…, tap Maya. Expect: Maya dimmed, a chip "Not Maya", and the line that nobody you leave out can tell.
+32. Phone A: Friends › Maya › When you ask friends: Only ask quietly. New › All friends with Invite. Expect: Maya dimmed (not asked); switch to Ask quietly: Maya asked again.
+33. Phone B (Maya), during steps 31 and 32: Expect nothing at all on Phone B for any request it was left out of: no notification, no card, nothing in Home.
+34. Phone A: You › Privacy. Expect: Place, Exact location, Budget (Never), Diet, People, Photos, Interests (Share), Calendar details (Never), each with a line explaining the selected choice; Calendar details set to Share says Share and Ask me aren't used by any skill yet.
+35. Phone A: quit Starling while a consent sheet is up, then reopen. Expect: no sheet, and the request back in progress, not ended.
 
 ## Release build
 
-27. Archive a Release build (or run the Release scheme). Expect: You has no Developer section, and nothing anywhere says "test build"; New's tiles say "Not in this build yet" until the skill lanes merge.
+36. Archive a Release build (or run the Release scheme). Expect: You has no Developer section, and nothing anywhere says "test build"; New's Down for… tile says "Not in this build yet" until lane B merges, while Find a time and Pick a place start. No Swap photos anywhere (its flag is off).
