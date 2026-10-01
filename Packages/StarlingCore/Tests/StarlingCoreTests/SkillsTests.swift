@@ -1,5 +1,6 @@
 import Foundation
 import StarlingCore
+import StarlingFakes
 import Testing
 
 @Suite struct SkillsTests {
@@ -66,6 +67,25 @@ import Testing
         #expect(pickAPlace.blockingTopics(in: settings).isEmpty)
         try settings.set(.never, for: .place)
         #expect(pickAPlace.blockingTopics(in: settings) == [.place])
+    }
+
+    /// ADR 0020: only a mutual reveal skill can ask quietly.
+    @Test func sendModesAreDeclaredAndAskQuietlyNeedsMutualReveal() throws {
+        func make(_ block: BuildingBlock, _ modes: [SendMode]) throws -> SkillDescriptor {
+            try SkillDescriptor(ref: SkillRef(.downFor, SkillVersion(1)), wording: Self.wording, buildingBlock: block,
+                                topicsUsed: [.time, .activity], topicsRequired: [.time, .activity], produces: [.plan],
+                                intent: IntentSchema(slots: [IntentSlot(.activity, required: true, hint: "what")]), sendModes: modes)
+        }
+        #expect(try make(.mutualReveal, [.askQuietly, .invite]).defaultSendMode == .askQuietly)
+        #expect(try make(.privateQuery, [.invite]).sendModes == [.invite])
+        #expect(throws: ValidationError.self) { try make(.privateQuery, [.askQuietly, .invite]) }
+        #expect(throws: ValidationError.self) { try make(.mutualReveal, []) }
+        #expect(throws: ValidationError.self) { try make(.mutualReveal, [.invite, .invite]) }
+        // Every sample skill but Down for only invites.
+        for skill in SampleSkills.all {
+            #expect(skill.sendModes == (skill.id == .downFor ? [.askQuietly, .invite] : [.invite]))
+        }
+        #expect(try JSONEncoder().encode(SendMode.askQuietly) == Data(#""ask_quietly""#.utf8))
     }
 
     @Test func chainsFollowArtifactsAndExposeOnlyWhatIsNew() throws {

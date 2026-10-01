@@ -21,12 +21,15 @@ public struct SkillIntent: Hashable, Sendable {
     /// rules by the app before the service sees them (ADR 0141).
     public let rules: OwnerRules
     public let audience: Audience
+    /// Ask quietly or Invite, one of the skill's `sendModes` (ADR 0020).
+    public let mode: SendMode
     public let expiresAt: Timestamp
 
-    public init(skill: SkillRef, rules: OwnerRules, audience: Audience, expiresAt: Timestamp) {
+    public init(skill: SkillRef, rules: OwnerRules, audience: Audience, mode: SendMode, expiresAt: Timestamp) {
         self.skill = skill
         self.rules = rules
         self.audience = audience
+        self.mode = mode
         self.expiresAt = expiresAt
     }
 }
@@ -145,13 +148,17 @@ public protocol SkillService: Sendable {
 public struct ParsedIntent: Hashable, Sendable {
     public let constraints: ConstraintSet
     public let audience: Audience?
+    /// A mode the owner's words asked for ("quietly"), shown as a chip the
+    /// owner can change. Nil leaves the skill's default.
+    public let mode: SendMode?
     public let expiresAt: Timestamp?
     /// Names the owner typed ("with Priya"), resolved to friends on the phone.
     public let mentionedNames: [String]
 
-    public init(constraints: ConstraintSet, audience: Audience? = nil, expiresAt: Timestamp? = nil, mentionedNames: [String] = []) {
+    public init(constraints: ConstraintSet, audience: Audience? = nil, mode: SendMode? = nil, expiresAt: Timestamp? = nil, mentionedNames: [String] = []) {
         self.constraints = constraints
         self.audience = audience
+        self.mode = mode
         self.expiresAt = expiresAt
         self.mentionedNames = mentionedNames
     }

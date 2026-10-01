@@ -24,7 +24,8 @@ public enum SampleSkills {
             IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
             IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
             IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-        ])
+        ]),
+        sendModes: [.askQuietly, .invite]
     )
 
     public static let findATime = try! SkillDescriptor(

@@ -10,7 +10,7 @@ import Testing
     }
 
     @Test func aRequestCarriesTheChainForEveryEnvelope() throws {
-        let intent = SkillIntent(skill: SkillRef(.pickAPlace, SkillVersion(1)), rules: .empty, audience: .picked([Fixtures.bob]),
+        let intent = SkillIntent(skill: SkillRef(.pickAPlace, SkillVersion(1)), rules: .empty, audience: .picked([Fixtures.bob]), mode: .invite,
                                  expiresAt: Timestamp(Fixtures.now.addingTimeInterval(3600)))
         let parent = ConversationID()
         let request = SkillRequest(interaction: InteractionID(), conversation: ConversationID(), intent: intent,
