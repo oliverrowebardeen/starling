@@ -73,6 +73,29 @@ import Testing
         #expect(timeline.whatLeft.shared.map(\.topic) == [.time, .activity, .place])
     }
 
+    @Test func anUnconfirmedLinkOfAnUnknownVersionWithholdsEveryKeptClaim() throws {
+        let (plan, place, _) = try boba()
+        // This build's Pick a place is 2.0 and declares fewer topics: no
+        // budget. The link ran 1.0, which could have sent the plan's budget.
+        let fewer = try SkillDescriptor(
+            ref: SkillRef(.pickAPlace, SkillVersion(2)), wording: SampleSkills.pickAPlace.wording, buildingBlock: .privateAggregation,
+            topicsUsed: [.place], topicsRequired: [.place], accepts: [.plan], produces: [.placeChoice],
+            intent: try IntentSchema(slots: [IntentSlot(.place, required: false, hint: "the area")])
+        )
+        for registry in [try SkillRegistry([SampleSkills.downFor, fewer]), try SkillRegistry([SampleSkills.downFor])] {
+            let whatLeft = WhatLeftYourPhone(interactions: [plan, place], registry: registry, unconfirmed: [place.conversation])
+            #expect(whatLeft.unconfirmed == [place.id])
+            // Not "budget stayed on your phone": nothing is claimed kept.
+            #expect(whatLeft.kept.isEmpty)
+        }
+        // A confirmed link of an unknown version claims nothing of its own,
+        // and its complete log still shows what it shared.
+        let whatLeft = WhatLeftYourPhone(interactions: [plan, place], registry: try SkillRegistry([SampleSkills.downFor, fewer]))
+        #expect(whatLeft.unconfirmed.isEmpty)
+        #expect(whatLeft.kept == [.topic(.budget)])
+        #expect(whatLeft.shared.map(\.topic) == [.time, .activity, .place])
+    }
+
     @Test func thePlansWhatLeftIsExactlyItsEgressLogs() throws {
         let (plan, place, photos) = try boba()
         let whatLeft = try #require(PlanTimeline(for: plan.id, in: [plan, place, photos], registry: registry)).whatLeft

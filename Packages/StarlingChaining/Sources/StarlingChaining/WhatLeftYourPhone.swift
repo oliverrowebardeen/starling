@@ -10,7 +10,9 @@ import StarlingCore
 /// "Kept" is a claim that something never left, so it is made only from
 /// interactions whose log is known to be complete. For any other, listed in
 /// `unconfirmed`, its topics and permissions are left out of `kept` and the
-/// app says it could not confirm everything that left during it.
+/// app says it could not confirm everything that left during it. If such an
+/// interaction ran a skill version this build does not register, what it
+/// could have sent is unknown, and `kept` is empty.
 public struct WhatLeftYourPhone: Hashable, Sendable {
     /// One topic that left the phone.
     public struct Shared: Hashable, Sendable {
@@ -73,15 +75,28 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
 
         let doubtful = interactions.filter { unconfirmed.contains($0.conversation) || !$0.egressIsKnown }
         let doubtfulIDs = Set(doubtful.map(\.id))
-        func exposure(_ items: [Interaction]) -> SkillExposure {
-            items.compactMap { registry.descriptor(for: $0.skill.id)?.exposure }.reduce(SkillExposure.none) { $0.union($1) }
+        // What a skill exposes, only for the exact version that ran: another
+        // registered version may declare different topics.
+        func exposure(of item: Interaction) -> SkillExposure? {
+            guard let descriptor = registry.descriptor(for: item.skill.id), descriptor.ref == item.skill else { return nil }
+            return descriptor.exposure
         }
         // What the confirmed interactions used, less anything an unconfirmed
-        // one could have sent.
-        let vouched = exposure(interactions.filter { !doubtfulIDs.contains($0.id) })
-        let unknown = exposure(doubtful)
-        let used = vouched.topics.subtracting(unknown.topics)
-        let permissions = vouched.permissions.subtracting(unknown.permissions)
+        // one could have sent. A confirmed one whose version is unknown
+        // claims nothing kept of its own. An unconfirmed one whose version is
+        // unknown could have sent anything, so nothing is claimed kept at all.
+        let vouched = interactions.filter { !doubtfulIDs.contains($0.id) }.compactMap(exposure(of:)).reduce(SkillExposure.none) { $0.union($1) }
+        let unknownExposures = doubtful.map(exposure(of:))
+        let used: Set<PrivacyTopic>
+        let permissions: Set<SystemPermission>
+        if unknownExposures.contains(where: { $0 == nil }) {
+            used = []
+            permissions = []
+        } else {
+            let unknown = unknownExposures.compactMap { $0 }.reduce(SkillExposure.none) { $0.union($1) }
+            used = vouched.topics.subtracting(unknown.topics)
+            permissions = vouched.permissions.subtracting(unknown.permissions)
+        }
 
         shared = PrivacyTopic.allCases.compactMap { topic in
             counts[topic].map { Shared(topic: topic, values: values[topic] ?? [], recipients: recipients[topic] ?? [], sends: $0) }
