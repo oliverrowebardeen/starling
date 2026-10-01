@@ -1,6 +1,6 @@
 # Phase 1 device checklist: lane H (App features)
 
-Build: Debug, from `xcodegen generate --spec App/project.yml`, on one iPhone with Apple Intelligence on. Lanes E1, E2, and F are not merged yet, so Down, pairing, and friends run on fakes; Developer > Fakes stands in for the second phone. Delete Starling first so onboarding runs.
+Build: Debug, from `xcodegen generate --spec App/project.yml`, on one iPhone with Apple Intelligence on. Lane G's policy, consent sheet content, and audit log are real. Lanes E1 and F are not wired yet, so Down, the Starling pairing ceremony, and friends run on fakes; Developer > Fakes stands in for the second phone. Delete Starling first so onboarding runs.
 
 ## Onboarding
 
@@ -27,18 +27,20 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, on one iPhone wit
 12. Developer > Fakes: tap "Add a sample friend" twice.
 13. Down? tab: the status mark at the top shows two shapes apart. Type "free tonight, want food, keep my location to myself", tap "Check with friends". Expect: a review with Time and Activity rows, and a "What may leave your phone" section listing Time, Activity, Budget, Place, Diet, and Group size, each with a "Never share" toggle. If the rules editor saved "never share where I am" in step 4, Place shows on and cannot be turned off. Otherwise turn on "Never share place".
 14. Pick Maybe and "1 hour", tap "I'm a maybe". Expect: "You're a maybe until" a time one hour from now, and the mark starts searching (your shape pulses).
-15. Developer > Fakes: tap "Send a sample through Outbox". Expect: "Send to <friend>?" listing your free times, food, and $15.00, a note that this build does not hide your free times, and "Says its model runs on their iPhone". Swipe down on the sheet. Expect: it does not close. Wait 2 minutes without answering. Expect: the sheet closes by itself and "It wasn't approved, so nothing left your phone."
+15. Developer > Fakes: tap "Send a sample through Outbox". Expect: "Send to <friend>?" with rows Availability (a UTC time range, "end excluded"), Activity "boba run", and Budget "12.00 USD"; "The recipient's model location is unknown"; and notes that no agent card has been received and that each message also sends identifiers and protocol metadata. Swipe down on the sheet. Expect: it does not close. Wait 2 minutes without answering. Expect: the sheet closes by itself and "It wasn't approved, so nothing left your phone."
 16. Tap "Send a sample through Outbox" again. Expect: the sheet again (a timeout is not remembered). Tap "Don't send". Expect: the same "It wasn't approved" message.
 17. Tap it again. Expect: the sheet again (a decline is not remembered). Tap Send. Expect: "Sent to <friend> (recorded, not delivered)." Tap it once more. Expect: no sheet, "Sent to <friend>" within 1 second.
-18. Tap "Send, with rules changing during consent". Expect: a sheet showing $18.00. Tap Send. Expect: "Your sharing rules changed while you were deciding, so nothing was sent."
-19. Tap "Simulate: message from a friend". Expect: "The Down service has received N Inbox events" with N at least 1.
-20. Tap "Simulate: checking with friends". Expect: no notification; the Down? tab says "Checking with 2 friends."
-21. Tap "Simulate: match (a maybe)". Expect: a banner within 2 seconds, even with Starling open: "You and <friend> are both interested" with the plan. The Down? tab lists the match, and the mark moves together and rests as the logo.
-22. Tap "Simulate: match (both down)". Expect: a banner "are both down". Swipe down for Notification Center. Expect: one Starling notification for that friend, not two.
-23. Tap "Simulate: Down? expired". Expect: no notification; the Down? tab returns to "What are you up for?" with "Your Down? reached its end time." The mark returns to two shapes apart (after a match there is no "no match" drift).
-24. Start a Down? again, then tap "Simulate: Down? failed". Expect: the mark drifts apart and the other shape fades, with no sound or message about a friend, then rests apart within 3 seconds.
-25. Start a Down? again, then tap Withdraw. Expect: back to the start with no notification, and the mark goes straight to apart.
+18. Tap "Send, with the policy changing during consent". Expect: a sheet showing Budget "18.00 USD". Tap Send. Expect: "Your sharing rules changed while you were deciding, so nothing was sent."
+19. Developer > Audit log. Expect: exactly two "propose to <friend>" entries (steps 17), each listing Activity: keywords, Budget: amount, Time: slots, and no values. The declined, timed-out, and refused sends are not listed.
+20. Rules tab > Edit rules: turn on "Never share budget", Save. Developer > Fakes: tap "Send a sample through Outbox". Expect: no sheet, "Your sharing rules don't allow this, so nothing was sent." Turn "Never share budget" off again and save.
+21. Tap "Simulate: message from a friend". Expect: "The Down service has received N Inbox events" with N at least 1.
+22. Tap "Simulate: checking with friends". Expect: no notification; the Down? tab says "Checking with 2 friends."
+23. Tap "Simulate: match (a maybe)". Expect: a banner within 2 seconds, even with Starling open: "You and <friend> are both interested" with the plan. The Down? tab lists the match, and the mark moves together and rests as the logo.
+24. Tap "Simulate: match (both down)". Expect: a banner "are both down". Swipe down for Notification Center. Expect: one Starling notification for that friend, not two.
+25. Tap "Simulate: Down? expired". Expect: no notification; the Down? tab returns to "What are you up for?" with "Your Down? reached its end time." The mark returns to two shapes apart (after a match there is no "no match" drift).
+26. Start a Down? again, then tap "Simulate: Down? failed". Expect: the mark drifts apart and the other shape fades, with no sound or message about a friend, then rests apart within 3 seconds.
+27. Start a Down? again, then tap Withdraw. Expect: back to the start with no notification, and the mark goes straight to apart.
 
 ## Release build
 
-26. In Xcode, Product > Scheme > Edit Scheme > Run > Build Configuration: Release. Run. Expect: Down? and Friends say "isn't in this build yet", Developer shows only Model Bench and "Release (no fakes)". Set it back to Debug.
+28. In Xcode, Product > Scheme > Edit Scheme > Run > Build Configuration: Release. Run. Expect: Down? and Friends say "isn't in this build yet", Developer shows only Model Bench and "Release (no fakes)". Set it back to Debug.
