@@ -98,6 +98,9 @@ struct Invited: Hashable, Sendable, Codable {
     let expiresAt: Timestamp
     /// The times the starter offered.
     let candidates: [TimeSlot]
+    /// The starter's query as it arrived, passed to the policy with the
+    /// answer (`OutboundContext.answering`, ADR 0019).
+    var query: Query?
     var lastQuery: MessageID
     var phase: Phase
     /// The owner's standing limits when the request arrived ("no plans

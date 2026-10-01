@@ -21,7 +21,7 @@ extension FindATimeService {
         // Interactions that ended recently (ADR 0011, amendment 15) become
         // tombstones first, so a late retry for one is never opened again.
         for ended in mine where ended.state.isFinal {
-            remember(ended.conversation, asker: ended.role == .invitee ? ended.participants.first : nil)
+            remember(ended.conversation, asker: ended.role == .invitee ? ended.participants.first : nil, interaction: ended.id)
         }
 
         var live: Set<InteractionID> = []
@@ -161,7 +161,7 @@ extension FindATimeService {
         var copy = interaction
         emit(.failed, to: &copy)
         removeCheckpoint(interaction.id)
-        remember(interaction.conversation, asker: interaction.role == .invitee ? interaction.participants.first : nil)
+        remember(interaction.conversation, asker: interaction.role == .invitee ? interaction.participants.first : nil, interaction: interaction.id)
     }
 
     /// The service's copy never sees consent; a sheet open at the restart

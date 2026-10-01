@@ -229,13 +229,13 @@ final class Phone: Sendable {
 
     init(name: String, hub: LoopbackHub, calendar: FakeCalendarStore, use: CalendarUse = .useMyCalendar,
          policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
-         standing: ConstraintSet = .empty, clock: TestClock) {
+         standing: ConstraintSet = .empty, policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil, clock: TestClock) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
         self.calendar = calendar
         self.use = Mutex(use)
-        self.policy = policy
+        self.policy = policyWithFriends?(peers) ?? policy
         self.consent = consent
         self.clock = clock
         self.standing = standing
@@ -400,9 +400,11 @@ final class World: Sendable {
     func phone(
         _ name: String, calendar: FakeCalendarStore = FakeCalendarStore(), use: CalendarUse = .useMyCalendar,
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
-        standing: ConstraintSet = .empty
+        standing: ConstraintSet = .empty,
+        policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil
     ) -> Phone {
-        let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent, standing: standing, clock: clock)
+        let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent,
+                          standing: standing, policyWithFriends: policyWithFriends, clock: clock)
         phones.withLock { $0.append(phone) }
         return phone
     }

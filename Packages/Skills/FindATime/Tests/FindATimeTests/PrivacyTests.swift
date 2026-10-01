@@ -102,6 +102,61 @@ struct PrivacyTests {
         await world.stop()
     }
 
+    /// ADR 0019, decision 4: an answer that only says which of the
+    /// friend's own times work carries no value of the owner's, so it goes
+    /// without a sheet whatever the time topic is set to. Ben sets time to
+    /// Ask me; his answer still leaves without asking, while his "That
+    /// works" (which repeats the terms) gets a sheet.
+    @Test func aYesOrNoAnswerNeedsNoSheet() async throws {
+        var settings = PrivacySettings()
+        try settings.set(.askMe, for: .time)
+        let rules = OwnerRules(constraints: .empty, disclosure: settings.disclosureRules)
+        let world = World()
+        let a = world.phone("Ana")
+        let sheet = HeldConsent()
+        let b = world.phone("Ben", calendar: FakeCalendarStore(events: Canary.events()), consent: sheet,
+                            policyWithFriends: { DeterministicPolicyEngine(ownerRules: rules, pairedPeers: $0) })
+        try await world.start()
+
+        try await a.findATime(with: [b])
+        let (bCard, _) = try await b.waitForProposal()
+        #expect(await sheet.asked == 0)
+        #expect(settings.choice(for: .calendarDetails) == .never)
+        try await b.accept(bCard)
+        try await eventually("Ben's sheet for his acceptance") { await sheet.asked == 1 }
+        await world.stop()
+    }
+
+    /// Every send names the interaction it belongs to on this phone (Core
+    /// v2.1), so the consent sheet suspends the right one.
+    @Test func everySendNamesItsInteraction() async throws {
+        let world = World()
+        let policyA = FixedPolicyEngine(.allow)
+        let policyB = FixedPolicyEngine(.allow)
+        let a = world.phone("Ana", policy: policyA)
+        let b = world.phone("Ben", policy: policyB)
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        _ = try await a.waitForProposal()
+        let (bCard, _) = try await b.waitForProposal()
+        try await a.accept(started)
+        try await b.accept(bCard)
+        try await a.waitForState(started, .planned)
+        try await b.waitForState(bCard, .planned)
+
+        for (policy, id) in [(policyA, started), (policyB, bCard)] {
+            let sends = await policy.evaluated.filter { $0.envelope.skill != nil }
+            #expect(!sends.isEmpty)
+            #expect(sends.allSatisfy { $0.context.interaction == id && $0.envelope.mode == .invite })
+        }
+        let answers = await policyB.evaluated.filter { $0.envelope.body.kind == .answer }
+        #expect(answers.allSatisfy { message in
+            guard case .answer(let answer) = message.envelope.body, let query = message.context.answering else { return false }
+            return query.isAnsweredYesOrNo(by: answer)
+        })
+        await world.stop()
+    }
+
     static func slots(in body: MessageBody) -> [TimeSlot] {
         let values: [IssueValue] = switch body {
         case .query(let query): [query.candidates]

@@ -1,4 +1,5 @@
 import Foundation
+import StarlingCore
 
 /// Wall time and timers, injectable so tests control expiry and run
 /// retries in milliseconds.
@@ -25,8 +26,9 @@ public struct FindATimeConfiguration: Hashable, Sendable {
     /// The range searched when the owner gave none, and the longest allowed.
     public var defaultRangeDays: Int
     public var maxRangeDays: Int
-    /// Most times one query offers, and most an invitee answers about.
-    /// Bounds what a dishonest friend can probe with one request (ADR 0221).
+    /// Most times one query offers, and most an invitee answers about, at
+    /// most `ProtocolLimits.maxCandidatesAnsweredPerIssue`. Bounds what a
+    /// dishonest friend can probe with one request (ADRs 0019, 0221).
     public var maxCandidates: Int
     /// Longest candidate an invitee accepts in a query.
     public var maxCandidateMinutes: Int
@@ -66,7 +68,9 @@ public struct FindATimeConfiguration: Hashable, Sendable {
         maxOpenInvitationsPerFriend: Int = 4,
         maxRevisions: UInt32 = 8
     ) {
-        precondition(maxAttempts > 0 && maxCandidates > 0 && maxCandidates <= 64)
+        // One query per conversation, so this also bounds the candidates an
+        // invitee answers yes or no about (ADR 0019, decision 6).
+        precondition(maxAttempts > 0 && maxCandidates > 0 && maxCandidates <= ProtocolLimits.maxCandidatesAnsweredPerIssue)
         precondition(maxRevisions > 0 && maxRevisions <= 16, "a proposal round must stay below ProtocolLimits.maxNegotiationRounds")
         precondition(maxRangeDays >= defaultRangeDays && maxRangeDays <= 14)
         self.slotMinutes = slotMinutes

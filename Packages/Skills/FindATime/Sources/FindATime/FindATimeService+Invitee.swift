@@ -40,6 +40,7 @@ extension FindATimeService {
             chainedFrom: envelope.chainedFrom,
             expiresAt: Timestamp(now.addingTimeInterval(configuration.inviteeLifetime.timeInterval)),
             candidates: candidates,
+            query: query,
             lastQuery: envelope.id,
             phase: .resolving
         )

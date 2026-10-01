@@ -60,6 +60,8 @@ public actor FindATimeService: SkillService {
         /// The starter, for an invitee conversation: a late query or
         /// proposal from it gets "no plan" again, never a new card.
         let asker: PeerID?
+        /// The ended interaction, so its last "no plan" still names it.
+        let interaction: InteractionID?
         var replies = 0
     }
 
@@ -292,14 +294,14 @@ public actor FindATimeService: SkillService {
             conversationOf[interaction] = nil
             checkpointQueue.yield(.remove(interaction))
         }
-        remember(conversation, asker: asker)
+        remember(conversation, asker: asker, interaction: interaction)
     }
 
     /// Records an ended conversation so late messages for it get at most
     /// "no plan" and never open it again.
-    func remember(_ conversation: ConversationID, asker: PeerID?) {
+    func remember(_ conversation: ConversationID, asker: PeerID?, interaction: InteractionID?) {
         guard finished[conversation] == nil else { return }
-        finished[conversation] = Tombstone(asker: asker)
+        finished[conversation] = Tombstone(asker: asker, interaction: interaction)
         finishedOrder.append(conversation)
         if finishedOrder.count > Self.maxTombstones { finished[finishedOrder.removeFirst()] = nil }
     }
@@ -363,9 +365,15 @@ public actor FindATimeService: SkillService {
             guard pending.insert(key).inserted else { return .failed }
         }
         defer { if let key { pending.remove(key) } }
+        // Every send names its interaction (Core v2.1), so the consent sheet
+        // suspends the right one; an answer also names the friend's query,
+        // so the policy can see it only says yes or no (ADR 0019).
+        let interaction = initiating[conversation]?.interaction.id ?? invited[conversation]?.interaction.id ?? finished[conversation]?.interaction
+        let answering: Query? = if case .answer = body { invited[conversation]?.query } else { nil }
         do {
             let envelope = try await outbox.send(
                 body, to: peer, conversation: conversation, recipientCard: cards[peer],
+                context: OutboundContext(answering: answering, interaction: interaction),
                 skill: FindATimeSkill.ref, mode: .invite, chainedFrom: chainedFrom
             )
             diagnostics.sends += 1
