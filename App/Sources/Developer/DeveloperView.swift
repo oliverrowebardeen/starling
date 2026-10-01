@@ -32,6 +32,12 @@ struct DeveloperView: View {
             fakes
             #endif
 
+            Section {
+                NavigationLink("Audit log") { AuditLogView(log: LiveServices.auditLog, friends: app.friends?.friends ?? []) }
+            } footer: {
+                Text("What this phone handed to a transport since launch.")
+            }
+
             Section("Build") {
                 LabeledContent("Services", value: buildKind)
                 Button("Show onboarding again") { onboardingFinished = false }
