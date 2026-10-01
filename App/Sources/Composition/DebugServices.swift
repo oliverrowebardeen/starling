@@ -311,7 +311,7 @@ final class SimulatedFriend {
 enum DownSelfTest {
     static func runIfRequested(app: AppModel, harness: DebugHarness) async {
         guard UserDefaults.standard.bool(forKey: "starlingSelfTestDown"), let down = app.down, let sim = harness.simFriend else { return }
-        await app.start()
+        await app.startLinks()
         let approver = Task {
             while !Task.isCancelled {
                 if let request = app.consent.current {

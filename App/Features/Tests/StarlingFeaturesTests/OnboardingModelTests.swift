@@ -44,4 +44,22 @@ actor CountingPrompter: LocalNetworkPrompter {
         model.skip()
         #expect(model.isFinished)
     }
+
+    /// Codex review of PR #42 (finding 3): the radios' Bonjour work raises
+    /// the Local Network alert, so they start only after its explanation.
+    @Test func linksStartOnlyAfterTheLocalNetworkStep() async {
+        let prompter = CountingPrompter()
+        let started = Recorder<Int>()
+        let model = OnboardingModel(localNetwork: prompter, notifier: RecordingNotifier(), startLinks: {
+            await started.record(await prompter.prompts)
+        })
+        await model.next()
+        #expect(model.step == .localNetwork)
+        #expect(await started.values.isEmpty, "not while the welcome screen shows")
+        await model.next()
+        #expect(await started.values == [1], "after the explanation and the deliberate prompt")
+        await model.next()
+        await model.next()
+        #expect(await started.values == [1])
+    }
 }

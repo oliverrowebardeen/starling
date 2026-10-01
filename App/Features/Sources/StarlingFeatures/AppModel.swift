@@ -127,6 +127,7 @@ public final class AppModel {
     private let downService: (any DownService)?
     private var inboxLoop: Task<Void, Never>?
     private var started = false
+    private var linksStarted = false
 
     public init(services: AppServices) {
         self.services = services
@@ -215,11 +216,22 @@ public final class AppModel {
         await rulesEditor.load()
         await refreshPolicy()
         down?.listen()
+        // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
-        // After the loop is listening, so no peerAvailable is missed.
+        await friends?.load()
+    }
+
+    /// Starts the radios and then whatever must follow them (lane E1's
+    /// pairing services). Separate from `start()` because the radios'
+    /// Bonjour work raises the Local Network alert: the app calls this after
+    /// onboarding's Local Network step, or at launch once onboarding is done
+    /// (ADR 0142). Runs once.
+    public func startLinks() async {
+        await start()
+        guard !linksStarted else { return }
+        linksStarted = true
         try? await services.transport?.start()
         await services.afterStart?()
-        await friends?.load()
     }
 
     /// The single Inbox loop: every event, in arrival order, goes to the
@@ -252,7 +264,9 @@ public final class AppModel {
     }
 
     public func makeOnboarding() -> OnboardingModel {
-        OnboardingModel(localNetwork: services.localNetwork, notifier: services.notifier)
+        OnboardingModel(localNetwork: services.localNetwork, notifier: services.notifier) { [weak self] in
+            await self?.startLinks()
+        }
     }
 
     /// A fresh ceremony model, or nil if pairing is not in this build.

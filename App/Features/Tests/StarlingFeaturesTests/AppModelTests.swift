@@ -71,6 +71,8 @@ actor StoppableScriptedDown: StoppableDownService {
         let down = StoppableScriptedDown()
         let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), transport: transport))
         await app.start()
+        #expect(await transport.isStarted == false, "radios wait for onboarding's Local Network step")
+        await app.startLinks()
         #expect(await transport.isStarted)
         await app.shutdown()
         #expect(await down.shutdowns == 1)
@@ -172,7 +174,10 @@ actor StoppableScriptedDown: StoppableDownService {
         services.afterStart = { await sawStarted.record(await transport.isStarted) }
         let app = AppModel(services: services)
         await app.start()
-        #expect(await sawStarted.values == [true])
+        #expect(await sawStarted.values.isEmpty)
+        await app.startLinks()
+        await app.startLinks()
+        #expect(await sawStarted.values == [true], "once, after the transport started")
     }
 
     @Test func featuresMissingFromTheBuildAreNil() {
