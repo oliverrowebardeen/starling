@@ -39,17 +39,17 @@ struct Phone {
     let service: SwapPhotosService
     let transport: RecordingTransport
     /// The phone's one ledger, shared by its Outbox and the service.
-    let ledger: InMemoryConversationLedger
+    let ledger: any ConversationLedger
 
-    init(policy: PolicyDecision = .allow, now: Date = Fixtures.afterTonight, ledger: InMemoryConversationLedger = InMemoryConversationLedger()) {
+    init(policy: PolicyDecision = .allow, now: Date = Fixtures.afterTonight, ledger: any ConversationLedger = InMemoryConversationLedger()) {
         self.init(now: now, ledger: ledger) { transport, ledger in
             Outbox(transport: transport, policy: FixedPolicyEngine(policy), consent: ScriptedConsentProvider(.approved), ledger: ledger, now: { now })
         }
     }
 
     /// A phone whose Outbox the test builds around its transport and ledger.
-    init(now: Date = Fixtures.afterTonight, ledger: InMemoryConversationLedger = InMemoryConversationLedger(),
-         outbox: (RecordingTransport, InMemoryConversationLedger) -> Outbox) {
+    init(now: Date = Fixtures.afterTonight, ledger: any ConversationLedger = InMemoryConversationLedger(),
+         outbox: (RecordingTransport, any ConversationLedger) -> Outbox) {
         let knownPlans = [Fixtures.parentConversation: Fixtures.plan]
         transport = RecordingTransport(localPeer: Fixtures.me)
         self.ledger = ledger

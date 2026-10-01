@@ -4,6 +4,28 @@ import StarlingFakes
 import StarlingSwapPhotos
 import Testing
 
+/// A ledger whose retirements a test can hold at a gate or refuse.
+actor GatedLedger: ConversationLedger {
+    struct Refused: Error {}
+    let gate = Gate()
+    private let inner = InMemoryConversationLedger()
+    private var holding = false
+    private var refusing = false
+
+    func holdRetirements() { holding = true }
+    func refuseRetirements(_ value: Bool) { refusing = value }
+
+    func isRetired(_ conversation: ConversationID) async throws -> Bool { try await inner.isRetired(conversation) }
+    func retire(_ conversation: ConversationID) async throws {
+        if holding { await gate.pass() }
+        if refusing { throw Refused() }
+        try await inner.retire(conversation)
+    }
+    func reserve(_ candidates: [IssueValue], issue: IssueKey, to peer: PeerID, in conversation: ConversationID) async throws -> Bool {
+        try await inner.reserve(candidates, issue: issue, to: peer, in: conversation)
+    }
+}
+
 /// Core v2.1: send modes (ADR 0020), the interaction on every send, and
 /// conversations that stay closed after they end (ADR 0011 amendment 15).
 @Suite struct ModesAndClosedConversationsTests {
@@ -120,5 +142,56 @@ import Testing
         let phone = Phone(ledger: ledger)
         await phone.service.handle(.message(try Fixtures.offer()))
         #expect(await phone.events().isEmpty)
+    }
+
+    static func openCard(_ phone: Phone) async throws -> (InteractionID, ConversationID, AsyncStream<SkillEvent>.Iterator) {
+        let offer = try Fixtures.offer()
+        await phone.service.handle(.message(offer))
+        var iterator = phone.service.events.makeAsyncIterator()
+        guard case .incoming(let id, _, _, _) = await iterator.next() else { throw SwapPhotosError.unknownInteraction(InteractionID()) }
+        _ = await iterator.next()  // the proposal card
+        return (id, offer.conversation, iterator)
+    }
+
+    @Test func aPassIsReportedOnlyOnceTheRetirementIsDurable() async throws {
+        let ledger = GatedLedger()
+        let phone = Phone(ledger: ledger)
+        let (id, conversation, _) = try await Self.openCard(phone)
+        await ledger.holdRetirements()
+        let service = phone.service
+        let passing = Task { try await service.answer(id, with: .pass) }
+        await ledger.gate.arrived()
+        // The retirement is still being written: no ending reported yet, so a
+        // crash now leaves the card live and restore retires it, never a
+        // reported pass with the conversation still open.
+        #expect(try await !ledger.isRetired(conversation))
+        let early = await phone.events()
+        #expect(!early.contains(.lifecycle(id, .ownerPassed)))
+        await ledger.gate.open()
+        _ = await passing.result
+        #expect(try await ledger.isRetired(conversation))
+    }
+
+    @Test func aRetirementTheLedgerRefusesIsNotReportedAsCleanEnding() async throws {
+        let ledger = GatedLedger()
+        let phone = Phone(ledger: ledger)
+        let (id, conversation, iterator) = try await Self.openCard(phone)
+        var events = iterator
+        await ledger.refuseRetirements(true)
+        try await phone.service.answer(id, with: .pass)
+        #expect(await events.next() == .lifecycle(id, .failed))
+        #expect(await phone.service.unretiredConversations == [conversation])
+        #expect(await phone.service.retireFailures == 1)
+        // Still closed on this launch.
+        await phone.service.handle(.message(try Fixtures.offer(conversation: conversation)))
+        // Storage recovers: the retirement is recorded.
+        await ledger.refuseRetirements(false)
+        await phone.service.retryRetirements()
+        #expect(await phone.service.unretiredConversations.isEmpty)
+        #expect(try await ledger.isRetired(conversation))
+        await phone.service.shutdown()
+        var rest: [SkillEvent] = []
+        while let event = await events.next() { rest.append(event) }
+        #expect(rest.isEmpty)
     }
 }

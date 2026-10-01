@@ -78,9 +78,10 @@ public actor SwapPhotosService: SkillService {
     /// filled before the ledger's write, so an envelope that arrives while
     /// the retirement is being recorded is not reopened either.
     private var closed: Set<ConversationID> = []
-    /// Retirements the ledger could not record. A ledger that cannot write
-    /// cannot read either, so a later offer is still refused (fail closed).
+    /// Retirement attempts the ledger refused, retries included.
     public private(set) var retireFailures = 0
+    /// Conversations whose retirement the ledger has not recorded yet.
+    private var unretired: Set<ConversationID> = []
 
     /// `ledger` is the app's `ConversationLedger`, the one its Outbox uses
     /// (ADR 0021): a conversation it has retired is never opened again.
@@ -134,8 +135,7 @@ public actor SwapPhotosService: SkillService {
             _ = await send(session.participants.map { (offer, $0) }, in: interaction, session: session)
 
         case (.picking, .pass):
-            emit(interaction, .ownerPassed)
-            await forget(interaction)
+            await finish(interaction, with: .ownerPassed)
 
         case (.invited(let from, let offer, let proposal, let revision), .accept(let accepted)) where accepted == revision:
             sessions[interaction]?.advance(to: .accepted(revision: revision))
@@ -148,8 +148,7 @@ public actor SwapPhotosService: SkillService {
 
         case (.invited, .pass):
             // Silence: "If you pass, they just won't see it."
-            emit(interaction, .ownerPassed)
-            await forget(interaction)
+            await finish(interaction, with: .ownerPassed)
 
         default:
             throw SwapPhotosError.unexpectedAnswer(interaction)
@@ -198,18 +197,19 @@ public actor SwapPhotosService: SkillService {
     /// sheet is the coordinator's to record (it applies the pass), so it
     /// adds nothing here.
     private func end(_ interaction: InteractionID, after error: any Error) async {
-        switch error {
-        case OutboxError.consentDeclined: break
-        case OutboxError.denied: emit(interaction, .blockedByPrivacy)
-        default: emit(interaction, .failed)
+        let event: InteractionEvent? = switch error {
+        case OutboxError.consentDeclined: nil
+        case OutboxError.denied: .blockedByPrivacy
+        default: .failed
         }
-        await forget(interaction)
+        await finish(interaction, with: event)
     }
 
     /// Cancels every send still in flight and retires the conversation, so
-    /// nothing more leaves for it and nothing reopens it.
+    /// nothing more leaves for it and nothing reopens it. The coordinator
+    /// records the withdrawal itself.
     public func withdraw(_ interaction: InteractionID) async {
-        await forget(interaction)
+        await finish(interaction, with: nil)
     }
 
     // MARK: - As a friend
@@ -294,6 +294,7 @@ public actor SwapPhotosService: SkillService {
     /// coordinator also passes interactions that ended in the last day; they
     /// are retired again, in case the app quit before it recorded that.
     public func restore(_ interactions: [Interaction]) async {
+        await retryRetirements()
         for interaction in interactions where interaction.skill.id == descriptor.id {
             if interaction.state.isFinal {
                 await retire(interaction.conversation)
@@ -306,8 +307,8 @@ public actor SwapPhotosService: SkillService {
                                                    participants: interaction.participants, step: .picking(question: question.revision))
                 byConversation[interaction.conversation] = interaction.id
             } else {
-                emit(interaction.id, .failed)
                 await retire(interaction.conversation)
+                emit(interaction.id, .failed)
             }
         }
     }
@@ -324,21 +325,55 @@ public actor SwapPhotosService: SkillService {
         continuation.yield(.lifecycle(interaction, event))
     }
 
-    /// Ends the session here: cancels every send still in flight for it and
-    /// retires its conversation, so a friend's retried offer after a pass
-    /// never shows the card again, after a restart too.
-    private func forget(_ interaction: InteractionID) async {
+    /// Ends the session: cancels every send still in flight for it, retires
+    /// its conversation durably, and only then publishes `event`, so no
+    /// ending is reported while a crash could still leave the conversation
+    /// open to a fresh offer. `event` is nil when the coordinator records the
+    /// ending itself (a withdrawal, a declined sheet). If the ledger cannot
+    /// record the retirement, the ending is reported as `.failed`, never as
+    /// clean, and the retirement waits in `unretiredConversations`.
+    private func finish(_ interaction: InteractionID, with event: InteractionEvent?) async {
         if let tasks = inFlight.removeValue(forKey: interaction) { for task in tasks.values { task.cancel() } }
         guard let conversation = sessions.removeValue(forKey: interaction)?.conversation else { return }
         byConversation[conversation] = nil
-        await retire(conversation)
+        let retired = await retire(conversation)
+        guard let event else { return }
+        emit(interaction, retired ? event : .failed)
     }
 
     /// Records the ending in the ledger through Outbox, which also cancels any
     /// send of the conversation still waiting in its queue or the
-    /// transport's (ADR 0021 decision 10).
-    private func retire(_ conversation: ConversationID) async {
+    /// transport's (ADR 0021 decision 10). Returns whether the ledger has it.
+    /// Earlier retirements that failed are tried again first.
+    @discardableResult
+    private func retire(_ conversation: ConversationID) async -> Bool {
         closed.insert(conversation)
-        do { try await outbox.retire(conversation) } catch { retireFailures += 1 }
+        await retryRetirements()
+        do {
+            try await outbox.retire(conversation)
+            unretired.remove(conversation)
+            return true
+        } catch {
+            retireFailures += 1
+            unretired.insert(conversation)
+            return false
+        }
     }
+
+    /// Tries again every retirement the ledger could not record. The app may
+    /// call it when its storage recovers; each new ending and `restore` do.
+    public func retryRetirements() async {
+        for conversation in unretired {
+            do {
+                try await outbox.retire(conversation)
+                unretired.remove(conversation)
+            } catch {
+                retireFailures += 1
+            }
+        }
+    }
+
+    /// Conversations that ended here but are not yet retired in the ledger.
+    /// Still closed on this launch; at risk only across a relaunch.
+    public var unretiredConversations: Set<ConversationID> { unretired }
 }
