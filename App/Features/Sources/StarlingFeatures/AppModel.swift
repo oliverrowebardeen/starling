@@ -2,6 +2,12 @@ import Foundation
 import Observation
 import StarlingCore
 
+/// A Down service that must be told when the app tears it down (lane F's
+/// DownNegotiator: "Call shutdown() when tearing the service down").
+public protocol StoppableDownService: DownService {
+    func shutdown() async
+}
+
 /// Everything the app's features are built from. The app target assembles
 /// one for Debug (fakes from StarlingFakes) and one for Release (only real
 /// implementations). A nil service means that feature is not in this build
@@ -10,9 +16,10 @@ public struct AppServices: Sendable {
     public var agent: (any AgentModel)?
     public var rules: any RulesStore
     public var peers: (any PairedPeerStore)?
-    /// Lane F's service. Takes the consent provider because its `Outbox`
-    /// needs one, and the consent sheet belongs to the app.
-    public var makeDownService: (@Sendable (any ConsentProvider) -> any DownService)?
+    /// Lane F's service, built on the app's `Outbox` (lane G's policy, the
+    /// consent sheet, the audit log) so every Down send is judged the same
+    /// way. Its local peer must be the Outbox transport's.
+    public var makeDownService: (@Sendable (Outbox) -> any DownService)?
     /// Lanes E1 and E2's pairing ceremony.
     public var makePairingSession: PairingSessionFactory?
     /// The app's one `Inbox` stream (v1.1: `Inbox.events(from:)` over the
@@ -27,6 +34,13 @@ public struct AppServices: Sendable {
     /// The link the app's `Outbox` sends on. Nil until a transport the app
     /// may send owner data over is in the build (lane E1's secure channel).
     public var transport: (any Transport)?
+    /// This agent's card, sent in a `hello` to each peer that becomes
+    /// available. Down reads peers' cards; it does not send its own.
+    public var agentCard: AgentCard?
+    /// Whether Down's PSI provider hides the owner's free times.
+    public var downMatchingIsPrivate: Bool
+    /// Plain words for the Down service's own errors.
+    public var describeDownError: @Sendable (any Error) -> String?
     /// Lane G's consent sheet content for a disclosure.
     public var presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)?
     public var notifier: any MatchNotifier
@@ -38,12 +52,15 @@ public struct AppServices: Sendable {
         agent: (any AgentModel)?,
         rules: any RulesStore,
         peers: (any PairedPeerStore)?,
-        makeDownService: (@Sendable (any ConsentProvider) -> any DownService)?,
+        makeDownService: (@Sendable (Outbox) -> any DownService)?,
         makePairingSession: PairingSessionFactory?,
         inboxEvents: AsyncStream<InboxEvent>? = nil,
         makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
         transport: (any Transport)? = nil,
+        agentCard: AgentCard? = nil,
+        downMatchingIsPrivate: Bool = false,
+        describeDownError: @escaping @Sendable (any Error) -> String? = { _ in nil },
         presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)? = nil,
         notifier: any MatchNotifier,
         localNetwork: any LocalNetworkPrompter,
@@ -59,6 +76,9 @@ public struct AppServices: Sendable {
         self.makePolicy = makePolicy
         self.auditLog = auditLog
         self.transport = transport
+        self.agentCard = agentCard
+        self.downMatchingIsPrivate = downMatchingIsPrivate
+        self.describeDownError = describeDownError
         self.presentConsent = presentConsent
         self.notifier = notifier
         self.localNetwork = localNetwork
@@ -100,9 +120,8 @@ public final class AppModel {
             store: services.rules,
             formatter: services.formatter
         )
-        if let makeDown = services.makeDownService, let peers = services.peers {
-            let consent = consent
-            let service = makeDown(consent)
+        if let makeDown = services.makeDownService, let peers = services.peers, let outbox {
+            let service = makeDown(outbox)
             downService = service
             down = DownModel(
                 service: service,
@@ -110,6 +129,8 @@ public final class AppModel {
                 rules: services.rules,
                 peers: peers,
                 notifier: services.notifier,
+                matchingIsPrivate: services.downMatchingIsPrivate,
+                describeError: services.describeDownError,
                 formatter: services.formatter,
                 timeZone: services.timeZone
             )
@@ -165,6 +186,8 @@ public final class AppModel {
         await refreshPolicy()
         down?.listen()
         routeInbox()
+        // After the loop is listening, so no peerAvailable is missed.
+        try? await services.transport?.start()
         await friends?.load()
     }
 
@@ -174,11 +197,29 @@ public final class AppModel {
     /// events here too.
     private func routeInbox() {
         guard inboxLoop == nil, let events = services.inboxEvents, let downService else { return }
+        let outbox = outbox
+        let card = services.agentCard
         inboxLoop = Task {
             for await event in events {
+                // The link layer greets each peer with this agent's card, so
+                // the peer's policy knows where the model runs. Hello is
+                // always allowed and carries nothing else. Not awaited, so a
+                // slow link never holds up the loop.
+                if case .peerAvailable(let peer) = event, let outbox, let card {
+                    Task { _ = try? await outbox.send(.hello(card), to: peer, conversation: ConversationID()) }
+                }
                 await downService.handle(event)
             }
         }
+    }
+
+    /// Tears down the Down service and the link. Call when the app's
+    /// services go away; lane F requires shutdown() on its service.
+    public func shutdown() async {
+        inboxLoop?.cancel()
+        inboxLoop = nil
+        if let stoppable = downService as? any StoppableDownService { await stoppable.shutdown() }
+        await services.transport?.stop()
     }
 
     public func makeOnboarding() -> OnboardingModel {

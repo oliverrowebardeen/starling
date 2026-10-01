@@ -42,8 +42,9 @@ import Testing
     static let neverPlace = OwnerRules(constraints: .empty, disclosure: [DisclosureRule(issue: .place, action: .never)])
 
     @Test func noOutboxWithoutATransport() {
-        let app = AppModel(services: AppModelTests.services(down: nil, peers: nil))
-        #expect(app.outbox == nil)
+        var services = AppModelTests.services(down: nil, peers: nil)
+        services.transport = nil
+        #expect(AppModel(services: services).outbox == nil)
     }
 
     @Test func sendsBeforeStartAreDenied() async throws {
