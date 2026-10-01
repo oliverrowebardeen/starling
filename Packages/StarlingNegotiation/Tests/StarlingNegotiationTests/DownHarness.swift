@@ -151,6 +151,9 @@ final class DownWorld: Sendable {
     let wire = Wire()
     let nodes: [DownNode]
     private let observer: Mutex<Task<Void, Never>?> = Mutex(nil)
+    /// How long the wire observer waits before recording each delivery.
+    /// Zero normally; tests set it to widen the observer's natural lag.
+    private let wireDelay: Duration
 
     init(
         _ names: [String],
@@ -159,8 +162,10 @@ final class DownWorld: Sendable {
         psi: any PSIProvider = InsecurePSIStub(),
         consent: any ConsentProvider = ScriptedConsentProvider(.approved),
         clock: DownClock = pinnedClock,
-        configuration: DownConfiguration = fastConfiguration
+        configuration: DownConfiguration = fastConfiguration,
+        wireDelay: Duration = .zero
     ) {
+        self.wireDelay = wireDelay
         let hub = LoopbackHub()
         self.hub = hub
         nodes = names.map {
@@ -173,9 +178,11 @@ final class DownWorld: Sendable {
     func start(pairAll: Bool = true) async throws {
         let deliveries = await hub.deliveries()
         let wire = wire
+        let wireDelay = wireDelay
         observer.withLock {
             $0 = Task {
                 for await delivery in deliveries {
+                    if wireDelay > .zero { try? await Task.sleep(for: wireDelay) }
                     if let envelope = try? EnvelopeCodec().decode(delivery.frame.bytes) { await wire.record(envelope) }
                 }
             }
@@ -204,16 +211,28 @@ final class DownWorld: Sendable {
 
     /// Every match any node reported is backed by the peer's own accept of
     /// the identical plan on the wire: the definition of "no false match".
-    func expectNoFalseMatches() async {
-        let envelopes = await wire.envelopes
+    ///
+    /// The wire observer records deliveries on its own task, so it can lag
+    /// behind a match on a loaded machine. The backing accept was delivered
+    /// before the match could fire, so the check waits up to `timeout` for
+    /// it to be recorded. A match nobody accepted is never backed and still
+    /// fails.
+    func expectNoFalseMatches(timeout: Duration = .seconds(2)) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
         for node in nodes {
             for match in await node.log.matches {
-                let backed = envelopes.contains { envelope in
-                    guard envelope.sender == match.peer, envelope.recipient == node.id,
-                          case .accept(let acceptance) = envelope.body,
-                          let (plan, _) = DownProfile.split(acceptance.terms)
-                    else { return false }
-                    return plan == match.terms
+                var backed = false
+                while true {
+                    backed = await wire.envelopes.contains { envelope in
+                        guard envelope.sender == match.peer, envelope.recipient == node.id,
+                              case .accept(let acceptance) = envelope.body,
+                              let (plan, _) = DownProfile.split(acceptance.terms)
+                        else { return false }
+                        return plan == match.terms
+                    }
+                    if backed || clock.now >= deadline { break }
+                    try? await Task.sleep(for: .milliseconds(5))
                 }
                 #expect(backed, "\(node.name) matched without the peer's accept")
             }

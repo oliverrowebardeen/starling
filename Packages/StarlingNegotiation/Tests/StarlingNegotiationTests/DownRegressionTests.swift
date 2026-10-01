@@ -237,7 +237,11 @@ import Testing
     @Test func theOpeningOfferSkipsASlotThatStartedDuringTheExchange() async throws {
         let time = MovableClock()
         let consent = GatedConsentProvider()
-        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent, clock: time.clock)
+        // A consent wait is bounded by its step's deadline (ADR 0120, item
+        // 19). 200 ms retries give the owner a 1 s step, well past the pause
+        // below; the default 20 ms test retries would give only 100 ms.
+        let slow = DownConfiguration(retryInterval: .milliseconds(200), maxAttempts: 5)
+        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent, clock: time.clock, configuration: slow)
         let (starter, answerer) = Self.roles(world)
         try await world.start()
         try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
@@ -245,6 +249,9 @@ import Testing
         try await eventually("the activity query waits for consent") { await consent.pending == 1 }
 
         time.set(T.at(19).addingTimeInterval(60))
+        // The owner takes a moment over the sheet, as a loaded machine's
+        // scheduler also can.
+        try await Task.sleep(for: .milliseconds(150))
         await consent.answerAll(.approved)
         try await eventually("both matched") { await matchCounts(starter, answerer) == [1, 1] }
         #expect(await starter.log.matches.first?.terms[.time] == .slots([T.slot(19.5, 21.5)]))
@@ -425,6 +432,34 @@ import Testing
         #expect(await ben.negotiator.queueDepth(for: mallory.id) <= limit)
         await consent.answerAll(.declined)
         await mallory.stop()
+        await world.stop()
+    }
+
+    // MARK: - Harness
+
+    /// The wire observer records deliveries on its own task, so it can lag
+    /// behind a match on a loaded machine (lane H saw this check fail once).
+    /// The check must wait for the backing accept to be recorded rather than
+    /// read the wire at one instant.
+    @Test func theNoFalseMatchCheckWaitsForASlowWire() async throws {
+        let world = DownWorld(["ana", "ben"], wireDelay: .milliseconds(30))
+        try await world.start()
+        try await world["ana"].want(time: [T.slot(19, 22)])
+        try await world["ben"].want(time: [T.slot(19, 22)])
+        try await eventually("both matched") { await matchCounts(world["ana"], world["ben"]) == [1, 1] }
+        await world.expectNoFalseMatches()
+        await world.stop()
+    }
+
+    /// The waiting check still catches a match nobody accepted.
+    @Test func theNoFalseMatchCheckStillCatchesAnUnbackedMatch() async throws {
+        let world = DownWorld(["ana", "ben"])
+        try await world.start()
+        let fake = DownMatch(peer: world["ben"].id, terms: try T.plan(time: T.slot(19, 20)), bothDown: true)
+        await world["ana"].log.append(.matched(fake))
+        await withKnownIssue {
+            await world.expectNoFalseMatches(timeout: .milliseconds(100))
+        }
         await world.stop()
     }
 }
