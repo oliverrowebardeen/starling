@@ -444,6 +444,39 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(!model.participants.contains(h.leo.id))
     }
 
+    /// Re-review of PR #54, finding 1: Down for… after a Find a time plan
+    /// takes only the time slot, not the plan, and the plan's people must
+    /// still bound who is asked, under All friends and under a group.
+    @Test func aChainThatDropsThePlanStillStaysWithinItsPeople() async throws {
+        let h = try await ComposerHarness()
+        for friend in [h.maya, h.jake, h.leo] { try h.give(friend.id, [SampleSkills.downFor.ref, SampleSkills.findATime.ref]) }
+        let group = try FriendGroup(name: "Everyone", members: [h.maya.id, h.jake.id, h.leo.id])
+        await h.settings.saveGroup(group)
+        await h.settings.setRule(.alwaysInclude, for: h.leo.id)
+
+        var parent = Interaction(skill: SampleSkills.findATime.ref, role: .initiator, participants: [h.maya.id], createdAt: Timestamp(h.clock.now))
+        let slot = try TimeSlot(start: h.clock.now, end: h.clock.now.addingTimeInterval(3600))
+        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees([h.me, h.maya.id]), activity: nil, time: slot)))
+        h.model.continuePlan(parent, with: SampleSkills.downFor)
+        #expect(h.model.chain?.inputs == [.timeSlot(slot)], "Down for… accepts the slot only")
+
+        h.model.audience = .allFriends
+        #expect(h.model.participants == [h.maya.id])
+        h.model.audience = .group(group.id)
+        #expect(h.model.participants == [h.maya.id])
+        h.model.audience = .everyoneExcept
+        #expect(h.model.participants == [h.maya.id])
+
+        h.model.audience = .allFriends
+        h.model.text = "boba"
+        let constraints = try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []))]])
+        h.model.constraints = constraints
+        _ = try #require(await h.model.send())
+        let sent = try #require(await h.down.started.first)
+        #expect(sent.participants == [h.maya.id])
+        #expect(sent.chainedFrom == parent.conversation)
+    }
+
     @Test func cancelClearsTheDraft() async throws {
         let h = try await ComposerHarness()
         h.model.text = "boba"

@@ -78,6 +78,10 @@ public final class ComposerModel {
         /// Topics and permissions this step adds over what the plan already
         /// shared. Non-empty means the owner sees them before starting.
         public let adds: SkillExposure
+        /// The parent plan's people. A chained request goes only to them
+        /// (ADR 0020 decision 9.3), whatever artifacts the next skill
+        /// accepts: Down for… after Find a time takes only the time slot.
+        public let allowed: Set<PeerID>
     }
 
     /// Every edit the owner makes to the draft bumps `generation`, so a
@@ -366,9 +370,8 @@ public final class ComposerModel {
     /// The friends this request may go to at all. A chained step goes only
     /// to the parent plan's people (ADR 0020 decision 9.3).
     private var pool: [PairedPeer] {
-        guard let chain, case .plan(let plan)? = chain.inputs.first(where: { $0.kind == .plan }) else { return friends() }
-        let attendees = Set(plan.attendees.peers)
-        return friends().filter { attendees.contains($0.id) }
+        guard let chain else { return friends() }
+        return friends().filter { chain.allowed.contains($0.id) }
     }
 
     /// The audience as Core's `Audience`.
@@ -410,7 +413,10 @@ public final class ComposerModel {
     /// Who the request goes to: `Audience.resolve` over the friends this
     /// request may reach, keeping those whose Starling runs the skill.
     public var participants: [PeerID] {
-        audienceValue.resolve(mode: sendMode, friends: pool.map(\.id), book: settings.audienceBook, canRun: canRun)
+        let resolved = audienceValue.resolve(mode: sendMode, friends: pool.map(\.id), book: settings.audienceBook, canRun: canRun)
+        // Belt and braces: a chained request never leaves the parent plan.
+        guard let allowed = chain?.allowed else { return resolved }
+        return resolved.filter(allowed.contains)
     }
 
     /// "Maya's Starling doesn't do this yet." for chosen friends who cannot
@@ -619,7 +625,8 @@ public final class ComposerModel {
             ),
             inputs: inputs,
             parentSkill: parent.skill,
-            adds: next.exposure.adding(over: parentSkill.exposure)
+            adds: next.exposure.adding(over: parentSkill.exposure),
+            allowed: Set(plan.attendees.peers).subtracting(localPeer.map { [$0] } ?? [])
         )
         skill = next.id
         audience = .pick
