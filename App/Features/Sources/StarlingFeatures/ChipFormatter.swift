@@ -57,6 +57,11 @@ public struct ChipFormatter: Sendable {
         return endsLate ? "\(day) after \(hour(slot.start))" : "\(day) \(hour(slot.start)) to \(hour(slot.end))"
     }
 
+    /// When something starts: "Tonight at 8:30 PM", "Friday at 6 PM".
+    public func start(_ slot: TimeSlot) -> String {
+        "\(dayWord(slot.start)) at \(hour(slot.start))"
+    }
+
     /// "Expires in 3 hrs", "Expires in 1 hr", "Expires in 45 min".
     public func expiry(_ date: Date) -> String {
         let minutes = max(1, Int((date.timeIntervalSince(now()) / 60).rounded()))
