@@ -31,6 +31,9 @@ extension FindATimeService {
               open.filter({ $0.asker == envelope.sender }).count < configuration.maxOpenInvitationsPerFriend
         else { return ignore("too many open requests") }
         guard let skill = envelope.skill else { return }
+        // However the conversation was ended, forgotten, or restarted, it
+        // never learns about more than maxCandidates times in all.
+        guard spendAnswerBudget(candidates, in: id, asker: envelope.sender) else { return ignore("answer budget spent") }
 
         let value = Invited(
             interaction: Interaction(

@@ -159,16 +159,47 @@ public protocol FindATimeCheckpointStore: Sendable {
     func all() async throws -> [FindATimeCheckpoint]
     func save(_ checkpoint: FindATimeCheckpoint) async throws
     func remove(_ interaction: InteractionID) async throws
+    /// The record of candidates answered about per conversation, kept apart
+    /// from checkpoints because it outlives the interaction.
+    func ledger() async throws -> AnsweredLedger
+    func saveLedger(_ ledger: AnsweredLedger) async throws
+}
+
+/// Which candidate times this phone has answered about in each friend's
+/// conversation, so one conversation never learns about more than
+/// `FindATimeConfiguration.maxCandidates` of them, however it is restarted
+/// or reopened (ADR 0019, decision 6). It is kept for the restore window,
+/// independent of the bounded memory of ended conversations, and survives
+/// a relaunch. Opaque outside the package.
+public struct AnsweredLedger: Hashable, Sendable, Codable {
+    struct Entry: Hashable, Sendable, Codable {
+        let asker: PeerID
+        var slots: Set<TimeSlot>
+        var updatedAt: Timestamp
+    }
+
+    var entries: [ConversationID: Entry] = [:]
+
+    public init() {}
+
+    /// Drops entries untouched for longer than `window`.
+    mutating func prune(now: Date, window: TimeInterval) {
+        let cutoff = Timestamp(now.addingTimeInterval(-window))
+        entries = entries.filter { $0.value.updatedAt >= cutoff }
+    }
 }
 
 public actor InMemoryFindATimeCheckpoints: FindATimeCheckpointStore {
     private var items: [InteractionID: FindATimeCheckpoint] = [:]
+    private var answered = AnsweredLedger()
 
     public init() {}
 
     public func all() async throws -> [FindATimeCheckpoint] { Array(items.values) }
     public func save(_ checkpoint: FindATimeCheckpoint) async throws { items[checkpoint.interaction] = checkpoint }
     public func remove(_ interaction: InteractionID) async throws { items[interaction] = nil }
+    public func ledger() async throws -> AnsweredLedger { answered }
+    public func saveLedger(_ ledger: AnsweredLedger) async throws { answered = ledger }
 }
 
 /// One JSON file per live interaction in a directory the app chooses (for
@@ -205,6 +236,23 @@ public actor FileFindATimeCheckpoints: FindATimeCheckpointStore {
     public func remove(_ interaction: InteractionID) async throws {
         let url = url(for: interaction)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
+
+    public func ledger() async throws -> AnsweredLedger {
+        let url = directory.appendingPathComponent("answered.ledger")
+        guard FileManager.default.fileExists(atPath: url.path) else { return AnsweredLedger() }
+        return try JSONDecoder().decode(AnsweredLedger.self, from: Data(contentsOf: url))
+    }
+
+    public func saveLedger(_ ledger: AnsweredLedger) async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        var options: Data.WritingOptions = [.atomic]
+        #if os(iOS)
+        options.insert(.completeFileProtection)
+        #endif
+        try encoder.encode(ledger).write(to: directory.appendingPathComponent("answered.ledger"), options: options)
     }
 
     private func url(for interaction: InteractionID) -> URL {

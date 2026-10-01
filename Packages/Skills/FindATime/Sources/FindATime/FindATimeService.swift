@@ -68,6 +68,7 @@ public actor FindATimeService: SkillService {
     enum CheckpointOp: Sendable {
         case save(FindATimeCheckpoint)
         case remove(InteractionID)
+        case ledger(AnsweredLedger)
         case flush(CheckedContinuation<Void, Never>)
     }
 
@@ -83,6 +84,17 @@ public actor FindATimeService: SkillService {
     private(set) var diagnostics = Diagnostics()
 
     static let maxTombstones = 256
+    /// How long the answered-candidate record keeps a conversation: the
+    /// restore window, in which the coordinator still hands ended
+    /// interactions back (ADR 0011, amendment 15).
+    static let ledgerWindow: TimeInterval = 24 * 60 * 60
+    /// Conversations the record holds at most. When full, new requests are
+    /// refused rather than an old record dropped.
+    static let maxLedgerEntries = 4_096
+
+    var ledger = AnsweredLedger()
+    private var ledgerLoad: Task<AnsweredLedger, Never>?
+    private var ledgerLoaded = false
 
     /// - Parameters:
     ///   - localPeer: This phone's ID (the Outbox transport's `localPeer`).
@@ -126,6 +138,7 @@ public actor FindATimeService: SkillService {
                 switch op {
                 case .save(let checkpoint): try? await checkpoints.save(checkpoint)
                 case .remove(let id): try? await checkpoints.remove(id)
+                case .ledger(let ledger): try? await checkpoints.saveLedger(ledger)
                 case .flush(let done): done.resume()
                 }
             }
@@ -179,6 +192,7 @@ public actor FindATimeService: SkillService {
             switch envelope.body {
             case .query(let query):
                 guard await isTurnedOn() else { return ignore("turned off") }
+                await loadLedger()
                 receiveQuery(envelope, query)
             case .answer(let answer): receiveAnswer(envelope, answer)
             case .propose(let proposal): receiveProposal(envelope, proposal)
@@ -193,6 +207,7 @@ public actor FindATimeService: SkillService {
     }
 
     public func restore(_ interactions: [Interaction]) async {
+        await loadLedger()
         let saved = (try? await checkpointStore.all()) ?? []
         resume(interactions, from: saved)
     }
@@ -304,6 +319,35 @@ public actor FindATimeService: SkillService {
         finished[conversation] = Tombstone(asker: asker, interaction: interaction)
         finishedOrder.append(conversation)
         if finishedOrder.count > Self.maxTombstones { finished[finishedOrder.removeFirst()] = nil }
+    }
+
+    /// Loads the answered-candidate record once, before the first request
+    /// is handled, so a relaunch keeps every conversation's budget.
+    func loadLedger() async {
+        guard !ledgerLoaded else { return }
+        let store = checkpointStore
+        let load = ledgerLoad ?? Task { (try? await store.ledger()) ?? AnsweredLedger() }
+        ledgerLoad = load
+        let loaded = await load.value
+        guard !ledgerLoaded else { return }
+        ledger = loaded
+        ledger.prune(now: now(), window: Self.ledgerWindow)
+        ledgerLoaded = true
+    }
+
+    /// Records the candidates a new request in `conversation` would have
+    /// this phone answer about, or refuses it if that would take the
+    /// conversation past `maxCandidates` (ADR 0019, decision 6).
+    func spendAnswerBudget(_ candidates: [TimeSlot], in conversation: ConversationID, asker: PeerID) -> Bool {
+        ledger.prune(now: now(), window: Self.ledgerWindow)
+        let entry = ledger.entries[conversation]
+        if let entry, entry.asker != asker { return false }
+        let union = (entry?.slots ?? []).union(candidates)
+        guard union.count <= configuration.maxCandidates else { return false }
+        guard entry != nil || ledger.entries.count < Self.maxLedgerEntries else { return false }
+        ledger.entries[conversation] = AnsweredLedger.Entry(asker: asker, slots: union, updatedAt: Timestamp(now()))
+        checkpointQueue.yield(.ledger(ledger))
+        return true
     }
 
     func removeCheckpoint(_ interaction: InteractionID) {

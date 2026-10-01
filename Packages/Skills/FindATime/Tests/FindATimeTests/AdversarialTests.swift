@@ -224,4 +224,44 @@ struct AdversarialTests {
         #expect(await a.coordinator.interaction(started)?.state == .negotiating)
         await world.stop()
     }
+    /// Review of PR #53 (second round), finding 1: one conversation never
+    /// learns about more than 16 times, even after its memory of ending is
+    /// pushed out by 257 other conversations, and even after a restart.
+    @Test func theAnswerBudgetSurvivesForgettingAndRestarts() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory")
+        // Free on day 0, busy all of day 2 (where the filler requests go).
+        let target = world.phone("Ben", calendar: FakeCalendarStore(events: [FakeCalendarEvent(title: "Away", start: T.at(48), end: T.at(72))]))
+        try await world.start()
+
+        let conversation = ConversationID()
+        let first = (0..<16).map { T.slot(9 + Double($0) * 0.5, 9.5 + Double($0) * 0.5) }
+        try await mallory.send(query(first), to: target, conversation: conversation)
+        try await eventually("Ben answered about 16 times") { world.envelopes.contains { $0.sender == target.id && $0.body.kind == .answer } }
+        try await mallory.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: target, conversation: conversation)
+        try await eventually("conversation ended") { await target.service.invited.isEmpty }
+
+        // Push the ended conversation out of the bounded memory of endings.
+        for i in 0...FindATimeService.maxTombstones {
+            try await mallory.send(query([T.slot(48 + Double(i % 20) * 0.5, 48.5 + Double(i % 20) * 0.5)]), to: target, conversation: ConversationID())
+            try await eventually("filler \(i) ended") { await target.service.invited.isEmpty }
+        }
+        #expect(await target.service.finished[conversation] == nil)
+
+        // A fresh query in the same conversation, about 16 new times.
+        let second = (0..<16).map { T.slot(24 + 9 + Double($0) * 0.5, 24 + 9.5 + Double($0) * 0.5) }
+        let answersBefore = world.envelopes.filter { $0.sender == target.id && $0.body.kind == .answer }.count
+        try await mallory.send(query(second), to: target, conversation: conversation)
+        try await eventually("refused") { await target.service.diagnostics.ignored["answer budget spent", default: 0] == 1 }
+
+        // And again after a relaunch, with only the saved record to go on.
+        await target.restart()
+        try await target.greetAgain(world)
+        try await mallory.send(query(second), to: target, conversation: conversation)
+        try await eventually("refused after a restart") { await target.service.diagnostics.ignored["answer budget spent", default: 0] == 1 }
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(world.envelopes.filter { $0.sender == target.id && $0.body.kind == .answer }.count == answersBefore)
+        #expect(await target.coordinator.all().filter { $0.conversation == conversation }.count == 1)
+        await world.stop()
+    }
 }
