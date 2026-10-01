@@ -27,6 +27,9 @@ struct Invite {
     var revision: UInt32 = 0
     var proposal: SkillProposal?
     var proposeID: MessageID?
+    /// The proposal as the organizer offered it, for the policy to see that
+    /// a yes repeats only its terms (ADR 0019, amendment 10).
+    var offer: Proposal?
     var accepted = false
     /// The roster the organizer confirmed; it can only shrink afterwards.
     var finalRoster: [PeerID]?
@@ -256,6 +259,7 @@ extension PickAPlaceService {
         let card = SkillProposal(revision: revision, participants: roster, terms: proposal.terms, plan: plan)
         invites[conversation]?.revision = revision
         invites[conversation]?.proposal = card
+        invites[conversation]?.offer = proposal
         invites[conversation]?.proposeID = id
         invites[conversation]?.accepted = false
         emit(invite.id, .proposalReady(card))
@@ -291,7 +295,8 @@ extension PickAPlaceService {
             guard !invite.accepted, !invite.accepting else { return }
             invites[conversation]?.accepting = true
             let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
-            let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
+            let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
+                                           accepting: invite.offer)
             invites[conversation]?.accepting = false
             // A yes to a proposal that has since been replaced reports
             // nothing (ADR 0011, amendment 14).
@@ -332,7 +337,8 @@ extension PickAPlaceService {
         guard let invite = invites[conversation], let proposal = invite.proposal else { return }
         let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
         spawn(conversation) { service in
-            await service.trySend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
+            await service.trySend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
+                                  accepting: invite.offer)
         }
     }
 

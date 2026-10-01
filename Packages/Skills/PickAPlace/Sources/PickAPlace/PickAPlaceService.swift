@@ -318,19 +318,21 @@ public actor PickAPlaceService: SkillService {
     /// invite (ADR 0020), naming the interaction it belongs to so the
     /// consent sheet and the audit find it. `answering` is the friend's
     /// query when the message only says which of its candidates work
-    /// (ADR 0019).
+    /// (ADR 0019); `accepting` is the friend's proposal when the message
+    /// says yes to exactly its terms (ADR 0019, amendment 10).
     @discardableResult
     func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?,
-              answering: Query? = nil) async throws -> Envelope {
+              answering: Query? = nil, accepting: Proposal? = nil) async throws -> Envelope {
         let interaction = organized[conversation]?.id ?? invites[conversation]?.id
         return try await outbox.send(body, to: peer, conversation: conversation, recipientCard: cards[peer],
-                                     context: OutboundContext(answering: answering, interaction: interaction),
+                                     context: OutboundContext(answering: answering, interaction: interaction, accepting: accepting),
                                      skill: descriptor.ref, mode: descriptor.defaultSendMode, chainedFrom: chainedFrom)
     }
 
     /// A send whose failure changes nothing, such as a goodbye.
-    func trySend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async {
-        _ = try? await send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
+    func trySend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?,
+                 accepting: Proposal? = nil) async {
+        _ = try? await send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom, accepting: accepting)
     }
 
     /// Runs work for one conversation on its own task, cancelled when the
@@ -351,10 +353,11 @@ public actor PickAPlaceService: SkillService {
 
     /// Runs a send on a tracked task and waits for it, so ending the
     /// conversation cancels it even while the caller is waiting.
-    func trackedSend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async -> (any Error)? {
+    func trackedSend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?,
+                     accepting: Proposal? = nil) async -> (any Error)? {
         let task = Task { () -> (any Error)? in
             do {
-                try await self.send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
+                try await self.send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom, accepting: accepting)
                 return nil
             } catch {
                 return error

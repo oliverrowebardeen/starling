@@ -152,6 +152,9 @@ extension PickAPlaceService {
             invite.acceptable = [place]
             invite.revision = proposal.revision
             invite.proposal = proposal
+            // The offer itself was not stored; its terms are what a yes
+            // repeats, so they stand for it.
+            invite.offer = try? Proposal(round: 0, terms: proposal.terms)
             invite.accepted = Self.step(of: interaction.state) == .confirmed
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation

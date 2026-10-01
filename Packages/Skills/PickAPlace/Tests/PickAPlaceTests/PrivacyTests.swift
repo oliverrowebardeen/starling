@@ -51,10 +51,11 @@ struct PrivacyTests {
         #expect(await maya.interaction(conversation) == nil)
     }
 
-    /// ADR 0019: with Place set to Never, Maya's agent still says which of
-    /// Oliver's places work (a yes or no to his own options), but her yes
-    /// to a proposal repeats the place as a term, so the policy stops it.
-    @Test func placeSetToNeverStillSaysYesOrNoButCannotAccept() async throws {
+    /// ADR 0019, decision 4 and amendment 10: with Place set to Never,
+    /// Maya's agent still says which of Oliver's places work, and her yes,
+    /// which repeats only what Oliver proposed, still goes, so she joins
+    /// the plan without her own place values ever leaving.
+    @Test func placeSetToNeverStillSaysYesAndJoins() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
         let oliver = Phone("Oliver", hub: hub, maps: maps)
@@ -63,10 +64,14 @@ struct PrivacyTests {
         defer { Task { await group.stop() } }
         let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
         #expect(await maya.reaches(.proposed, in: conversation))
-        #expect(await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer })
-        try await maya.accept(in: conversation)
-        #expect(await maya.reaches(.ended(.blockedByPrivacy), in: conversation))
-        #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .accept })
+        #expect(await oliver.reaches(.proposed, in: conversation))
+        for phone in [maya, oliver] { try await phone.accept(in: conversation) }
+        #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await oliver.reaches(.planned, in: conversation))
+        // Maya's yes repeated Oliver's terms exactly.
+        let terms = try #require(await oliver.interaction(conversation)?.proposal?.terms)
+        let yeses = await group.wire.sent(by: maya.id).compactMap { if case .accept(let acceptance) = $0.body { acceptance.terms } else { nil } }
+        #expect(!yeses.isEmpty && yeses.allSatisfy { $0 == terms })
         #expect(await group.lifecyclesWereLegal())
     }
 
