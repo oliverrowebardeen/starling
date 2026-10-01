@@ -24,6 +24,7 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0018](0018-hand-offs.md) | Hand-offs to Calendar, Messages, Maps, and Siri | Accepted (Muse and Dots open) |
 | [0019](0019-never-stays-on-the-phone.md) | Never keeps a value on the phone, and every topic has the same control | Accepted (amends 0014) |
 | [0020](0020-send-modes-and-audience.md) | Send modes and audience: Ask quietly, Invite, and undetectable exclusion | Accepted (amends 0010, 0011) |
+| [0021](0021-one-ledger-for-what-a-friend-was-told.md) | One ledger for what a friend was told, enforced by Outbox | Accepted (amends 0011, 0019) |
 | [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Proposed |
 | [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Proposed |
 | [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |
