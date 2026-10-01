@@ -100,6 +100,23 @@ struct AdversarialTests {
         #expect(await maya.coordinator.incoming.count == fastConfiguration.maxNewRequestsPerFriendPerHour)
     }
 
+    @Test func aRequestWhoseOrganizerGoesSilentEnds() async throws {
+        let quick = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                            answerWindow: .milliseconds(300), confirmWindow: .milliseconds(300))
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all), configuration: quick)
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all), configuration: quick)
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        // Mallory asks, gets Maya's list, and never says anything again.
+        let conversation = ConversationID()
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+        #expect(await maya.reaches(.negotiating, in: conversation))
+        #expect(await maya.reaches(.ended(.expired), in: conversation, within: 3))
+        #expect(await eventually { await maya.service.tasks.isEmpty })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aStrangersCardIsNotKept() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))

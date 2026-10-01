@@ -84,6 +84,7 @@ extension PickAPlaceService {
             invite.revision = interaction.proposalRevision ?? 0
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
+            spawnInviteDeadline(conversation)
             return true
         case .proposed, .confirmed:
             guard let proposal = interaction.proposal, let (place, roster) = Self.parts(of: proposal),
@@ -99,6 +100,7 @@ extension PickAPlaceService {
             invite.accepted = Self.step(of: interaction.state) == .confirmed
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
+            spawnInviteDeadline(conversation)
             if invite.accepted {
                 spawnAcceptance(conversation)
                 spawnWaitForConfirmation(conversation)

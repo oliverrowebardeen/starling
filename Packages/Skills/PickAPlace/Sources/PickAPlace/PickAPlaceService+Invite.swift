@@ -44,7 +44,20 @@ extension PickAPlaceService {
         requestTimes[envelope.sender] = recent + [clock.now()]
         let conversation = envelope.conversation
         invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender, chainedFrom: envelope.chainedFrom)
+        spawnInviteDeadline(conversation)
         spawn(conversation) { await $0.judgeAndAnswer(conversation, query: envelope.id, candidates: candidates) }
+    }
+
+    /// Ends a request the organizer stops answering: an honest organizer
+    /// settles it within its answer and confirm windows, so a request still
+    /// open well after that is over. Without this, a silent or crashed
+    /// organizer would hold a live slot, and Home's row, forever.
+    func spawnInviteDeadline(_ conversation: ConversationID) {
+        let limit = configuration.answerWindow + configuration.confirmWindow * 2
+        spawn(conversation) { service in
+            guard (try? await service.clock.sleep(limit)) != nil, !Task.isCancelled else { return }
+            service.endInvite(conversation, event: .expired, reply: nil)
+        }
     }
 
     func inviteReceived(_ envelope: Envelope) {
