@@ -93,7 +93,8 @@ public actor SecureTransport: Transport {
         /// reaches it. Survives any number of unconfirmed replacements.
         var lastConfirmed: Channel?
         /// Receive only: newer sessions replaced before they were confirmed
-        /// (newest last), in case the peer switched to one of them.
+        /// (newest last), in case the peer switched to one of them. Sized to
+        /// hold every session one restart budget can create.
         var superseded: [Channel] = []
         /// The timer resending our confirm until the responder acknowledges it.
         var confirmTimer: UInt64?
@@ -110,7 +111,11 @@ public actor SecureTransport: Transport {
 
     static let maxPendingPerPeer = 4
     static let maxUnconfirmedRestarts = 2
-    static let maxSupersededPerPeer = 2
+    /// Every unconfirmed session one restart budget can create: the first
+    /// replacement plus `maxUnconfirmedRestarts` restarts. Keeping that many
+    /// means no session the peer may still use is evicted before the budget
+    /// runs out (review 3, finding 2).
+    static let maxSupersededPerPeer = maxUnconfirmedRestarts + 1
     static let maxRememberedEphemerals = 64
 
     public init(
@@ -419,7 +424,13 @@ public actor SecureTransport: Transport {
             for index in entry.superseded.indices.reversed() {
                 var channel = entry.superseded[index]
                 if let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
-                    entry.superseded[index] = channel
+                    // The peer uses this session, which confirms it: it becomes
+                    // the last confirmed session, kept until a newer one is
+                    // confirmed. Older ones are no longer needed; newer ones
+                    // stay in case the peer switches again.
+                    channel.confirmed = true
+                    entry.lastConfirmed = channel
+                    entry.superseded.removeSubrange(...index)
                     (plaintext, channelUsed) = (opened, channel)
                     break
                 }

@@ -218,6 +218,7 @@ actor FaultyLink: Transport {
     private var toDrop = 0
     private var toFail = 0
     private var controlOnly = false
+    private var toPass = 0
     private(set) var dropped = 0
     private(set) var failed = 0
 
@@ -225,7 +226,10 @@ actor FaultyLink: Transport {
 
     /// `controlOnly` limits the fault to confirm and acknowledgement frames,
     /// which carry no payload, so data frames still pass.
-    func drop(nextTransportFrames count: Int, controlOnly: Bool = false) { (toDrop, self.controlOnly) = (count, controlOnly) }
+    /// `afterPassing` lets that many matching frames through before the fault starts.
+    func drop(nextTransportFrames count: Int, controlOnly: Bool = false, afterPassing: Int = 0) {
+        (toDrop, self.controlOnly, toPass) = (count, controlOnly, afterPassing)
+    }
     func fail(nextTransportFrames count: Int, controlOnly: Bool = false) { (toFail, self.controlOnly) = (count, controlOnly) }
 
     func start() async throws { try await inner.start() }
@@ -234,6 +238,7 @@ actor FaultyLink: Transport {
     func send(_ frame: Frame, to peer: PeerID) async throws {
         if frame.bytes.first == SecureWire.FrameType.transport.rawValue,
            !controlOnly || frame.bytes.count == SecureWire.transportOverhead {
+            if toPass > 0 { toPass -= 1; try await inner.send(frame, to: peer); return }
             if toDrop > 0 { toDrop -= 1; dropped += 1; return }
             if toFail > 0 { toFail -= 1; failed += 1; throw TransportError.peerUnreachable(peer) }
         }
