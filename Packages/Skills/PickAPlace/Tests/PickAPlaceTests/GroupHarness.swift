@@ -151,8 +151,15 @@ actor Coordinator {
 
     func state(_ id: InteractionID) -> InteractionState? { interactions[id]?.state }
 
-    func consentRequested(for conversation: ConversationID?) -> UInt32? {
-        guard let conversation, var interaction = interaction(conversation: conversation) else { return nil }
+    /// The interaction a sheet is for: by the ID the service put in the
+    /// send's context (Core v2.1), else by conversation.
+    func target(_ disclosure: Disclosure) -> Interaction? {
+        if let id = disclosure.interaction, let found = interactions[id] { return found }
+        return disclosure.conversation.flatMap { interaction(conversation: $0) }
+    }
+
+    func consentRequested(for disclosure: Disclosure) -> UInt32? {
+        guard var interaction = target(disclosure) else { return nil }
         nextConsent += 1
         do {
             try interaction.apply(.consentNeeded(request: nextConsent), at: Timestamp(Date()))
@@ -164,16 +171,30 @@ actor Coordinator {
     }
 
     /// Passing on the sheet is the owner's pass; the coordinator applies it.
-    func consentDeclined(conversation: ConversationID?) {
-        guard let conversation, var interaction = interaction(conversation: conversation) else { return }
+    func consentDeclined(for disclosure: Disclosure) {
+        guard var interaction = target(disclosure) else { return }
         try? interaction.apply(.ownerPassed, at: Timestamp(Date()))
         interactions[interaction.id] = interaction
     }
 
-    func consentApproved(_ request: UInt32, conversation: ConversationID?) {
-        guard let conversation, var interaction = interaction(conversation: conversation) else { return }
-        try? interaction.apply(.consentGiven(request: request), at: Timestamp(Date()))
-        interactions[interaction.id] = interaction
+    func consentApproved(_ request: UInt32, for disclosure: Disclosure) {
+        settle(.consentGiven(request: request), for: disclosure)
+    }
+
+    /// The send was cancelled while its sheet was up: nobody answered and
+    /// nothing was sent (ADR 0011, amendment 15).
+    func consentCancelled(_ request: UInt32, for disclosure: Disclosure) {
+        settle(.consentCancelled(request: request), for: disclosure)
+    }
+
+    private func settle(_ event: InteractionEvent, for disclosure: Disclosure) {
+        guard var interaction = target(disclosure) else { return }
+        do {
+            try interaction.apply(event, at: Timestamp(Date()))
+            interactions[interaction.id] = interaction
+        } catch {
+            rejected.append((.lifecycle(interaction.id, event), "\(error)"))
+        }
         drain(interaction.id)
     }
 }
@@ -198,11 +219,16 @@ final class CoordinatorConsent: ConsentProvider {
         // emitted, possibly before the coordinator has applied it: wait for
         // the interaction, as lane A's sheet must.
         let coordinator = coordinator
-        _ = await eventually(1) { await coordinator.interaction(conversation: disclosure.conversation ?? ConversationID()) != nil }
-        let request = await coordinator.consentRequested(for: disclosure.conversation)
+        _ = await eventually(1) { await coordinator.target(disclosure) != nil }
+        let request = await coordinator.consentRequested(for: disclosure)
         await gate?.wait()
-        if outcome == .approved, let request { await coordinator.consentApproved(request, conversation: disclosure.conversation) }
-        if outcome == .declined { await coordinator.consentDeclined(conversation: disclosure.conversation) }
+        // The service cancelled the send while the sheet was up.
+        if Task.isCancelled {
+            if let request { await coordinator.consentCancelled(request, for: disclosure) }
+            return .declined
+        }
+        if outcome == .approved, let request { await coordinator.consentApproved(request, for: disclosure) }
+        if outcome == .declined { await coordinator.consentDeclined(for: disclosure) }
         return outcome
     }
 }
@@ -210,20 +236,19 @@ final class CoordinatorConsent: ConsentProvider {
 /// Holds consent sheets open until the test opens it.
 actor ConsentGate {
     private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
     private(set) var waiting = 0
 
+    /// Returns when the gate opens, or as soon as the waiting task is
+    /// cancelled, as a real sheet is dismissed.
     func wait() async {
         guard !isOpen else { return }
         waiting += 1
-        await withCheckedContinuation { waiters.append($0) }
+        while !isOpen, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
     }
 
-    func open() {
-        isOpen = true
-        waiters.forEach { $0.resume() }
-        waiters = []
-    }
+    func open() { isOpen = true }
 }
 
 /// One phone: transport, Outbox, Inbox loop, the service, and a coordinator.

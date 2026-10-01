@@ -172,20 +172,22 @@ struct InFlightTests {
         let request = try await oliver.organize(Venues.all, with: [maya, jake])
         #expect(await eventually { await gate.waiting >= 1 })
         #expect(await eventually { await oliver.coordinator.received.contains { if case .lifecycle(request.id, .proposalReady) = $0 { true } else { false } } })
+        try await Task.sleep(for: .milliseconds(100))
         await gate.open()
-        try await Task.sleep(for: .milliseconds(300))
+        try await Task.sleep(for: .milliseconds(200))
 
         #expect(await !oliver.coordinator.received.contains(.lifecycle(request.id, .blockedByPrivacy)))
         #expect(await !group.wire.sent(by: oliver.id).contains { $0.body.kind == .query && $0.recipient == jake.id })
-        // The plan goes ahead. Oliver's coordinator refused the proposal
-        // while its sheet for the old query was up (a cancelled consent
-        // request has no event yet; docs/requests/P15-D.md), so the owner's
-        // yes goes to the service directly.
+        // Cancelling the query closed its sheet (consentCancelled), and the
+        // coordinator applied the proposal it had held meanwhile
+        // (ADR 0011, amendment 15): the plan goes ahead through the real
+        // state machine.
+        #expect(await oliver.reaches(.proposed, in: request.conversation))
         #expect(await maya.reaches(.proposed, in: request.conversation))
-        try await maya.accept(in: request.conversation)
-        try await oliver.service.answer(request.id, with: .accept(proposal: 1))
+        for phone in [oliver, maya] { try await phone.accept(in: request.conversation) }
+        #expect(await oliver.reaches(.planned, in: request.conversation))
         #expect(await maya.reaches(.planned, in: request.conversation))
-        #expect(await oliver.coordinator.received.contains(.lifecycle(request.id, .everyoneConfirmed(revision: 1))))
+        #expect(await group.lifecyclesWereLegal())
     }
 
     @Test func aDeclinedSheetAddsNoEventFromTheService() async throws {
