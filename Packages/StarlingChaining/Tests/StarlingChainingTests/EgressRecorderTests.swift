@@ -351,4 +351,71 @@ actor GatedSink: EgressSink {
         _ = try await sending.value
         #expect(try await journal.unresolved().isEmpty)
     }
+
+    @Test func aJournalThatCannotNoteTheSendStopsIt() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let journal = InMemoryEgressJournal()
+        await journal.failAll()
+        let transport = RecordingTransport(localPeer: Fixtures.me)
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        let outbox = Outbox(transport: transport, policy: allowingWithItems(), consent: ScriptedConsentProvider(.approved), observer: recorder)
+        await #expect(throws: InMemoryEgressJournal.Unavailable.self) {
+            try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
+        }
+        // Nothing left the phone, and there is nothing to vouch for.
+        #expect(await transport.sent.isEmpty)
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+        #expect(try await store.interaction(plan.id)?.egress.isEmpty == true)
+    }
+
+    @Test func aSendCutOffBeforeItWasConfirmedIsUnknownAfterARestart() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        let store = InMemoryInteractionStore([plan, link])
+        let journal = InMemoryEgressJournal()
+        // The transport fails after willSend, as a crash in between would:
+        // didSend never comes.
+        let transport = RecordingTransport(localPeer: Fixtures.me)
+        await transport.failSends(with: .failed("link dropped"))
+        let before = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        let outbox = Outbox(transport: transport, policy: allowingWithItems(), consent: ScriptedConsentProvider(.approved), observer: before)
+        await #expect(throws: TransportError.failed("link dropped")) {
+            try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya,
+                                  conversation: link.conversation, skill: link.skill, mode: .invite, chainedFrom: plan.conversation)
+        }
+        // Noted before the transport, never settled.
+        let noted = try await journal.unresolved()
+        #expect(noted.map(\.sent) == [false])
+        #expect(noted.first?.record.topics == [.place, .diet])
+        #expect(await before.unconfirmedConversations == [link.conversation])
+
+        // Relaunch: the note becomes an unknown record on the link itself, so
+        // the audit stays honest even without the recorder's memory.
+        let after = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        await after.recover()
+        let saved = try #require(try await store.interaction(link.id))
+        #expect(saved.egress.map(\.itemsUnknown) == [true])
+        #expect(!saved.egressIsKnown)
+        #expect(try await journal.unresolved().isEmpty)
+        let whatLeft = WhatLeftYourPhone(interactions: [plan, saved], registry: SampleSkills.registry)
+        #expect(whatLeft.unconfirmed == [link.id])
+        #expect(!whatLeft.kept.contains(.topic(.place)) && !whatLeft.kept.contains(.topic(.diet)))
+    }
+
+    @Test func aConfirmedSendSettlesItsNoteAndIsKnown() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let journal = InMemoryEgressJournal()
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let sent = try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya,
+                                         conversation: plan.conversation)
+        let saved = try #require(try await store.interaction(plan.id))
+        #expect(saved.egress.map(\.message) == [sent.id])
+        #expect(saved.egressIsKnown)
+        #expect(try await journal.unresolved().isEmpty)
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+    }
 }

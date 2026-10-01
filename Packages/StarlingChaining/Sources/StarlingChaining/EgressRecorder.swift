@@ -31,20 +31,28 @@ public struct EgressJournalEntry: Hashable, Sendable, Codable {
     public let message: MessageID
     public let conversation: ConversationID
     public let record: EgressRecord
+    /// False from `willSend` until Outbox confirms the transport took the
+    /// envelope. An entry still false at launch may or may not have left,
+    /// so its record is written as unknown.
+    public let sent: Bool
 
-    public init(message: MessageID, conversation: ConversationID, record: EgressRecord) {
+    public init(message: MessageID, conversation: ConversationID, record: EgressRecord, sent: Bool) {
         self.message = message
         self.conversation = conversation
         self.record = record
+        self.sent = sent
     }
 }
 
 /// Durable memory of the sends the recorder has not yet confirmed, so the
-/// audit's uncertainty survives a restart: an entry is written before the
-/// first attempt to record the send and removed only once the record is on
-/// its interaction. The app keeps it on disk (lane A); a restarted recorder
-/// reads it in `recover()`. `InMemoryEgressJournal` is for tests.
+/// audit's uncertainty survives a crash or restart (ADR 0021 decision 4). An
+/// entry is written in `willSend`, before the transport takes the envelope,
+/// updated when the send is confirmed, and removed only once its record is
+/// on the interaction. The app keeps it on disk (lane A); a restarted
+/// recorder reads it in `recover()`. `InMemoryEgressJournal` is for tests.
 public protocol EgressJournal: Sendable {
+    /// Adds the entry, or replaces the one for the same envelope. Durable
+    /// before it returns.
     func remember(_ entry: EgressJournalEntry) async throws
     func forget(_ message: MessageID) async throws
     /// Every entry not yet forgotten, oldest first.
@@ -54,34 +62,50 @@ public protocol EgressJournal: Sendable {
 /// An `EgressJournal` in memory. Survives a recorder, not the app: tests
 /// share one between two recorders to stand in for a restart.
 public actor InMemoryEgressJournal: EgressJournal {
+    public struct Unavailable: Error {}
     private var entries: [EgressJournalEntry] = []
+    private var failing = false
 
     public init() {}
 
+    /// Makes every later call throw, as a full or broken disk would.
+    public func failAll() { failing = true }
+
     public func remember(_ entry: EgressJournalEntry) async throws {
-        guard !entries.contains(where: { $0.message == entry.message }) else { return }
-        entries.append(entry)
+        if failing { throw Unavailable() }
+        if let index = entries.firstIndex(where: { $0.message == entry.message }) { entries[index] = entry } else { entries.append(entry) }
     }
 
-    public func forget(_ message: MessageID) async throws { entries.removeAll { $0.message == message } }
-    public func unresolved() async throws -> [EgressJournalEntry] { entries }
+    public func forget(_ message: MessageID) async throws {
+        if failing { throw Unavailable() }
+        entries.removeAll { $0.message == message }
+    }
+
+    public func unresolved() async throws -> [EgressJournalEntry] {
+        if failing { throw Unavailable() }
+        return entries
+    }
 }
 
 /// Install with `Outbox(observer:)`.
 ///
 /// Every send stays unresolved, and its conversation unconfirmed, from the
-/// moment Outbox reports it until the sink has put its record on the
-/// interaction: through a write under way, a failure, a retry, and a
-/// restart alike. The journal holds it until then; call `recover()` at
-/// launch, before showing any audit.
+/// moment Outbox announces it in `willSend` until the sink has put its record
+/// on the interaction: through the transport, a write under way, a failure,
+/// a retry, and a crash or restart alike. If the journal cannot note a send,
+/// `willSend` throws and Outbox sends nothing. Call `recover()` at launch,
+/// before showing any audit.
 public actor EgressRecorder: OutboxObserver {
     /// At most this many unresolved sends are kept for a retry; past that the
-    /// oldest is dropped, and its conversation stays unconfirmed for good.
+    /// oldest confirmed one is dropped, and its conversation stays
+    /// unconfirmed. Its journal entry stays, so a restart brings it back.
     public static let maxPending = 256
 
     private struct Pending {
         let conversation: ConversationID
-        let record: EgressRecord
+        var record: EgressRecord
+        /// Outbox confirmed the transport took it. Only then is it written.
+        var sent: Bool
     }
 
     private let sink: any EgressSink
@@ -93,9 +117,6 @@ public actor EgressRecorder: OutboxObserver {
     /// Sends whose sink call is under way, so two retries never write one
     /// send at the same time.
     private var attempting: Set<MessageID> = []
-    /// Sends whose journal entry is still being written. None is written to
-    /// the sink before its uncertainty is durable.
-    private var journaling: Set<MessageID> = []
     /// Conversations that lost a record for good (the retry queue was full).
     private var lost: Set<ConversationID> = []
 
@@ -108,9 +129,8 @@ public actor EgressRecorder: OutboxObserver {
     public private(set) var unexplained = 0
     /// Write attempts the sink rejected, retries included.
     public private(set) var failedWrites = 0
-    /// Journal operations that failed. A send whose entry could not be
-    /// written is still recorded if the sink works; if both fail, its
-    /// uncertainty lasts only until the app quits.
+    /// Journal operations that failed. A failure in `willSend` stops the
+    /// send; a later one leaves an entry that a restart resolves.
     public private(set) var journalFailures = 0
     /// The journal could not be read at launch, so the app cannot know which
     /// logs are complete: it should not claim anything stayed on the phone.
@@ -123,7 +143,9 @@ public actor EgressRecorder: OutboxObserver {
     }
 
     /// At launch: brings back every send the journal still holds, so its
-    /// conversation is unconfirmed again, and retries them.
+    /// conversation is unconfirmed again, and records it. A send that was
+    /// announced but never confirmed may or may not have left, so it is
+    /// recorded with `itemsUnknown` (ADR 0021 decision 4).
     public func recover() async {
         let entries: [EgressJournalEntry]
         do {
@@ -133,30 +155,57 @@ public actor EgressRecorder: OutboxObserver {
             journalFailures += 1
             return
         }
-        for entry in entries { track(entry.message, Pending(conversation: entry.conversation, record: entry.record)) }
+        for entry in entries {
+            let record = entry.sent ? entry.record
+                : EgressRecord(at: entry.record.at, recipient: entry.record.recipient, items: entry.record.items, message: entry.message, itemsUnknown: true)
+            track(entry.message, Pending(conversation: entry.conversation, record: record, sent: true))
+        }
         await retryPending()
     }
 
-    /// `disclosed` is what Outbox reports: the consent sheet's items, or for
-    /// a send allowed without a sheet the policy's own list
-    /// (`PolicyEngine.disclosedItems(for:)`), or nil when the policy could
-    /// not say.
+    /// Before the transport: notes the send durably as pending, with what it
+    /// discloses. Throws, and Outbox sends nothing, if the journal cannot.
+    public func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
+        if case .deny = decision { return }
+        let record = Self.record(for: envelope, disclosed: disclosed, at: now())
+        // Tracked before the first suspension, so the conversation is
+        // unconfirmed from the moment the send is announced.
+        track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: false))
+        do {
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: false))
+        } catch {
+            journalFailures += 1
+            // Not sent, so nothing to record: forget it here too.
+            pending[envelope.id] = nil
+            order.removeAll { $0 == envelope.id }
+            throw error
+        }
+    }
+
+    /// After the transport took the envelope: settles the pending note and
+    /// records the send on its interaction. `disclosed` is what Outbox
+    /// reports: the consent sheet's items, or for a send allowed without a
+    /// sheet the policy's own list (`PolicyEngine.disclosedItems(for:)`), or
+    /// nil when the policy could not say.
     public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
         if case .deny = decision { return }  // Outbox never reports a denied send.
         if disclosed == nil { unexplained += 1 }
-        let record = EgressRecord(at: Timestamp(now()), recipient: envelope.recipient, items: disclosed ?? [],
-                                  message: envelope.id, itemsUnknown: disclosed == nil)
-        // Tracked before the first suspension, so the conversation is
-        // unconfirmed from the moment the send is reported, and journaled
-        // before any write, so that survives a restart.
-        track(envelope.id, Pending(conversation: envelope.conversation, record: record))
-        journaling.insert(envelope.id)
+        // The envelope as sent carries its number and send time; the draft
+        // announced in willSend has the same ID.
+        let record = Self.record(for: envelope, disclosed: disclosed, at: now())
+        if pending[envelope.id] == nil {
+            track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: true))
+        } else {
+            pending[envelope.id]?.record = record
+            pending[envelope.id]?.sent = true
+        }
         do {
-            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record))
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: true))
         } catch {
+            // The entry stays as announced; a restart records it as unknown,
+            // or, if this record lands first, Interaction.record keeps this one.
             journalFailures += 1
         }
-        journaling.remove(envelope.id)
         await retryPending()
     }
 
@@ -166,30 +215,34 @@ public actor EgressRecorder: OutboxObserver {
         await outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
     }
 
-    /// Writes every unresolved send, oldest first, skipping any already being
-    /// written. Each stays unresolved until its own write lands. The app calls
-    /// it when the store recovers; every new send also runs it.
+    /// Writes every confirmed, unresolved send, oldest first, skipping any
+    /// already being written. Each stays unresolved until its own write
+    /// lands. The app calls it when the store recovers; every send also runs it.
     public func retryPending() async {
-        for message in order where pending[message] != nil && !attempting.contains(message) && !journaling.contains(message) {
+        for message in order where pending[message]?.sent == true && !attempting.contains(message) {
             await attempt(message)
         }
     }
 
-    /// Conversations whose egress log may be missing a send: one is being
-    /// written, waits for a retry, or was dropped. Pass to
+    /// Conversations whose egress log may be missing a send: one is on its
+    /// way out, being written, waiting for a retry, or was dropped. Pass to
     /// `WhatLeftYourPhone` and `PlanTimeline` so they do not claim anything
     /// stayed on the phone there.
     public var unconfirmedConversations: Set<ConversationID> {
         lost.union(pending.values.map(\.conversation))
     }
 
+    private static func record(for envelope: Envelope, disclosed: [DisclosedItem]?, at date: Date) -> EgressRecord {
+        EgressRecord(at: Timestamp(date), recipient: envelope.recipient, items: disclosed ?? [], message: envelope.id, itemsUnknown: disclosed == nil)
+    }
+
     private func track(_ message: MessageID, _ item: Pending) {
         guard pending[message] == nil else { return }
         pending[message] = item
         order.append(message)
-        // Over the limit: drop the oldest send not being written.
-        // Its journal entry stays, so a restart brings it back.
-        if order.count > Self.maxPending, let oldest = order.first(where: { !attempting.contains($0) && !journaling.contains($0) }) {
+        // Over the limit: drop the oldest confirmed send not being written.
+        if order.count > Self.maxPending,
+           let oldest = order.first(where: { pending[$0]?.sent == true && !attempting.contains($0) }) {
             if let dropped = pending.removeValue(forKey: oldest) { lost.insert(dropped.conversation) }
             order.removeAll { $0 == oldest }
         }
