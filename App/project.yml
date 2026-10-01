@@ -28,6 +28,13 @@ packages:
   # Lane E1's identity, pinned friends, pairing, and secure channel.
   StarlingIdentity:
     path: ../Packages/StarlingIdentity
+  # Lane D's Pick a place, lane E's chaining and audit, and its Swap photos.
+  PickAPlace:
+    path: ../Packages/Skills/PickAPlace
+  StarlingChaining:
+    path: ../Packages/StarlingChaining
+  SwapPhotos:
+    path: ../Packages/Skills/SwapPhotos
   # Lane BR's status mark and palette (ADR 0172).
   StarlingDesign:
     path: ../Packages/StarlingDesign
@@ -83,6 +90,14 @@ targets:
         product: StarlingFeatures
       - package: StarlingDesign
         product: StarlingDesign
+      - package: PickAPlace
+        product: PickAPlace
+      - package: PickAPlace
+        product: PickAPlaceMapKit
+      - package: StarlingChaining
+        product: StarlingChaining
+      - package: SwapPhotos
+        product: StarlingSwapPhotos
       - package: StarlingPolicy
         product: StarlingPolicy
       - package: StarlingIdentity

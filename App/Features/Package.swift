@@ -16,11 +16,19 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../Packages/StarlingCore"),
+        // Lane E's chaining and audit, and lane D's Pick a place (its
+        // Foundation-only library; the MapKit half stays in the app).
+        .package(path: "../../Packages/StarlingChaining"),
+        .package(path: "../../Packages/Skills/PickAPlace"),
     ],
     targets: [
-        // Depends on StarlingCore only. StarlingFakes is for tests and Debug
-        // builds; the app injects fakes, this module never imports them.
-        .target(name: "StarlingFeatures", dependencies: [.product(name: "StarlingCore", package: "StarlingCore")]),
+        // StarlingFakes is for tests and Debug builds; the app injects
+        // fakes, this module never imports them.
+        .target(name: "StarlingFeatures", dependencies: [
+            .product(name: "StarlingCore", package: "StarlingCore"),
+            .product(name: "StarlingChaining", package: "StarlingChaining"),
+            .product(name: "PickAPlace", package: "PickAPlace"),
+        ]),
         .testTarget(
             name: "StarlingFeaturesTests",
             dependencies: [
