@@ -8,23 +8,23 @@ import StarlingNegotiation
 
 extension DownForService {
     /// The starter's schedule, fixed so that when a friend hears from it
-    /// never depends on any other friend (review finding 2): gather until
-    /// `gatherWindow` after taking the request on, then check, with every
-    /// ready member at once and exactly once, who may share a plan; then
-    /// propose when `vetWindow` ends, with whoever answered. A friend still
-    /// finding time or answering when the gathering ends is left out.
+    /// never depends on any other friend (review finding 2, and the final
+    /// privacy review's finding 2): a friend whose time check is done is
+    /// asked, once, who it could share a plan with at `gatherWindow` after
+    /// the starter took the request on, or as soon as it is done if later.
+    /// When that check's `vetWindow` ends, every friend is offered its own
+    /// plan (`offer(to:in:)`).
     ///
     /// Not while this request is itself answering a lower starter's run:
     /// that group comes first (ADR 0210 decision 5).
     func considerProposing(_ id: InteractionID) {
-        guard let request = requests[id], request.invitation == nil, request.engagement == .hub, request.group == nil,
-              request.vetting == nil, request.mirror.state == .negotiating
+        guard let request = requests[id], request.invitation == nil, request.engagement == .hub,
+              request.group?.confirming == nil, request.mirror.state != .planned, !request.mirror.state.isFinal
         else { return }
         let all = runs.values.filter { $0.request == id }
         guard !all.contains(where: { $0.role == .member && ($0.phase == .psi || $0.phase == .details) }) else { return }
-        let mine = all.filter { $0.role == .hub }
-        let ready = mine.filter { $0.phase == .ready }
-        guard !ready.isEmpty else { return checkSettled(id) }
+        let fresh = all.filter { $0.role == .hub && $0.phase == .ready && $0.vetCount == 0 }
+        guard !fresh.isEmpty else { return checkSettled(id) }
         let waited = ContinuousClock.now - request.since
         guard waited >= configuration.gatherWindow else {
             guard request.quiet == nil else { return }
@@ -35,8 +35,7 @@ extension DownForService {
             }
             return
         }
-        for run in mine where run.phase == .psi || run.phase == .details { end(run.key, .withdrawn, react: false) }
-        startVetting(ready, in: id)
+        startVetting(fresh, in: id)
     }
 
     private func quietPassed(_ id: InteractionID) {
@@ -47,7 +46,7 @@ extension DownForService {
     /// How many times the starter asks one member about the others: once.
     static let maxVettingRounds = 1
 
-    /// Asks every ready member, once, which of the others it could share a
+    /// Asks each of `ready`, once, which of the others it could share a
     /// plan with its own request includes: those with the same half-hour
     /// and an activity both accept. A member with nobody to ask about gets
     /// the same check, padded, so the check itself says nothing.
@@ -61,36 +60,37 @@ extension DownForService {
             runs[run.key]?.vetCount += 1
             enqueue(.act(run.key, .vet(others.sorted())), for: run.key.peer)
         }
+        let batch = UUID()
+        let keys = ready.map(\.key)
         let window = configuration.vetWindow
-        requests[id]?.vetting = Task { [weak self] in
-            try? await Task.sleep(for: window)
-            await self?.vettingEnded(id)
+        requests[id]?.vettings[batch] = Task { [weak self] in
+            do { try await Task.sleep(for: window) } catch { return }
+            await self?.vettingEnded(id, batch: batch, keys: keys)
         }
     }
 
-    /// The check's window is over: propose to whoever answered it.
-    private func vettingEnded(_ id: InteractionID) {
-        guard let request = requests[id], request.group == nil, request.mirror.state == .negotiating else { return }
-        let mine = runs.values.filter { $0.request == id && $0.role == .hub }
-        let vetted = mine.filter { $0.phase == .ready && $0.vetCount > 0 }
-        for run in mine where !(run.phase == .ready && run.vetCount > 0) { end(run.key, .withdrawn, react: false) }
-        guard let plan = plan(for: vetted.map(\.key.peer), in: id) else {
-            for run in vetted {
-                enqueue(.notify(run.notice, .noOverlap), for: run.key.peer)
-                end(run.key, .excluded, react: false)
-            }
-            // Gather again from now: friends who join later get a fresh,
-            // equally fixed schedule.
-            requests[id]?.vetting = nil
-            requests[id]?.since = ContinuousClock.now
+    /// A check's window is over: offer every friend its own plan. A friend
+    /// whose check did not come back in time is left out.
+    private func vettingEnded(_ id: InteractionID, batch: UUID, keys: [RunKey]) {
+        guard requests[id]?.vettings.removeValue(forKey: batch) != nil, let request = requests[id],
+              request.group?.confirming == nil
+        else { return }
+        for key in keys where runs[key]?.phase == .vetting { end(key, .withdrawn, react: false) }
+        guard offer(to: candidates(in: id), in: id) else {
+            if requests[id]?.group != nil { endRequest(id, with: .noAgreement) }
             return checkSettled(id)
         }
-        requests[id]?.vetting = nil
-        propose(plan.terms, to: plan.members, in: id)
+    }
+
+    /// Friends checked and still in: waiting for a plan or offered one.
+    func candidates(in id: InteractionID) -> [PeerID] {
+        runs.values
+            .filter { $0.request == id && $0.role == .hub && $0.vetCount > 0 && [.ready, .proposed, .accepted].contains($0.phase) }
+            .map(\.key.peer)
     }
 
     /// The group plan from these friends' answers, or nil.
-    private func plan(for peers: [PeerID], in id: InteractionID) -> (terms: Terms, members: [PeerID])? {
+    private func plan(for peers: [PeerID], including friend: PeerID, in id: InteractionID) -> (terms: Terms, members: [PeerID])? {
         guard let request = requests[id] else { return nil }
         var candidates: [PeerID: CandidateAnswers] = [:]
         for peer in peers {
@@ -102,43 +102,107 @@ extension DownForService {
         guard let plan = GroupPlanner.plan(
             hub: localPeer, liked: request.profile.liked,
             candidates: candidates, maxMinutes: configuration.maxPlanMinutes, now: clock.now(),
-            together: { allowed[$0]?.contains($1) == true }
+            including: friend, together: { allowed[$0]?.contains($1) == true }
         ), plan.members.allSatisfy({ request.profile.permits(plan.terms, me: localPeer, hub: localPeer, member: $0, now: clock.now()) })
         else { return nil }
         return plan
     }
 
-    /// Shows `terms` on the owner's card as the next revision, sends them to
-    /// every member, and tells friends left out "no plan".
-    private func propose(_ terms: Terms, to members: [PeerID], in id: InteractionID) {
-        guard let request = requests[id], let first = members.first,
-              let roster = DownForProfile.roster(of: terms, hub: localPeer, member: first)
-        else { return }
-        let revision = (request.mirror.proposalRevision ?? 0) + 1
-        // A proposal round is bounded on the wire; so are re-plans.
-        guard revision <= UInt32(ProtocolLimits.maxNegotiationRounds) else {
-            endRequest(id, with: .noAgreement)
-            return
+    /// Whether two friends each asked the other (the audience check).
+    private func mutual(_ a: PeerID, _ b: PeerID, in id: InteractionID) -> Bool {
+        guard let conversation = requests[id]?.conversation else { return false }
+        return runs[RunKey(conversation: conversation, peer: a)]?.allowed.contains(b) == true
+            && runs[RunKey(conversation: conversation, peer: b)]?.allowed.contains(a) == true
+    }
+
+    /// Offers every candidate its own plan, and picks the starter's
+    /// (final privacy review of PR #56, finding 2).
+    ///
+    /// A friend's own plan is the plan it would get if the starter knew
+    /// only of the friends it shares a mutual audience with: so nothing a
+    /// friend is offered depends on anyone outside that, interested or not.
+    /// The starter's own plan is one that each of its members would also
+    /// get as its own plan, preferring more friends, then the starter's
+    /// earlier activity and time. Every other friend with a plan of its own
+    /// is offered it all the same, on the same schedule, and the starter
+    /// never confirms it: to that friend it is a starter whose owner did
+    /// not answer. A friend with no plan even in its own view hears an
+    /// ordinary no. Only a friend whose own plan changed gets a new round.
+    ///
+    /// - Returns: Whether anyone was offered anything.
+    @discardableResult
+    func offer(to candidates: [PeerID], in id: InteractionID) -> Bool {
+        guard let request = requests[id] else { return false }
+        var own: [PeerID: (terms: Terms, members: [PeerID])] = [:]
+        for friend in candidates {
+            let world = [friend] + candidates.filter { $0 != friend && mutual(friend, $0, in: id) }
+            if let plan = plan(for: world, including: friend, in: id) { own[friend] = plan }
         }
-        let card = SkillProposal(revision: revision, participants: roster, terms: terms, plan: DownForProfile.plan(from: terms, origin: request.conversation, hub: localPeer, member: first))
-        // Behind a consent sheet the card cannot show yet; this runs again
-        // once the sheet is answered.
-        guard report(id, .proposalReady(card)) else { return }
-        requests[id]?.group = Group(revision: revision, terms: terms, members: members)
-        for run in runs.values where run.request == id && run.role == .hub {
-            if members.contains(run.key.peer) {
-                runs[run.key]?.terms = terms
-                runs[run.key]?.accepted = false
-                runs[run.key]?.phase = .proposed
-                runs[run.key]?.proposalEnvelopes = []
-                runs[run.key]?.replies = [:]
-                enqueue(.act(run.key, .propose), for: run.key.peer)
+        for friend in candidates where own[friend] == nil {
+            let key = RunKey(conversation: request.conversation, peer: friend)
+            if let run = runs[key] { enqueue(.notify(run.notice, .noOverlap), for: friend) }
+            stopDelivery(key)
+            end(key, .excluded, react: false)
+        }
+        guard !own.isEmpty else { return false }
+
+        // The starter's plan: one its members all have as their own.
+        let consistent = Set(own.values.map(\.terms)).compactMap { terms -> (terms: Terms, members: [PeerID])? in
+            guard let plan = own.values.first(where: { $0.terms == terms }),
+                  plan.members.allSatisfy({ own[$0]?.terms == terms })
+            else { return nil }
+            return plan
+        }
+        let liked = request.profile.liked
+        func rank(_ plan: (terms: Terms, members: [PeerID])) -> (Int, Int, Int64, [PeerID]) {
+            let activity = DownForProfile.activity(of: plan.terms).flatMap { liked.firstIndex(of: $0) } ?? liked.count
+            let start = DownForProfile.slot(of: plan.terms)?.startMinute ?? .max
+            return (-plan.members.count, activity, start, plan.members)
+        }
+        let current = request.group.flatMap { group in consistent.first { $0.terms == group.terms && $0.members == group.members } }
+        let chosen = current ?? consistent.min { a, b in
+            let (x, y) = (rank(a), rank(b))
+            return (x.0, x.1, x.2) != (y.0, y.1, y.2) ? (x.0, x.1, x.2) < (y.0, y.1, y.2) : x.3.lexicographicallyPrecedes(y.3)
+        }
+
+        // The starter's card, when its plan changed.
+        if let chosen, request.group?.terms != chosen.terms || request.group?.members != chosen.members {
+            let revision = (request.mirror.proposalRevision ?? 0) + 1
+            guard revision <= UInt32(ProtocolLimits.maxNegotiationRounds), let first = chosen.members.first,
+                  let roster = DownForProfile.roster(of: chosen.terms, hub: localPeer, member: first)
+            else {
+                endRequest(id, with: .noAgreement)
+                return true
+            }
+            let card = SkillProposal(revision: revision, participants: roster, terms: chosen.terms, plan: DownForProfile.plan(from: chosen.terms, origin: request.conversation, hub: localPeer, member: first))
+            report(id, .proposalReady(card))
+            requests[id]?.group?.window?.cancel()
+            requests[id]?.group = Group(revision: revision, terms: chosen.terms, members: chosen.members)
+        } else if chosen == nil {
+            // Nobody's plan is one the others share: no plan the starter
+            // can confirm this time, though every friend is offered its own.
+            if requests[id]?.group == nil {
+                requests[id]?.group = Group(revision: request.mirror.proposalRevision ?? 0, terms: own.values.first!.terms, members: [])
             } else {
-                enqueue(.notify(run.notice, .noOverlap), for: run.key.peer)
-                end(run.key, .excluded, react: false)
+                requests[id]?.group?.members = []
             }
         }
-        armWindow(id, revision: revision)
+
+        // Every friend's own plan, a new round only when it changed.
+        for (friend, plan) in own {
+            let key = RunKey(conversation: request.conversation, peer: friend)
+            guard let run = runs[key], run.terms != plan.terms || run.phase == .ready else { continue }
+            runs[key]?.terms = plan.terms
+            runs[key]?.accepted = false
+            runs[key]?.acceptedProposal = nil
+            runs[key]?.phase = .proposed
+            runs[key]?.proposalEnvelopes = []
+            runs[key]?.replies = [:]
+            enqueue(.act(key, .propose), for: friend)
+        }
+        if let revision = requests[id]?.group?.revision { armWindow(id, revision: revision) }
+        checkComplete(id)
+        return true
     }
 
     /// A hub run ended without a plan.
@@ -148,24 +212,25 @@ extension DownForService {
             considerProposing(id)
             return checkSettled(id)
         }
-        guard group.members.contains(peer) else { return }
         if group.confirming != nil {
             // Confirmations are on their way; this one counts as sent.
-            return confirmationSent(id, to: peer)
+            if group.members.contains(peer) { confirmationSent(id, to: peer) }
+            return
         }
         drop([peer], from: id)
     }
 
-    /// Re-plans without `peers`: a new revision for whoever is left, or no
-    /// plan. Friends who stay must say "I'm in" again, since the roster is
-    /// part of what they agree to.
+    /// Offers again without `peers`. Friends whose own plan is unchanged
+    /// see nothing new; the rest get a new round, and the starter a new
+    /// card if its plan changed. Friends who stay in a changed plan must
+    /// say I'm in again, since the roster is part of what they agree to.
     private func drop(_ peers: Set<PeerID>, from id: InteractionID) {
         guard let request = requests[id], let group = request.group else { return }
         for peer in peers { stopDelivery(RunKey(conversation: request.conversation, peer: peer)) }
-        group.window?.cancel()
-        requests[id]?.group = nil
-        let remaining = group.members.filter { !peers.contains($0) && runs[RunKey(conversation: request.conversation, peer: $0)] != nil }
         if request.invitation != nil {
+            group.window?.cancel()
+            requests[id]?.group = nil
+            let remaining = group.members.filter { !peers.contains($0) && runs[RunKey(conversation: request.conversation, peer: $0)] != nil }
             // An invitation's plan does not change; only who is in it does.
             guard !remaining.isEmpty else {
                 endRequest(id, with: .noAgreement)
@@ -174,16 +239,11 @@ extension DownForService {
             for peer in remaining { runs[RunKey(conversation: request.conversation, peer: peer)]?.accepted = false }
             return showInvitation(to: remaining, in: id)
         }
-        for peer in remaining { runs[RunKey(conversation: request.conversation, peer: peer)]?.phase = .ready }
-        guard let plan = plan(for: remaining, in: id) else {
+        let remaining = candidates(in: id).filter { !peers.contains($0) }
+        guard !remaining.isEmpty, offer(to: remaining, in: id) else {
             endRequest(id, with: .noAgreement)
             return
         }
-        let before = requests[id]?.mirror.proposalRevision
-        propose(plan.terms, to: plan.members, in: id)
-        // Could not show the new card (a consent sheet is up): nobody is up
-        // for the old one any more.
-        if requests[id]?.mirror.proposalRevision == before { endRequest(id, with: .noAgreement) }
     }
 
     /// When a proposal's window passes: friends who have not said "I'm in"
@@ -204,8 +264,8 @@ extension DownForService {
     /// the starter said it is not theirs to learn.
     private func windowPassed(_ id: InteractionID, revision: UInt32) {
         guard let request = requests[id], let group = request.group, group.revision == revision, group.confirming == nil else { return }
-        guard !request.passed, group.ownerAccepted else {
-            endRequest(id, with: request.passed ? .ownerPassed : .expired)
+        guard !request.passed, !group.members.isEmpty, group.ownerAccepted else {
+            endRequest(id, with: request.passed ? .ownerPassed : group.members.isEmpty ? .noAgreement : .expired)
             return
         }
         let late = group.members.filter { runs[RunKey(conversation: request.conversation, peer: $0)]?.accepted != true }
@@ -231,12 +291,13 @@ extension DownForService {
         }
     }
 
-    /// A friend said I'm in to the plan it was offered: that stops the
-    /// proposal's schedule.
+    /// A friend said I'm in to the plan it was offered, its own: that
+    /// stops the proposal's schedule. It counts towards the starter's plan
+    /// only when the friend is in it.
     func handleAccept(_ acceptance: Acceptance, in key: RunKey) {
         guard let run = runs[key], run.role == .hub, run.phase == .proposed, let terms = run.terms, acceptance.terms == terms,
-              run.proposalEnvelopes.contains(acceptance.proposal) || acceptsDelivery(acceptance, at: key), let request = requests[run.request],
-              request.invitation != nil ? request.group == nil : request.group?.terms == terms
+              run.proposalEnvelopes.contains(acceptance.proposal) || acceptsDelivery(acceptance, at: key),
+              let request = requests[run.request], request.invitation == nil || request.group == nil
         else { return }
         stopDelivery(key)
         runs[key]?.accepted = true
@@ -250,7 +311,7 @@ extension DownForService {
     /// "I'm in" to the current revision. Nobody is in a plan before that.
     func checkComplete(_ id: InteractionID) {
         guard let request = requests[id], var group = request.group, group.ownerAccepted, group.confirming == nil,
-              request.mirror.state == .confirmed
+              !group.members.isEmpty, request.mirror.state == .confirmed
         else { return }
         let keys = group.members.map { RunKey(conversation: request.conversation, peer: $0) }
         guard keys.allSatisfy({ runs[$0]?.accepted == true }) else { return }
@@ -276,7 +337,10 @@ extension DownForService {
         requests[id]?.group = group
         guard confirming.isEmpty, report(id, .everyoneConfirmed(revision: group.revision)) else { return }
         produceArtifacts(id, terms: group.terms, origin: request.conversation, peer: group.members[0])
-        for key in runs.keys where runs[key]?.request == id { end(key, .matched) }
+        // Friends offered a plan of their own that was not this one keep
+        // its schedule: they cannot tell this from a starter who never
+        // answered.
+        for key in runs.keys where runs[key]?.request == id { end(key, group.members.contains(key.peer) ? .matched : .withdrawn, react: false) }
         armCleanup(id)
     }
 

@@ -236,6 +236,56 @@ import Testing
         let last = try #require(seen.last?.1)
         return Delivered(kinds: kinds, count: seen.count, lastAfterFirst: first.duration(to: last))
     }
+
+    // MARK: Final privacy review, finding 2: a friend outside C's audience
+
+    @Test func whatCHearsDoesNotDependOnAFriendOutsideItsAudience() async throws {
+        let bAsksOnlyA = try await Self.cTranscript(bIsUp: true)
+        let bHasNoRequest = try await Self.cTranscript(bIsUp: false)
+        #expect(bAsksOnlyA.terms == bHasNoRequest.terms)
+        #expect(bAsksOnlyA.participants == ["A", "C"] && bHasNoRequest.participants == ["A", "C"])
+        #expect(bAsksOnlyA.kinds == bHasNoRequest.kinds, "B up \(bAsksOnlyA.kinds), B not \(bHasNoRequest.kinds)")
+        #expect(!bAsksOnlyA.kinds.contains(.reject) && !bHasNoRequest.kinds.contains(.reject))
+        #expect(abs(bAsksOnlyA.proposals - bHasNoRequest.proposals) <= 1, "B up \(bAsksOnlyA.proposals), B not \(bHasNoRequest.proposals)")
+        let gap = abs((bAsksOnlyA.firstProposalAt - bHasNoRequest.firstProposalAt) / .milliseconds(1))
+        #expect(gap < 250, "the proposal reached C \(gap) ms apart")
+    }
+
+    struct CView: Sendable {
+        let terms: Terms?
+        let participants: [String]?
+        /// Everything that reached C, repeats collapsed.
+        let kinds: [MessageBody.Kind]
+        let proposals: Int
+        let firstProposalAt: Duration
+    }
+
+    /// A < B < C. A asks B and C; C asks A and B. B either asks only A,
+    /// leaving C out, or has no request at all. C never answers its card.
+    /// Returns what reached C in the 1.5 s after its card showed.
+    static func cTranscript(bIsUp: Bool) async throws -> CView {
+        let world = World(3)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let (a, b, c) = (world["A"], world["B"], world["C"])
+        let clock = ContinuousClock()
+        let started = clock.now
+        _ = try await a.down(for: ["boba"], with: [b, c])
+        let cs = try await c.down(for: ["boba"], with: [a, b])
+        if bIsUp { _ = try await b.down(for: ["boba"], with: [a]) }
+        try await c.waitForProposal(cs)
+        let proposedAt = started.duration(to: clock.now)
+        try await Task.sleep(for: .milliseconds(1_500))
+        let toC = await world.wire.envelopes.filter { $0.recipient == c.id }
+        var kinds: [MessageBody.Kind] = []
+        for kind in toC.map(\.body.kind) where kinds.last != kind { kinds.append(kind) }
+        let card = await c.lifecycle.interaction(cs)?.proposal
+        let names = [a.id: "A", b.id: "B", c.id: "C"]
+        return CView(
+            terms: card?.terms, participants: card?.participants.map { names[$0] ?? "?" }, kinds: kinds,
+            proposals: toC.filter { $0.body.kind == .propose }.count, firstProposalAt: proposedAt
+        )
+    }
 }
 
 extension Mallory {

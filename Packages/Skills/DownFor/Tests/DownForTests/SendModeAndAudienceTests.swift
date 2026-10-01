@@ -28,9 +28,23 @@ import Testing
         for envelope in await world.wire.envelopes {
             if case .propose(let proposal) = envelope.body { #expect(proposal.terms[.people] == nil) }
         }
+        // Each is offered its own pair, whoever else is up for it (final
+        // privacy review, finding 2), and only A's plan is made: with
+        // whichever of them A's card shows.
+        try await b.waitForProposal(bs)
+        try await c.waitForProposal(cs)
         let cards = [await b.lifecycle.interaction(bs)?.proposal, await c.lifecycle.interaction(cs)?.proposal].compactMap { $0 }
-        #expect(cards.count == 1)
-        #expect(cards.allSatisfy { $0.participants.count == 2 })
+        #expect(cards.map(\.participants) == [[a.id, b.id], [a.id, c.id]])
+        let chosen = try #require(card.participants.last)
+        let (inIt, leftOut) = chosen == b.id ? ((b, bs), (c, cs)) : ((c, cs), (b, bs))
+        try await a.imIn(mine)
+        try await b.imIn(bs)
+        try await c.imIn(cs)
+        try await a.waitFor(.planned, mine)
+        try await inIt.0.waitFor(.planned, inIt.1)
+        #expect(await a.lifecycle.interaction(mine)?.plan?.attendees.peers == [a.id, chosen])
+        // The other hears nothing more, as from a starter who never answered.
+        try await leftOut.0.waitFor(.ended(.nobodyUp), leftOut.1)
         await world.expectCleanLifecycles()
     }
 

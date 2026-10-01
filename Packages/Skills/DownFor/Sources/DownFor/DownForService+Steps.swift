@@ -36,7 +36,10 @@ extension DownForService {
     }
 
     private func canStart(_ id: InteractionID, with peer: PeerID) -> Bool {
-        guard let request = requests[id], request.isGathering, request.engagement == .hub, request.group == nil, request.vetting == nil,
+        // A friend who turns up after the others is taken on all the same,
+        // as it would be if nobody else had: whether it is depends on no
+        // one else's answer (final privacy review, finding 2).
+        guard let request = requests[id], request.isTakingFriends, request.engagement == .hub,
               request.record.participants.contains(peer), !request.settled.contains(peer), !request.unsupported.contains(peer),
               reachable.contains(peer), request.runs[peer, default: 0] < configuration.maxRunsPerPeer
         else { return false }
@@ -56,7 +59,7 @@ extension DownForService {
             // Only a quiet request answers a quiet ask: one sent as an
             // invitation is not up for matching (review finding 3).
             .filter {
-                $0.record.mode == .askQuietly && $0.isGathering && $0.group == nil && $0.vetting == nil
+                $0.record.mode == .askQuietly && $0.isGathering && $0.group == nil && $0.vettings.isEmpty
                     && $0.record.participants.contains(peer) && !$0.settled.contains(peer) && !$0.unsupported.contains(peer)
             }
             .sorted { $0.mirror.createdAt < $1.mirror.createdAt }

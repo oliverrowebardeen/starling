@@ -74,9 +74,9 @@ public actor DownForService: SkillService {
         /// before the starter proposes.
         var since = ContinuousClock.now
         var quiet: Task<Void, Never>?
-        /// The audience check is running; the proposal follows at the end
-        /// of its window.
-        var vetting: Task<Void, Never>?
+        /// Audience checks running, each with its own window; the offers
+        /// follow when one ends.
+        var vettings: [UUID: Task<Void, Never>] = [:]
         /// The owner passed on the card. The request runs on unchanged,
         /// minus any I'm in from the owner, until the card's window ends
         /// (final privacy review, finding 1).
@@ -84,6 +84,12 @@ public actor DownForService: SkillService {
 
         var id: InteractionID { record.interaction }
         var conversation: ConversationID { record.conversation }
+
+        /// Still starting runs with friends: until the plan is being
+        /// confirmed, a card showing or not.
+        var isTakingFriends: Bool {
+            mirror.state != .planned && !mirror.state.isFinal && group?.confirming == nil
+        }
 
         /// Still gathering friends: negotiating, possibly behind a consent sheet.
         var isGathering: Bool {
@@ -504,7 +510,7 @@ public actor DownForService: SkillService {
         // unless its card had shown (`end`).
         request.timer?.cancel()
         request.quiet?.cancel()
-        request.vetting?.cancel()
+        for task in request.vettings.values { task.cancel() }
         for key in deliveries.keys where deliveries[key]?.request == id { stopDelivery(key) }
         request.group?.window?.cancel()
         for key in runs.keys where runs[key]?.request == id { end(key, .withdrawn) }
