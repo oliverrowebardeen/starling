@@ -28,7 +28,8 @@ Phones A and B are paired, both on the Phase 1.5 build.
 3. Phone B: tap New, type "down for boba after 8", then "See who's up for it". Expect within about a minute (the starter gathers for 30 seconds and checks rosters for 15 before any card, on purpose), on both phones: a Needs you card such as "You and A are both down for boba. Tonight at 8 PM?" with I'm in and Not tonight. Approve any consent sheet that appears first; the sheet names the other phone's owner.
 4. Phone A: tap I'm in. Expect: Phone A's card shows it is waiting; Phone B still shows its card. Phone B: tap I'm in. Expect: "It's a plan" on both phones within 5 seconds, with the same time and activity.
 5. Three phones (A, B, C), all down for boba with all friends. Expect: one card on each phone listing all three. A and B tap I'm in; Phone C taps Not tonight. Expect: nothing changes on A or B until the owner window passes (15 minutes by default), then a new card listing only A and B, and no message on either says C passed. Both tap I'm in. Expect: It's a plan for two.
-5a. Three phones again, but on Phones B and C pick only A as the audience. Expect: each card lists two people; B never sees C's name and C never sees B's.
+5a. Three phones again, but on Phones B and C pick only A as the audience. Expect: B's card lists A and B, C's lists A and C, and A's lists one of them. B never sees C's name and C never sees B's. All three tap I'm in. Expect: It's a plan on A and on whichever phone A's card named; the other card shows nothing new and ends as nobody up when its wait runs out (about 30 minutes).
+5b. Phones A and B, both down for boba. Phone A taps Not tonight; Phone B does nothing. Repeat with Phone A doing nothing. Expect, both times: Phone B's card stays as it was until about 30 minutes later, then ends as nobody up; Developer, What left your phone on A shows the proposal resent on the same schedule both times, stopping about 15 minutes after the card.
 6. Phone A: start "pho tonight", then tap the request and withdraw it before Phone B has a request. Expect: it moves to history; Phone B never shows anything.
 7. Phone B: switch Down for... off in You, then on Phone A start "boba tonight". Expect: Phone A says B's Starling doesn't do this (if B is the only friend) or leaves B out.
 8. Phone A: force-quit Starling while a request is In progress, reopen it. Expect: the request is still In progress, and a plan still forms if Phone B goes down for the same thing.
@@ -48,6 +49,7 @@ Phones A and B are paired, both on the Phase 1.5 build.
 | B3 to B4 two-phone plan | | | |
 | B5 three-phone plan and pass | | | |
 | B5a rosters only of friends who asked | | | |
+| B5b starter's pass looks like silence | | | |
 | B6 to B8 | | | |
 | B9 to B10 invite and everyone except | | | |
 | B11 copy | | | |
