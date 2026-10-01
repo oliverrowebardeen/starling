@@ -161,6 +161,8 @@ actor FailingSkillService: SkillService {
         for event: InteractionEvent in [.started, .proposalReady(try proposal(1)), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
             try plan.apply(event, at: Timestamp(clock.now))
         }
+        // Lane E accepts a hint only from the plan's final attendees.
+        plan.record(.plan(try self.plan(endingIn: 3600, origin: plan.conversation)))
         let lifecycle = coordinator(store: InMemoryInteractionStore([plan]))
         await lifecycle.start()
 
