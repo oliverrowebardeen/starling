@@ -38,6 +38,8 @@ public final class LinkTestModel {
     private let outbox: Outbox
     private let card: AgentCard
     private let name: @MainActor (PeerID) -> String?
+    /// How long a round trip waits for its reply before it counts as lost.
+    private let replyTimeout: Duration
     private let clock = ContinuousClock()
     /// Our pings awaiting a reply: conversation to peer and start time.
     private var pending: [ConversationID: (peer: PeerID, start: ContinuousClock.Instant)] = [:]
@@ -51,12 +53,14 @@ public final class LinkTestModel {
         consent: any ConsentProvider,
         observer: (any OutboxObserver)?,
         card: AgentCard,
-        name: @escaping @MainActor (PeerID) -> String?
+        name: @escaping @MainActor (PeerID) -> String?,
+        replyTimeout: Duration = .seconds(10)
     ) {
         self.transport = transport
         outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: observer)
         self.card = card
         self.name = name
+        self.replyTimeout = replyTimeout
     }
 
     public func start() async {
@@ -90,6 +94,14 @@ public final class LinkTestModel {
         }
         do {
             try await outbox.send(.hello(card), to: peer, conversation: conversation)
+            // Delivery is best effort and a reply can be lost (or dropped by
+            // the Inbox, for example for clock skew), so stop waiting after a
+            // while and let the owner try again.
+            let timeout = replyTimeout
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.giveUp(on: conversation, after: timeout)
+            }
         } catch {
             pending[conversation] = nil
             update(peer) {
@@ -123,6 +135,15 @@ public final class LinkTestModel {
             }
         case .dropped:
             break
+        }
+    }
+
+    private func giveUp(on conversation: ConversationID, after timeout: Duration) {
+        guard let ping = pending.removeValue(forKey: conversation) else { return }
+        let seconds = timeout.components.seconds
+        update(ping.peer) {
+            $0.isWaiting = false
+            $0.lastError = seconds >= 1 ? "No reply within \(seconds) seconds." : "No reply in time."
         }
     }
 

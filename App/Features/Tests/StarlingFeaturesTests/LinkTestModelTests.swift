@@ -10,7 +10,7 @@ import Testing
     let friend = PeerID.random()
     let card = try! AgentCard(model: .onDevice, capabilities: [.down])
 
-    func model() -> LinkTestModel {
+    func model(replyTimeout: Duration = .seconds(10)) -> LinkTestModel {
         let friend = friend
         return LinkTestModel(
             transport: transport,
@@ -18,7 +18,8 @@ import Testing
             consent: ScriptedConsentProvider(.declined),
             observer: nil,
             card: card,
-            name: { $0 == friend ? "Maya" : nil }
+            name: { $0 == friend ? "Maya" : nil },
+            replyTimeout: replyTimeout
         )
     }
 
@@ -99,6 +100,30 @@ import Testing
         await model.ping(friend)
         #expect(model.peers.first?.isWaiting == false)
         #expect(model.peers.first?.lastError != nil)
+    }
+
+    /// Review finding 3 on PR #27: a round trip with no reply must not
+    /// leave the button disabled for good.
+    @Test func aRoundTripWithNoReplyTimesOutAndCanBeRetried() async throws {
+        let model = model(replyTimeout: .milliseconds(50))
+        await model.start()
+        transport.inject(.peerAvailable(friend))
+        await eventually { !model.peers.isEmpty }
+
+        await model.ping(friend)
+        #expect(model.peers.first?.isWaiting == true)
+        await eventually { model.peers.first?.isWaiting == false }
+        #expect(model.peers.first?.isWaiting == false)
+        #expect(model.peers.first?.lastError?.contains("No reply") == true)
+
+        // A late reply to the timed-out ping is not counted as a round trip.
+        let late = try await sentEnvelopes()[0].conversation
+        try inject(.hello(card), conversation: late)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(model.peers.first?.lastRoundTrip == nil)
+
+        await model.ping(friend)
+        #expect(model.peers.first?.isWaiting == true, "retry works")
     }
 
     @Test func stopStopsTheTransport() async {
