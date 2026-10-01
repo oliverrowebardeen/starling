@@ -543,9 +543,10 @@ import Testing
         await lossy.drop(nextTransportFrames: .max, controlOnly: true)
         let before = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count
         let sender = Task {
-            let deadline = ContinuousClock.now + .milliseconds(1_500)
+            let clock = SuspendingClock()
+            let deadline = clock.now + .milliseconds(1_500)
             var index = 0
-            while ContinuousClock.now < deadline {
+            while clock.now < deadline {
                 try? await alice.secure.send(Frame(Data("m\(index)".utf8)), to: bob.id)
                 index += 1
                 try? await Task.sleep(for: .milliseconds(5))

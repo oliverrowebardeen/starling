@@ -10,16 +10,23 @@ struct TimedOut: Error, CustomStringConvertible {
 }
 
 /// Polls `condition` until it holds or `timeout` passes.
+///
+/// Measured on `SuspendingClock`, which stops while the host sleeps.
+/// `ContinuousClock` keeps counting, so a host that slept mid-run woke every
+/// waiting test past its deadline at once (seen as a 584 s "timeout" in a
+/// test that had run for 0.8 s).
 func eventually(
     _ what: String, timeout: Duration = .seconds(5),
     _ condition: @Sendable () async throws -> Bool
 ) async throws {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
+    let clock = SuspendingClock()
+    let start = clock.now
+    let deadline = start + timeout
+    while clock.now < deadline {
         if try await condition() { return }
         try await Task.sleep(for: .milliseconds(5))
     }
-    throw TimedOut(description: "timed out waiting for \(what)")
+    throw TimedOut(description: "timed out waiting for \(what) after \(clock.now - start)")
 }
 
 /// Records every value of a stream so tests can assert on history.
