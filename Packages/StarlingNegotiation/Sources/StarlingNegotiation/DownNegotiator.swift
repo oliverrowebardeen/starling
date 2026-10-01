@@ -39,7 +39,9 @@ public actor DownNegotiator: DownService {
     private enum Work: Sendable {
         case start(generation: Int)
         case message(Envelope)
-        case timer(ConversationID, token: Int)
+        /// Resend a step's outstanding bodies (the deadline itself is kept
+        /// outside the queue, in `deadlineTick`).
+        case resend(ConversationID, token: Int)
     }
 
     private var intent: ActiveIntent?
@@ -49,14 +51,16 @@ public actor DownNegotiator: DownService {
 
     private var workers: [PeerID: (queue: AsyncStream<Work>.Continuation, task: Task<Void, Never>)] = [:]
     private var timers: [ConversationID: Task<Void, Never>] = [:]
-    /// Sends in the Outbox (possibly waiting on policy or the owner's consent).
-    /// Ending their conversation cancels them and releases the waiting worker.
-    private var pendingSends: [UUID: PendingSend] = [:]
+    /// Work a conversation is waiting on: sends in the Outbox (possibly
+    /// waiting on policy or the owner's consent) and model calls. Ending the
+    /// conversation cancels them and releases the waiting worker at once.
+    private var pendingWork: [UUID: PendingWork] = [:]
 
-    private struct PendingSend {
+    private struct PendingWork {
         let conversation: ConversationID
         let task: Task<Void, Never>
-        let waiter: CheckedContinuation<Result<Envelope, any Error>, Never>
+        /// Resumes the waiter with a cancellation error.
+        let abandon: @Sendable () -> Void
     }
     var conversations: [ConversationID: DownConversation] = [:]
     private var activeByPeer: [PeerID: ConversationID] = [:]
@@ -199,7 +203,7 @@ public actor DownNegotiator: DownService {
     private func endEverything() {
         for id in Array(conversations.keys) { end(id, .withdrawn) }
         // Replies for finished conversations may still be in the Outbox.
-        cancelSends { _ in true }
+        cancelWork { _ in true }
         intent?.expiry.cancel()
         intent = nil
     }
@@ -232,7 +236,7 @@ public actor DownNegotiator: DownService {
         switch work {
         case .start(let generation): await initiate(with: peer, generation: generation)
         case .message(let envelope): await receive(envelope)
-        case .timer(let id, let token): await timerFired(id, token: token)
+        case .resend(let id, let token): await resend(id, token: token)
         }
     }
 
@@ -439,31 +443,44 @@ public actor DownNegotiator: DownService {
     /// send never leaves. Cancelling also resumes this call at once, so the
     /// friend's work queue is not held up by a sheet nobody will answer.
     private func cancellableSend(_ body: MessageBody, to peer: PeerID, in id: ConversationID, context: OutboundContext) async -> Result<Envelope, any Error> {
-        let key = UUID()
         let card = cards[peer]
-        return await withCheckedContinuation { waiter in
-            let task = Task { [weak self, outbox] in
-                let result: Result<Envelope, any Error>
-                do {
-                    result = .success(try await outbox.send(body, to: peer, conversation: id, recipientCard: card, context: context))
-                } catch {
-                    result = .failure(error)
-                }
-                await self?.finishSend(key, result)
-            }
-            pendingSends[key] = PendingSend(conversation: id, task: task, waiter: waiter)
+        return await cancellable(in: id) { [outbox] in
+            try await outbox.send(body, to: peer, conversation: id, recipientCard: card, context: context)
         }
     }
 
-    private func finishSend(_ key: UUID, _ result: Result<Envelope, any Error>) {
-        pendingSends.removeValue(forKey: key)?.waiter.resume(returning: result)
+    /// Runs `work` in its own task on behalf of conversation `id`. If the
+    /// conversation ends first (deadline, withdrawal, expiry), the task is
+    /// cancelled and this returns a cancellation error at once, so a stalled
+    /// model call or an unanswered consent sheet never holds up the friend's
+    /// work queue or outlives its deadline.
+    func cancellable<T: Sendable>(in id: ConversationID, _ work: @escaping @Sendable () async throws -> T) async -> Result<T, any Error> {
+        let key = UUID()
+        return await withCheckedContinuation { (waiter: CheckedContinuation<Result<T, any Error>, Never>) in
+            let task = Task { [weak self] in
+                let result: Result<T, any Error>
+                do {
+                    result = .success(try await work())
+                } catch {
+                    result = .failure(error)
+                }
+                await self?.finishWork(key) { waiter.resume(returning: result) }
+            }
+            pendingWork[key] = PendingWork(conversation: id, task: task, abandon: { waiter.resume(returning: .failure(CancellationError())) })
+        }
     }
 
-    private func cancelSends(where matches: (ConversationID) -> Bool) {
-        for (key, pending) in pendingSends where matches(pending.conversation) {
-            pendingSends[key] = nil
+    private func finishWork(_ key: UUID, resume: @Sendable () -> Void) {
+        // Resume only if nobody abandoned it first: exactly once either way.
+        guard pendingWork.removeValue(forKey: key) != nil else { return }
+        resume()
+    }
+
+    private func cancelWork(where matches: (ConversationID) -> Bool) {
+        for (key, pending) in pendingWork where matches(pending.conversation) {
+            pendingWork[key] = nil
             pending.task.cancel()
-            pending.waiter.resume(returning: .failure(CancellationError()))
+            pending.abandon()
         }
     }
 
@@ -512,27 +529,31 @@ public actor DownNegotiator: DownService {
         timers[id]?.cancel()
         timers[id] = Task { [weak self, clock, configuration] in
             do { try await clock.sleep(configuration.retryInterval) } catch { return }
-            await self?.enqueue(.timer(id, token: token), for: peer)
+            await self?.deadlineTick(id, token: token, peer: peer)
         }
     }
 
-    private func timerFired(_ id: ConversationID, token: Int) async {
-        guard let conversation = conversations[id], conversation.timerToken == token else { return }
-        guard conversation.generation == intent?.generation else {
-            end(id, .withdrawn)
-            return
+    /// Runs on the actor directly, not on the friend's work queue, so a
+    /// deadline fires even while that queue waits on a stalled model call or
+    /// consent sheet; ending the conversation then cancels that work.
+    private func deadlineTick(_ id: ConversationID, token: Int, peer: PeerID) {
+        guard var conversation = conversations[id], conversation.timerToken == token else { return }
+        guard conversation.generation == intent?.generation else { return end(id, .withdrawn) }
+        guard conversation.attempts < conversation.attemptLimit else { return end(id, .timedOut) }
+        conversation.attempts += 1
+        conversations[id] = conversation
+        armTimer(id)
+        if !conversation.outstanding.isEmpty, let current = conversations[id] {
+            enqueue(.resend(id, token: current.timerToken), for: peer)
         }
-        guard conversation.attempts < conversation.attemptLimit else {
-            end(id, .timedOut)
-            return
-        }
+    }
+
+    /// Resends a step's outstanding bodies, unless the step has moved on.
+    private func resend(_ id: ConversationID, token: Int) async {
+        guard let conversation = conversations[id], conversation.timerToken == token, isLive(id) else { return }
         for body in conversation.outstanding {
             guard await send(body, to: conversation.peer, in: id, profile: conversation.profile) != .ended, isLive(id) else { return }
         }
-        guard var current = conversations[id], current.timerToken == token else { return }
-        current.attempts += 1
-        conversations[id] = current
-        armTimer(id)
     }
 
     // MARK: - Ending
@@ -542,7 +563,7 @@ public actor DownNegotiator: DownService {
     func end(_ id: ConversationID, _ outcome: DownOutcome) {
         guard let conversation = conversations.removeValue(forKey: id) else { return }
         timers.removeValue(forKey: id)?.cancel()
-        cancelSends { $0 == id }
+        cancelWork { $0 == id }
         if activeByPeer[conversation.peer] == id { activeByPeer[conversation.peer] = nil }
         switch outcome {
         case .matched, .noOverlap, .rejected, .policy, .failed:

@@ -262,6 +262,11 @@ func matchCounts(_ nodes: DownNode...) async -> [Int] {
 actor Counter {
     private(set) var value = 0
     func increment() { value += 1 }
+    /// Increments and returns the new value.
+    func next() -> Int {
+        value += 1
+        return value
+    }
 }
 
 /// A paired "friend" with no negotiator: the test scripts every message.

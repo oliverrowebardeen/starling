@@ -133,7 +133,8 @@ extension DownNegotiator {
             var matches: [KeywordMatch] = []
             if profile.needsModelToMatch, !usable.isEmpty {
                 noteModelCall()
-                matches = (try? await model.match(wanted: profile.liked, offered: usable).value) ?? []
+                let liked = profile.liked
+                matches = (try? await cancellable(in: id) { [model] in try await model.match(wanted: liked, offered: usable).value }.get()) ?? []
                 guard conversations[id] != nil else { return }
             }
             // After the model: code decides what counts.
@@ -220,7 +221,7 @@ extension DownNegotiator {
             if !alternatives.isEmpty {
                 noteModelCall()
                 let context = NegotiationContext(proposal: proposal, constraints: profile.constraints, history: conversation.history, now: clock.now())
-                let move = try? await model.decide(context).value
+                let move = try? await cancellable(in: id) { [model] in try await model.decide(context).value }.get()
                 guard conversations[id] != nil else { return }
                 if case .counter(let terms)? = move, alternatives.contains(terms), profile.permits(terms) { choice = terms }
             }

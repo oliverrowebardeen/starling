@@ -202,6 +202,35 @@ import Testing
         await world.expectNoFalseMatches()
         await world.stop()
     }
+
+    /// P2: a stalled model call must not hold back the deadline that bounds
+    /// it, and must not block that friend's later work.
+    @Test func aStalledModelCallTimesOutAndDoesNotBlockLaterRuns() async throws {
+        let calls = Counter()
+        let model = ScriptedAgentModel(onMatch: { wanted, offered in
+            if await calls.next() == 1 { try await Task.sleep(for: .seconds(30)) }
+            return ScriptedAgentModel.exactMatches(wanted: wanted, offered: offered)
+        })
+        let world = DownWorld(["ana", "ben"], model: model)
+        let (starter, answerer) = Self.roles(world)
+        try await world.start()
+        try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
+        try await answerer.want(time: [T.slot(19, 22)], liked: ["food"])
+
+        // The details deadline is 200 ms and the stall 30 s; 2 s leaves room
+        // for a loaded machine.
+        try await eventually(timeout: .seconds(2), "the stalled conversation timed out") {
+            let started = await calls.value
+            let timedOut = await answerer.negotiator.diagnostics.outcomes[.timedOut]
+            return started == 1 && timedOut == 1
+        }
+
+        await answerer.negotiator.clearIntent()
+        try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
+        try await answerer.want(time: [T.slot(19, 22)], liked: ["food"])
+        try await eventually(timeout: .seconds(2), "a fresh run matched") { await matchCounts(starter, answerer) == [1, 1] }
+        await world.stop()
+    }
 }
 
 import Synchronization
