@@ -394,6 +394,39 @@ import Testing
         await mallory.stop()
         await world.stop()
     }
+
+    /// P2: while a friend's worker waits (here on consent), what that friend
+    /// sends queues in bounded memory; the overflow is dropped and counted.
+    @Test func aBlockedFriendsQueueStaysBounded() async throws {
+        let gate = ConsentForOneSender()
+        let consent = GatedConsentProvider()
+        // Long deadlines keep the worker blocked for the whole flood.
+        let slow = DownConfiguration(retryInterval: .seconds(1), maxAttempts: 5)
+        let world = DownWorld(["ben"], policy: gate.policy(.psi), consent: consent, configuration: slow)
+        let mallory = RawPeer(hub: world.hub)
+        try await world.start()
+        try await mallory.start()
+        let ben = world["ben"]
+        gate.choose(ben.id)
+        try await eventually("ben sees mallory") { await ben.negotiator.isReachable(mallory.id) }
+        try await ben.want(time: [T.slot(19, 22)])
+        try await ben.store.save(PairedPeer(publicKey: mallory.key, nickname: "mallory", pairedAt: Timestamp(T.now)))
+        let conversation = try await DownAdversarialTests().openRun(from: mallory, to: ben)
+        try await eventually("ben's reply waits for consent") { await consent.pending == 1 }
+
+        let flood = 200
+        for index in 0..<flood {
+            let query = try Query(issue: .activity, candidates: .keywords([T.keyword("item \(index)")]))
+            try await mallory.send(.query(query), to: ben.id, in: conversation)
+        }
+        let limit = DownNegotiator.maxQueuedWorkPerPeer
+        // Well inside the 5 s deadline, so the worker is still blocked.
+        try await eventually(timeout: .seconds(2), "the overflow was dropped") { await ben.negotiator.diagnostics.droppedWork >= flood - limit }
+        #expect(await ben.negotiator.queueDepth(for: mallory.id) <= limit)
+        await consent.answerAll(.declined)
+        await mallory.stop()
+        await world.stop()
+    }
 }
 
 import Synchronization

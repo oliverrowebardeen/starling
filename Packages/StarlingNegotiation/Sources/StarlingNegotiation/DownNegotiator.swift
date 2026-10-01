@@ -91,6 +91,8 @@ public actor DownNegotiator: DownService {
         /// Outbound values the final gate refused. Anything above zero is a
         /// bug upstream, caught before it reached the Outbox.
         var gateRefusals = 0
+        /// Work dropped because a friend's queue was full.
+        var droppedWork = 0
     }
 
     private(set) var diagnostics = Diagnostics()
@@ -219,20 +221,44 @@ public actor DownNegotiator: DownService {
     /// check. Once the secure channel drops unknown keys below the Inbox
     /// (ADR 0003), only paired friends get this far anyway.
     static let maxWorkers = 256
+    /// While a friend's worker waits on consent or the model, at most this
+    /// many of that friend's messages (each up to a 56 KiB envelope) wait
+    /// behind it.
+    static let maxQueuedWorkPerPeer = 64
+
+    /// Items waiting in each friend's queue (not counting the one running).
+    private var queued: [PeerID: Int] = [:]
+
+    func queueDepth(for peer: PeerID) -> Int { queued[peer, default: 0] }
+
+    private func dequeued(_ peer: PeerID) {
+        queued[peer, default: 1] -= 1
+    }
 
     private func enqueue(_ work: Work, for peer: PeerID) {
         if workers[peer] == nil {
             guard workers.count < Self.maxWorkers else { return }
-            let (stream, queue) = AsyncStream.makeStream(of: Work.self)
+            // Bounded, keeping the oldest and dropping new arrivals when full:
+            // a friend's messages must be handled in order, and the oldest are
+            // the steps the conversation is waiting on. A dropped message is
+            // one more lost frame, which the peer's retries recover (ARCHITECTURE
+            // section 2, rule 5); deadlines run outside the queue, so they
+            // still fire.
+            let (stream, queue) = AsyncStream.makeStream(of: Work.self, bufferingPolicy: .bufferingOldest(Self.maxQueuedWorkPerPeer))
             let task = Task { [weak self] in
                 for await work in stream {
                     guard let self else { return }
+                    await self.dequeued(peer)
                     await self.perform(work, peer: peer)
                 }
             }
             workers[peer] = (queue, task)
         }
-        workers[peer]?.queue.yield(work)
+        switch workers[peer]?.queue.yield(work) {
+        case .enqueued?: queued[peer, default: 0] += 1
+        case .dropped?: diagnostics.droppedWork += 1
+        default: break
+        }
     }
 
     private func perform(_ work: Work, peer: PeerID) async {
