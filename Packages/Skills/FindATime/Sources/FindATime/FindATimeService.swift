@@ -55,6 +55,7 @@ public actor FindATimeService: SkillService {
     private let checkpointTask: Task<Void, Never>
     private var isShutDown = false
     private var pending: Set<SendKey> = []
+    private var checkpointsClosed = false
 
     struct Tombstone: Hashable, Sendable {
         /// The starter, for an invitee conversation.
@@ -219,6 +220,7 @@ public actor FindATimeService: SkillService {
         effects = [:]
         continuation.finish()
         await flushCheckpoints()
+        checkpointsClosed = true
         checkpointQueue.finish()
     }
 
@@ -297,38 +299,76 @@ public actor FindATimeService: SkillService {
     /// Ends a conversation on this phone: its work stops at once, and once
     /// its last "no plan" has left, it is retired for good through Outbox
     /// (ADR 0021). Nothing is sent in it, and nothing is opened for it, again.
-    func finish(_ conversation: ConversationID) {
-        let interaction = initiating[conversation]?.interaction.id ?? invited[conversation]?.interaction.id
+    ///
+    /// The terminal `event` is reported only after the retirement is
+    /// recorded, so no ending is ever published for a conversation that a
+    /// fresh request could still reopen. If retiring throws, `failed` is
+    /// reported instead, and the conversation stays closed on this phone and
+    /// is retired again at the next launch. `nil` reports nothing (a plan
+    /// whose time passed: the coordinator applies `planEnded`).
+    func close(_ conversation: ConversationID, reporting event: InteractionEvent?) {
+        var copy = initiating[conversation]?.interaction ?? invited[conversation]?.interaction
+        let interaction = copy?.id
         let asker = invited[conversation]?.asker
+        // Decide now, on the service's copy, which event the lifecycle will
+        // accept; it is published after the retirement.
+        var report: InteractionEvent?
+        if let event, copy != nil {
+            if (try? copy?.apply(event, at: Timestamp(now()))) != nil {
+                report = event
+            } else if (try? copy?.apply(.failed, at: Timestamp(now()))) != nil {
+                report = .failed
+            } else {
+                diagnostics.unappliedEvents += 1
+            }
+        }
         initiating[conversation] = nil
         invited[conversation] = nil
         attempts[conversation] = nil
         tickers.removeValue(forKey: conversation)?.cancel()
         cancelWork(of: conversation)
-        if let interaction {
-            conversationOf[interaction] = nil
-            checkpointQueue.yield(.remove(interaction))
-        }
+        if let interaction { conversationOf[interaction] = nil }
         remember(conversation, asker: asker, interaction: interaction)
-        retireAfterLastWords(conversation)
+        retire(conversation, interaction: interaction, asker: asker, report: report)
     }
 
-    /// Retires `conversation` once its last "no plan" has gone. Shutting down
-    /// first leaves it unretired; restore retires every ended interaction.
-    func retireAfterLastWords(_ conversation: ConversationID) {
+    /// Retires `conversation` once its last "no plan" has gone, then reports.
+    /// A checkpoint marks it retiring until the ledger has it, so shutting
+    /// down first never leaves it open: restore retires it again.
+    func retire(_ conversation: ConversationID, interaction: InteractionID?, asker: PeerID?, report: InteractionEvent?) {
+        if let interaction {
+            checkpointQueue.yield(.save(FindATimeCheckpoint(state: .retiring(conversation: conversation, interaction: interaction, asker: asker, report: report))))
+        }
         let words = lastWords.removeValue(forKey: conversation) ?? []
         let outbox = outbox
         spawn(for: nil) {
             for word in words { await word.value }
+            let retired: Bool
             do {
                 try await outbox.retire(conversation)
+                retired = true
             } catch {
-                await self.retireFailed()
+                retired = false
             }
+            await self.retired(conversation, interaction: interaction, asker: asker, report: report, succeeded: retired)
         }
     }
 
-    private func retireFailed() { diagnostics.retireFailures += 1 }
+    private func retired(_ conversation: ConversationID, interaction: InteractionID?, asker: PeerID?, report: InteractionEvent?, succeeded: Bool) {
+        guard let interaction else { return }
+        if succeeded {
+            if let report { continuation.yield(.lifecycle(interaction, report)) }
+            checkpointQueue.yield(.remove(interaction))
+        } else {
+            // Not a clean ending: the conversation could not be closed for
+            // good. It stays closed in memory and in its checkpoint, and the
+            // next launch retires it again.
+            diagnostics.retireFailures += 1
+            if report != nil { continuation.yield(.lifecycle(interaction, .failed)) }
+            // Failed is reported; the next launch only retires it.
+            checkpointQueue.yield(.save(FindATimeCheckpoint(state: .retiring(conversation: conversation, interaction: interaction, asker: asker, report: nil))))
+        }
+    }
 
     /// Whether a friend's query may open an invitee interaction: not in a
     /// retired conversation, and only if the ledger reserves its candidates
@@ -376,8 +416,12 @@ public actor FindATimeService: SkillService {
     }
 
     /// Waits until every checkpoint write queued so far has finished.
+    /// Returns at once after shutdown, when the queue no longer runs.
     func flushCheckpoints() async {
-        await withCheckedContinuation { checkpointQueue.yield(.flush($0)) }
+        guard !checkpointsClosed else { return }
+        await withCheckedContinuation { continuation in
+            if case .terminated = checkpointQueue.yield(.flush(continuation)) { continuation.resume() }
+        }
     }
 
     // MARK: - Sending

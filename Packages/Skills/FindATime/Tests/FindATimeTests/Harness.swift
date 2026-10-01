@@ -226,6 +226,55 @@ actor HeldDenial: PolicyEngine {
     }
 }
 
+/// A conversation ledger whose retirements a test can hold or make fail,
+/// around the in-memory one (ADR 0021).
+actor ControlledLedger: ConversationLedger {
+    struct RetireFailed: Error {}
+
+    let inner: InMemoryConversationLedger
+    private var holding = false
+    private var failing = false
+    private var abandoning = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var retireCalls = 0
+
+    init(_ inner: InMemoryConversationLedger) { self.inner = inner }
+
+    func hold() { holding = true }
+    func failRetirements(_ fail: Bool) { failing = fail }
+    func release() {
+        holding = false
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+
+    /// Ends every held retirement without recording it, as if the process
+    /// had died while it was waiting.
+    func abandonHeld() {
+        abandoning = true
+        release()
+    }
+
+    func isRetired(_ conversation: ConversationID) async throws -> Bool { try await inner.isRetired(conversation) }
+
+    func retire(_ conversation: ConversationID) async throws {
+        retireCalls += 1
+        if holding {
+            await withCheckedContinuation { waiting.append($0) }
+            if abandoning {
+                abandoning = false
+                throw RetireFailed()
+            }
+        }
+        if failing { throw RetireFailed() }
+        try await inner.retire(conversation)
+    }
+
+    func reserve(_ candidates: [IssueValue], issue: IssueKey, to peer: PeerID, in conversation: ConversationID) async throws -> Bool {
+        try await inner.reserve(candidates, issue: issue, to: peer, in: conversation)
+    }
+}
+
 /// The app's consent provider around a scripted owner.
 struct LifecycleConsent: ConsentProvider {
     let owner: any ConsentProvider
@@ -256,6 +305,9 @@ final class Phone: Sendable {
     /// The phone's one conversation ledger, kept across restarts as the app
     /// persists it, shared by its Outbox and the service (ADR 0021).
     let conversations = InMemoryConversationLedger()
+    /// What the Outbox and the service use: `conversations`, or a test's
+    /// wrapper around it.
+    let ledger: any ConversationLedger
     let clock: TestClock
     let standing: ConstraintSet
     private let state: Mutex<(service: FindATimeService?, outbox: Outbox?, coordinator: Coordinator, tasks: [Task<Void, Never>])>
@@ -267,13 +319,15 @@ final class Phone: Sendable {
 
     init(name: String, hub: LoopbackHub, calendar: FakeCalendarStore, use: CalendarUse = .useMyCalendar,
          policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
-         standing: ConstraintSet = .empty, policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil, clock: TestClock) {
+         standing: ConstraintSet = .empty, policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil,
+         ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil, clock: TestClock) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
         self.calendar = calendar
         self.use = Mutex(use)
         self.policy = policyWithFriends?(peers) ?? policy
+        self.ledger = ledger?(conversations) ?? conversations
         self.consent = consent
         self.clock = clock
         self.standing = standing
@@ -284,10 +338,10 @@ final class Phone: Sendable {
     /// to simulate an app restart.
     func makeService(configuration: FindATimeConfiguration = fastConfiguration) {
         let outbox = Outbox(transport: transport, policy: policy, consent: LifecycleConsent(owner: consent, coordinator: coordinator),
-                            sequences: sequences, ledger: conversations)
+                            sequences: sequences, ledger: ledger)
         let availability = OwnerAvailability.standard(calendar: calendar, use: { self.use.withLock { $0 } })
         let service = FindATimeService(
-            localPeer: id, outbox: outbox, conversations: conversations, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
+            localPeer: id, outbox: outbox, conversations: ledger, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
             clock: clock.clock, timeZone: T.utc, configuration: configuration,
             standingRules: { [standing] in standing }
         )
@@ -441,10 +495,11 @@ final class World: Sendable {
         _ name: String, calendar: FakeCalendarStore = FakeCalendarStore(), use: CalendarUse = .useMyCalendar,
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
         standing: ConstraintSet = .empty,
-        policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil
+        policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil,
+        ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil
     ) -> Phone {
         let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent,
-                          standing: standing, policyWithFriends: policyWithFriends, clock: clock)
+                          standing: standing, policyWithFriends: policyWithFriends, ledger: ledger, clock: clock)
         phones.withLock { $0.append(phone) }
         return phone
     }

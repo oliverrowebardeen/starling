@@ -141,6 +141,10 @@ public struct FindATimeCheckpoint: Hashable, Sendable, Codable {
     enum State: Hashable, Sendable, Codable {
         case initiating(Initiating)
         case invited(Invited)
+        /// Ended on this phone but not yet confirmed retired in the
+        /// conversation ledger. Kept until it is, so a relaunch retires it
+        /// again and reports `report` only then (ADR 0021).
+        case retiring(conversation: ConversationID, interaction: InteractionID, asker: PeerID?, report: InteractionEvent?)
     }
 
     let state: State
@@ -149,6 +153,7 @@ public struct FindATimeCheckpoint: Hashable, Sendable, Codable {
         switch state {
         case .initiating(let value): value.interaction.id
         case .invited(let value): value.interaction.id
+        case .retiring(_, let interaction, _, _): interaction
         }
     }
 }

@@ -4,6 +4,7 @@ import StarlingAvailability
 import StarlingAvailabilityFakes
 import StarlingCore
 import StarlingFakes
+import Synchronization
 import Testing
 
 /// `restore(_:)` after the app is quit and relaunched (ADR 0222).
@@ -349,6 +350,107 @@ struct CrashWindowTests {
         let cards = await target.coordinator.all()
         #expect(cards.count == 1)
         #expect(cards.first?.state == .ended(.declined))
+        await world.stop()
+    }
+
+    /// Lane E's review (ADR 0021): an ending is reported only after the
+    /// conversation's retirement is recorded in the ledger.
+    @Test func anEndingIsReportedOnlyOnceRetired() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let controlled = Mutex<ControlledLedger?>(nil)
+        let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied), ledger: { inner in
+            let ledger = ControlledLedger(inner)
+            controlled.withLock { $0 = ledger }
+            return ledger
+        })
+        let ledger = controlled.withLock { $0! }
+        try await world.start()
+        try await a.findATime(with: [b])
+        let (asked, _) = try await b.waitForQuestion()
+        let conversation = await b.coordinator.interaction(asked)!.conversation
+
+        await ledger.hold()
+        try await b.service.answer(asked, with: .pass)
+        try await eventually("retiring") { await ledger.retireCalls == 1 }
+        try await Task.sleep(for: .milliseconds(60))
+        // Not retired yet, so not reported yet.
+        #expect(await b.coordinator.interaction(asked)?.state == .awaitingOwner)
+        #expect(!(await b.coordinator.log.contains { if case .lifecycle(_, .ownerPassed) = $0 { true } else { false } }))
+
+        await ledger.release()
+        try await b.waitForState(asked, .ended(.declined))
+        #expect(try await b.conversations.isRetired(conversation))
+        await world.stop()
+    }
+
+    /// If retiring throws, the ending is not reported as clean: the
+    /// interaction ends failed, the conversation stays closed to a fresh
+    /// request, and the next launch retires it.
+    @Test func aFailedRetirementReportsFailedAndStaysClosed() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory")
+        let controlled = Mutex<ControlledLedger?>(nil)
+        let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied), ledger: { inner in
+            let ledger = ControlledLedger(inner)
+            controlled.withLock { $0 = ledger }
+            return ledger
+        })
+        let ledger = controlled.withLock { $0! }
+        try await world.start()
+        let conversation = ConversationID()
+        let query = MessageBody.query(try Query(issue: .time, candidates: .slots([T.slot(9, 10)])))
+        try await mallory.send(query, to: b, conversation: conversation)
+        let (asked, _) = try await b.waitForQuestion()
+
+        await ledger.failRetirements(true)
+        try await b.service.answer(asked, with: .pass)
+        try await b.waitForState(asked, .ended(.failed))
+        #expect(try await b.conversations.isRetired(conversation) == false)
+
+        // A fresh request in the same conversation opens nothing.
+        try await mallory.send(query, to: b, conversation: conversation)
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await b.coordinator.all().count == 1)
+
+        // The next launch retires it, and reports nothing more.
+        await ledger.failRetirements(false)
+        await b.restart()
+        try await eventually("retired on relaunch") { (try? await b.conversations.isRetired(conversation)) == true }
+        #expect(await b.coordinator.rejected.isEmpty)
+        await world.stop()
+    }
+
+    /// A crash between the ending and its retirement: the next launch
+    /// retires the conversation and only then reports the ending.
+    @Test func aCrashBeforeRetirementIsFinishedOnRelaunch() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let controlled = Mutex<ControlledLedger?>(nil)
+        let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied), ledger: { inner in
+            let ledger = ControlledLedger(inner)
+            controlled.withLock { $0 = ledger }
+            return ledger
+        })
+        let ledger = controlled.withLock { $0! }
+        try await world.start()
+        try await a.findATime(with: [b])
+        let (asked, _) = try await b.waitForQuestion()
+        let conversation = await b.coordinator.interaction(asked)!.conversation
+
+        await ledger.hold()
+        try await b.service.answer(asked, with: .pass)
+        try await eventually("retiring") { await ledger.retireCalls == 1 }
+        // The app dies with the retirement still pending: it is never recorded.
+        await b.service.flushCheckpoints()
+        await b.service.shutdown()
+        await ledger.abandonHeld()
+        #expect(try await b.conversations.isRetired(conversation) == false)
+        #expect(await b.coordinator.interaction(asked)?.state == .awaitingOwner)
+
+        await b.restart()
+        try await b.waitForState(asked, .ended(.declined))
+        #expect(try await b.conversations.isRetired(conversation))
         await world.stop()
     }
 }

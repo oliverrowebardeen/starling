@@ -40,8 +40,8 @@ extension FindATimeService {
         try? value.interaction.apply(.started, at: Timestamp(now))
         guard !friends.isEmpty else {
             // Nobody to ask: the app resolved no friend who runs the skill.
-            emit(.unsupported, to: &value.interaction)
-            return
+            initiating[id] = value
+            return close(id, reporting: .unsupported)
         }
         initiating[id] = value
         register(id, interaction: request.interaction)
@@ -90,9 +90,7 @@ extension FindATimeService {
             beginCollecting(id)
 
         case (.askingOwner, .pass):
-            emit(.ownerPassed, to: &value.interaction)
-            initiating[id] = value
-            finish(id)
+            close(id, reporting: .ownerPassed)
 
         case (.proposing, .accept(let revision)):
             guard let draft = value.draft, revision == draft.revision, value.interaction.proposalRevision == revision else {
@@ -106,10 +104,8 @@ extension FindATimeService {
             confirmIfEveryoneAccepted(id)
 
         case (.proposing, .pass):
-            emit(.ownerPassed, to: &value.interaction)
-            initiating[id] = value
             tellEveryoneNoPlan(id)
-            finish(id)
+            close(id, reporting: .ownerPassed)
 
         default:
             throw mismatch(answer, value.interaction)
@@ -117,12 +113,10 @@ extension FindATimeService {
     }
 
     func initiatorWithdraw(_ id: ConversationID) {
-        guard var value = initiating[id] else { return }
-        emit(.withdrawn, to: &value.interaction)
-        initiating[id] = value
+        guard let value = initiating[id] else { return }
         // After a plan is made, withdrawing only ends it on this phone.
         if value.phase != .planned { tellEveryoneNoPlan(id) }
-        finish(id)
+        close(id, reporting: .withdrawn)
     }
 
     // MARK: Collecting answers
@@ -175,16 +169,15 @@ extension FindATimeService {
     /// - A policy denial is blocked by privacy, which Core accepts from
     ///   every live step except planned: a plan already agreed stands.
     private func initiatorRefused(_ id: ConversationID, _ outcome: SendOutcome) {
-        guard var value = initiating[id] else { return }
-        switch outcome {
-        case .denied: emit(.blockedByPrivacy, to: &value.interaction)
+        guard initiating[id] != nil else { return }
+        let event: InteractionEvent? = switch outcome {
+        case .denied: .blockedByPrivacy
         // The ledger refused for good (ADR 0021).
-        case .refused: emit(.failed, to: &value.interaction)
-        default: break
+        case .refused: .failed
+        default: nil
         }
-        initiating[id] = value
         tellEveryoneNoPlan(id)
-        finish(id)
+        close(id, reporting: event)
     }
 
     func receiveAnswer(_ envelope: Envelope, _ answer: Answer) {
@@ -429,11 +422,9 @@ extension FindATimeService {
 
     /// Ends with no plan and tells every friend still waiting.
     func endWithoutPlan(_ id: ConversationID, _ event: InteractionEvent, notify: Bool = true) {
-        guard var value = initiating[id] else { return }
-        if !emit(event, to: &value.interaction) { emit(.failed, to: &value.interaction) }
-        initiating[id] = value
+        guard initiating[id] != nil else { return }
         if notify { tellEveryoneNoPlan(id) }
-        finish(id)
+        close(id, reporting: event)
     }
 
     private func tellEveryoneNoPlan(_ id: ConversationID) {
@@ -448,7 +439,7 @@ extension FindATimeService {
         case .planned:
             // The coordinator applies planEnded (ADR 0011, amendment 15);
             // the service only stops answering for the plan.
-            if let end = value.draft?.slot.end, now() >= end { finish(id) }
+            if let end = value.draft?.slot.end, now() >= end { close(id, reporting: nil) }
         case _ where expired(value.expiresAt):
             endWithoutPlan(id, .expired)
         case .collecting where expired(value.answerDeadline):

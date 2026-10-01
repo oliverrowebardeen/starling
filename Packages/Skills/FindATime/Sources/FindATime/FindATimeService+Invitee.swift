@@ -115,9 +115,7 @@ extension FindATimeService {
         case (.askingOwner, .pass):
             // Silence, like having no time free: "If you pass, they just
             // won't see it."
-            emit(.ownerPassed, to: &value.interaction)
-            invited[id] = value
-            finish(id)
+            close(id, reporting: .ownerPassed)
 
         case (.proposed, .accept(let revision)):
             guard let offer = value.offer, offer.revision == revision, value.interaction.proposalRevision == revision else {
@@ -131,12 +129,10 @@ extension FindATimeService {
             inviteeResendAcceptance(id)
 
         case (.proposed, .pass):
-            emit(.ownerPassed, to: &value.interaction)
-            invited[id] = value
             // The same "no plan", naming the same proposal, as a declined
             // sheet or a refused acceptance after the same tap (ADR 0019).
             tellAskerNoPlan(id)
-            finish(id)
+            close(id, reporting: .ownerPassed)
 
         case (.accepted, .accept(let revision)) where value.offer?.revision == revision:
             // Tapped twice: already accepted.
@@ -148,12 +144,10 @@ extension FindATimeService {
     }
 
     func inviteeWithdraw(_ id: ConversationID) {
-        guard var value = invited[id] else { return }
-        emit(.withdrawn, to: &value.interaction)
-        invited[id] = value
+        guard let value = invited[id] else { return }
         // Like a pass: silent while answering, "no plan" once a card is up.
         if value.phase != .planned, value.offer != nil { tellAskerNoPlan(id) }
-        finish(id)
+        close(id, reporting: .withdrawn)
     }
 
     private func answer(_ id: ConversationID, with slots: [TimeSlot]) {
@@ -273,15 +267,14 @@ extension FindATimeService {
     /// privacy. The starter hears "no plan" only for a refused acceptance,
     /// which follows the owner's tap like a pass does.
     private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome, tellAsker: Bool) {
-        guard var value = invited[id] else { return }
-        switch outcome {
-        case .denied: emit(.blockedByPrivacy, to: &value.interaction)
-        case .refused: emit(.failed, to: &value.interaction)
-        default: break
+        guard invited[id] != nil else { return }
+        let event: InteractionEvent? = switch outcome {
+        case .denied: .blockedByPrivacy
+        case .refused: .failed
+        default: nil
         }
-        invited[id] = value
         if tellAsker { tellAskerNoPlan(id) }
-        finish(id)
+        close(id, reporting: event)
     }
 
     /// "No plan" for the proposal on the card, naming its latest envelope:
@@ -334,10 +327,8 @@ extension FindATimeService {
 
     /// Ends without a plan and without telling the starter anything.
     func inviteeEndWithoutPlan(_ id: ConversationID, _ event: InteractionEvent) {
-        guard var value = invited[id] else { return }
-        if !emit(event, to: &value.interaction) { emit(.failed, to: &value.interaction) }
-        invited[id] = value
-        finish(id)
+        guard invited[id] != nil else { return }
+        close(id, reporting: event)
     }
 
     func inviteeTick(_ id: ConversationID) {
@@ -345,7 +336,7 @@ extension FindATimeService {
         switch value.phase {
         case .planned:
             // The coordinator applies planEnded (ADR 0011, amendment 15).
-            if let end = value.offer?.plan.time?.end, now() >= end { finish(id) }
+            if let end = value.offer?.plan.time?.end, now() >= end { close(id, reporting: nil) }
         case _ where expired(value.expiresAt):
             inviteeEndWithoutPlan(id, .expired)
         case .accepted:

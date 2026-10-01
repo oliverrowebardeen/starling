@@ -23,11 +23,23 @@ extension FindATimeService {
         // recorded. Retiring is idempotent; the ledger keeps it for good.
         for ended in mine where ended.state.isFinal {
             remember(ended.conversation, asker: ended.role == .invitee ? ended.participants.first : nil, interaction: ended.id)
-            retireAfterLastWords(ended.conversation)
+            retire(ended.conversation, interaction: nil, asker: nil, report: nil)
         }
 
+        // Conversations that ended but whose retirement was never confirmed
+        // (the app quit, or the ledger failed): keep them closed, retire them
+        // now, and report their ending only once that is recorded. Their
+        // interactions, however old, are never resumed.
         var live: Set<InteractionID> = []
-        for stored in mine where !stored.state.isFinal {
+        let stillLive = Set(mine.filter { !$0.state.isFinal }.map(\.id))
+        for checkpoint in saved {
+            guard case .retiring(let conversation, let interaction, let asker, let report) = checkpoint.state else { continue }
+            live.insert(interaction)
+            remember(conversation, asker: asker, interaction: interaction)
+            retire(conversation, interaction: interaction, asker: asker, report: stillLive.contains(interaction) ? report : nil)
+        }
+
+        for stored in mine where !stored.state.isFinal && !live.contains(stored.id) {
             guard conversationOf[stored.id] == nil, initiating[stored.conversation] == nil, invited[stored.conversation] == nil else { continue }
             live.insert(stored.id)
             let interaction = Self.withoutConsent(stored)
@@ -36,6 +48,8 @@ extension FindATimeService {
                 resumeInitiating(value, as: interaction)
             case .invited(let value)?:
                 resumeInvited(value, as: interaction)
+            case .retiring?:
+                break
             case nil:
                 // Nothing to resume from. A plan already made stands; anything
                 // else is reported failed rather than left hanging.
@@ -159,12 +173,12 @@ extension FindATimeService {
         }
     }
 
+    /// Ends an interaction that cannot resume: retired first, then reported
+    /// failed (either way, if retiring throws).
     private func reportFailed(_ interaction: Interaction) {
-        var copy = interaction
-        emit(.failed, to: &copy)
-        removeCheckpoint(interaction.id)
-        remember(interaction.conversation, asker: interaction.role == .invitee ? interaction.participants.first : nil, interaction: interaction.id)
-        retireAfterLastWords(interaction.conversation)
+        let asker = interaction.role == .invitee ? interaction.participants.first : nil
+        remember(interaction.conversation, asker: asker, interaction: interaction.id)
+        retire(interaction.conversation, interaction: interaction.id, asker: asker, report: .failed)
     }
 
     /// The service's copy never sees consent; a sheet open at the restart
