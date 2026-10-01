@@ -297,6 +297,12 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     /// Consent requests still waiting on the owner. The interaction resumes
     /// only when the last one is approved.
     public private(set) var pendingConsents: Set<UInt32>
+    /// The question the agent is waiting for its owner to answer, kept so
+    /// the card survives an app restart.
+    public private(set) var pendingQuestion: SkillQuestion?
+    /// The current proposal, kept so its card survives a restart. Its
+    /// revision is `proposalRevision` once `proposalReady` arrived.
+    public private(set) var proposal: SkillProposal?
 
     /// An initiator starts while drafting; an invitee starts negotiating,
     /// because its agent is already handling the request.
@@ -323,6 +329,8 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         egress = []
         proposalRevision = nil
         pendingConsents = []
+        pendingQuestion = nil
+        proposal = nil
     }
 
     public var updatedAt: Timestamp { history.last?.at ?? createdAt }
@@ -361,7 +369,29 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         case .consentGiven(let request): pendingConsents.remove(request)
         default: break
         }
-        if next.isFinal { pendingConsents = [] }
+        switch event {
+        case .ownerAnswered, .ownerPassed: pendingQuestion = nil
+        default: break
+        }
+        if next.isFinal {
+            pendingConsents = []
+            pendingQuestion = nil
+        }
+    }
+
+    /// Keeps the question the agent put to its owner. A question older than
+    /// the one already kept is ignored.
+    public mutating func record(_ question: SkillQuestion) {
+        if let current = pendingQuestion, question.revision <= current.revision { return }
+        pendingQuestion = question
+    }
+
+    /// Keeps a proposal's content. One older than the current revision is
+    /// ignored, so a late event cannot put stale terms back on the card.
+    public mutating func record(_ proposal: SkillProposal) {
+        if let current = proposalRevision, proposal.revision < current { return }
+        if let kept = self.proposal, proposal.revision < kept.revision { return }
+        self.proposal = proposal
     }
 
     public mutating func setParticipants(_ peers: [PeerID]) { participants = peers }

@@ -172,4 +172,29 @@ import Testing
         try interaction.apply(.withdrawn, at: Self.at(9))
         #expect(interaction.pendingConsents.isEmpty)
     }
+
+    /// Review 2 of PR #45: an app restart must keep what a card needs.
+    @Test func pendingQuestionsAndProposalsSurviveARestart() throws {
+        var interaction = Interaction(skill: SkillRef(.findATime, SkillVersion(1)), role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
+        let slots = try TimeSlot(start: Fixtures.now, end: Fixtures.now.addingTimeInterval(3600))
+        let question = SkillQuestion(revision: 1, issue: .time, candidates: .slots([slots]), asker: Fixtures.alice)
+        try interaction.apply(.ownerNeeded, at: Self.at(1))
+        interaction.record(question)
+        interaction.record(SkillQuestion(revision: 0, issue: .time, candidates: .slots([]), asker: nil))
+        #expect(interaction.pendingQuestion == question)
+
+        var restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(interaction))
+        #expect(restored == interaction && restored.state == .awaitingOwner)
+
+        try restored.apply(.ownerAnswered, at: Self.at(2))
+        #expect(restored.pendingQuestion == nil)
+
+        let terms = try Terms([.time: .slots([slots])])
+        try restored.apply(.proposalReady(revision: 2), at: Self.at(3))
+        restored.record(SkillProposal(revision: 2, participants: [Fixtures.alice, Fixtures.bob], terms: terms))
+        restored.record(SkillProposal(revision: 1, participants: [], terms: .empty))
+        #expect(restored.proposal?.revision == 2 && restored.proposal?.terms == terms)
+        let again = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(restored))
+        #expect(again.proposal == restored.proposal && again.proposalRevision == 2)
+    }
 }

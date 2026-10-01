@@ -158,6 +158,9 @@ public actor ScriptedSkillService: SkillService {
     public func start(_ request: SkillRequest) async throws { started.append(request) }
     public func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws { answers.append((interaction, answer)) }
     public func withdraw(_ interaction: InteractionID) async { withdrawn.append(interaction) }
+    public private(set) var restored: [Interaction] = []
+
     public func handle(_ event: InboxEvent) async { handled.append(event) }
+    public func restore(_ interactions: [Interaction]) async { restored = interactions }
     public func shutdown() async { continuation.finish() }
 }

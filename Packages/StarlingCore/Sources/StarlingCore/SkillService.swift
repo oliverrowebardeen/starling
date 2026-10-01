@@ -57,7 +57,7 @@ public struct SkillRequest: Hashable, Sendable {
 /// instead" fallback, or an invitee's review), with typed candidate answers.
 /// The availability source's time-only `OwnerQuestion` stays for Phase 2's
 /// `AvailabilitySource`.
-public struct SkillQuestion: Hashable, Sendable {
+public struct SkillQuestion: Hashable, Sendable, Codable {
     /// Increases with each question in an interaction, so an answer to an
     /// older question is never taken for a newer one.
     public let revision: UInt32
@@ -87,7 +87,7 @@ public enum OwnerAnswer: Hashable, Sendable {
 
 /// A proposal card's facts. Wording comes from `SkillModel.proposalText`,
 /// with a template fallback in the skill's package.
-public struct SkillProposal: Hashable, Sendable {
+public struct SkillProposal: Hashable, Sendable, Codable {
     /// Increases with each proposal in an interaction; the card, the
     /// owner's answer, and `InteractionEvent.proposalReady` carry it.
     public let revision: UInt32
@@ -129,6 +129,11 @@ public protocol SkillService: Sendable {
     func withdraw(_ interaction: InteractionID) async
     /// Every InboxEvent; the service ignores envelopes for other skills.
     func handle(_ event: InboxEvent) async
+    /// Called once at launch, before any `handle(_:)`, with this skill's
+    /// live interactions from the store, including any pending question or
+    /// proposal. The service rebuilds what it can, continuing revisions from
+    /// the stored ones; one it cannot resume it reports as failed or expired.
+    func restore(_ interactions: [Interaction]) async
     func shutdown() async
 }
 
