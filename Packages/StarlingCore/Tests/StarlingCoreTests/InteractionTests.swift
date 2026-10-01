@@ -154,6 +154,23 @@ import Testing
         #expect(throws: InvalidTransition.self) { try InteractionState.planned.applying(.consentNeeded(request: 1)) }
     }
 
+    /// Review of PR #51: an invitee accepts, and the policy denies the
+    /// acceptance because the topic is now set to Never.
+    @Test func aPolicyDenialEndsAnyLiveStepButNotAPlan() throws {
+        var invitee = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
+        try invitee.apply(.proposalReady(Self.proposal(1)), at: Self.at(1))
+        try invitee.apply(.blockedByPrivacy, at: Self.at(2))
+        #expect(invitee.state == .ended(.blockedByPrivacy))
+
+        let live: [InteractionState] = [.drafting, .negotiating, .awaitingOwner, .proposed, .confirmed]
+            + ConsentResume.allCases.map { .awaitingConsent(resume: $0) }
+        for state in live {
+            #expect(try state.applying(.blockedByPrivacy) == .ended(.blockedByPrivacy))
+        }
+        #expect(throws: InvalidTransition.self) { try InteractionState.planned.applying(.blockedByPrivacy) }
+        #expect(throws: InvalidTransition.self) { try InteractionState.done.applying(.blockedByPrivacy) }
+    }
+
     /// Review 2 of PR #45: two sends in one interaction ask at once.
     @Test func overlappingConsentRequestsResumeOnlyWhenAllAreApproved() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
