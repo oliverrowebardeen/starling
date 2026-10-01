@@ -136,6 +136,7 @@ final class NearbySession {
             case .amount(let amount): "\(key) \(amount.minorUnits / 100) \(amount.currency)"
             case .flag(let flag): "\(key) \(flag)"
             case .count(let count): "\(key) \(count)"
+            case .places(let places): "\(key) \(places.map(\.name.rawValue).joined(separator: ","))"
             }
         }.joined(separator: "; ")
     }

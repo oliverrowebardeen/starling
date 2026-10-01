@@ -29,6 +29,8 @@ public enum ProtocolLimits {
     /// A venue name's length, in characters (ADR 0012).
     public static let maxPlaceNameCharacters = 64
     public static let maxMapItemIDCharacters = 128
+    /// Venues in one `IssueValue.places`.
+    public static let maxPlacesPerValue = 8
     /// People in one plan, the owner included.
     public static let maxAttendees = 16
     public static let maxProviderNameCharacters = 32

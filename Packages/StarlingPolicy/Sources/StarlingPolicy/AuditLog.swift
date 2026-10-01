@@ -4,7 +4,7 @@ import StarlingCore
 /// Coarse value shapes only. No counts, booleans, amounts, keywords, slots,
 /// provider names, or PSI payloads are retained in audit storage.
 public enum AuditValueKind: String, Hashable, Sendable {
-    case slots, keywords, amount, flag, count
+    case slots, keywords, amount, flag, count, places
 
     init(_ value: IssueValue) {
         switch value {
@@ -13,6 +13,7 @@ public enum AuditValueKind: String, Hashable, Sendable {
         case .amount: self = .amount
         case .flag: self = .flag
         case .count: self = .count
+        case .places: self = .places
         }
     }
 }

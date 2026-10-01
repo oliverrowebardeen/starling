@@ -44,3 +44,17 @@ import Testing
         #expect(Artifact.placeChoice(place).kind == .placeChoice)
     }
 }
+
+@Suite struct PlacesValueTests {
+    @Test func placesTravelAsABoundedIssueValue() throws {
+        let a = try PlaceChoice(name: PlaceName("Boba Guys"), mapItemID: "I1")
+        let b = try PlaceChoice(name: PlaceName("Tea Lab"))
+        let terms = try Terms([.place: .places([a, b])])
+        let round = try JSONDecoder().decode(Terms.self, from: JSONEncoder().encode(terms))
+        #expect(round == terms)
+        #expect(throws: ValidationError.self) { try IssueValue.places([]).validated() }
+        #expect(throws: ValidationError.self) { try IssueValue.places([a, a]).validated() }
+        let many = try (0...ProtocolLimits.maxPlacesPerValue).map { try PlaceChoice(name: PlaceName("Place \($0)")) }
+        #expect(throws: ValidationError.self) { try IssueValue.places(many).validated() }
+    }
+}

@@ -104,6 +104,7 @@ public struct ConsentSheetModel: Hashable, Sendable {
             return "\(amount.minorUnits) minor units (\(amount.currency))"
         case .flag(let flag): return flag ? "Yes" : "No"
         case .count(let count): return String(count)
+        case .places(let places): return places.map(\.name.rawValue).joined(separator: "\n")
         }
     }
 
