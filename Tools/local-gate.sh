@@ -34,6 +34,7 @@ xcodebuild build -quiet \
   -derivedDataPath "$work/.build-app" \
   CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES || fail "app build"
 "$work/Tools/check-release-no-fakes.sh" "$work/.build-release" || fail "Release build or no-fakes check"
+"$work/Tools/check-release-no-debug.sh" "$work/.build-release" || fail "Release no-debug check"
 
 cleanup
 echo "GATE PASS ($branch)"

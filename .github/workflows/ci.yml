@@ -48,3 +48,5 @@ jobs:
           SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
       - name: Release links no StarlingFakes (ADR 0140)
         run: Tools/check-release-no-fakes.sh
+      - name: Release has no Developer section (ADR 0015)
+        run: Tools/check-release-no-debug.sh
