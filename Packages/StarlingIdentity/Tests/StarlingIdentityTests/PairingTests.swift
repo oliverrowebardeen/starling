@@ -18,7 +18,7 @@ struct PairingDevice {
     static func make(hub: LoopbackHub, identity: IdentityKeyPair = .generate(), configuration: PairingConfiguration = .fast) async throws -> PairingDevice {
         let store = InMemoryPairedPeerStore()
         let link = GatedLink(LoopbackTransport(localPeer: identity.peerID, hub: hub))
-        let service = PairingService(identity: identity, store: store, link: link, configuration: configuration)
+        let service = PairingService(identity: identity, pins: PinAuthority(store: store), link: link, configuration: configuration)
         try await service.start()
         return PairingDevice(identity: identity, store: store, link: link, service: service)
     }
@@ -306,7 +306,7 @@ extension Recorder where Element == PairingEvent {
     @Test func invalidRequestsThrow() async throws {
         let hub = LoopbackHub()
         let identity = IdentityKeyPair.generate()
-        let service = PairingService(identity: identity, store: InMemoryPairedPeerStore(), link: LoopbackTransport(localPeer: identity.peerID, hub: hub))
+        let service = PairingService(identity: identity, pins: PinAuthority(store: InMemoryPairedPeerStore()), link: LoopbackTransport(localPeer: identity.peerID, hub: hub))
         await #expect(throws: PairingServiceError.notStarted) { try await service.pair(with: .random(), nickname: "Bob") }
         try await service.start()
         await #expect(throws: PairingServiceError.cannotPairWithSelf) { try await service.pair(with: identity.peerID, nickname: "Me") }
@@ -332,8 +332,8 @@ extension Recorder where Element == PairingEvent {
         let hub = LoopbackHub()
         let alice = try await Node.make("alice", hub: hub)
         let bob = try await Node.make("bob", hub: hub)
-        let alicePairing = PairingService(identity: alice.identity, store: alice.store, link: alice.secure.pairingLink, configuration: .fast)
-        let bobPairing = PairingService(identity: bob.identity, store: bob.store, link: bob.secure.pairingLink, configuration: .fast)
+        let alicePairing = PairingService(identity: alice.identity, secureTransport: alice.secure, configuration: .fast)
+        let bobPairing = PairingService(identity: bob.identity, secureTransport: bob.secure, configuration: .fast)
         try await alicePairing.start()
         try await bobPairing.start()
 
@@ -383,8 +383,8 @@ extension Recorder where Element == PairingEvent {
         try await bob.secure.start()
         try await alice.waitForPeer(bob.id)
         try await bob.waitForPeer(alice.id)
-        let alicePairing = PairingService(identity: alice.identity, store: alice.store, link: alice.secure.pairingLink, configuration: .fast)
-        let bobPairing = PairingService(identity: bob.identity, store: bob.store, link: bob.secure.pairingLink, configuration: .fast)
+        let alicePairing = PairingService(identity: alice.identity, secureTransport: alice.secure, configuration: .fast)
+        let bobPairing = PairingService(identity: bob.identity, secureTransport: bob.secure, configuration: .fast)
         try await alicePairing.start()
         try await bobPairing.start()
         let sa = try await alicePairing.pair(with: bob.id, nickname: "Bob")
@@ -416,9 +416,80 @@ extension Recorder where Element == PairingEvent {
         withExtendedLifetime(repair.services) {}
     }
 
+    /// Where review 3's test holds one side of the unpair-versus-commit race.
+    enum Suspension: String, CaseIterable, Sendable {
+        case commitSaveBeforeWrite, commitSaveAfterWrite
+        case unpairRemoveBeforeDelete, unpairRemoveAfterDelete, unpairRevocationNotice
+    }
+
+    /// Review 3 finding 1, and the invariant of ADR 0100 decision 11: once
+    /// `unpair` has started, no pin for the peer survives it and no session
+    /// with the peer exists, whichever await either path is suspended at.
+    /// Alice has confirmed a re-pair; the test holds one path at one await,
+    /// runs the other as far as it can go, then releases.
+    @Test(arguments: Suspension.allCases)
+    func unpairWinsAtEveryAwait(_ suspension: Suspension) async throws {
+        let repair = try await repairing()
+        let (alice, bob) = (repair.alice, repair.bob)
+        let heardBefore = await alice.events.received.count
+        let notice = Gate()
+        if suspension == .unpairRevocationNotice {
+            await alice.secure.observeRevocations { _ in await notice.wait() }
+        }
+
+        switch suspension {
+        case .commitSaveBeforeWrite, .commitSaveAfterWrite:
+            let point: GatedPairedPeerStore.Point = suspension == .commitSaveBeforeWrite ? .saveBeforeWrite : .saveAfterWrite
+            await alice.store.arm(point)
+            await repair.aliceSession.confirm(codesMatch: true)
+            await repair.bobSession.confirm(codesMatch: true)
+            try await eventually("alice's commit is held") { await alice.store.suspended(at: point) == 1 }
+            let unpair = Task { try await alice.secure.unpair(bob.id) }
+            try await settle()
+            #expect(await alice.secure.status(of: bob.id).provenKey == nil, "no session once unpair has started")
+            await alice.store.release(point)
+            try await unpair.value
+
+        case .unpairRemoveBeforeDelete, .unpairRemoveAfterDelete, .unpairRevocationNotice:
+            let point: GatedPairedPeerStore.Point? = switch suspension {
+            case .unpairRemoveBeforeDelete: .removeBeforeDelete
+            case .unpairRemoveAfterDelete: .removeAfterDelete
+            default: nil
+            }
+            if let point { await alice.store.arm(point) }
+            let unpair = Task { try await alice.secure.unpair(bob.id) }
+            try await eventually("alice's unpair is held") {
+                if let point { return await alice.store.suspended(at: point) == 1 }
+                return await notice.waiters == 1
+            }
+            // While the removal is in progress the pin cannot be used.
+            #expect(await alice.secure.status(of: bob.id).provenKey == nil, "no session while unpairing")
+            let reconnect = Task { await alice.secure.reconnect(bob.id) }
+            await repair.aliceSession.confirm(codesMatch: true)
+            await repair.bobSession.confirm(codesMatch: true)
+            try await settle()
+            #expect(await alice.secure.status(of: bob.id).provenKey == nil, "no new session while unpairing")
+            if let point { await alice.store.release(point) } else { await notice.release() }
+            try await unpair.value
+            await reconnect.value
+        }
+        try await settle()
+
+        // The invariant, after everything has settled.
+        if case .paired = try await repair.aliceEvents.waitForOutcome() { Issue.record("alice re-pinned bob") }
+        #expect(try await alice.store.peer(for: bob.id) == nil)
+        await alice.secure.reconnect(bob.id)
+        try? await bob.secure.send(Frame(Data("still here".utf8)), to: alice.id)
+        try await settle()
+        #expect(await alice.secure.status(of: bob.id).provenKey == nil)
+        #expect(await alice.events.received.count == heardBefore)
+        await notice.release()
+        withExtendedLifetime(repair.services) {}
+    }
+
     /// Review 2 finding 1, pending save: both owners confirmed and Alice's
-    /// save is in flight when she unpairs Bob through `unpair(_:)`. The save
-    /// lands after the removal; unpairing must still win.
+    /// save is in flight when she unpairs Bob through `unpair(_:)`, which
+    /// runs while the save is still held. Unpairing must still win.
     @Test func unpairingDuringAPendingSaveWins() async throws {
         let repair = try await repairing()
         let (alice, bob) = (repair.alice, repair.bob)
@@ -427,8 +498,12 @@ extension Recorder where Element == PairingEvent {
         await repair.bobSession.confirm(codesMatch: true)
         try await eventually("alice's save is in flight") { await alice.store.suspendedSaves == 1 }
 
-        try await alice.secure.unpair(bob.id)
+        // The unpair's removal waits for the commit holding the pin lock;
+        // the commit then sees the revocation and leaves no pin.
+        let unpair = Task { try await alice.secure.unpair(bob.id) }
+        try await settle()
         await alice.store.releaseSaves()
+        try await unpair.value
 
         #expect(try await repair.aliceEvents.waitForOutcome() == .failed(.cancelled))
         #expect(try await alice.store.peer(for: bob.id) == nil)

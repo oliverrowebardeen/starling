@@ -44,7 +44,9 @@ public actor SecureTransport: Transport {
 
     private let inner: any Transport
     private let identity: IdentityKeyPair
-    private let pairedPeers: any PairedPeerStore
+    /// The authority over this transport's pinned keys. Pairing commits and
+    /// unpairs go through it (ADR 0100 decision 11).
+    public nonisolated let pins: PinAuthority
     private let configuration: SecureTransportConfiguration
     private let continuation: AsyncStream<TransportEvent>.Continuation
     private let pairingContinuation: AsyncStream<TransportEvent>.Continuation
@@ -59,10 +61,6 @@ public actor SecureTransport: Transport {
     /// link loss, rollover). A pin lookup that started under an older
     /// generation is stale and must not create or install a session.
     private var generations: [PeerID: UInt64] = [:]
-    /// Bumped only when a peer is revoked (`disconnect`, `unpair`). A pairing
-    /// ceremony commits only if this is unchanged since it started.
-    private var revocationGenerations: [PeerID: UInt64] = [:]
-    private var revocationObservers: [@Sendable (PeerID) async -> Void] = []
     private var sendTail: Task<Void, Never>?
     /// Frames dropped since start, for tests and diagnostics. No reasons are kept.
     private(set) var droppedFrames = 0
@@ -123,7 +121,7 @@ public actor SecureTransport: Transport {
     ) {
         self.inner = inner
         self.identity = identity
-        self.pairedPeers = pairedPeers
+        pins = PinAuthority(store: pairedPeers)
         self.configuration = configuration
         kind = inner.kind
         localPeer = identity.peerID
@@ -147,6 +145,9 @@ public actor SecureTransport: Transport {
             throw TransportError.failed("wrapped transport must use this identity's PeerID")
         }
         state = .started
+        // Revocations that start at the authority (for example from another
+        // component) end sessions here too.
+        pins.observeRevocations { [weak self] peer in await self?.endSessions(with: peer) }
         let events = inner.events
         eventLoop = Task { [weak self] in
             for await event in events {
@@ -198,40 +199,38 @@ public actor SecureTransport: Transport {
         await initiate(with: peer)
     }
 
-    /// Unpairs `peer`: the one call the app should use. Removes the pin, then
-    /// revokes (see `disconnect(_:)`), so no session, pending handshake,
-    /// pairing ceremony, or in-flight pairing save with the peer survives.
+    /// Unpairs `peer`: the one call the app should use. Before its first
+    /// await it marks the peer revoked at the pin authority and ends every
+    /// session and handshake with it; then it cancels pairing ceremonies and
+    /// removes the pin under the authority's lock. No pin, session, or
+    /// pairing commit with the peer survives it (ADR 0100 decision 11).
     public func unpair(_ peer: PeerID) async throws {
-        do {
-            try await pairedPeers.remove(peer)
-        } catch {
-            await disconnect(peer)
-            throw error
-        }
-        await disconnect(peer)
+        pins.beginRemoval(peer)
+        endSessions(with: peer)
+        try await pins.completeRemoval(peer)
     }
 
-    /// Revokes `peer` without touching the store: ends its session, voids pin
-    /// lookups in flight, and tells every `PairingService` on this transport
-    /// to cancel its ceremony with the peer. Remove the pin first (or call
-    /// `unpair(_:)`), or the next link-up will start a session again.
+    /// Revokes `peer` without removing its pin: ends its session, voids pin
+    /// lookups in flight, and cancels pairing ceremonies with it. Use
+    /// `unpair(_:)` to unpair; this alone leaves the pin, so the next link-up
+    /// starts a session again.
     public func disconnect(_ peer: PeerID) async {
-        revocationGenerations[peer, default: 0] += 1
+        pins.markRevoked(peer)
+        endSessions(with: peer)
+        await pins.notifyObservers(peer)
+    }
+
+    /// Registers a handler run on every revocation of a peer.
+    public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
+        pins.observeRevocations(handler)
+    }
+
+    /// Ends every session and handshake with `peer` and voids pin lookups in
+    /// flight. Synchronous, so revocation takes effect before any await.
+    private func endSessions(with peer: PeerID) {
         tearDown(peer, announce: true)
         // Also when there was no state yet: a first handshake may be mid-lookup.
         generations[peer, default: 0] += 1
-        for observer in revocationObservers { await observer(peer) }
-    }
-
-    /// How many times `peer` has been revoked. Pairing records it when a
-    /// ceremony starts and saves only if it has not changed.
-    public func revocationGeneration(of peer: PeerID) -> UInt64 {
-        revocationGenerations[peer, default: 0]
-    }
-
-    /// Registers a handler run on every revocation. Used by `PairingService`.
-    public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
-        revocationObservers.append(handler)
     }
 
     /// What this layer knows about one link: the `PeerID` the link claims,
@@ -623,13 +622,16 @@ public actor SecureTransport: Transport {
         (try? IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation))?.peerID == peer
     }
 
-    /// Looks up the key pinned for `peer`. Returns nil if the peer was torn
-    /// down or disconnected while the lookup was suspended, so a pin read
+    /// Looks up the key pinned for `peer` through the pin authority. Returns
+    /// nil while the peer is being unpaired, and if it was revoked, torn
+    /// down, or disconnected while the lookup was suspended, so a pin read
     /// before an unpair can never start or answer a handshake after it.
+    /// Callers create handshake state synchronously after this returns.
     private func pinnedKey(for peer: PeerID) async -> X25519PublicKey? {
         let generation = generations[peer, default: 0]
-        guard let paired = try? await pairedPeers.peer(for: peer), paired.id == peer,
-              state == .started, generations[peer, default: 0] == generation
+        guard let (paired, token) = await pins.pinned(peer),
+              state == .started, generations[peer, default: 0] == generation,
+              pins.revocationToken(of: peer) == token, !pins.isRemoving(peer)
         else { return nil }
         return try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
     }
@@ -685,5 +687,3 @@ public struct SecureLinkStatus: Hashable, Sendable {
     /// handshake, failed decryption, stale nonce). No reasons are kept.
     public let droppedFrames: Int
 }
-
-extension SecureTransport: PairingRevocations {}

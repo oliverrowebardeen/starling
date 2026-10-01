@@ -117,17 +117,60 @@ actor GatedPairedPeerStore: PairedPeerStore {
         waiting = []
     }
 
+    /// Points inside `save` and `remove` where a test can hold the caller.
+    enum Point: Hashable, Sendable { case saveBeforeWrite, saveAfterWrite, removeBeforeDelete, removeAfterDelete }
+    private var armedPoints: Set<Point> = []
+    private var waitingAt: [Point: [CheckedContinuation<Void, Never>]] = [:]
+
+    func arm(_ point: Point) { armedPoints.insert(point) }
+    func suspended(at point: Point) -> Int { waitingAt[point]?.count ?? 0 }
+
+    func release(_ point: Point) {
+        armedPoints.remove(point)
+        for continuation in waitingAt[point] ?? [] { continuation.resume() }
+        waitingAt[point] = nil
+    }
+
+    private func pause(at point: Point) async {
+        guard armedPoints.contains(point) else { return }
+        await withCheckedContinuation { waitingAt[point, default: []].append($0) }
+    }
+
     func all() async throws -> [PairedPeer] { try await inner.all() }
     func save(_ peer: PairedPeer) async throws {
         if saveArmed { await withCheckedContinuation { waitingSaves.append($0) } }
+        await pause(at: .saveBeforeWrite)
         try await inner.save(peer)
+        await pause(at: .saveAfterWrite)
     }
-    func remove(_ id: PeerID) async throws { try await inner.remove(id) }
+    func remove(_ id: PeerID) async throws {
+        await pause(at: .removeBeforeDelete)
+        try await inner.remove(id)
+        await pause(at: .removeAfterDelete)
+    }
 
     func peer(for id: PeerID) async throws -> PairedPeer? {
         let snapshot = try await inner.peer(for: id)
         if armed { await withCheckedContinuation { waiting.append($0) } }
         return snapshot
+    }
+}
+
+/// A one-shot gate a test can hold async work at.
+actor Gate {
+    private var open = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    var waiters: Int { waiting.count }
+
+    func wait() async {
+        guard !open else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        open = true
+        for continuation in waiting { continuation.resume() }
+        waiting = []
     }
 }
 

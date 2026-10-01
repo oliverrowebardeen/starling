@@ -13,17 +13,6 @@ public struct PairingConfiguration: Sendable {
     }
 }
 
-/// Where unpairing happens, so it can win over a pairing ceremony that is
-/// still running. `SecureTransport` is the implementation.
-public protocol PairingRevocations: Sendable {
-    /// Changes every time `peer` is revoked.
-    func revocationGeneration(of peer: PeerID) async -> UInt64
-    /// Removes the pin and ends every session and ceremony with `peer`.
-    func unpair(_ peer: PeerID) async throws
-    /// Runs `handler` on every revocation.
-    func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) async
-}
-
 public enum PairingServiceError: Error, Hashable, Sendable {
     case cannotPairWithSelf
     case notStarted
@@ -40,37 +29,44 @@ public enum PairingServiceError: Error, Hashable, Sendable {
 /// link. The service is the single consumer of the link's events.
 public actor PairingService {
     private let identity: IdentityKeyPair
-    private let store: any PairedPeerStore
+    private let pins: PinAuthority
     private let link: any Transport
     private let configuration: PairingConfiguration
     private let now: @Sendable () -> Date
-    private let revocations: (any PairingRevocations)?
     private var ceremonies: [PeerID: PairingCeremony] = [:]
     private var loop: Task<Void, Never>?
 
-    /// - Parameter revocations: Where unpairing happens. Defaults to the
-    ///   `SecureTransport` behind `link` when it is `pairingLink`. With none,
-    ///   nothing can revoke a ceremony (plain links in tests).
+    /// Pairs over `secureTransport.pairingLink` and commits pins through
+    /// `secureTransport.pins`, so unpairing is ordered against every commit.
     public init(
         identity: IdentityKeyPair,
-        store: any PairedPeerStore,
+        secureTransport: SecureTransport,
+        configuration: PairingConfiguration = PairingConfiguration(),
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.init(identity: identity, pins: secureTransport.pins, link: secureTransport.pairingLink, configuration: configuration, now: now)
+    }
+
+    /// Pairs over any link. Pins are committed only through `pins`, the
+    /// authority every unpair also goes through.
+    public init(
+        identity: IdentityKeyPair,
+        pins: PinAuthority,
         link: any Transport,
         configuration: PairingConfiguration = PairingConfiguration(),
-        revocations: (any PairingRevocations)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.identity = identity
-        self.store = store
+        self.pins = pins
         self.link = link
         self.configuration = configuration
-        self.revocations = revocations ?? (link as? PairingLink)?.owner
         self.now = now
     }
 
     /// Starts the link (if needed) and begins listening for pairing traffic.
     public func start() async throws {
         guard loop == nil else { return }
-        await revocations?.observeRevocations { [weak self] peer in await self?.revoked(peer) }
+        pins.observeRevocations { [weak self] peer in await self?.revoked(peer) }
         let events = link.events
         loop = Task { [weak self] in
             for await event in events {
@@ -99,11 +95,10 @@ public actor PairingService {
         _ = try PairedPeer(publicKey: identity.publicKey, nickname: nickname, pairedAt: Timestamp(now()))
 
         if let previous = ceremonies.removeValue(forKey: peer) { await previous.cancel() }
-        let generation = await revocations?.revocationGeneration(of: peer)
         let ceremony = PairingCeremony(
-            peer: peer, nickname: nickname, identity: identity, store: store,
+            peer: peer, nickname: nickname, identity: identity, pins: pins,
             link: link, configuration: configuration, now: now,
-            revocations: revocations, revocationGeneration: generation
+            revocationToken: pins.revocationToken(of: peer)
         )
         ceremonies[peer] = ceremony
         await ceremony.begin { [weak self] in await self?.finished(ceremony, peer: peer) }
@@ -162,14 +157,13 @@ actor PairingCeremony: PairingSession {
     private let peer: PeerID
     private let nickname: String
     private let identity: IdentityKeyPair
-    private let store: any PairedPeerStore
+    private let pins: PinAuthority
     private let link: any Transport
     private let configuration: PairingConfiguration
     private let now: @Sendable () -> Date
     private let initiator: Bool
-    private let revocations: (any PairingRevocations)?
-    /// The peer's revocation generation when the ceremony started.
-    private let revocationGeneration: UInt64?
+    /// The peer's revocation token when the ceremony started.
+    private let revocationToken: UInt64
 
     private var phase = Phase.waiting
     private var handshake: NoiseHandshakeState
@@ -183,16 +177,15 @@ actor PairingCeremony: PairingSession {
     private var onFinish: (@Sendable () async -> Void)?
 
     init(
-        peer: PeerID, nickname: String, identity: IdentityKeyPair, store: any PairedPeerStore,
+        peer: PeerID, nickname: String, identity: IdentityKeyPair, pins: PinAuthority,
         link: any Transport, configuration: PairingConfiguration, now: @escaping @Sendable () -> Date,
-        revocations: (any PairingRevocations)?, revocationGeneration: UInt64?
+        revocationToken: UInt64
     ) {
-        self.revocations = revocations
-        self.revocationGeneration = revocationGeneration
+        self.revocationToken = revocationToken
         self.peer = peer
         self.nickname = nickname
         self.identity = identity
-        self.store = store
+        self.pins = pins
         self.link = link
         self.configuration = configuration
         self.now = now
@@ -226,7 +219,7 @@ actor PairingCeremony: PairingSession {
     }
 
     /// The owner unpaired this peer while the ceremony ran. A ceremony that
-    /// is already saving is caught by the generation check in `completeIfReady`.
+    /// is already saving is caught by the token check in `PinAuthority.commit`.
     func revoke() async {
         await end(.cancelled, notice: .cancel)
     }
@@ -360,16 +353,11 @@ actor PairingCeremony: PairingSession {
         do {
             let key = try IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation)
             let paired = try PairedPeer(publicKey: key, nickname: nickname, pairedAt: Timestamp(now()))
-            // Unpairing wins: commit only if the peer was not revoked since
-            // the ceremony started, and undo the save if it was revoked while
-            // the save was in flight.
-            guard await notRevoked() else { return finish(.failed(.cancelled)) }
-            try await store.save(paired)
-            guard await notRevoked() else {
-                try? await revocations?.unpair(peer)
-                return finish(.failed(.cancelled))
-            }
-            finish(.paired(paired))
+            // Unpairing wins: the authority commits only if the peer was not
+            // revoked since the ceremony started, and leaves no pin if a
+            // revocation starts before the commit ends.
+            let committed = try await pins.commit(paired, ifNotRevokedSince: revocationToken)
+            finish(committed ? .paired(paired) : .failed(.cancelled))
         } catch {
             finish(.failed(.protocolError))
         }
@@ -377,10 +365,6 @@ actor PairingCeremony: PairingSession {
 
     // MARK: Plumbing
 
-    private func notRevoked() async -> Bool {
-        guard let revocations, let revocationGeneration else { return true }
-        return await revocations.revocationGeneration(of: peer) == revocationGeneration
-    }
 
     private func abandon() async {
         await end(.protocolError, notice: .cancel)
