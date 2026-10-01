@@ -80,8 +80,8 @@ final class TestClock: Sendable {
                                      chain: ChainLink(parent: plan.id, parentConversation: ConversationID(), consumed: [.plan], trigger: .afterPlanEnds,
                                                       optedInAt: Fixtures.at(minutes: 6)))
         #expect(schedule.check(at: afterTheEnd, interactions: [plan, mismatched], settings: swapOn, cards: Fixtures.cards()) == [.cancel(mismatched, .withdrawn)])
-        // A link to someone the plan did not include.
-        let outsider = Interaction(skill: SampleSkills.swapPhotos.ref, role: .initiator, participants: [Fixtures.maya, Fixtures.stranger],
+        // A link only to someone the plan did not include.
+        let outsider = Interaction(skill: SampleSkills.swapPhotos.ref, role: .initiator, participants: [Fixtures.stranger],
                                    createdAt: Fixtures.at(minutes: 6),
                                    chain: ChainLink(parent: plan.id, parentConversation: plan.conversation, consumed: [.plan], trigger: .afterPlanEnds,
                                                     optedInAt: Fixtures.at(minutes: 6)))
@@ -209,5 +209,23 @@ final class TestClock: Sendable {
         // A different link that happens to wait under the same plan is not this one.
         let other = Interaction(skill: waiting.skill, role: .initiator, participants: waiting.participants, createdAt: waiting.createdAt, chain: waiting.chain)
         #expect(!handed.isCurrent(other))
+    }
+
+    @Test func aLinkStartsOnlyWithThePeopleStillInThePlan() throws {
+        let (plan, waiting) = try optedIn()
+        #expect(waiting.participants == [Fixtures.maya, Fixtures.jake])
+        // Jake passed on the place later: the plan is now you and Maya.
+        var shrunk = plan
+        let narrowed = try Plan(id: try #require(plan.plan).id, origin: plan.conversation, attendees: Attendees([Fixtures.me, Fixtures.maya]),
+                                activity: Fixtures.boba, time: Fixtures.tonight)
+        shrunk.record(.plan(narrowed))
+        let results = schedule.check(at: afterTheEnd, interactions: [shrunk, waiting], settings: swapOn, cards: Fixtures.cards())
+        guard case .start(let due) = try #require(results.first) else {
+            Issue.record("expected a start, got \(results)")
+            return
+        }
+        #expect(due.link.participants == [Fixtures.maya])
+        #expect(due.request(rules: .empty, expiresAt: Fixtures.at(minutes: 600)).participants == [Fixtures.maya])
+        #expect(results.first?.isCurrent(waiting) == true)
     }
 }
