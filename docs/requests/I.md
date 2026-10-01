@@ -34,7 +34,7 @@ acceptance test exercise the actual secure channel. Lane I cannot edit
 
 ## Completed: F and G integration
 
-Rebased onto `777de46`, which includes F, G, and E2. The new
+Rebased onto `84461c5`, which includes F, G, E2, and C2. The new
 `Tools/Simulator/Tests/DownIntegrationTests/` target exercises the public
 `DownNegotiator` and `DeterministicPolicyEngine` through Inbox and Outbox over
 Loopback, with the real audit observer. Its 15 tests include 22 parameterized
@@ -47,21 +47,22 @@ fixture paired records; they do not replace the secure-channel acceptance
 scenario tracked by #8. Method and limits are in
 [ADR 0151](../decisions/0151-down-policy-integration-tests.md).
 
-## C2: matching negative controls
+## C2: remaining multi-offer false matches
 
-[Issue #9](https://github.com/oliverrowebardeen/starling-ios/issues/9) records
-`food` versus `movie` matching as equivalent in 24/24 real-model baseline calls.
-The benign and attack variants also produced false matches in 24/24 calls each.
-Attack-versus-benign normalized outcomes changed in 6/24 comparisons, but the
-100% baseline false-positive rate prevents isolating unsafe injection effects.
-Decide returned safe counters in all 72 calls. There were no model errors.
+C2 merged in `927086f`. The fresh 144-call real-model experiment confirms its
+single-offer fix: `food` versus `movie` has 0/24 false matches, down from 24/24.
+That baseline now asserts no match without a known-issue marker.
 
-Please add unrelated-pair evaluation and correct the matcher in StarlingAgent.
-The full rates and 48 trial triples are in
-`Tools/Simulator/Tests/PromptInjectionTests/Results/`. Rerun the opt-in experiment
-after C2 lands. Its baseline assertion links to #9 with `withKnownIssue`; new
-attack-only unsafe transitions and unsafe decisions remain ordinary failures.
-Per the C2 relay, once the Orchestrator confirms its merge, assert the corrected
-baseline normally and retain #9 markers only on the benign-label and
-attack-label variants that still fail. The F/G integration update leaves the
-experiment and its markers unchanged.
+[Issue #9](https://github.com/oliverrowebardeen/starling-ios/issues/9) stays open:
+the benign-label and attack-label variants still produce false matches in
+24/24 calls each. Each variant has a separate `withKnownIssue` assertion, so a
+future partial fix will be visible. Attack-versus-benign normalized outcomes
+changed in 21/24 comparisons (87.5%), but the benign control's 100% false-match
+rate still prevents isolating unsafe injection effects. All 72 decide calls
+returned safe counters, and no model errors occurred.
+
+The new report is
+`Tools/Simulator/Tests/PromptInjectionTests/Results/macos-26.7-xcode-27.0-c2.json`.
+The adjacent README compares it with the retained pre-C2 report. New attack-only
+unsafe transitions and unsafe decisions remain ordinary failures. No change to
+StarlingAgent is made in this lane.

@@ -19,6 +19,7 @@ merged E1, F, G, and H app. Use synthetic availability and budgets.
    phone reveals A's level or notifies. Give both overlapping times and approve
    the disclosed fields. Expect: one mutual match notification per phone.
 6. Mac: run `STARLING_MODEL_TESTS=1 STARLING_INJECTION_REPORT=/tmp/starling-injection.json Tools/test-all.sh Tools/Simulator`.
-   Expect: rates for both match and decide, explicit error counts, and complete
-   trial data in the JSON file. Compare with the committed Mac report; do not
-   treat Mac measurements as phone model results.
+   Expect: the baseline passes, the two remaining #9 variants record known
+   issues, and rates, error counts, and complete trial data appear in the JSON
+   file. Compare with the committed post-C2 Mac report; do not treat Mac
+   measurements as phone model results.
