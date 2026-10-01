@@ -21,8 +21,10 @@ Verified against Apple's documentation (2026-10-01):
 3. **What the stub does.**
    - The one who opted in: when the plan ends (ADR 0240), the service asks its owner to pick photos. The pick sends one offer, the photo count under the photos topic, to everyone else in the plan, with the skill and `chainedFrom`, through the Outbox. Acceptances are collected.
    - A friend: an offer from someone in a plan this phone was in creates an invitee card and nothing else: no picker, no permission, no start. "Share" sends an acceptance; a pass sends nothing ("If you pass, they just won't see it").
+   - A newer offer from the same friend replaces the card at the next revision. A send's denial or failure is reported only if its step is still current (ADR 0011 amendment 14), and withdrawing cancels a send still waiting on a sheet or the policy's re-check.
    - Moving the photos themselves is Phase 4's (brief 2.8 and 5). The initiator's interaction stays negotiating until it expires, and the friend's stays confirmed.
 4. **The coordinator applies `.started`.** For an initiator, the lifecycle coordinator applies `.started` when the owner sends (here, when the schedule hands the link over), before calling `SkillService.start`; the service never emits it (Orchestrator's answer to `docs/requests/P15-E.md`, recorded in ADR 0011). `start` emits only the pick question.
+5. **Invite only, closed after it ends** (Core v2.1). Swap photos declares `sendModes: [.invite]`, as ADR 0020 requires of a skill not built on mutual reveal. Every send carries mode `invite` and `OutboundContext(interaction:)`; a request in another mode is refused, and an envelope in another mode is ignored, so a quiet ask never becomes a card. A conversation that ended here, or arrives ended in `restore(_:)`, stays closed: a late or retried offer for it is ignored, so a pass is never followed by the same card (ADR 0011 amendment 15).
 
 ## Consequences
 

@@ -13,7 +13,7 @@ Core v2 leaves four things open:
 1. What "already granted for the plan" means.
 2. Where an after-plan-ends opt-in lives between Confirm and the plan's end. `ChainLink` sits on the chained `Interaction`, which does not exist until the skill starts.
 3. How "every envelope of the link carries `chainedFrom`" is enforced when the skills that send belong to other lanes.
-4. What the receiving phone does with a peer's `chainedFrom`, given that `Interaction` has no field for it and a `ChainLink` records the owner's own opt-in.
+4. What the receiving phone does with a peer's `chainedFrom`, given that a `ChainLink` records the owner's own opt-in. (Core v2.1 later added `Interaction.friendChainHint` for it, at this lane's request.)
 
 ## Decision
 
@@ -26,22 +26,23 @@ Core v2 leaves four things open:
    - a link of the same skill from this plan is still working (before planned), so "Somewhere else?" returns once the last one settles;
    - for an after-plan-ends skill, the plan has no end time.
 
-   The people a link goes to are the plan's attendees (ADR 0012 decision 8) minus this phone.
+   The people a link goes to are the plan's attendees (ADR 0012 decision 8) minus this phone, and no one else, even if the parent asked more people than ended up in the plan; a parent without a plan offers no chain. So `chainedFrom` never names a conversation a recipient was not in, and exclusion stays undetectable (ADR 0020 decision 9.3). A link carries its skill's default send mode.
 3. **A tap and a matching consent, checked again at the tap.** `begin` (at Confirm) and `optIn` (after the plan ends) take an `OwnerTap` and, when the row adds anything, a `LinkConsent` for the same parent and skill covering at least what the row adds. Both recompute the row from the current interactions, settings, and cards first, so a card, a switch, or a Never topic that changed after the row was drawn refuses the start (`notOffered`), and a row that now adds more than was approved asks again (`consentRequired`).
 4. **An opt-in is a waiting interaction.** `optIn` returns a drafting initiator interaction with `ChainLink(trigger: .afterPlanEnds, optedInAt: tap)`. The app saves it in its `InteractionStore`, so it survives a restart with no new storage. Switching it off removes it (`optOut`): nothing ran and nothing left the phone. Lane A shows it as the plan's "Photos after" chip rather than a row under In progress.
 5. **The schedule checks everything again when the plan ends.** `PlanEndSchedule.check` starts a waiting link only if:
    - its parent is still planned or done, and the stored link names the parent's conversation;
    - the parent was already planned when the owner tapped (so the opt-in was made at Confirm);
    - the skill is still in the build, switched on, not blocked by a Never topic, and at the version the owner approved;
-   - everyone in the plan still runs it.
+   - everyone in the plan still runs it;
+   - the link still names only people in the plan.
 
    Otherwise it returns a cancel with the event that ends the link in history (withdrawn, unsupported, or blocked by privacy), never a silent wait. Only initiator interactions in drafting can wait, so an invitee interaction, which starts negotiating, can never be started by the schedule. `PlanEndScheduler` runs the check while the app is open, napping until the next end (capped at a minute by default) and handing each link over once. It reads settings and cards before the store, so an opt-out during those reads is seen. Because the owner can still opt out after a hand-over, the coordinator confirms each one with `ScheduledChain.isCurrent` (or `PlanEndScheduler.claim`) inside the write that applies `.started` or the cancel event, and drops a stale one. `nextEnd(after:)` lets the app schedule a local notification at the plan's end with `UNCalendarNotificationTrigger`, so the check also runs when the owner opens it.
 6. **`chainedFrom` is enforced on the way out.** `ChainedFromPolicy` wraps the app's `PolicyEngine`. For a conversation whose stored interaction has a `ChainLink`, an envelope whose `chainedFrom` is missing or names another conversation is denied (`chain.chained_from_mismatch`) before the wrapped policy or any consent sheet sees it. A store failure denies (`chain.store_unavailable`). Other conversations pass through unchanged, so privacy topics still decide egress. The app must save a link's interaction before calling its service's `start`.
-7. **A peer's `chainedFrom` only groups.** `IncomingChain.timelineParent` accepts a hint only if it names a conversation on this phone that became a plan (planned or done) and the sender is in that plan. Accepted hints group the invitee interaction on the plan's timeline as a friend's request (`PlanTimeline.Entry.Origin.friend`). A hint is never turned into a `ChainLink`, never enters the schedule, and the package has no path from an incoming envelope to `begin`, `optIn`, or a permission.
+7. **A peer's `chainedFrom` only groups.** `IncomingChain.timelineParent` accepts a hint only if it names a conversation on this phone that became a plan (planned or done) and the sender is in that plan. The coordinator keeps an accepted hint with `Interaction.setFriendChainHint` (Core v2.1), which only an invitee can carry, and `PlanTimeline` groups it on the plan's timeline as a friend's request (`PlanTimeline.Entry.Origin.friend`). A hint is never turned into a `ChainLink`, never enters the schedule, and the package has no path from an incoming envelope to `begin`, `optIn`, or a permission.
 
 ## Consequences
 
-- Lane A wires: the "Keep it going" list from `suggestions`; the link consent sheet from `ChainSuggestion.adds`; `begin`/`optIn` on the tap; `ChainedFromPolicy` around its policy; `PlanEndScheduler` with the cancel events applied; a notification at `nextEnd`; and the friend hint map (see `docs/requests/P15-E.md`).
+- Lane A wires: the "Keep it going" list from `suggestions`; the link consent sheet from `ChainSuggestion.adds`; `begin`/`optIn` on the tap; `ChainedFromPolicy` around its policy; `PlanEndScheduler` with the cancel events applied; a notification at `nextEnd`; and the friend hint (see `docs/requests/P15-E.md`).
 - Opt-in and link consent are approvals of a skill's declared exposure, separate from the per-send consent sheets the policy still raises for Ask me topics.
 - The opt-in survives a restart, but `PlanEndScheduler` runs only while the app is open. A plan that ends while Starling is closed starts its link the next time the owner opens it, which the notification prompts.
 
