@@ -106,6 +106,9 @@ public final class AppModel {
     /// Nil until a `DownService` and a paired-peer store are in the build.
     public let down: DownModel?
     public let friends: FriendsModel?
+    /// The app's link layer: greets peers, answers hellos, and shows each
+    /// peer's connection and round trips. Nil without an Outbox and a card.
+    public let link: LinkTestModel?
     /// The policy every app send is judged by, following the owner's rules.
     public let policy: RulesPolicy?
     /// The app's one `Outbox`: lane G's policy, the consent sheet, and the
@@ -148,6 +151,12 @@ public final class AppModel {
             down = nil
         }
         friends = services.peers.map { FriendsModel(store: $0, unpair: services.unpair, rename: services.rename) }
+        if let outbox, let card = services.agentCard {
+            let friends = friends
+            link = LinkTestModel(outbox: outbox, card: card, name: { peer in friends?.friends.first { $0.id == peer }?.nickname })
+        } else {
+            link = nil
+        }
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
         down?.intentChanged = { [weak self] in
             guard let self else { return }
@@ -200,28 +209,21 @@ public final class AppModel {
         await friends?.load()
     }
 
-    /// The single Inbox loop: every event goes to the Down service, in
-    /// arrival order, which ignores what is not part of Down. In Phase 1
-    /// every conversation is Down's (F request 4); later features get their
-    /// events here too.
+    /// The single Inbox loop: every event, in arrival order, goes to the
+    /// friends list (reachability), the link layer (hello and round trips),
+    /// and the Down service, which ignores what is not part of Down. In
+    /// Phase 1 every conversation is Down's (F request 4).
     private func routeInbox() {
         // Runs whenever there is an Inbox: Release has friends (and their
         // reachability) even without Down.
         guard inboxLoop == nil, let events = services.inboxEvents else { return }
         let downService = downService
-        let outbox = outbox
-        let card = services.agentCard
         let friends = friends
+        let link = link
         inboxLoop = Task {
             for await event in events {
-                // The link layer greets each peer with this agent's card, so
-                // the peer's policy knows where the model runs. Hello is
-                // always allowed and carries nothing else. Not awaited, so a
-                // slow link never holds up the loop.
-                if case .peerAvailable(let peer) = event, let outbox, let card {
-                    Task { _ = try? await outbox.send(.hello(card), to: peer, conversation: ConversationID()) }
-                }
                 friends?.handle(event)
+                await link?.handle(event)
                 await downService?.handle(event)
             }
         }
