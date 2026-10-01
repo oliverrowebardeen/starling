@@ -90,10 +90,9 @@ final class DebugHarness {
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter(),
-            // Location is real (lane D); calendar and photos stay simulated
-            // until their wiring lands.
-            permissions: [LocationPermissionAccess(location: places.location)]
-                + [SystemPermission.calendarFullAccess, .photoLibrary].map(DebugPermissionAccess.init),
+            // Calendar (lane C) and location (lane D) are real; photos stays
+            // simulated while Swap photos is behind its flag.
+            permissions: [LocationPermissionAccess(location: places.location), LiveServices.calendarPermission, DebugPermissionAccess(permission: .photoLibrary)],
             cardsFile: try? .standard("peer-cards.json"),
             notesFile: try? .standard("plan-notes.json")
         )

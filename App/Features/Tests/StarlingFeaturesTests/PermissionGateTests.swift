@@ -1,4 +1,6 @@
 import Foundation
+import StarlingAvailability
+import StarlingAvailabilityFakes
 import StarlingCore
 import StarlingFakes
 @testable import StarlingFeatures
@@ -103,12 +105,54 @@ actor FakeAccess: PermissionAccess {
         // ADR 0013 amendment 6: "both free" is true only when answering.
         let answering = PermissionExplanation.make(.calendarFullAccess, skill: skill, friends: ["Priya"], role: .invitee)
         #expect(answering.rows[2] == DisplayLine(title: "Priya sees", detail: "Only times you're both free"))
-        #expect(sheet.body.contains("Priya's agent never has to ask you"))
+        #expect(sheet.body == "Your agent checks when you're busy, right here on your iPhone, so friends' agents don't have to ask you.")
+        #expect(sheet.fallback == "No problem, your agent will ask you instead.")
         #expect(PermissionExplanation.make(.calendarFullAccess, skill: skill, friends: ["Maya", "Jake"]).rows[2].title == "Maya and Jake see")
         #expect(PermissionExplanation.continueLabel == "Continue")
         for permission in SystemPermission.allCases {
             let text = PermissionExplanation.make(permission, skill: skill, friends: ["A", "B", "C"])
             #expect(!(text.title + text.body + text.fallback + text.rows.map { $0.title + ($0.detail ?? "") }.joined()).contains("\u{2014}"))
         }
+    }
+}
+
+/// Lane C's calendar access behind the gate (P15-C request 1).
+@MainActor
+@Suite struct CalendarPermissionTests {
+    let skill = SampleSkills.findATime
+
+    @Test func theSystemAlertComesOnlyAfterContinue() async {
+        let calendar = FakeCalendarStore(status: .notDetermined, grantOnRequest: true)
+        let gate = PermissionGate(access: [CalendarPermissionAccess(access: CalendarAccess(store: calendar))])
+        let settings = SettingsModel(store: InMemoryOwnerSettingsStore(), flags: .phase1_5)
+        await settings.load()
+        let outcome = Task { await gate.prepare(.calendarFullAccess, for: skill, friends: ["Maya"], settings: settings) }
+        await eventually { gate.pending != nil }
+        #expect(calendar.requestCount == 0)
+        gate.proceed()
+        #expect(await outcome.value == .granted)
+        #expect(calendar.requestCount == 1)
+    }
+
+    @Test func dontAllowFallsBackToAskingAndAWriteOnlyCalendarCanStillBeAsked() async {
+        let calendar = FakeCalendarStore(status: .writeOnly, grantOnRequest: false)
+        let gate = PermissionGate(access: [CalendarPermissionAccess(access: CalendarAccess(store: calendar))])
+        let settings = SettingsModel(store: InMemoryOwnerSettingsStore(), flags: .phase1_5)
+        await settings.load()
+        let outcome = Task { await gate.prepare(.calendarFullAccess, for: skill, friends: ["Maya"], settings: settings) }
+        await eventually { gate.pending != nil }
+        gate.proceed()
+        #expect(await outcome.value == .askInstead(fallback: "No problem, your agent will ask you instead."))
+        #expect(settings.asksInstead(.findATime))
+    }
+
+    @Test func aDeniedCalendarShowsNoSheet() async {
+        let calendar = FakeCalendarStore(status: .denied)
+        let gate = PermissionGate(access: [CalendarPermissionAccess(access: CalendarAccess(store: calendar))])
+        let settings = SettingsModel(store: InMemoryOwnerSettingsStore(), flags: .phase1_5)
+        await settings.load()
+        #expect(await gate.prepare(.calendarFullAccess, for: skill, friends: ["Maya"], settings: settings) == .askInstead(fallback: nil))
+        #expect(gate.pending == nil)
+        #expect(calendar.requestCount == 0)
     }
 }

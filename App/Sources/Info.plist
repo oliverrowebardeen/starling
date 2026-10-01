@@ -5,6 +5,10 @@
 	<!-- Merged with the generated Info.plist (GENERATE_INFOPLIST_FILE). Keys here cannot be build settings. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Starling finds your friends' phones nearby so your agents can talk directly, without a server.</string>
+	<!-- Lane C's text (CalendarAccess.purposeString, ADR 0013 decision 6). iOS 17
+	     and later need the full-access key; Add to Calendar needs no key (ADR 0018). -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Starling checks when you're busy so friends' agents can find a time without asking you. Event details stay on your iPhone.</string>
 	<!-- Lane D's text (PickAPlaceSkill.locationPurpose, ADR 0013 decision 6). -->
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Starling uses your location only while it finds places near you. Your location stays on your iPhone; friends see only the places you suggest.</string>

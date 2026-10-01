@@ -62,7 +62,7 @@ struct DeveloperView: View {
             } header: {
                 Text("Permissions and model")
             } footer: {
-                Text("Calendar, location, and photos are stand-ins until lanes C, D, and E merge: Starling's sheet is real, the system alert is simulated.")
+                Text("Calendar and location ask the real system alerts. Photos is a stand-in until Swap photos is turned on: Starling's sheet is real, its system alert is simulated.")
             }
 
             Section {

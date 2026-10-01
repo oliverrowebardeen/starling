@@ -40,6 +40,7 @@ let package = Package(
                 "StarlingFeatures",
                 .product(name: "StarlingCore", package: "StarlingCore"),
                 .product(name: "StarlingFakes", package: "StarlingCore"),
+                .product(name: "StarlingAvailabilityFakes", package: "StarlingAvailability"),
             ]
         ),
     ]

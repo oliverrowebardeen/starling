@@ -1,3 +1,4 @@
+import FindATime
 import Foundation
 import Observation
 import PickAPlace
@@ -47,20 +48,22 @@ public struct PermissionExplanation: Hashable, Sendable, Identifiable {
         let sees = friends.count == 1 ? "\(who) sees" : "\(who) see"
         switch permission {
         case .calendarFullAccess:
+            // Lane C's words (FindATimeCopy.PermissionSheet, P15-C request 1).
+            typealias Sheet = FindATimeCopy.PermissionSheet
             return PermissionExplanation(
                 permission: permission,
-                title: "\(skill.wording.name) works best with your calendar",
-                body: "Your agent checks when you're busy, right here on your iPhone, so \(friends.count == 1 ? "\(who)'s agent" : "your friends' agents") never \(friends.count == 1 ? "has" : "have") to ask you.",
+                title: Sheet.title,
+                body: Sheet.body,
                 rows: [
-                    DisplayLine(title: "Your agent reads", detail: "When you're busy or free"),
-                    DisplayLine(title: "Never leaves your phone", detail: "Event names, places, people"),
+                    DisplayLine(title: Sheet.readsLabel, detail: Sheet.readsValue),
+                    DisplayLine(title: Sheet.staysLabel, detail: Sheet.staysValue),
                     // Without private set intersection, the one who starts
                     // names some free times first, so "both free" is true
                     // only for the friend who answers (ADR 0013 amendment 6).
-                    DisplayLine(title: sees, detail: role == .initiator ? "Only a few times you're free" : "Only times you're both free"),
+                    DisplayLine(title: sees, detail: role == .initiator ? Sheet.seesValueWhenAsking : Sheet.seesValueWhenAnswering),
                 ],
-                footnote: "Change this anytime in You › Skills.",
-                fallback: "No problem, your agent will ask you instead."
+                footnote: Sheet.footnote,
+                fallback: FindATimeCopy.deniedFallback
             )
         case .locationWhenInUse:
             // Lane D's words (PickAPlaceSkill.locationSheet, P15-D request 1).

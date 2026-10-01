@@ -3,6 +3,7 @@ import Network
 import PickAPlace
 import PickAPlaceMapKit
 import StarlingAgent
+import StarlingAvailability
 import StarlingChaining
 import StarlingCore
 import StarlingFeatures
@@ -57,7 +58,7 @@ extension AppServices {
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter(),
-            permissions: [LocationPermissionAccess(location: places.location)],
+            permissions: [LocationPermissionAccess(location: places.location), LiveServices.calendarPermission],
             cardsFile: try? .standard("peer-cards.json"),
             notesFile: try? .standard("plan-notes.json")
         )
@@ -100,6 +101,15 @@ enum LiveServices {
         PickAPlaceSkill.descriptor,
         SwapPhotos.descriptor,
     ])
+
+    /// The app's one EventKit store: the permission sheet asks through it,
+    /// and Find a time reads busy times from it (P15-C request 1).
+    static let calendar = EventKitCalendarStore()
+
+    /// Lane C's calendar access, asked only from Starling's sheet.
+    static var calendarPermission: CalendarPermissionAccess {
+        CalendarPermissionAccess(access: CalendarAccess(store: calendar))
+    }
 
     static func rulesStore() -> any RulesStore {
         (try? FileRulesStore.standard()) ?? InMemoryRulesStore()
