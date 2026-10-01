@@ -221,6 +221,29 @@ struct AdversarialTests {
         #expect(await group.wire.sent(by: jake.id).count == before)
     }
 
+    /// Issue #64 (lane F): an open conversation still rejects a message on
+    /// another major version of the skill.
+    @Test func anOpenConversationStillRejectsAnIncompatibleSkillMajor() async throws {
+        let (group, maya, mallory) = try await mayaAndMallory()
+        defer { Task { await group.stop() } }
+        let conversation = ConversationID()
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+
+        let incompatible = SkillRef(.pickAPlace, SkillVersion(2, 0))
+        let terms = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation,
+                                      skill: incompatible, mode: .invite)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.interaction(conversation)?.proposal == nil)
+        #expect(await maya.state(in: conversation) == .negotiating)
+
+        // The same proposal at a compatible version is the control.
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation,
+                                      skill: skill, mode: .invite)
+        #expect(await maya.reaches(.proposed, in: conversation))
+    }
+
     @Test func aStrangersCardIsNotKept() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
