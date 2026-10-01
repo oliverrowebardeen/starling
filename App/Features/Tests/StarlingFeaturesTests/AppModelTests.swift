@@ -247,23 +247,24 @@ import Testing
     @Test func launchKeepsSequenceNumbersForResumableConversationsOnly() async throws {
         let file = JSONFile(url: FileManager.default.temporaryDirectory.appending(path: "starling-seq-\(UUID().uuidString).json"))
         let sequences = FileSentSequenceStore(file: file)
+        let peer = PeerID.random()
         var live = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [.random()], createdAt: Timestamp(Date()))
         try live.apply(.started, at: Timestamp(Date()))
         var old = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [.random()], createdAt: Timestamp(Date().addingTimeInterval(-3 * 86_400)))
         try old.apply(.withdrawn, at: Timestamp(Date().addingTimeInterval(-2 * 86_400)))
         let hello = ConversationID()
-        try sequences.recordSent(1, in: live.conversation)
-        try sequences.recordSent(2, in: old.conversation)
-        try sequences.recordSent(3, in: hello)
+        try sequences.recordSent(1, in: live.conversation, to: peer)
+        try sequences.recordSent(2, in: old.conversation, to: peer)
+        try sequences.recordSent(3, in: hello, to: peer)
 
         var services = Self.services()
         services.interactions = InMemoryInteractionStore([live, old])
         services.sequences = sequences
         let app = AppModel(services: services)
         await app.start()
-        #expect(sequences.highestSent(in: live.conversation) == 1)
-        #expect(sequences.highestSent(in: old.conversation) == nil)
-        #expect(sequences.highestSent(in: hello) == nil)
+        #expect(sequences.highestSent(in: live.conversation, to: peer) == 1)
+        #expect(sequences.highestSent(in: old.conversation, to: peer) == nil)
+        #expect(sequences.highestSent(in: hello, to: peer) == nil)
     }
 
     @Test func keepItGoingHidesChainsAFriendCannotRun() async throws {

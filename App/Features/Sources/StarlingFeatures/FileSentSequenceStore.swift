@@ -1,9 +1,12 @@
 import Foundation
 import StarlingCore
 
-/// Remembers the highest sequence number this phone sent in each
-/// conversation, across launches (Core v2.1, `SentSequenceStore`), in
+/// Remembers the highest sequence number this phone sent to each friend in
+/// each conversation, across launches (`SentSequenceStore`, ADR 0021
+/// decision 8: numbers run per conversation and recipient), in
 /// `Application Support/Starling/sent-sequences.json` (ADR 0200's helper).
+/// An entry written before numbers were per recipient is kept as a floor
+/// for every recipient in that conversation, so no older number is reused.
 ///
 /// `Outbox` calls it synchronously with no suspension between numbering
 /// and sending, so it holds a lock and writes the file before returning: a
@@ -17,8 +20,9 @@ import StarlingCore
 public final class FileSentSequenceStore: RetainingSentSequenceStore, @unchecked Sendable {
     struct Document: Codable {
         var version = 1
-        /// Conversation UUID to highest sequence sent, plus when it was last
-        /// used, for pruning.
+        /// "conversation UUID/recipient hex" to the highest sequence sent,
+        /// plus when it was last used. A key with no recipient is a floor
+        /// from the earlier per-conversation format.
         var sent: [String: Entry] = [:]
     }
 
@@ -49,15 +53,23 @@ public final class FileSentSequenceStore: RetainingSentSequenceStore, @unchecked
         FileSentSequenceStore(file: try .standard("sent-sequences.json"))
     }
 
-    public func highestSent(in conversation: ConversationID) -> UInt64? {
-        lock.withLock { document.sent[conversation.rawValue.uuidString]?.highest }
+    static func key(_ conversation: ConversationID, _ recipient: PeerID) -> String {
+        "\(conversation.rawValue.uuidString)/\(recipient.hex)"
     }
 
-    public func recordSent(_ sequence: UInt64, in conversation: ConversationID) throws {
+    public func highestSent(in conversation: ConversationID, to recipient: PeerID) -> UInt64? {
+        lock.withLock {
+            let own = document.sent[Self.key(conversation, recipient)]?.highest
+            let floor = document.sent[conversation.rawValue.uuidString]?.highest
+            return [own, floor].compactMap(\.self).max()
+        }
+    }
+
+    public func recordSent(_ sequence: UInt64, in conversation: ConversationID, to recipient: PeerID) throws {
         try lock.withLock {
             var next = document
             clock += 1
-            let key = conversation.rawValue.uuidString
+            let key = Self.key(conversation, recipient)
             next.sent[key] = Entry(highest: max(next.sent[key]?.highest ?? 0, sequence), used: clock)
             // Written first: memory never claims a number the disk does not.
             try file.write(next)
@@ -75,7 +87,7 @@ extension FileSentSequenceStore {
         try lock.withLock {
             let keep = Set(conversations.map(\.rawValue.uuidString))
             var next = document
-            next.sent = next.sent.filter { keep.contains($0.key) }
+            next.sent = next.sent.filter { keep.contains(String($0.key.prefix { $0 != "/" })) }
             guard next.sent.count != document.sent.count else { return }
             try file.write(next)
             document = next
