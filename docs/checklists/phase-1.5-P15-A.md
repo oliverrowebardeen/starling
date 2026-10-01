@@ -37,7 +37,7 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 
 20. Phone A: from the plan, Somewhere else? Expect: New on Pick a place, Maya picked, a line "This step also shares Diet and may ask for your location."
 21. Phone A: tap Suggest places near me. Expect: Starling's own sheet first ("Pick a place can suggest places near you", three rows, one Continue button, no Cancel); Continue. Expect: no real system alert in this Debug build (simulated, see You › Developer); "Nearby" appears as a chip.
-22. Phone A: New › tile Find a time, type "find a time next week", start it. Expect: Starling's calendar sheet ("Find a time works best with your calendar", Your agent reads / Never leaves your phone / Maya sees, one Continue). In You › Developer turn on "System alerts say Don't Allow" first to check the fallback: Expect "No problem, your agent will ask you instead." and the request still goes out; You shows Find a time set to Just ask me.
+22. Phone A: New › tile Find a time, type "find a time next week", start it. Expect: Starling's calendar sheet ("Find a time works best with your calendar", Your agent reads / Never leaves your phone / "Maya sees: Only a few times you're free", one Continue). In You › Developer turn on "System alerts say Don't Allow" first to check the fallback: Expect "No problem, your agent will ask you instead." and the request still goes out; You shows Find a time set to Just ask me.
 
 ## Privacy topics and skill switches
 
