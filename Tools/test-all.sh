@@ -7,7 +7,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 
 packages=("$@")
 if [ ${#packages[@]} -eq 0 ]; then
-  for manifest in "$root"/Packages/*/Package.swift "$root"/Tools/*/Package.swift "$root"/App/*/Package.swift; do
+  for manifest in "$root"/Packages/*/Package.swift "$root"/Packages/Skills/*/Package.swift "$root"/Tools/*/Package.swift "$root"/App/*/Package.swift; do
     [ -f "$manifest" ] && packages+=("$(dirname "$manifest")")
   done
 fi
