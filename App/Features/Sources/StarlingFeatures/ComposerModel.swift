@@ -40,16 +40,16 @@ public enum Expiry: Hashable, Sendable {
 @MainActor
 @Observable
 public final class ComposerModel {
-    public enum AudienceChoice: String, Hashable, Sendable, CaseIterable {
-        case allFriends, closeFriends, pick
-
-        public var label: String {
-            switch self {
-            case .allFriends: "All friends"
-            case .closeFriends: "Close friends"
-            case .pick: "Pick"
-            }
-        }
+    /// Who to ask, as the Ask picker offers it (ADR 0020). Every choice
+    /// goes through `Audience.resolve`, so exceptions, groups, and the
+    /// owner's per-friend rules mean the same thing everywhere.
+    public enum AudienceChoice: Hashable, Sendable {
+        case allFriends, closeFriends
+        case group(GroupID)
+        /// Everyone but the friends in `excepted`.
+        case everyoneExcept
+        /// Exactly the friends in `picked`.
+        case pick
     }
 
     /// One skill tile under "Or start with".
@@ -94,6 +94,11 @@ public final class ComposerModel {
     public var constraints = ConstraintSet.empty { didSet { if constraints != oldValue { generation &+= 1 } } }
     public var audience = AudienceChoice.allFriends { didSet { if audience != oldValue { generation &+= 1 } } }
     public var picked: Set<PeerID> = [] { didSet { if picked != oldValue { generation &+= 1 } } }
+    /// Friends left out under Everyone except.
+    public var excepted: Set<PeerID> = [] { didSet { if excepted != oldValue { generation &+= 1 } } }
+    /// Ask quietly or Invite, when the skill offers both; nil means the
+    /// skill's default (ADR 0020).
+    public var mode: SendMode? { didSet { if mode != oldValue { generation &+= 1 } } }
     public var expiry = Expiry.hours(3) { didSet { if expiry != oldValue { generation &+= 1 } } }
     public private(set) var chain: ChainDraft?
     public private(set) var notice: String?
@@ -187,6 +192,7 @@ public final class ComposerModel {
         guard skill != self.skill else { return }
         self.skill = skill
         generation &+= 1
+        mode = nil
         routedByModel = false
         notice = nil
         if let descriptor, availability(of: skill) == .available, !trimmedText.isEmpty, let skillModel {
@@ -249,6 +255,7 @@ public final class ComposerModel {
         let slots = Set(skill.intent.slots.map(\.issue))
         constraints = (try? ConstraintSet(parsed.constraints.constraints.filter { slots.contains($0.key) })) ?? .empty
         if let expires = parsed.expiresAt?.date, expires > now() { expiry = .at(expires) }
+        if let wanted = parsed.mode, skill.sendModes.contains(wanted) { mode = wanted }
         let named = parsed.mentionedNames.compactMap(friend(named:))
         if !named.isEmpty {
             audience = .pick
@@ -274,18 +281,31 @@ public final class ComposerModel {
             let known = Set(friends().map(\.id))
             self.audience = .pick
             picked = Set(peers).intersection(known)
-        case .everyoneExcept, .group:
-            self.audience = .allFriends
+        case .everyoneExcept(let peers):
+            let known = Set(friends().map(\.id))
+            self.audience = .everyoneExcept
+            excepted = Set(peers).intersection(known)
+        case .group(let id):
+            // Only a group the owner saved; anything else is ignored.
+            if settings.audienceBook.groups[id] != nil { self.audience = .group(id) }
         }
     }
 
     /// The chips under "Starling understood", without the skill's own chip.
     public var chips: [String] {
         var chips = chipFormatter.chips(for: constraints)
-        if audience == .pick, !picked.isEmpty {
+        if let descriptor, descriptor.sendModes.count > 1 { chips.append(Self.modeLabel(sendMode)) }
+        switch audience {
+        case .pick where !picked.isEmpty:
             chips.append("With " + PermissionExplanation.names(audienceFriends.filter(\.isIncluded).map(\.name)))
-        } else if audience == .closeFriends {
+        case .closeFriends:
             chips.append("Close friends")
+        case .group(let id):
+            if let group = settings.audienceBook.groups[id] { chips.append(group.name) }
+        case .everyoneExcept where !excepted.isEmpty:
+            chips.append("Not " + PermissionExplanation.names(audienceFriends.filter { excepted.contains($0.id) }.map(\.name)))
+        default:
+            break
         }
         if descriptor?.intent.asksForExpiry ?? true { chips.append(chipFormatter.expiry(expiresAt)) }
         return chips
@@ -308,12 +328,64 @@ public final class ComposerModel {
 
     public var expiresAt: Date { expiry.date(from: now(), timeZone: timeZone) }
 
+    // MARK: Mode
+
+    /// The mode the request goes with: the owner's choice when the skill
+    /// offers it, otherwise the skill's default.
+    public var sendMode: SendMode {
+        guard let descriptor else { return mode ?? .invite }
+        if let mode, descriptor.sendModes.contains(mode) { return mode }
+        return descriptor.defaultSendMode
+    }
+
+    /// Whether New shows the Ask quietly / Invite choice: only for a skill
+    /// with both (ADR 0020 decision 2).
+    public var offersModeChoice: Bool { (descriptor?.sendModes.count ?? 0) > 1 }
+
+    public static func modeLabel(_ mode: SendMode) -> String {
+        switch mode {
+        case .askQuietly: "Ask quietly"
+        case .invite: "Invite"
+        }
+    }
+
     // MARK: Audience
+
+    /// The Ask picker's choices: all friends, close friends, each saved
+    /// group, everyone except, and pick.
+    public var audienceOptions: [(choice: AudienceChoice, label: String)] {
+        [(.allFriends, "All friends"), (.closeFriends, "Close friends")]
+            + settings.groups.map { (.group($0.id), $0.name) }
+            + [(.everyoneExcept, "Everyone except…"), (.pick, "Pick friends")]
+    }
+
+    public var audienceLabel: String {
+        audienceOptions.first { $0.choice == audience }?.label ?? "All friends"
+    }
+
+    /// The friends this request may go to at all. A chained step goes only
+    /// to the parent plan's people (ADR 0020 decision 9.3).
+    private var pool: [PairedPeer] {
+        guard let chain, case .plan(let plan)? = chain.inputs.first(where: { $0.kind == .plan }) else { return friends() }
+        let attendees = Set(plan.attendees.peers)
+        return friends().filter { attendees.contains($0.id) }
+    }
+
+    /// The audience as Core's `Audience`.
+    public var audienceValue: Audience {
+        switch audience {
+        case .allFriends: .allFriends
+        case .closeFriends: .closeFriends
+        case .group(let id): .group(id)
+        case .everyoneExcept: .everyoneExcept(pool.map(\.id).filter(excepted.contains))
+        case .pick: .picked(pool.map(\.id).filter(picked.contains))
+        }
+    }
 
     /// Every friend for the Ask row, labeled with `RosterLabels` so two
     /// friends with one nickname are told apart.
     public var audienceFriends: [AudienceFriend] {
-        let all = friends()
+        let all = pool
         let names = Dictionary(all.map { ($0.id, $0.nickname) }, uniquingKeysWith: { first, _ in first })
         let labels = RosterLabels.labels(for: all.map(\.id), friends: names)
         let included = Set(chosenFriends)
@@ -322,13 +394,10 @@ public final class ComposerModel {
         }
     }
 
+    /// Who the audience names after the owner's rules, before checking
+    /// which friends' Starlings run the skill.
     private var chosenFriends: [PeerID] {
-        let all = friends().map(\.id)
-        switch audience {
-        case .allFriends: return all
-        case .closeFriends: return all.filter(settings.isClose)
-        case .pick: return all.filter(picked.contains)
-        }
+        audienceValue.resolve(mode: sendMode, friends: pool.map(\.id), book: settings.audienceBook, canRun: { _ in true })
     }
 
     /// A friend with no card yet is included; the skill's service checks
@@ -338,8 +407,11 @@ public final class ComposerModel {
         return cards.support(of: peer, for: descriptor.ref)?.isSupported ?? true
     }
 
-    /// Who the request goes to: the chosen friends who can run the skill.
-    public var participants: [PeerID] { chosenFriends.filter(canRun) }
+    /// Who the request goes to: `Audience.resolve` over the friends this
+    /// request may reach, keeping those whose Starling runs the skill.
+    public var participants: [PeerID] {
+        audienceValue.resolve(mode: sendMode, friends: pool.map(\.id), book: settings.audienceBook, canRun: canRun)
+    }
 
     /// "Maya's Starling doesn't do this yet." for chosen friends who cannot
     /// run the skill (ADR 0010 decision 4).
@@ -351,7 +423,14 @@ public final class ComposerModel {
             : "\(PermissionExplanation.names(out))'s Starlings don't do this yet."
     }
 
+    /// A tap on a friend in the Ask row. Under Everyone except it leaves
+    /// them out or brings them back; otherwise it switches to Pick, starting
+    /// from whoever the audience named.
     public func toggle(_ friend: PeerID) {
+        if audience == .everyoneExcept {
+            if excepted.contains(friend) { excepted.remove(friend) } else { excepted.insert(friend) }
+            return
+        }
         if audience != .pick {
             picked = Set(chosenFriends)
             audience = .pick
@@ -392,10 +471,13 @@ public final class ComposerModel {
     /// The skill's own button label: "See who's up for it" for Down for….
     public var startLabel: String { descriptor?.wording.startAction ?? "Start" }
 
-    /// One line under the button. Mutual reveal: nobody sees a request
-    /// nobody is up for (ADR 0017 decision 1).
+    /// One line under the button, by mode (ADR 0017, ADR 0020).
     public var footnote: String? {
-        descriptor?.buildingBlock == .mutualReveal ? "If nobody's up for it, nobody sees you asked." : nil
+        guard descriptor != nil else { return nil }
+        return switch sendMode {
+        case .askQuietly: "If nobody's up for it, nobody sees you asked."
+        case .invite: "The friends you ask see this as an invite."
+        }
     }
 
     /// What a chained step adds over what the plan already shared, or nil.
@@ -434,16 +516,13 @@ public final class ComposerModel {
         }
         let recipients = participants
         let names = audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
-        let audienceValue: Audience = switch audience {
-        case .allFriends: .allFriends
-        case .closeFriends: .closeFriends
-        case .pick: .picked(recipients)
-        }
+        let audienceValue = audienceValue
+        let sendMode = sendMode
         let chain = chain
         let request = SkillRequest(
             interaction: InteractionID(),
             conversation: ConversationID(),
-            intent: SkillIntent(skill: descriptor.ref, rules: rules, audience: audienceValue, mode: descriptor.defaultSendMode, expiresAt: Timestamp(expiresAt)),
+            intent: SkillIntent(skill: descriptor.ref, rules: rules, audience: audienceValue, mode: sendMode, expiresAt: Timestamp(expiresAt)),
             participants: recipients,
             inputs: chain?.inputs ?? [],
             chainedFrom: chain?.link.parentConversation
@@ -515,6 +594,8 @@ public final class ComposerModel {
         constraints = .empty
         audience = .allFriends
         picked = []
+        excepted = []
+        mode = nil
         expiry = .hours(3)
         chain = nil
         notice = nil

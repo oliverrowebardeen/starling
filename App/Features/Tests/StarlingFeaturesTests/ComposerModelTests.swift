@@ -86,7 +86,7 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.skillChip == "Down for boba")
         // Fixtures.noon is 14:13 UTC; six hours later is 20:13, and the
         // slot runs past 11 PM, so "after".
-        #expect(h.model.chips.map(plain) == ["Boba", "Tonight after 8:13 PM", "Expires in 3 hrs"])
+        #expect(h.model.chips.map(plain) == ["Boba", "Tonight after 8:13 PM", "Ask quietly", "Expires in 3 hrs"])
         // Diet is not a Down for… slot.
         #expect(h.model.constraints.constraints[.diet] == nil)
         #expect(h.model.startLabel == "See who's up for it")
@@ -332,6 +332,116 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         h.permissions.proceed()
         #expect(await sending.value != nil)
         #expect(await h.time.started.map(\.participants) == [[h.jake.id]])
+    }
+
+    // MARK: Send modes and audience (ADR 0020)
+
+    @Test func downForOffersBothModesAndSendsTheChosenOne() async throws {
+        let h = try await ComposerHarness()
+        h.model.text = "boba tonight"
+        await h.model.understand()
+        #expect(h.model.offersModeChoice)
+        #expect(h.model.sendMode == .askQuietly)
+        #expect(h.model.footnote == "If nobody's up for it, nobody sees you asked.")
+        h.model.mode = .invite
+        #expect(h.model.footnote == "The friends you ask see this as an invite.")
+        #expect(h.model.chips.contains("Invite"))
+        _ = try #require(await h.model.send())
+        #expect(await h.down.started.first?.intent.mode == .invite)
+    }
+
+    @Test func aSkillWithOneModeOffersNoChoiceAndIgnoresAParsedQuietMode() async throws {
+        let model = ScriptedSkillModel(
+            onRoute: { _, _ in .findATime },
+            onIntent: { _, _ in ParsedIntent(constraints: try ConstraintSet([.time: [try Constraint(.within([try TimeSlot(start: Fixtures.noon, end: Fixtures.noon.addingTimeInterval(3600))]))]]), mode: .askQuietly) }
+        )
+        let h = try await ComposerHarness(skillModel: model)
+        h.model.text = "find a time quietly"
+        await h.model.understand()
+        #expect(!h.model.offersModeChoice)
+        #expect(h.model.sendMode == .invite)
+    }
+
+    @Test func aParsedModeAndExceptionBecomeEditableChoices() async throws {
+        let model = ScriptedSkillModel(
+            onRoute: { _, _ in .downFor },
+            onIntent: { [jake = PeerID.random()] _, _ in
+                ParsedIntent(constraints: try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []))]]),
+                             audience: .everyoneExcept([jake]), mode: .invite)
+            }
+        )
+        let h = try await ComposerHarness(skillModel: model)
+        h.model.text = "boba, invite everyone but jake"
+        await h.model.understand()
+        #expect(h.model.sendMode == .invite)
+        // An unknown peer in the exception is dropped; the audience stays.
+        #expect(h.model.audience == .everyoneExcept)
+        #expect(h.model.excepted.isEmpty)
+    }
+
+    /// Everyone except leaves the friend out, and nothing is sent to them.
+    @Test func everyoneExceptLeavesAFriendOut() async throws {
+        let h = try await ComposerHarness()
+        h.model.text = "boba"
+        await h.model.understand()
+        h.model.audience = .everyoneExcept
+        h.model.toggle(h.leo.id)
+        #expect(h.model.participants == [h.maya.id])
+        #expect(h.model.chips.contains("Not Leo"))
+        _ = try #require(await h.model.send())
+        let sent = try #require(await h.down.started.first)
+        #expect(sent.participants == [h.maya.id])
+        #expect(sent.intent.audience == .everyoneExcept([h.leo.id]))
+    }
+
+    @Test func standingRulesShapeBroadAudiencesButNotPicks() async throws {
+        let h = try await ComposerHarness()
+        try h.give(h.jake.id, [SampleSkills.downFor.ref, SampleSkills.findATime.ref])
+        await h.settings.setRule(.neverInclude, for: h.jake.id)
+        await h.settings.setRule(.quietOnly, for: h.leo.id)
+        h.model.text = "boba"
+        await h.model.understand()
+        #expect(h.model.participants == [h.maya.id, h.leo.id], "quiet ask: Leo is in, Jake never")
+        h.model.mode = .invite
+        #expect(h.model.participants == [h.maya.id], "invite: quiet-only Leo is left out")
+        h.model.audience = .pick
+        h.model.picked = [h.jake.id]
+        #expect(h.model.participants == [h.jake.id], "a pick made now beats the rule")
+    }
+
+    @Test func aGroupAsksItsMembers() async throws {
+        let h = try await ComposerHarness()
+        let group = try FriendGroup(name: "Climbing", members: [h.maya.id, h.jake.id])
+        await h.settings.saveGroup(group)
+        h.model.text = "boba"
+        await h.model.understand()
+        #expect(h.model.audienceOptions.map(\.label) == ["All friends", "Close friends", "Climbing", "Everyone except…", "Pick friends"])
+        h.model.audience = .group(group.id)
+        // Jake's card lacks Down for…, so only Maya goes.
+        #expect(h.model.participants == [h.maya.id])
+        #expect(h.model.chips.contains("Climbing"))
+        h.model.audience = .group(GroupID())
+        #expect(h.model.participants.isEmpty)
+    }
+
+    /// ADR 0020 decision 9.3: a chained step can reach only the plan's
+    /// people, whatever the owner taps.
+    @Test func aChainedStepCanOnlyAskThePlansPeople() async throws {
+        let h = try await ComposerHarness()
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore(), now: h.clock.closure)
+        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
+                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
+        try h.give(h.maya.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
+        try h.give(h.leo.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
+        var parent = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [h.maya.id], createdAt: Timestamp(h.clock.now))
+        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees([h.me, h.maya.id]), activity: Keyword("boba"), time: nil)))
+        model.continuePlan(parent, with: SampleSkills.pickAPlace)
+        #expect(model.audienceFriends.map(\.id) == [h.maya.id])
+        model.audience = .allFriends
+        #expect(model.participants == [h.maya.id])
+        model.toggle(h.leo.id)
+        #expect(!model.participants.contains(h.leo.id))
     }
 
     @Test func cancelClearsTheDraft() async throws {

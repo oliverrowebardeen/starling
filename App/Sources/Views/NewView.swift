@@ -128,11 +128,31 @@ struct NewView: View {
 
     private var ask: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Ask").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-            Picker("Ask", selection: $composer.audience) {
-                ForEach(ComposerModel.AudienceChoice.allCases, id: \.self) { Text($0.label).tag($0) }
+            HStack {
+                Text("Ask").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+                Spacer()
+                Picker("Ask", selection: $composer.audience) {
+                    ForEach(Array(composer.audienceOptions.enumerated()), id: \.offset) { _, option in
+                        Text(option.label).tag(option.choice)
+                    }
+                }
+                .pickerStyle(.menu)
             }
-            .pickerStyle(.segmented)
+            if composer.offersModeChoice {
+                Picker("How", selection: Binding(get: { composer.sendMode }, set: { composer.mode = $0 })) {
+                    Text(ComposerModel.modeLabel(.askQuietly)).tag(SendMode.askQuietly)
+                    Text(ComposerModel.modeLabel(.invite)).tag(SendMode.invite)
+                }
+                .pickerStyle(.segmented)
+                Text(composer.sendMode == .askQuietly
+                     ? "Friends see nothing unless they're up for it too."
+                     : "Friends see your invite and can say yes or pass.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if composer.audience == .everyoneExcept {
+                Text("Tap a friend to leave them out. Nobody you leave out can tell.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             if composer.audienceFriends.isEmpty {
                 Text("Pair with a friend in Friends first.").font(.subheadline).foregroundStyle(.secondary)
             } else {
@@ -157,6 +177,7 @@ struct NewView: View {
                             }
                             .accessibilityLabel(friend.name)
                             .accessibilityValue(friend.isIncluded ? (friend.canRun ? "Asked" : "Their Starling doesn't do this yet") : "Not asked")
+                            .disabled(composer.chain != nil && !friend.isIncluded)
                         }
                     }
                 }

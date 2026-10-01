@@ -33,6 +33,20 @@ struct FriendsView: View {
         let labels = RosterLabels.labels(for: model.friends.map(\.id), friends: Dictionary(model.friends.map { ($0.id, $0.nickname) }, uniquingKeysWith: { a, _ in a }))
         return List {
             if let notice = model.notice { NoticeSection(text: notice) }
+            if !model.friends.isEmpty {
+                Section {
+                    ForEach(app.settings.groups) { group in
+                        NavigationLink(value: GroupRoute(id: group.id)) {
+                            LabeledContent(group.name, value: group.members.count == 1 ? "1 friend" : "\(group.members.count) friends")
+                        }
+                    }
+                    NavigationLink("New group", value: GroupRoute(id: nil))
+                } header: {
+                    Text("Groups")
+                } footer: {
+                    Text("Groups stay on this phone. Nobody sees which groups they're in.")
+                }
+            }
             ForEach(Array(zip(model.friends, labels)), id: \.0.id) { friend, label in
                 NavigationLink(value: friend.id) {
                     HStack(spacing: 12) {
@@ -63,6 +77,7 @@ struct FriendsView: View {
         }
         .refreshable { await model.load() }
         .navigationDestination(for: PeerID.self) { id in FriendDetailView(app: app, model: model, id: id) }
+        .navigationDestination(for: GroupRoute.self) { route in GroupEditor(app: app, model: model, id: route.id) }
     }
 
     private func supportLine(_ friend: PeerID) -> String {
@@ -102,8 +117,17 @@ struct FriendDetailView: View {
                         }
                     }
                     Toggle("Close friend", isOn: Binding(get: { app.settings.isClose(id) }, set: { on in Task { await app.settings.setClose(id, on) } }))
+                    Picker("When you ask friends", selection: Binding(
+                        get: { app.settings.rule(for: id) },
+                        set: { rule in Task { await app.settings.setRule(rule, for: id) } }
+                    )) {
+                        Text("Like anyone else").tag(FriendRule?.none)
+                        Text("Always include").tag(FriendRule?.some(.alwaysInclude))
+                        Text("Never include").tag(FriendRule?.some(.neverInclude))
+                        Text("Only ask quietly").tag(FriendRule?.some(.quietOnly))
+                    }
                 } footer: {
-                    Text("Only you see this name and whether they're a close friend.")
+                    Text(Self.ruleNote(app.settings.rule(for: id)))
                 }
 
                 Section {
@@ -208,11 +232,88 @@ struct FriendDetailView: View {
         .presentationDetents([.medium])
     }
 
+    /// What a standing rule does (ADR 0020 decision 7), in one line.
+    static func ruleNote(_ rule: FriendRule?) -> String {
+        switch rule {
+        case nil: "Only you see this name, whether they're a close friend, and any rule you set here."
+        case .alwaysInclude?: "Added whenever you ask a group of friends, unless you leave them out that time. Only you see this."
+        case .neverInclude?: "Left out whenever you ask a group of friends. You can still pick them by name. They can't tell."
+        case .quietOnly?: "Asked only quietly, so they never get an invite they could see. They can't tell."
+        }
+    }
+
     static func support(_ support: SkillSupport) -> String {
         switch support {
         case .supported: "Yes"
         case .missing: "Doesn't do this yet"
         case .incompatible: "Needs an update"
+        }
+    }
+}
+
+/// A saved group to edit, or nil for a new one.
+struct GroupRoute: Hashable {
+    let id: GroupID?
+}
+
+/// Creates or edits one of the owner's private groups (ADR 0020).
+struct GroupEditor: View {
+    let app: AppModel
+    let model: FriendsModel
+    let id: GroupID?
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var members: Set<PeerID> = []
+    @State private var loaded = false
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name, like Climbing", text: $name)
+            } footer: {
+                Text("Only you see this group and its name.")
+            }
+            Section("Who's in it") {
+                ForEach(model.friends, id: \.id) { friend in
+                    Toggle(isOn: Binding(get: { members.contains(friend.id) }, set: { if $0 { members.insert(friend.id) } else { members.remove(friend.id) } })) {
+                        HStack {
+                            PairSymbol(seed: friend.id.bytes).frame(width: 24, height: 24)
+                            Text(friend.nickname)
+                        }
+                    }
+                }
+            }
+            if let id {
+                Section {
+                    Button("Delete group", role: .destructive) {
+                        Task {
+                            await app.settings.deleteGroup(id)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(id == nil ? "New group" : "Group")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    Task {
+                        guard let group = try? FriendGroup(id: id ?? GroupID(), name: name, members: members) else { return }
+                        await app.settings.saveGroup(group)
+                        dismiss()
+                    }
+                }
+                .disabled((try? FriendGroup(name: name, members: members)) == nil)
+            }
+        }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            if let id, let group = app.settings.audienceBook.groups[id] {
+                name = group.name
+                members = group.members
+            }
         }
     }
 }
