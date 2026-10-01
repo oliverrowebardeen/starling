@@ -337,6 +337,44 @@ import Testing
         #expect(try await ledger.isRetired(request.conversation))
     }
 
+    /// ADR 0011 amendment 16: a pass hides the card at once, but the
+    /// conversation is retired only when the skill reports the pass.
+    @Test func aPassHidesTheCardButRetiresOnlyWhenTheSkillReportsIt() async throws {
+        let ledger = InMemoryConversationLedger()
+        let built = Built()
+        var services = Self.services(built: built)
+        services.ledger = ledger
+        let app = AppModel(services: services)
+        await app.start()
+        let maya = PeerID.random()
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, mode: .askQuietly, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [maya]
+        )
+        try await app.lifecycle.start(request, settings: app.settings.skillSettings)
+        let down = try #require(built.services.first { $0.descriptor.id == .downFor })
+        let proposal = SkillProposal(revision: 1, participants: [maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        await down.emit(.lifecycle(request.interaction, .proposalReady(proposal)))
+        await eventually { app.home.needsYou.contains { $0.id == request.interaction } }
+        #expect(app.home.needsYou.contains { $0.id == request.interaction })
+
+        #expect(await app.lifecycle.answer(request.interaction, with: .pass))
+        #expect(!app.home.needsYou.contains { $0.id == request.interaction })
+        #expect(app.home.isEmpty)
+        // Not retired, not ended: friends see the same traffic as for no answer.
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(try await !ledger.isRetired(request.conversation))
+        #expect(app.lifecycle.interaction(request.interaction)?.state == .proposed)
+
+        // The skill's schedule ended: now the pass is applied and retired.
+        await down.emit(.lifecycle(request.interaction, .ownerPassed))
+        for _ in 0..<2000 where try await !ledger.isRetired(request.conversation) { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(try await ledger.isRetired(request.conversation))
+        #expect(app.lifecycle.interaction(request.interaction)?.state == .ended(.declined))
+        await app.shutdown()
+    }
+
     @Test func anUnreadableLedgerIsReportedOnHome() async throws {
         var services = Self.services()
         services.ledger = UnavailableConversationLedger()

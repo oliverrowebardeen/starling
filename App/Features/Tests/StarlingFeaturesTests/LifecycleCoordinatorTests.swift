@@ -226,13 +226,44 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.isEmpty)
     }
 
-    @Test func passingEndsDeclinedAndTellsTheService() async throws {
+    /// ADR 0011 amendment 16: a pass hides the card and goes to the
+    /// service; the record ends only when the service reports the pass.
+    @Test func aPassHidesTheCardAndEndsOnlyWhenTheSkillReportsIt() async throws {
         let lifecycle = coordinator()
+        var reported: [Set<InteractionID>] = []
+        lifecycle.onPassedChange = { reported.append($0) }
         let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
         await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
         #expect(await lifecycle.answer(id, with: .pass))
-        #expect(lifecycle.interaction(id)?.state == .ended(.declined))
+        #expect(lifecycle.passed == [id])
+        #expect(lifecycle.interaction(id)?.state == .proposed)
         #expect(await down.answers.map(\.1) == [.pass])
+
+        await lifecycle.handle(.lifecycle(id, .ownerPassed), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(id)?.state == .ended(.declined))
+        #expect(lifecycle.passed.isEmpty)
+        #expect(reported == [[id], []])
+    }
+
+    @Test func aPassOnAnEndedCardIsDroppedBeforeTheService() async throws {
+        let lifecycle = coordinator()
+        let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
+        await lifecycle.withdraw(id)
+        #expect(await !lifecycle.answer(id, with: .pass))
+        #expect(lifecycle.passed.isEmpty)
+        #expect(await down.answers.isEmpty)
+    }
+
+    @Test func aPassFromAnEarlierLaunchStaysHiddenUntilItEnds() async throws {
+        var open = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        try open.apply(.started, at: Timestamp(clock.now))
+        try open.apply(.proposalReady(try proposal(1)), at: Timestamp(clock.now))
+        var ended = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        try ended.apply(.withdrawn, at: Timestamp(clock.now))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([open, ended]))
+        lifecycle.restorePassed([open.id, ended.id])
+        await lifecycle.start()
+        #expect(lifecycle.passed == [open.id])
     }
 
     @Test func withdrawingEndsTheRequestAndTellsTheService() async throws {

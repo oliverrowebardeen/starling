@@ -72,6 +72,14 @@ public final class LifecycleCoordinator {
     /// Newest last, at most `maxDropped`.
     public private(set) var dropped: [DroppedEvent] = []
     public private(set) var isLoaded = false
+    /// Cards the owner passed on whose skill has not reported the pass yet
+    /// (ADR 0011 amendment 16). Hidden on this phone at once; the record is
+    /// unchanged, and nothing is retired, until the service reports
+    /// `ownerPassed`, so friends see the same traffic as for no answer.
+    public private(set) var passed: Set<InteractionID> = []
+    /// Called whenever `passed` changes, so the app can keep it across a
+    /// relaunch.
+    public var onPassedChange: @MainActor (Set<InteractionID>) -> Void = { _ in }
     /// A plain sentence when the store could not be read or written.
     public private(set) var notice: String?
 
@@ -170,6 +178,13 @@ public final class LifecycleCoordinator {
             }
         }
         await beforeRestore()
+        // A pass the skill reported while the app was closed has ended its
+        // interaction; nothing else is hidden any more.
+        let open = Set(interactions.filter { !$0.state.isFinal }.map(\.id))
+        if !passed.isSubset(of: open) {
+            passed.formIntersection(open)
+            onPassedChange(passed)
+        }
         let cutoff = Timestamp(now().addingTimeInterval(-Self.recentlyEnded))
         for (id, service) in services {
             let live = interactions.filter { $0.skill.id == id && (!$0.state.isFinal || $0.updatedAt >= cutoff) }
@@ -291,13 +306,22 @@ public final class LifecycleCoordinator {
         return item.id
     }
 
+    /// Cards passed in an earlier launch whose skill had not reported the
+    /// pass yet. Call before `start()`.
+    public func restorePassed(_ ids: Set<InteractionID>) {
+        passed.formUnion(ids)
+    }
+
     /// The owner's answer on a card. Applied here first: an acceptance of
     /// anything but the current proposal revision, or a reply to anything
     /// but the pending question, is dropped and never reaches the service.
+    /// A pass only hides the card and goes to the service, which reports
+    /// `ownerPassed` when ending cannot reveal it (ADR 0011 amendment 16).
     /// Returns whether it was applied.
     @discardableResult
     public func answer(_ id: InteractionID, with answer: OwnerAnswer) async -> Bool {
         guard let current = interaction(id), let service = services[current.skill.id] else { return false }
+        if case .pass = answer { return await pass(current, service: service) }
         let event: InteractionEvent = switch answer {
         case .accept(let revision): .ownerAccepted(revision: revision)
         case .pass: .ownerPassed
@@ -308,6 +332,31 @@ public final class LifecycleCoordinator {
             try await service.answer(id, with: answer)
         } catch {
             logger.error("service refused an answer for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+        return true
+    }
+
+    private func pass(_ current: Interaction, service: any SkillService) async -> Bool {
+        // A pass must still apply to the record as it stands, so a tap on a
+        // stale card is dropped as before; the record itself is not changed.
+        var probe = current
+        do {
+            try probe.apply(.ownerPassed, at: Timestamp(now()))
+        } catch {
+            drop("\(InteractionEvent.ownerPassed)", current.id, current.skill.id, .other(String(describing: error)))
+            return false
+        }
+        guard passed.insert(current.id).inserted else { return true }
+        onPassedChange(passed)
+        do {
+            try await service.answer(current.id, with: .pass)
+        } catch {
+            // The skill did not take the pass: show the card again so the
+            // owner can answer it.
+            logger.error("service refused a pass for \(current.id, privacy: .public): \(String(describing: error), privacy: .public)")
+            passed.remove(current.id)
+            onPassedChange(passed)
+            return false
         }
         return true
     }
@@ -473,6 +522,7 @@ public final class LifecycleCoordinator {
         interactions[index] = item
         markDirty(item.id)
         onChange(before, item)
+        if item.state.isFinal, passed.remove(item.id) != nil { onPassedChange(passed) }
         if item.state.isFinal, !before.state.isFinal {
             deferred[item.id] = nil
             onFinished(item.id, item.conversation)

@@ -297,9 +297,13 @@ public final class AppModel {
         // Interactions load, then the journal is recovered, and only then do
         // the services restore (privacy review of PR #73).
         lifecycle.beforeRestore = { [weak self] in await self?.recoverEgress() }
+        let notes = notes
+        lifecycle.onPassedChange = { notes.setPassed($0) }
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
+            // A card the owner passed stays quiet until its skill ends it.
+            if self?.lifecycle.passed.contains(after.id) == true { return }
             guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
             Task { await notifier.post(notice) }
         }
@@ -310,7 +314,9 @@ public final class AppModel {
 
     public var home: HomeContent {
         syncNames()
-        return HomeContent(lifecycle.interactions, words: words)
+        // A passed card is gone from this phone at once (ADR 0011 amendment 16).
+        let passed = lifecycle.passed
+        return HomeContent(lifecycle.interactions.filter { !passed.contains($0.id) }, words: words)
     }
 
     /// The card this agent sends in each `hello`: where its model runs and
@@ -384,6 +390,7 @@ public final class AppModel {
         syncNames()
         cards.load()
         notes.load()
+        lifecycle.restorePassed(notes.passed)
         refreshCard()
         // Recovers the egress journal between loading and restoring.
         await lifecycle.start()

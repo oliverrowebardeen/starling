@@ -35,7 +35,8 @@ public struct ContactLink: Hashable, Sendable, Codable {
 }
 
 /// What the owner keeps about plans and friends on this phone beyond the
-/// interactions themselves: hand-offs made, and contact links. One JSON
+/// interactions themselves: hand-offs made, contact links, and cards passed
+/// whose skill has not ended them yet (ADR 0011 amendment 16). One JSON
 /// file (ADR 0204), never sent.
 @MainActor
 @Observable
@@ -43,10 +44,12 @@ public final class PlanNotes {
     struct Document: Codable {
         var handOffs: [String: [HandOffRecord]] = [:]
         var contactLinks: [String: ContactLink] = [:]
+        var passed: [String]? = nil
     }
 
     public private(set) var handOffs: [InteractionID: [HandOffRecord]] = [:]
     public private(set) var contactLinks: [PeerID: ContactLink] = [:]
+    public private(set) var passed: Set<InteractionID> = []
     private let file: JSONFile?
     private let now: @Sendable () -> Date
 
@@ -63,6 +66,13 @@ public final class PlanNotes {
         for (hex, link) in document.contactLinks {
             if let peer = try? PeerID(hex: hex) { contactLinks[peer] = link }
         }
+        passed = Set((document.passed ?? []).compactMap { UUID(uuidString: $0).map(InteractionID.init) })
+    }
+
+    public func setPassed(_ ids: Set<InteractionID>) {
+        guard ids != passed else { return }
+        passed = ids
+        save()
     }
 
     public func record(_ kind: HandOffRecord.Kind, for plan: InteractionID) {
@@ -84,7 +94,8 @@ public final class PlanNotes {
         guard let file else { return }
         try? file.write(Document(
             handOffs: Dictionary(uniqueKeysWithValues: handOffs.map { ($0.key.description, $0.value) }),
-            contactLinks: Dictionary(uniqueKeysWithValues: contactLinks.map { ($0.key.hex, $0.value) })
+            contactLinks: Dictionary(uniqueKeysWithValues: contactLinks.map { ($0.key.hex, $0.value) }),
+            passed: passed.map(\.description).sorted()
         ))
     }
 }

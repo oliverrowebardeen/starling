@@ -140,3 +140,23 @@ import Testing
         #expect(NextPlanAnswer.text([root], words: words, now: Fixtures.noon.addingTimeInterval(9 * 3600)) == "You have no plans coming up.")
     }
 }
+
+@MainActor
+@Suite struct PassedCardNotesTests {
+    /// ADR 0011 amendment 16: a card passed before a relaunch stays hidden
+    /// until its skill ends it.
+    @Test func passedCardsSurviveARelaunch() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "passed-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let id = InteractionID()
+        let notes = PlanNotes(file: JSONFile(url: url))
+        notes.setPassed([id])
+        let reopened = PlanNotes(file: JSONFile(url: url))
+        reopened.load()
+        #expect(reopened.passed == [id])
+        reopened.setPassed([])
+        let again = PlanNotes(file: JSONFile(url: url))
+        again.load()
+        #expect(again.passed.isEmpty)
+    }
+}

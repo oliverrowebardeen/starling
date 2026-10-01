@@ -283,10 +283,16 @@ final class DemoDriver {
                 }
             }
         }
-        var answers: [(InteractionID, OwnerAnswer)] = []
-        for service in services { answers += await service.answers }
-        for (id, answer) in answers.dropFirst(seenAnswers) {
-            if case .accept(let revision) = answer { await confirm(id, revision: revision) }
+        var answers: [(InteractionID, OwnerAnswer, ScriptedSkillService)] = []
+        for service in services { answers += await service.answers.map { ($0.0, $0.1, service) } }
+        for (id, answer, service) in answers.dropFirst(seenAnswers) {
+            switch answer {
+            case .accept(let revision): await confirm(id, revision: revision)
+            // A skill reports the pass when ending cannot reveal it (ADR 0011
+            // amendment 16); the scripted one does so at once.
+            case .pass: await service.emit(.lifecycle(id, .ownerPassed))
+            case .reply: break
+            }
         }
         seenAnswers = answers.count
     }
