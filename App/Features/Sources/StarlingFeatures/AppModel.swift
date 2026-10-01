@@ -142,6 +142,9 @@ public final class AppModel {
 
     func refreshPolicy() async {
         guard let policy else { return }
+        // Unreadable saved rules may hold "never share" rules the app cannot
+        // see. Leave the policy denying everything until the owner saves.
+        if rulesEditor.loadFailed { return }
         if let rules = effectiveRules {
             await policy.update(rules)
             return

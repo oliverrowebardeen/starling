@@ -86,4 +86,34 @@ actor ClearGatedDownService: DownService {
         #expect(down.phase == .composing)
         #expect(down.notice?.contains("saved rules changed") == true)
     }
+
+    @Test func aCorruptRulesFileKeepsEverySendDenied() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "starling-\(UUID().uuidString)/rules.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let app = Self.app(down: ScriptedDownService(), rules: FileRulesStore(url: url))
+        await app.start()
+        let policy = try #require(app.policy)
+
+        #expect(await policy.evaluate(try Self.message(to: .random())) == .deny(PolicyViolation(rule: RulesPolicy.notLoadedRule)))
+        #expect(app.rulesEditor.loadFailed)
+        #expect(app.rulesEditor.notice?.contains("won't send anything") == true)
+
+        // A Down intent cannot unlock it either.
+        let down = try #require(app.down)
+        await down.editByHand()
+        await down.goDown()
+        #expect(await policy.evaluate(try Self.message(to: .random())) == .deny(PolicyViolation(rule: RulesPolicy.notLoadedRule)))
+
+        // Saving rules again replaces the unreadable file and opens the policy.
+        app.rulesEditor.editByHand()
+        #expect(await app.rulesEditor.save())
+        #expect(app.rulesEditor.loadFailed == false)
+        guard case .needsConsent = await policy.evaluate(try Self.message(to: .random())) else {
+            Issue.record("expected the policy to judge sends again")
+            return
+        }
+    }
 }
