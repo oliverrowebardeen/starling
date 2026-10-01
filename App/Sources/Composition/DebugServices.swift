@@ -1,6 +1,7 @@
 #if DEBUG
 // Debug builds only. StarlingFakes includes the insecure PSI stub and
 // scripted doubles, so nothing outside `#if DEBUG` may import it (ADR 0140).
+import FindATime
 import Foundation
 import Observation
 import PickAPlace
@@ -30,10 +31,10 @@ final class DebugHarness {
     /// Keychain.
     let overlay = InMemoryPairedPeerStore()
     /// The skills whose lanes have not merged, played by scripted services.
-    let skills = [SampleSkills.downFor, SampleSkills.findATime].map(ScriptedSkillService.init(descriptor:))
-    /// Debug's registry: lane D's and lane E's real descriptors, and the
-    /// sample ones for skills still scripted.
-    static let registry = try! SkillRegistry([SampleSkills.downFor, SampleSkills.findATime, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
+    let skills = [SampleSkills.downFor].map(ScriptedSkillService.init(descriptor:))
+    /// Debug's registry: lanes C, D, and E's real descriptors, and the
+    /// sample one for the skill still scripted.
+    static let registry = try! SkillRegistry([SampleSkills.downFor, FindATimeSkill.descriptor, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
     private(set) var driver: DemoDriver?
     private(set) var friends: (any PairedPeerStore)?
     private(set) var localPeer: PeerID?
@@ -58,6 +59,7 @@ final class DebugHarness {
         let ledger = LiveServices.ledger()
         let places = LiveServices.places()
         let interactions = LiveServices.interactionStore()
+        let choices = OwnerChoices()
 
         return AppServices(
             agent: agent,
@@ -65,6 +67,7 @@ final class DebugHarness {
             registry: Self.registry,
             makeSkills: { outbox in
                 skills + [
+                    LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
                 ]
@@ -84,6 +87,7 @@ final class DebugHarness {
             egressJournal: LiveServices.egressJournal(),
             placeFinder: places.finder,
             stagedPlaces: places.staged,
+            choices: choices,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,
@@ -250,7 +254,6 @@ final class DemoDriver {
     private var seenAnswers = 0
     private var requests: [InteractionID: (SkillRequest, ScriptedSkillService)] = [:]
     private var revisions: [InteractionID: UInt32] = [:]
-    private var questions: [InteractionID: UInt32] = [:]
     var autoPropose = true
     private var loop: Task<Void, Never>?
 
@@ -344,19 +347,6 @@ final class DemoDriver {
 
     func nobodyUp(_ id: InteractionID) async {
         await requests[id]?.1.emit(.lifecycle(id, .noAgreement))
-    }
-
-    /// A friend's Find a time reaches this phone and asks when the owner is free.
-    func friendAsksForATime(from friend: PeerID) async {
-        guard let service = services.first(where: { $0.descriptor.id == .findATime }) else { return }
-        let id = InteractionID()
-        await service.emit(.incoming(id, conversation: ConversationID(), from: friend, chainedFrom: nil))
-        let calendar = Calendar(identifier: .gregorian)
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.date(bySettingHour: 16, minute: 0, second: 0, of: Date()) ?? Date()) ?? Date()
-        let slots = (0..<3).compactMap { day in try? TimeSlot(start: tomorrow.addingTimeInterval(Double(day) * 86_400), end: tomorrow.addingTimeInterval(Double(day) * 86_400 + 3600)) }
-        let revision = (questions[id] ?? 0) + 1
-        questions[id] = revision
-        await service.emit(.lifecycle(id, .ownerNeeded(SkillQuestion(revision: revision, issue: .time, candidates: .slots(slots), asker: friend))))
     }
 
     /// A friend's Down for… lines up with the owner's: both are down.

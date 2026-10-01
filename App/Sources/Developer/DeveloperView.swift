@@ -34,9 +34,6 @@ struct DeveloperView: View {
                     }
                 }
                 if let friend = app.friends?.friends.first, let driver = harness.driver {
-                    Button("\(friend.nickname)'s agent asks when you're free") {
-                        Task { await driver.friendAsksForATime(from: friend.id) }
-                    }
                     Button("\(friend.nickname) is down for tacos too") {
                         Task { await driver.friendIsDownToo(friend.id) }
                     }

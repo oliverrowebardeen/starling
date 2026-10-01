@@ -1,3 +1,4 @@
+import FindATime
 import Foundation
 import Network
 import PickAPlace
@@ -28,11 +29,13 @@ extension AppServices {
         let rules = LiveServices.rulesStore()
         let places = LiveServices.places()
         let interactions = LiveServices.interactionStore()
+        let choices = OwnerChoices()
         return AppServices(
             agent: FoundationModelsAgent(),
             registry: LiveServices.registry,
             makeSkills: { outbox in
                 [
+                    LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
                 ]
@@ -52,6 +55,7 @@ extension AppServices {
             egressJournal: LiveServices.egressJournal(),
             placeFinder: places.finder,
             stagedPlaces: places.staged,
+            choices: choices,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
@@ -66,10 +70,10 @@ extension AppServices {
 }
 
 enum LiveServices {
-    /// Every Phase 1.5 skill's descriptor: lane D's Pick a place and lane
-    /// E's Swap photos from their packages; Down for… and Find a time match
-    /// StarlingFakes.SampleSkills, which Release cannot link, until their
-    /// packages merge. Data only: a descriptor runs nothing without its
+    /// Every Phase 1.5 skill's descriptor: lane C's Find a time, lane D's
+    /// Pick a place, and lane E's Swap photos from their packages; Down for…
+    /// matches StarlingFakes.SampleSkills, which Release cannot link, until
+    /// its package merges. Data only: a descriptor runs nothing without its
     /// service.
     static let registry: SkillRegistry = try! SkillRegistry([
         try! SkillDescriptor(
@@ -86,18 +90,7 @@ enum LiveServices {
             ]),
             sendModes: [.askQuietly, .invite]
         ),
-        try! SkillDescriptor(
-            ref: SkillRef(.findATime, SkillVersion(1)),
-            wording: SkillWording(name: "Find a time", summary: "Agree on when", startAction: "Find a time",
-                                  acceptAction: "That works", declineAction: "Not then", declineNote: "If you pass, they just won't see it."),
-            // Calendar details are read on the phone only (ADR 0019).
-            buildingBlock: .privateQuery, topicsUsed: [.time, .activity, .people, .calendarDetails], topicsRequired: [.time],
-            permissions: [.calendarFullAccess], produces: [.timeSlot, .plan],
-            intent: IntentSchema(slots: [
-                IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
-                IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
-            ])
-        ),
+        FindATimeSkill.descriptor,
         PickAPlaceSkill.descriptor,
         SwapPhotos.descriptor,
     ])
@@ -141,6 +134,27 @@ enum LiveServices {
     static func places() -> (finder: PlaceFinder, staged: StagedCandidates, location: CoreLocationAccess) {
         let location = CoreLocationAccess()
         return (PlaceFinder(search: MapKitPlaceSearch(), location: location), StagedCandidates(), location)
+    }
+
+    /// Lane C's service over the app's one Outbox and the same conversation
+    /// ledger the Outbox enforces (P15-C request 2). It reads busy times from
+    /// the app's one calendar store, only while the owner uses it, and
+    /// keeps its checkpoints in Application Support so a request survives a
+    /// relaunch (ADR 0222).
+    static func findATime(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, ledger: any ConversationLedger, choices: OwnerChoices) -> any SkillService {
+        FindATimeService(
+            localPeer: me, outbox: outbox, conversations: ledger, pairedPeers: friends,
+            availability: .standard(calendar: calendar, use: { await choices.calendarUse() }),
+            checkpoints: FileFindATimeCheckpoints(directory: findATimeCheckpoints()),
+            isTurnedOn: { await choices.isOn(.findATime) },
+            standingRules: { await choices.standingConstraints() }
+        )
+    }
+
+    /// `Application Support/Starling/FindATime`, or a temporary directory if
+    /// that cannot be located, as for the interaction store.
+    static func findATimeCheckpoints() -> URL {
+        (try? JSONFile.standard("FindATime").url) ?? FileManager.default.temporaryDirectory.appending(path: "FindATime", directoryHint: .isDirectory)
     }
 
     /// Lane D's service over the app's one Outbox and the same conversation

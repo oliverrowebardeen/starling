@@ -1,4 +1,5 @@
 import Foundation
+import StarlingAvailability
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
@@ -80,6 +81,26 @@ import Testing
         let app = AppModel(services: services)
         await app.start()
         #expect(await retrying.retries == 1)
+        await app.shutdown()
+    }
+
+    @Test func skillsReadTheOwnersChoicesLiveAndCautiousBeforeLoading() async {
+        let choices = OwnerChoices()
+        var services = Self.services()
+        services.choices = choices
+        let app = AppModel(services: services)
+        // Before settings load: off, Just ask me.
+        #expect(!choices.isOn(.findATime))
+        #expect(choices.calendarUse() == .justAskMe)
+        await app.start()
+        #expect(choices.isOn(.findATime))
+        #expect(choices.calendarUse() == .useMyCalendar)
+        await app.settings.setSkill(.findATime, on: false)
+        #expect(!choices.isOn(.findATime))
+        await app.settings.setAskInstead(.findATime, true)
+        #expect(choices.calendarUse() == .justAskMe)
+        // Swap photos is behind its flag.
+        #expect(!choices.isOn(.swapPhotos))
         await app.shutdown()
     }
 
