@@ -23,7 +23,7 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, signed, on one iP
 
 Two phones (A and B, both on this build) for steps 11 to 14; run lane E1's checklist section B at the same time:
 
-11. Both: Friends > +. Expect: within 5 seconds each lists the other as "Phone" plus the other's 8 characters, and the label (Wi-Fi Aware or Nearby). Check each phone shows the other's "This phone is" number.
+11. Both: Friends > +. On Wi-Fi Aware iPhones: Phone A taps "Let a friend find this phone"; Phone B taps "Find a friend's phone" and picks A. Expect on B, within 15 seconds of the system pairing: A selected in "Phones nearby" and the name field filled with A's device name. On A (or on phones without Wi-Fi Aware), expect within 5 seconds the other phone listed as "Phone" plus its 8 characters, with its label (Wi-Fi Aware or Nearby). Check each phone shows the other's "This phone is" number.
 12. Both: pick the other phone, type a name, tap Pair. Expect: both show the same 6-digit code within 3 seconds. Phone A: "Codes match". Expect: A shows "Waiting for the other phone...". Phone B: "Codes match". Expect: "Paired with <name>" on both within 2 seconds, and the friend in the list with a green dot within 10 seconds.
 13. Pair again but tap "Codes are different" on B. Expect: a red warning that someone nearby may be interfering on B, a failure on A, and no new friend on either.
 14. On A, swipe B away and Unpair. Expect: B disappears from A's list, and B's dot for A turns grey within 15 seconds. Pair again to continue.

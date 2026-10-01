@@ -59,7 +59,7 @@ So after the system pairs two phones over Wi-Fi Aware, the app cannot offer "pai
 
 **Also, for the record:** E1's API gives one `SecureTransport` per link (LocalP2P and Wi-Fi Aware), while the app's `Outbox` and `Inbox` take one transport. Lane H will add a composite `Transport` in `App/Features` that merges both links' events and sends to whichever link has the peer. No request; noted so E1 and the Orchestrator see the shape.
 
-**Status:** lane E1 answered that the mapping from a picked device to its `PeerID` should come from lane E2, which is adding it. Until then lane H works around it (ADR 0145): a `LinkWatcher` wraps each raw link before its `SecureTransport`, passes events through, and records the peers the link reports; the pairing screen lists those that are not pinned. An API from E1 or E2 would let the app drop the wrapper.
+**Status:** resolved for Wi-Fi Aware by lane E2's `WiFiAwareTransport.peerID(for:waitingUpTo:)` (PR #38), which the pairing screen uses for the picked phone. For LocalP2P, and for the phone that made itself discoverable, lane H keeps its workaround (ADR 0145): a `LinkWatcher` wraps each raw link before its `SecureTransport`, passes events through, and records the peers the link reports; the pairing screen lists those that are not pinned. An API from E1 or E2 would let the app drop the wrapper.
 
 ## 6. Renaming a friend through the PinAuthority (lane E1, via the Orchestrator)
 
