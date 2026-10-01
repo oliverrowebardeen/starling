@@ -23,6 +23,10 @@ extension PickAPlaceService {
     public func restore(_ interactions: [Interaction]) async {
         // The hourly limit per friend survives the restart.
         await loadAdmissions()
+        // Yeses taken back before the restart keep going until acknowledged.
+        for withdrawal in (try? await ledger.pendingWithdrawals()) ?? [] where pendingWithdrawals[withdrawal.conversation] == nil {
+            retryWithdrawal(withdrawal)
+        }
         for interaction in interactions where interaction.skill.id == descriptor.id {
             switch interaction.state {
             case .drafting: continue

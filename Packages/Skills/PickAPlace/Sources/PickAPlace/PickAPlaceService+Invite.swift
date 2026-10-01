@@ -28,6 +28,8 @@ struct Invite {
     var proposal: SkillProposal?
     var proposeID: MessageID?
     var accepted = false
+    /// The roster the organizer confirmed; it can only shrink afterwards.
+    var finalRoster: [PeerID]?
     /// The owner's yes is on its way, possibly waiting on a consent sheet.
     var accepting = false
     /// Rises with each proposal that differs from the current card, when it
@@ -83,7 +85,13 @@ extension PickAPlaceService {
 
     func inviteReceived(_ envelope: Envelope) {
         let conversation = envelope.conversation
-        guard let invite = invites[conversation], envelope.sender == invite.organizer, !invite.isFinished else { return }
+        guard let invite = invites[conversation], envelope.sender == invite.organizer else { return }
+        if invite.isFinished {
+            // After the plan is confirmed, only a shorter roster can follow:
+            // someone took their yes back after the confirmation.
+            if case .accept(let acceptance) = envelope.body { rosterShrank(acceptance, in: conversation) }
+            return
+        }
         switch envelope.body {
         case .query(let query):
             // A retry asks about the same candidates; any other set is not
@@ -336,6 +344,7 @@ extension PickAPlaceService {
               final.count >= 2, final.first == invite.organizer, final.contains(localPeer), Set(final).isSubset(of: proposed)
         else { return }
         invites[conversation]?.finished = true
+        invites[conversation]?.finalRoster = final
         cancelTasks(conversation)
         remember(conversation)
         emit(invite.id, .everyoneConfirmed(revision: proposal.revision))
@@ -343,6 +352,20 @@ extension PickAPlaceService {
         if let attendees = try? Attendees(final) {
             continuation.yield(.produced(invite.id, .attendees(attendees)))
         }
+    }
+
+    /// A confirmed plan lost someone: the same terms with fewer people,
+    /// still including this phone and the organizer.
+    func rosterShrank(_ acceptance: Acceptance, in conversation: ConversationID) {
+        guard let invite = invites[conversation], let roster = invite.finalRoster, let proposal = invite.proposal,
+              case .peers(let shorter)? = acceptance.terms[.people],
+              Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
+              acceptance.terms.values.allSatisfy({ $0.key == .people || $0.value == proposal.terms[$0.key] }),
+              shorter.count >= 2, shorter.count < roster.count, shorter.first == invite.organizer, shorter.contains(localPeer),
+              Set(shorter).isSubset(of: roster), let attendees = try? Attendees(shorter)
+        else { return }
+        invites[conversation]?.finalRoster = shorter
+        continuation.yield(.produced(invite.id, .attendees(attendees)))
     }
 
     // MARK: - Ending
@@ -357,8 +380,39 @@ extension PickAPlaceService {
     ///   (ADR 0020, decision 9).
     func leave(_ conversation: ConversationID, event: InteractionEvent) {
         guard let invite = invites[conversation], !invite.isFinished else { return }
-        let tell = invite.proposal == nil || invite.accepted || invite.accepting
-        endInvite(conversation, event: event, reply: tell ? .noOverlap : nil)
+        guard invite.accepted || invite.accepting else {
+            endInvite(conversation, event: event, reply: invite.proposal == nil ? .noOverlap : nil)
+            return
+        }
+        // Taking a yes back must reach the organizer, or it would confirm a
+        // roster with someone who left: the no is kept in the ledger and
+        // retried until the organizer acknowledges it, across relaunches.
+        endInvite(conversation, event: event, reply: nil)
+        let withdrawal = PendingWithdrawal(conversation: conversation, organizer: invite.organizer, proposal: invite.proposeID,
+                                           chainedFrom: invite.chainedFrom, since: clock.now())
+        spawn(conversation) { try? await $0.ledger.recordWithdrawal(withdrawal) }
+        retryWithdrawal(withdrawal)
+    }
+
+    /// Sends the no again, with backoff, until the organizer acknowledges it
+    /// or a day has passed.
+    func retryWithdrawal(_ withdrawal: PendingWithdrawal) {
+        let conversation = withdrawal.conversation
+        pendingWithdrawals[conversation] = withdrawal
+        spawn(conversation) { service in
+            var interval = service.configuration.retryInterval
+            while service.pendingWithdrawals[conversation] == withdrawal {
+                guard service.clock.now().timeIntervalSince(withdrawal.since) < PickAPlaceLedgerState.withdrawalLifetime else {
+                    service.pendingWithdrawals[conversation] = nil
+                    try? await service.ledger.clearWithdrawal(conversation)
+                    return
+                }
+                let rejection = Rejection(proposal: withdrawal.proposal ?? MessageID(), reason: .noOverlap)
+                await service.trySend(.reject(rejection), to: withdrawal.organizer, conversation: conversation, chainedFrom: withdrawal.chainedFrom)
+                guard let next = await service.pause(interval) else { return }
+                interval = next
+            }
+        }
     }
 
     /// Ends this phone's part. `reply` is sent only for the owner's own

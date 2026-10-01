@@ -188,6 +188,18 @@ extension PickAPlaceService {
             guard organizer.invited.contains(sender) else { return }
             organizer.accepted.remove(sender)
             organizer.passed.insert(sender)
+            acknowledge(envelope)
+        case (.settled, .reject):
+            acknowledge(envelope)
+            // A withdrawal that crossed the confirmation wins: the friend's
+            // phone has already ended, so the plan goes on without them.
+            guard organizer.accepted.contains(sender) else { return }
+            organized[conversation] = organizer
+            withdrawAfterConfirmation(sender, in: conversation)
+            return
+        case (.ended, .reject):
+            acknowledge(envelope)
+            return
         case (.settled, .accept(let acceptance)):
             // A friend who said yes did not hear the confirmation: repeat
             // it, a bounded number of times.
@@ -388,6 +400,30 @@ extension PickAPlaceService {
         if let attendees = try? Attendees([localPeer] + yes) {
             continuation.yield(.produced(organizer.id, .attendees(attendees)))
         }
+    }
+
+    /// Takes a friend out of a confirmed plan: everyone left gets the
+    /// shortened roster, as a confirmation, and the plan's attendees update.
+    func withdrawAfterConfirmation(_ friend: PeerID, in conversation: ConversationID) {
+        guard var organizer = organized[conversation], organizer.phase == .settled, let terms = organizer.finalTerms,
+              case .peers(let roster)? = terms[.people]
+        else { return }
+        organizer.accepted.remove(friend)
+        organizer.passed.insert(friend)
+        let remaining = roster.filter { $0 != friend }
+        guard remaining.count >= 2, let attendees = try? Attendees(remaining) else {
+            // Nobody else is left to meet.
+            organized[conversation] = organizer
+            emit(organizer.id, .failed)
+            return
+        }
+        var values = terms.values
+        values[.people] = .peers(remaining)
+        organizer.finalTerms = try? Terms(values)
+        organizer.confirmationsRepeated = [:]
+        organized[conversation] = organizer
+        for other in remaining where other != localPeer { spawnConfirmation(conversation, to: other, organizer: organizer) }
+        continuation.yield(.produced(organizer.id, .attendees(attendees)))
     }
 
     func spawnConfirmation(_ conversation: ConversationID, to friend: PeerID, organizer: Organizer) {

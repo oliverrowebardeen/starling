@@ -10,6 +10,29 @@ public protocol PickAPlaceLedger: Sendable {
     /// hourly limit per friend survives a relaunch.
     func admissions(since date: Date) async throws -> [PeerID: [Date]]
     func recordAdmission(_ peer: PeerID, at date: Date) async throws
+    /// Yeses this phone took back that the organizer has not yet
+    /// acknowledged; retried until it does, across relaunches.
+    func pendingWithdrawals() async throws -> [PendingWithdrawal]
+    func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws
+    func clearWithdrawal(_ conversation: ConversationID) async throws
+}
+
+/// A yes this phone took back, waiting for the organizer to acknowledge it.
+public struct PendingWithdrawal: Codable, Hashable, Sendable {
+    public let conversation: ConversationID
+    public let organizer: PeerID
+    /// The proposal the yes answered, for the rejection to name.
+    public let proposal: MessageID?
+    public let chainedFrom: ConversationID?
+    public let since: Date
+
+    public init(conversation: ConversationID, organizer: PeerID, proposal: MessageID?, chainedFrom: ConversationID?, since: Date) {
+        self.conversation = conversation
+        self.organizer = organizer
+        self.proposal = proposal
+        self.chainedFrom = chainedFrom
+        self.since = since
+    }
 }
 
 /// The ledger could not be read or written.
@@ -20,13 +43,26 @@ public struct LedgerUnavailable: Error, Hashable, Sendable {
 /// Everything the ledger keeps, as one value both implementations share.
 public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     public var admissions: [PeerID: [Date]] = [:]
+    public var withdrawals: [ConversationID: PendingWithdrawal] = [:]
 
     public init() {}
+
+    /// How long a withdrawal is retried before the organizer is assumed gone.
+    public static let withdrawalLifetime: TimeInterval = 24 * 3_600
+
+    private enum CodingKeys: String, CodingKey { case admissions, withdrawals }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        admissions = try c.decodeIfPresent([PeerID: [Date]].self, forKey: .admissions) ?? [:]
+        withdrawals = try c.decodeIfPresent([ConversationID: PendingWithdrawal].self, forKey: .withdrawals) ?? [:]
+    }
 
     /// Drops what is too old to matter.
     mutating func prune(now: Date) {
         let hourAgo = now.addingTimeInterval(-3_600)
         admissions = admissions.mapValues { $0.filter { $0 > hourAgo } }.filter { !$0.value.isEmpty }
+        withdrawals = withdrawals.filter { now.timeIntervalSince($0.value.since) < Self.withdrawalLifetime }
     }
 }
 
@@ -49,6 +85,21 @@ public actor InMemoryPickAPlaceLedger: PickAPlaceLedger {
         guard !failing else { throw LedgerUnavailable() }
         state.admissions[peer, default: []].append(date)
     }
+
+    public func pendingWithdrawals() async throws -> [PendingWithdrawal] {
+        guard !failing else { throw LedgerUnavailable() }
+        return Array(state.withdrawals.values)
+    }
+
+    public func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws {
+        guard !failing else { throw LedgerUnavailable() }
+        state.withdrawals[withdrawal.conversation] = withdrawal
+    }
+
+    public func clearWithdrawal(_ conversation: ConversationID) async throws {
+        guard !failing else { throw LedgerUnavailable() }
+        state.withdrawals[conversation] = nil
+    }
 }
 
 /// The app's ledger, as JSON in `UserDefaults`. Old entries are pruned on
@@ -69,6 +120,18 @@ public actor UserDefaultsPickAPlaceLedger: PickAPlaceLedger {
 
     public func recordAdmission(_ peer: PeerID, at date: Date) async throws {
         try update(now: date) { $0.admissions[peer, default: []].append(date) }
+    }
+
+    public func pendingWithdrawals() async throws -> [PendingWithdrawal] {
+        Array(try read().withdrawals.values)
+    }
+
+    public func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws {
+        try update(now: Date()) { $0.withdrawals[withdrawal.conversation] = withdrawal }
+    }
+
+    public func clearWithdrawal(_ conversation: ConversationID) async throws {
+        try update(now: Date()) { $0.withdrawals[conversation] = nil }
     }
 
     func read() throws -> PickAPlaceLedgerState {

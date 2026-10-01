@@ -390,7 +390,8 @@ final class Phone: Sendable {
     func attendees(in conversation: ConversationID) async -> [PeerID]? {
         guard let interaction = await interaction(conversation) else { return nil }
         let artifacts = await coordinator.produced[interaction.id] ?? []
-        return artifacts.lazy.compactMap { if case .attendees(let people) = $0 { people.peers } else { nil } }.first
+        // The latest: a roster can shrink after the plan is confirmed.
+        return artifacts.compactMap { if case .attendees(let people) = $0 { people.peers } else { nil } }.last
     }
 
     func agreedPlace(in conversation: ConversationID) async -> PlaceChoice? {

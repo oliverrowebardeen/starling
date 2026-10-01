@@ -138,6 +138,8 @@ public actor PickAPlaceService: SkillService {
     /// A message for one opens nothing.
     var endedConversations: Set<ConversationID> = []
     var endedConversationOrder: [ConversationID] = []
+    /// Yeses taken back, retried until the organizer acknowledges them.
+    var pendingWithdrawals: [ConversationID: PendingWithdrawal] = [:]
     /// When each friend started requests on this phone, within the last hour.
     var requestTimes: [PeerID: [Date]] = [:]
     /// Cancels the work, sends included, still running for a conversation.
@@ -230,11 +232,20 @@ public actor PickAPlaceService: SkillService {
         guard let skill = envelope.skill else { return }
 
         let conversation = envelope.conversation
+        // Any rejection from the organizer acknowledges a withdrawal: it
+        // has left this phone out, or ended the request.
+        if case .reject = envelope.body, pendingWithdrawals[conversation]?.organizer == envelope.sender {
+            pendingWithdrawals[conversation] = nil
+            spawn(conversation) { try? await $0.ledger.clearWithdrawal(conversation) }
+        }
         if organized[conversation] != nil {
             organizerReceived(envelope)
         } else if invites[conversation] != nil {
             inviteReceived(envelope)
         } else if endedConversations.contains(conversation) {
+            // A friend still taking back a yes in a request that ended
+            // before this launch hears it is over, so it stops retrying.
+            if case .reject = envelope.body, pendingWithdrawals[conversation] == nil { acknowledge(envelope) }
             return
         } else if skill.version.isCompatible(with: descriptor.ref.version) {
             await loadAdmissions()
@@ -262,6 +273,16 @@ public actor PickAPlaceService: SkillService {
     /// Ended conversations remembered from before this launch: a day of
     /// requests, with room to spare.
     static let maxEndedMarkers = 512
+
+    /// Tells a friend its rejection was heard, with an ordinary no, so a
+    /// withdrawal stops being retried. One reply per rejection received.
+    func acknowledge(_ envelope: Envelope) {
+        let (conversation, friend, chainedFrom) = (envelope.conversation, envelope.sender, envelope.chainedFrom)
+        spawn(conversation) { service in
+            await service.trySend(.reject(Rejection(proposal: envelope.id, reason: .noOverlap)), to: friend,
+                                  conversation: conversation, chainedFrom: chainedFrom)
+        }
+    }
 
     /// Reads the admission log once per launch, before the first new
     /// request is admitted, and merges it with any admitted meanwhile.
