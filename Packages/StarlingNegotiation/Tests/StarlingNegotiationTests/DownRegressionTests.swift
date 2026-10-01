@@ -178,4 +178,28 @@ import Testing
         #expect(await !world.wire.sent(by: starter.id).contains { $0.body.kind == .query })
         await world.stop()
     }
+
+    /// P2: the acceptor's replayed accept names the offerer's retried offer
+    /// envelope; the confirmation that answers it must be honored.
+    @Test func aConfirmationOfAReplayedAcceptIsHonored() async throws {
+        let world = DownWorld(["ana", "ben"])
+        let (offerer, acceptor) = Self.roles(world)
+        // Every accept naming the first offer envelope the acceptor answered is lost.
+        let first = Synchronization.Mutex<MessageID?>(nil)
+        await acceptor.transport.lose { envelope in
+            guard case .accept(let acceptance) = envelope.body else { return false }
+            return first.withLock { original in
+                if original == nil { original = acceptance.proposal }
+                return original == acceptance.proposal
+            }
+        }
+        try await world.start()
+        try await offerer.want(time: [T.slot(19, 22)])
+        try await acceptor.want(time: [T.slot(19, 22)])
+        try await eventually("both matched") { await matchCounts(offerer, acceptor) == [1, 1] }
+        await world.expectNoFalseMatches()
+        await world.stop()
+    }
 }
+
+import Synchronization

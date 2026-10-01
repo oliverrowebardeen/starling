@@ -328,6 +328,14 @@ public actor DownNegotiator: DownService {
                 return
             }
             if let signature, let reply = conversation.replies[signature] {
+                // A retried offer arrives in a new envelope, and the replayed
+                // reply names it. Record it as the same offer, so the
+                // confirmation that answers this reply is recognized.
+                if case .offer(let round, let terms) = signature, var current = conversations[envelope.conversation],
+                   current.theirOffer?.round == round, current.theirOffer?.terms == terms {
+                    current.theirOffer?.envelopes.insert(envelope.id)
+                    conversations[envelope.conversation] = current
+                }
                 await replay(reply, to: envelope)
                 return
             }
