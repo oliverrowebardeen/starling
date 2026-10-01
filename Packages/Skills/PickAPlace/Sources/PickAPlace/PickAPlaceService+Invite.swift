@@ -97,6 +97,10 @@ extension PickAPlaceService {
         }
         switch envelope.body {
         case .query(let query):
+            // Once a proposal is on the card, the list has done its job: no
+            // query is answered again, so a friend who passed and one who
+            // has not decided look the same (final review of PR #55).
+            guard invite.proposal == nil else { return }
             // A retry asks about the same candidates; any other set is not
             // answered (ADR 0019, decision 6).
             guard query.issue == .place, case .places(let candidates) = query.candidates,

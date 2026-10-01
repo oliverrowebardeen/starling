@@ -143,6 +143,31 @@ struct AdversarialTests {
         #expect(answers == [.places([Venues.bobaGuys.choice])])
     }
 
+    /// Final review of PR #55, finding 1: after the proposal, a repeated
+    /// query cannot tell a pass from an undecided card.
+    @Test(arguments: [true, false])
+    func aRepeatedQueryCannotTellAPassFromAnUndecidedCard(jakePasses: Bool) async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let jake = Phone("Jake", hub: hub, maps: maps)
+        let group = try await Group([oliver, jake], hub: hub)
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [jake]).conversation
+        #expect(await jake.reaches(.proposed, in: conversation))
+        if jakePasses { try await jake.pass(in: conversation) }
+        try await Task.sleep(for: .milliseconds(100))
+        let before = await group.wire.sent(by: jake.id).count
+
+        // Oliver asks the same question again, twice.
+        for _ in 0..<2 {
+            try await oliver.outbox.send(query(Venues.all.map(\.choice)), to: jake.id, conversation: conversation,
+                                         skill: skill, mode: .invite)
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await group.wire.sent(by: jake.id).count == before)
+    }
+
     @Test func aStrangersCardIsNotKept() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
