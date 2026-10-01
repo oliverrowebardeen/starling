@@ -439,12 +439,9 @@ extension FindATimeService {
         guard let value = initiating[id] else { return }
         switch value.phase {
         case .planned:
-            if let end = value.draft?.slot.end, now() >= end {
-                var ended = value
-                emit(.planEnded, to: &ended.interaction)
-                initiating[id] = ended
-                finish(id)
-            }
+            // The coordinator applies planEnded (ADR 0011, amendment 15);
+            // the service only stops answering for the plan.
+            if let end = value.draft?.slot.end, now() >= end { finish(id) }
         case _ where expired(value.expiresAt):
             endWithoutPlan(id, .expired)
         case .collecting where expired(value.answerDeadline):

@@ -472,7 +472,9 @@ struct LifecycleTests {
         await world.stop()
     }
 
-    @Test func aPlanIsDoneWhenItsTimePasses() async throws {
+    /// The coordinator ends plans (ADR 0011, amendment 15). The service
+    /// never reports planEnded; it stops answering for the plan.
+    @Test func aPassedPlanIsForgottenWithoutReportingItsEnd() async throws {
         let world = World()
         let a = world.phone("Ana")
         let b = world.phone("Ben")
@@ -486,8 +488,14 @@ struct LifecycleTests {
         try await a.waitForState(started, .planned)
         try await b.waitForState(bCard, .planned)
         world.clock.advance(hours: 30)
-        try await a.waitForState(started, .done)
-        try await b.waitForState(bCard, .done)
+        try await eventually("both forget the plan") {
+            let starterDone = await a.service.initiating.isEmpty
+            let friendDone = await b.service.invited.isEmpty
+            return starterDone && friendDone
+        }
+        for phone in [a, b] {
+            #expect(!(await phone.coordinator.log.contains { if case .lifecycle(_, .planEnded) = $0 { true } else { false } }))
+        }
         await world.stop()
     }
 
