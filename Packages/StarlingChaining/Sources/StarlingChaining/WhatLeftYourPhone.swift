@@ -6,6 +6,11 @@ import StarlingCore
 /// phone. Built only from the egress logs, which hold the consent sheet's
 /// own items (ADR 0011 decision 5), and the skills' descriptors. Lane A
 /// renders it.
+///
+/// "Kept" is a claim that something never left, so it is made only from
+/// interactions whose log is known to be complete. For any other, listed in
+/// `unconfirmed`, its topics and permissions are left out of `kept` and the
+/// app says it could not confirm everything that left during it.
 public struct WhatLeftYourPhone: Hashable, Sendable {
     /// One topic that left the phone.
     public struct Shared: Hashable, Sendable {
@@ -39,8 +44,13 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
     public let other: [DisclosedItem]
     /// Every send recorded, including those that disclosed nothing.
     public let sends: Int
+    /// Interactions whose egress log may be incomplete: a send's items were
+    /// unknown, or `EgressRecorder` still has a write for its conversation
+    /// waiting or lost. In the order given.
+    public let unconfirmed: [InteractionID]
 
-    public init(interactions: [Interaction], registry: SkillRegistry) {
+    /// `unconfirmed` is `EgressRecorder.unconfirmedConversations`.
+    public init(interactions: [Interaction], registry: SkillRegistry, unconfirmed: Set<ConversationID> = []) {
         var values: [PrivacyTopic: [IssueValue]] = [:]
         var recipients: [PrivacyTopic: [PeerID]] = [:]
         var counts: [PrivacyTopic: Int] = [:]
@@ -49,7 +59,7 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
         for record in interactions.flatMap(\.egress) {
             sends += 1
             var touched: Set<PrivacyTopic> = []
-            for item in record.items {
+            for item in record.items where item != EgressRecord.unknownItems {
                 guard let topic = item.issue.flatMap(PrivacyTopic.init(issue:)) else {
                     if !other.contains(item) { other.append(item) }
                     continue
@@ -61,9 +71,17 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
             for topic in touched { counts[topic, default: 0] += 1 }
         }
 
-        let descriptors = interactions.compactMap { registry.descriptor(for: $0.skill.id) }
-        let used = descriptors.reduce(into: Set<PrivacyTopic>()) { $0.formUnion($1.topicsUsed) }
-        let permissions = descriptors.reduce(into: Set<SystemPermission>()) { $0.formUnion($1.permissions) }
+        let doubtful = interactions.filter { unconfirmed.contains($0.conversation) || $0.egress.contains(where: \.itemsUnknown) }
+        let doubtfulIDs = Set(doubtful.map(\.id))
+        func exposure(_ items: [Interaction]) -> SkillExposure {
+            items.compactMap { registry.descriptor(for: $0.skill.id)?.exposure }.reduce(SkillExposure.none) { $0.union($1) }
+        }
+        // What the confirmed interactions used, less anything an unconfirmed
+        // one could have sent.
+        let vouched = exposure(interactions.filter { !doubtfulIDs.contains($0.id) })
+        let unknown = exposure(doubtful)
+        let used = vouched.topics.subtracting(unknown.topics)
+        let permissions = vouched.permissions.subtracting(unknown.permissions)
 
         shared = PrivacyTopic.allCases.compactMap { topic in
             counts[topic].map { Shared(topic: topic, values: values[topic] ?? [], recipients: recipients[topic] ?? [], sends: $0) }
@@ -72,5 +90,6 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
             + SystemPermission.allCases.filter(permissions.contains).map(Kept.permission)
         self.other = other
         self.sends = sends
+        self.unconfirmed = doubtful.map(\.id)
     }
 }

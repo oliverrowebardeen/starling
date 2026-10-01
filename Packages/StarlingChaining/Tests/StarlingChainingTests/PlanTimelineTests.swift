@@ -60,6 +60,18 @@ import Testing
         #expect(whatLeft.sends == 4)
     }
 
+    @Test func aLinkWhoseLogIsUnconfirmedIsNotVouchedFor() throws {
+        let (plan, place, photos) = try boba()
+        let timeline = try #require(PlanTimeline(for: plan.id, in: [plan, place, photos], registry: registry, unconfirmed: [place.conversation]))
+        #expect(timeline.whatLeft.unconfirmed == [place.id])
+        // Pick a place uses place, budget, diet, and location: none of them
+        // is claimed as kept while its log may be missing a send. Swap photos
+        // has not run and its log is complete, so photos still is.
+        #expect(timeline.whatLeft.kept == [.topic(.photos), .permission(.photoLibrary)])
+        // What its log does show is still listed as shared.
+        #expect(timeline.whatLeft.shared.map(\.topic) == [.time, .activity, .place])
+    }
+
     @Test func thePlansWhatLeftIsExactlyItsEgressLogs() throws {
         let (plan, place, photos) = try boba()
         let whatLeft = try #require(PlanTimeline(for: plan.id, in: [plan, place, photos], registry: registry)).whatLeft

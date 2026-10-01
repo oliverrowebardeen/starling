@@ -42,8 +42,10 @@ public struct PlanTimeline: Hashable, Sendable {
     /// The timeline of the plan `interaction` belongs to, or nil if it is not
     /// in `interactions`. `friendHints` maps invitee interactions to the
     /// conversation their request named in `chainedFrom`, after
-    /// `IncomingChain.timelineParent` accepted it.
-    public init?(for interaction: InteractionID, in interactions: [Interaction], registry: SkillRegistry, friendHints: [InteractionID: ConversationID] = [:]) {
+    /// `IncomingChain.timelineParent` accepted it. `unconfirmed` is
+    /// `EgressRecorder.unconfirmedConversations`, for `whatLeft`.
+    public init?(for interaction: InteractionID, in interactions: [Interaction], registry: SkillRegistry,
+                 friendHints: [InteractionID: ConversationID] = [:], unconfirmed: Set<ConversationID> = []) {
         guard let start = interactions.first(where: { $0.id == interaction }) else { return nil }
         // Only invitee interactions without an owner link can be grouped by a
         // friend's hint.
@@ -89,6 +91,6 @@ public struct PlanTimeline: Hashable, Sendable {
                 participants: item.participants, artifacts: item.artifacts, history: item.history
             )
         }
-        whatLeft = WhatLeftYourPhone(interactions: members, registry: registry)
+        whatLeft = WhatLeftYourPhone(interactions: members, registry: registry, unconfirmed: unconfirmed)
     }
 }

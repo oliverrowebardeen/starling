@@ -10,9 +10,28 @@ let policyItems: DisclosedItemsForSend = { envelope, context in
     try DeterministicPolicyEngine().disclosure(for: OutboundMessage(envelope: envelope, recipientCard: nil, transport: .loopback, context: context)).items
 }
 
-actor FailingSink: EgressSink {
+/// A sink over a store that fails on demand: before writing (the store is
+/// down) or after writing (the write landed but its answer was lost).
+actor FlakySink: EgressSink {
     struct Failure: Error {}
-    func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool { throw Failure() }
+    private let store: StoreEgressSink
+    var failBefore = 0
+    var failAfter = 0
+
+    init(store: any InteractionStore, failBefore: Int = 0, failAfter: Int = 0) {
+        self.store = StoreEgressSink(store: store)
+        self.failBefore = failBefore
+        self.failAfter = failAfter
+    }
+
+    func heal() { failBefore = 0; failAfter = 0 }
+
+    func appendEgress(_ record: EgressRecord, message: MessageID, conversation: ConversationID) async throws -> Bool {
+        if failBefore > 0 { failBefore -= 1; throw Failure() }
+        let found = try await store.appendEgress(record, message: message, conversation: conversation)
+        if failAfter > 0 { failAfter -= 1; throw Failure() }
+        return found
+    }
 }
 
 @Suite struct EgressRecorderTests {
@@ -108,14 +127,93 @@ actor FailingSink: EgressSink {
         let phone = Self.phone([plan], base: FixedPolicyEngine(.allow), items: { _, _ in throw Unknown() })
         try await phone.outbox.send(.propose(try Proposal(round: 0, terms: Self.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
         #expect(await phone.recorder.unexplained == 1)
-        #expect(try await phone.store.interaction(plan.id)?.egress.map(\.items) == [[]])
+        let saved = try #require(try await phone.store.interaction(plan.id))
+        #expect(saved.egress.map(\.items) == [[EgressRecord.unknownItems]])
+        #expect(saved.egress.first?.itemsUnknown == true)
+        // The audit cannot vouch for this interaction: nothing is claimed
+        // as kept, and it says which interaction it could not confirm.
+        let whatLeft = WhatLeftYourPhone(interactions: [saved], registry: SampleSkills.registry)
+        #expect(whatLeft.kept.isEmpty)
+        #expect(whatLeft.unconfirmed == [plan.id])
+        #expect(whatLeft.other.isEmpty)
+        #expect(whatLeft.sends == 1)
     }
 
-    @Test func aFailedWriteIsCounted() async throws {
-        let recorder = EgressRecorder(sink: FailingSink(), itemsForSend: policyItems)
+    @Test func aFailedWriteIsKeptAndRetriedUntilItLands() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let sink = FlakySink(store: store, failBefore: 2)
+        let recorder = EgressRecorder(sink: sink, itemsForSend: policyItems)
         let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
-        try await outbox.send(.propose(try Proposal(round: 0, terms: Self.placeTerms())), to: Fixtures.maya, conversation: ConversationID())
+        let terms = try Terms([.budget: .amount(try MoneyAmount(minorUnits: 1200))])
+        try await outbox.send(.propose(try Proposal(round: 0, terms: terms)), to: Fixtures.maya, conversation: plan.conversation)
+
+        // The write failed: the log is incomplete, and the audit says so
+        // instead of claiming budget stayed on the phone.
         #expect(await recorder.failedWrites == 1)
+        #expect(await recorder.unconfirmedConversations == [plan.conversation])
+        var whatLeft = WhatLeftYourPhone(interactions: try await store.all(), registry: SampleSkills.registry,
+                                         unconfirmed: await recorder.unconfirmedConversations)
+        #expect(whatLeft.unconfirmed == [plan.id])
+        #expect(whatLeft.kept.isEmpty)
+        #expect(whatLeft.shared.isEmpty)
+
+        await recorder.retryPending()
+        #expect(await recorder.unconfirmedConversations == [plan.conversation])
+        await recorder.retryPending()
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+        let saved = try #require(try await store.interaction(plan.id))
+        #expect(saved.egress.map(\.topics) == [[.budget]])
+        whatLeft = WhatLeftYourPhone(interactions: [saved], registry: SampleSkills.registry, unconfirmed: await recorder.unconfirmedConversations)
+        #expect(whatLeft.unconfirmed.isEmpty)
+        #expect(whatLeft.shared.map(\.topic) == [.budget])
+        #expect(whatLeft.kept == [.topic(.time), .topic(.activity), .topic(.place)])
+    }
+
+    @Test func aRetryAfterALostAnswerDoesNotRecordTwice() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let recorder = EgressRecorder(sink: FlakySink(store: store, failAfter: 1), itemsForSend: policyItems)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
+        #expect(await recorder.unconfirmedConversations == [plan.conversation])
+        await recorder.retryPending()
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+        #expect(try await store.interaction(plan.id)?.egress.count == 1)
+    }
+
+    @Test func aNewSendRetriesEarlierFailuresFirst() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let recorder = EgressRecorder(sink: FlakySink(store: store, failBefore: 1), itemsForSend: policyItems)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let first = try await outbox.send(.propose(try Proposal(round: 0, terms: Terms([.budget: .amount(try MoneyAmount(minorUnits: 1))]))),
+                                          to: Fixtures.maya, conversation: plan.conversation)
+        try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.jake, conversation: plan.conversation)
+        let saved = try #require(try await store.interaction(plan.id))
+        #expect(saved.egress.map(\.recipient) == [first.recipient, Fixtures.jake])
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+    }
+
+    @Test func aFullRetryQueueLeavesTheConversationUnconfirmed() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let sink = FlakySink(store: store, failBefore: Int.max)
+        let recorder = EgressRecorder(sink: sink, itemsForSend: policyItems)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let other = ConversationID()
+        try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
+        for _ in 0..<EgressRecorder.maxPending {
+            try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: other)
+        }
+        await sink.heal()
+        await recorder.retryPending()
+        // The plan's record fell off the queue: it stays unconfirmed for good.
+        #expect(await recorder.unconfirmedConversations == [plan.conversation])
+        #expect(try await store.interaction(plan.id)?.egress.isEmpty == true)
     }
 }
