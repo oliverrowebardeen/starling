@@ -81,3 +81,20 @@ public actor RecordingOutboxObserver: OutboxObserver {
         records.append(Record(envelope: envelope, context: context, decision: decision, disclosed: nil))
     }
 }
+
+/// A `SentSequenceStore` in memory, shared between Outbox instances to
+/// stand for one phone across relaunches.
+public final class InMemorySentSequenceStore: SentSequenceStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var highest: [ConversationID: UInt64] = [:]
+
+    public init() {}
+
+    public func highestSent(in conversation: ConversationID) -> UInt64? {
+        lock.withLock { highest[conversation] }
+    }
+
+    public func recordSent(_ sequence: UInt64, in conversation: ConversationID) {
+        lock.withLock { highest[conversation] = max(highest[conversation] ?? 0, sequence) }
+    }
+}

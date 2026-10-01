@@ -96,7 +96,7 @@ One envelope per frame, sorted-key JSON. Version 2 (Core v2.1) carries the optio
 
 `mode` is `ask_quietly` or `invite` (ADR 0020). Version 1 is retired both ways: a version 1 build reads unknown keys as absent and could show a quiet ask openly, so it must never accept one. Version 0 frames (Phase 1 builds) still decode, with none of the three fields; a version 0 envelope that claims any of them is rejected.
 
-`sequence` is unique and increasing per sender and conversation. Outbox starts a conversation at the sender's clock in milliseconds on each launch and numbers an envelope only once the policy and consent have cleared it, so relaunches never reuse a number and refusals leave no gap.
+`sequence` is unique and increasing per sender and conversation. Outbox numbers an envelope only once the policy and consent have cleared it, so refusals leave no gap. On each launch a conversation starts above both the sender's clock in milliseconds and the highest number the app's `SentSequenceStore` recorded, so relaunches keep rising even if the clock moved back.
 
 Time slots are whole minutes since 1970 UTC. Changing anything here breaks `EnvelopeCodecTests.wireFormatIsFrozen` on purpose; `phaseOneFramesStillDecode` keeps version 0 working.
 

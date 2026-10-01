@@ -26,6 +26,17 @@ extension OutboxObserver {
     }
 }
 
+/// Remembers, across launches, the highest sequence number this phone sent
+/// in each conversation, so a relaunch continues above it even if the clock
+/// moved back (review of PR #57). Called synchronously from `Outbox` with no
+/// suspension between numbering and sending, so implementations must be
+/// fast and thread-safe. The app persists it; without one, a conversation
+/// restarts at the clock in milliseconds.
+public protocol SentSequenceStore: Sendable {
+    func highestSent(in conversation: ConversationID) -> UInt64?
+    func recordSent(_ sequence: UInt64, in conversation: ConversationID)
+}
+
 /// The only sanctioned way to send a message.
 ///
 /// Every envelope passes the `PolicyEngine`, and the owner's consent when the
@@ -37,6 +48,7 @@ public actor Outbox {
     private let consent: any ConsentProvider
     private let codec: EnvelopeCodec
     private let observer: (any OutboxObserver)?
+    private let sequences: (any SentSequenceStore)?
     private let now: @Sendable () -> Date
     private var nextSequence: [ConversationID: UInt64] = [:]
 
@@ -46,6 +58,7 @@ public actor Outbox {
         consent: any ConsentProvider,
         codec: EnvelopeCodec = EnvelopeCodec(),
         observer: (any OutboxObserver)? = nil,
+        sequences: (any SentSequenceStore)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -53,7 +66,13 @@ public actor Outbox {
         self.consent = consent
         self.codec = codec
         self.observer = observer
+        self.sequences = sequences
         self.now = now
+    }
+
+    private static func above(_ highest: UInt64?) -> UInt64 {
+        guard let highest else { return 0 }
+        return highest == .max ? .max : highest + 1
     }
 
     /// Milliseconds since 1970, or 0 for a clock set before 1970.
@@ -122,11 +141,14 @@ public actor Outbox {
         // so the friend sees no gap that says a send was refused (review of
         // PR #53). A conversation's first send on this launch starts at the
         // clock in milliseconds, so a relaunched app never reuses a number
-        // the friend has seen. The send time is now too: a consent sheet can
-        // take longer than a receiver's age limit.
+        // the friend has seen, and above anything the sequence store says
+        // was sent before, in case the clock moved back. The send time is
+        // now too: a consent sheet can take longer than a receiver's age
+        // limit.
         let sentAt = now()
-        let sequence = nextSequence[conversation] ?? Self.firstSequence(at: sentAt)
-        nextSequence[conversation] = sequence + 1
+        let sequence = nextSequence[conversation] ?? max(Self.firstSequence(at: sentAt), Self.above(sequences?.highestSent(in: conversation)))
+        nextSequence[conversation] = sequence &+ 1
+        sequences?.recordSent(sequence, in: conversation)
         let envelope = try Envelope(
             version: draft.version, id: draft.id, conversation: conversation, sender: draft.sender, recipient: recipient,
             sequence: sequence, sentAt: Timestamp(sentAt), body: body, skill: skill, mode: mode, chainedFrom: chainedFrom

@@ -69,6 +69,27 @@ import Testing
         #expect([first.sequence, second.sequence, elsewhere.sequence] == [start, start + 1, start])
     }
 
+    /// Review of PR #57: the clock moved back before the relaunch. The
+    /// store keeps the numbers rising, so the friend drops nothing.
+    @Test func aRelaunchAfterTheClockMovedBackStillRises() async throws {
+        let inbox = Inbox(localPeer: Fixtures.bob, now: { Fixtures.now })
+        let store = InMemorySentSequenceStore()
+        for (launch, offset) in [(0, 0.0), (1, -60.0)] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let launchedAt = Fixtures.now.addingTimeInterval(offset)
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                                sequences: store, now: { launchedAt })
+            for _ in 0..<5 { try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+            for sent in await transport.sent {
+                guard case .success = await inbox.accept(sent.frame, from: Fixtures.alice) else {
+                    Issue.record("launch \(launch) had a frame dropped")
+                    return
+                }
+            }
+        }
+        #expect(store.highestSent(in: Fixtures.conversation) == UInt64(Fixtures.now.timeIntervalSince1970 * 1000) + 9)
+    }
+
     /// Lane C: a relaunched app restarted at 0, and the friend's Inbox
     /// dropped every number it had already seen as a replay.
     @Test func aRelaunchedOutboxNeverReusesANumberTheFriendSaw() async throws {
