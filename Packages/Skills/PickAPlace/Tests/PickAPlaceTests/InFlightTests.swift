@@ -106,9 +106,7 @@ struct InFlightTests {
         #expect(await group.wire.sent(by: oliver.id).isEmpty)
     }
 
-    /// Core accepts `.blockedByPrivacy` from every live step but planned
-    /// once its pending PR lands; until then the state machine refuses it
-    /// from proposed, so these tests check what the service reported.
+    /// A denial ends any live step but planned (ADR 0011, amendment 14).
     @Test func aDeniedYesIsBlockedByPrivacy() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
@@ -121,8 +119,10 @@ struct InFlightTests {
         #expect(await maya.reaches(.proposed, in: conversation))
         let id = try #require(await maya.interaction(conversation)?.id)
         try await maya.accept(in: conversation)
-        #expect(await eventually { await maya.coordinator.received.contains(.lifecycle(id, .blockedByPrivacy)) })
+        #expect(await maya.reaches(.ended(.blockedByPrivacy), in: conversation))
         #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .accept })
+        #expect(await maya.coordinator.received.contains(.lifecycle(id, .blockedByPrivacy)))
+        #expect(await group.lifecyclesWereLegal())
     }
 
     @Test func aDeniedProposalIsBlockedByPrivacy() async throws {
@@ -134,10 +134,11 @@ struct InFlightTests {
         defer { Task { await group.stop() } }
 
         let request = try await oliver.organize(Venues.all, with: [maya])
-        #expect(await eventually { await oliver.coordinator.received.contains(.lifecycle(request.id, .blockedByPrivacy)) })
+        #expect(await oliver.reaches(.ended(.blockedByPrivacy), in: request.conversation))
         #expect(await !group.wire.sent(by: oliver.id).contains { $0.body.kind == .propose })
         // Maya hears "no plan" and nothing else.
         #expect(await maya.reaches(.ended(.nobodyUp), in: request.conversation))
+        #expect(await group.lifecyclesWereLegal())
     }
 
     /// ADR 0011, amendment 14: a send whose step was superseded while it was
