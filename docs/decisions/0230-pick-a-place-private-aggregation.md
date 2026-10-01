@@ -28,7 +28,8 @@ Facts about a venue are needed to judge it against a limit. Apple Maps does not 
    - A friend still deciding judges again when asked again.
 
    An organizer still collecting lists is reported as failed, because candidates and lists are in memory only.
-7. **Limits on a peer.** At most 4 live requests per friend and 32 in total. Only paired friends' messages are handled. A message for an unknown conversation starts nothing unless it is a place query. A query from another major version gets `reject(unsupported)` and nothing else.
+7. **Starting.** The coordinator applies `.started` and then calls `start` (ADR 0011, amendment 13); the service never emits it. Compose checks `PickAPlaceSkill.askable` first, because a `start` that throws ends the interaction as failed. With no friend whose card supports the skill, the service reports `.unsupported`.
+8. **Limits on a peer.** At most 4 live requests per friend and 32 in total. Only paired friends' messages are handled. A message for an unknown conversation starts nothing unless it is a place query. A query from another major version gets `reject(unsupported)` and nothing else.
 
 ## Consequences
 

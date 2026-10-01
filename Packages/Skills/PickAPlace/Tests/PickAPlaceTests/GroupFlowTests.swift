@@ -277,11 +277,18 @@ struct GroupFlowTests {
     @Test func startNeedsCandidatesThatFitTheOwner() async throws {
         let (group, oliver, maya, _) = try await threeFriends()
         defer { Task { await group.stop() } }
+        // Compose checks first, so the owner never sends a request that
+        // would end as failed.
+        #expect(PickAPlaceSkill.askable([Venues.fancy], limits: limits(budget: 10)).isEmpty)
+        #expect(PickAPlaceSkill.askable(Venues.all + Venues.all, limits: limits(budget: 10)) == [Venues.teaLab.choice, Venues.bobaGuys.choice])
         await #expect(throws: PickAPlaceError.noCandidates) { try await oliver.organize([], with: [maya]) }
         await #expect(throws: PickAPlaceError.nothingFitsYourLimits) {
             try await oliver.organize([Venues.fancy], with: [maya], limits: limits(budget: 10))
         }
         #expect(await group.wire.sent(by: oliver.id).isEmpty)
+        let failed = await oliver.coordinator.interactions.values.filter { $0.state == .ended(.failed) }
+        #expect(failed.count == 2)
+        #expect(await group.lifecyclesWereLegal())
     }
 
     @Test func withdrawingTellsFriendsNoPlan() async throws {

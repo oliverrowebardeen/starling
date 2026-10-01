@@ -38,6 +38,16 @@ public enum PickAPlaceSkill {
         ])
     )
 
+    /// The candidates `start` would ask friends about: those that fit the
+    /// owner's own limits, best first. Compose checks this is not empty
+    /// before the owner sends, because a `start` that throws ends the
+    /// interaction as failed (ADR 0011, amendment 13).
+    public static func askable(_ candidates: [PlaceCandidate], limits: ConstraintSet) -> [PlaceChoice] {
+        var seen: Set<PlaceChoice> = []
+        let unique = candidates.filter { seen.insert($0.choice).inserted }.prefix(ProtocolLimits.maxPlacesPerValue)
+        return PlaceJudge.acceptable(Array(unique), limits: limits)
+    }
+
     /// `NSLocationWhenInUseUsageDescription`. Lane A puts it in the app's
     /// Info.plist (ADR 0013, decision 6).
     public static let locationPurpose =

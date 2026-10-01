@@ -50,14 +50,11 @@ extension PickAPlaceService {
         guard ref.id == descriptor.id, ref.version.isCompatible(with: descriptor.ref.version) else { throw PickAPlaceError.wrongSkill }
         guard isNew(request) else { throw PickAPlaceError.alreadyStarted }
 
-        var seen: Set<PlaceChoice> = []
         let candidates = try await candidateSource.candidates(for: request)
-            .filter { seen.insert($0.choice).inserted }
-            .prefix(ProtocolLimits.maxPlacesPerValue)
         guard !candidates.isEmpty else { throw PickAPlaceError.noCandidates }
         // Ask only about places the owner can do: the owner's own limits are
         // applied before anything leaves, and never sent.
-        let ranking = PlaceJudge.acceptable(Array(candidates), limits: request.intent.rules.constraints)
+        let ranking = PickAPlaceSkill.askable(candidates, limits: request.intent.rules.constraints)
         guard !ranking.isEmpty else { throw PickAPlaceError.nothingFitsYourLimits }
         guard isNew(request) else { throw PickAPlaceError.alreadyStarted }
 
@@ -88,10 +85,12 @@ extension PickAPlaceService {
         )
         guard !friends.isEmpty else {
             organized[conversation]?.phase = .ended
+            // Negotiating, so the state machine ends it as unsupported.
             emit(request.interaction, .unsupported)
             return
         }
-        emit(request.interaction, .started)
+        // The coordinator applied `.started` before calling `start` (ADR
+        // 0011, amendment 13); the service never reports it.
         for friend in friends {
             spawn(conversation) { await $0.keepAsking(conversation, friend) }
         }

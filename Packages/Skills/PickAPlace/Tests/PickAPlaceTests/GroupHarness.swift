@@ -238,9 +238,9 @@ final class Phone: Sendable {
         }
     }
 
-    /// What the coordinator does when the owner taps the skill's start
-    /// button: create the interaction in drafting, stage Compose's
-    /// candidates, and start.
+    /// What the coordinator does when the owner sends: create the
+    /// interaction, stage Compose's candidates, apply `.started`, then call
+    /// `start`, applying `.failed` if it throws (ADR 0011, amendment 13).
     @discardableResult
     func organize(
         _ candidates: [PlaceCandidate], with friends: [Phone], limits: ConstraintSet = .empty,
@@ -251,8 +251,14 @@ final class Phone: Sendable {
         await staged.stage(candidates, for: interaction.id)
         let intent = SkillIntent(skill: PickAPlaceSkill.ref, rules: OwnerRules(constraints: limits), audience: .picked(friends.map(\.id)),
                                  expiresAt: Timestamp(Date().addingTimeInterval(expiresIn)))
-        try await service.start(SkillRequest(interaction: interaction.id, conversation: interaction.conversation, intent: intent,
-                                             participants: friends.map(\.id), inputs: inputs, chainedFrom: chainedFrom))
+        await coordinator.apply(.lifecycle(interaction.id, .started))
+        do {
+            try await service.start(SkillRequest(interaction: interaction.id, conversation: interaction.conversation, intent: intent,
+                                                 participants: friends.map(\.id), inputs: inputs, chainedFrom: chainedFrom))
+        } catch {
+            await coordinator.apply(.lifecycle(interaction.id, .failed))
+            throw error
+        }
         return interaction
     }
 
