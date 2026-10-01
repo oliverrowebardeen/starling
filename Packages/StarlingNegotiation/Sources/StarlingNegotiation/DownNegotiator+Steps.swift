@@ -281,6 +281,9 @@ extension DownNegotiator {
             guard await send(.accept(Acceptance(proposal: acceptance.proposal, terms: confirmation)), to: conversation.peer, in: id, profile: profile) == .sent,
                   var current = conversations[id]
             else { return }
+            // Consent may have held the confirmation past the start. The peer
+            // will refuse it by its own clock, so do not notify either.
+            guard profile.hasNotStarted(plan, now: clock.now()) else { return end(id, .timedOut) }
             current.replies[.accept(acceptance.terms)] = .confirm(confirmation)
             conversations[id] = current
             notifyMatch(with: current.peer, plan: plan, peerLevel: peerLevel, ownLevel: profile.level)

@@ -251,6 +251,54 @@ import Testing
         await consent.answerAll(.declined)
         await world.stop()
     }
+
+    /// P2: if the offerer's confirmation waits on consent past the plan's
+    /// start minute, nobody is notified of a plan already under way.
+    @Test func aConfirmationThatWaitedPastTheStartNotifiesNoOne() async throws {
+        let time = MovableClock()
+        let gate = ConsentForOneSender()
+        let consent = GatedConsentProvider()
+        let world = DownWorld(["ana", "ben"], policy: gate.policy(.accept), consent: consent, clock: time.clock)
+        let (offerer, acceptor) = Self.roles(world)
+        gate.choose(offerer.id)
+        try await world.start()
+        try await offerer.want(time: [T.slot(19, 22)])
+        try await acceptor.want(time: [T.slot(19, 22)])
+        try await eventually("the confirmation waits for consent") { await consent.pending == 1 }
+
+        time.set(T.at(19).addingTimeInterval(60))
+        await consent.answerAll(.approved)
+        try await world.settle()
+        #expect(await matchCounts(offerer, acceptor) == [0, 0])
+        await world.stop()
+    }
+
+    /// P2: an acceptance still waiting on consent when its plan starts is
+    /// cancelled, so it never leaves whenever the owner answers.
+    @Test func anAcceptanceWaitingPastTheStartIsCancelled() async throws {
+        let time = MovableClock(compressLongSleeps: true)
+        let gate = ConsentForOneSender()
+        let consent = GatedConsentProvider()
+        // Step deadlines (5 x 200 ms, 2 s for details) outlast the plan's
+        // start, so only a start-time watchdog can end this in time.
+        let slow = DownConfiguration(retryInterval: .milliseconds(200), maxAttempts: 5)
+        let world = DownWorld(["ana", "ben"], policy: gate.policy(.accept), consent: consent, clock: time.clock, configuration: slow)
+        let (offerer, acceptor) = Self.roles(world)
+        gate.choose(acceptor.id)
+        try await world.start()
+        try await offerer.want(time: [T.slot(19, 22)])
+        try await acceptor.want(time: [T.slot(19, 22)])
+        try await eventually("the acceptance waits for consent") { await consent.pending == 1 }
+
+        // The plan starts at 19:00; at 19:01 (60 ms here) the watchdog fires.
+        try await eventually(timeout: .milliseconds(500), "the acceptor gave up") { await acceptor.negotiator.conversations.isEmpty }
+        time.set(T.at(19).addingTimeInterval(60))
+        await consent.answerAll(.approved)
+        try await world.settle(timeout: .seconds(10))
+        #expect(await !world.wire.sent(by: acceptor.id).contains { $0.body.kind == .accept })
+        #expect(await matchCounts(offerer, acceptor) == [0, 0])
+        await world.stop()
+    }
 }
 
 import Synchronization

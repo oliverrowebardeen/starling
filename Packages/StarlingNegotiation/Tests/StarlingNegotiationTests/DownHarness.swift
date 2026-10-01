@@ -335,12 +335,33 @@ actor GatedConsentProvider: ConsentProvider {
     }
 }
 
-/// Wall time a test can move forward. Timers stay real.
+/// Wall time a test can move forward. Timers stay real, except that with
+/// `compressLongSleeps` a sleep of a second or more runs 1,000 times faster
+/// (a 60 s plan-start watchdog takes 60 ms; 20 ms retries are unchanged).
 final class MovableClock: Sendable {
     private let current = Mutex(T.now)
+    private let compressLongSleeps: Bool
+    init(compressLongSleeps: Bool = false) { self.compressLongSleeps = compressLongSleeps }
     func set(_ date: Date) { current.withLock { $0 = date } }
     var clock: DownClock {
-        DownClock(now: { [self] in self.current.withLock { $0 } }, sleep: { try await Task.sleep(for: $0) })
+        let compress = compressLongSleeps
+        return DownClock(now: { [self] in self.current.withLock { $0 } }, sleep: { duration in
+            try await Task.sleep(for: compress && duration >= .seconds(1) ? duration / 1000 : duration)
+        })
+    }
+}
+
+/// Asks for consent on `kind` from one sender only, chosen after the world
+/// exists (peer IDs are random).
+final class ConsentForOneSender: Sendable {
+    private let sender = Mutex<PeerID?>(nil)
+    func choose(_ peer: PeerID) { sender.withLock { $0 = peer } }
+    func policy(_ kind: MessageBody.Kind) -> FixedPolicyEngine {
+        FixedPolicyEngine { [self] message in
+            let chosen = self.sender.withLock { $0 }
+            guard message.envelope.body.kind == kind, message.envelope.sender == chosen else { return .allow }
+            return .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: []))
+        }
     }
 }
 

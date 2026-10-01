@@ -61,6 +61,8 @@ public actor DownNegotiator: DownService {
         let task: Task<Void, Never>
         /// Resumes the waiter with a cancellation error.
         let abandon: @Sendable () -> Void
+        /// Gives up on the work at a deadline, if it has one.
+        var watchdog: Task<Void, Never>?
     }
     var conversations: [ConversationID: DownConversation] = [:]
     private var activeByPeer: [PeerID: ConversationID] = [:]
@@ -406,6 +408,13 @@ public actor DownNegotiator: DownService {
             end(id, .failed)
             return .ended
         }
+        // An offer or acceptance is only worth sending while its plan is
+        // still ahead (ADR 0120, item 14). This also stops retries of one.
+        let planStart = profile.flatMap { _ in Self.planStart(of: body) }
+        if let planStart, !Self.isAhead(planStart, now: clock.now()) {
+            end(id, .timedOut)
+            return .ended
+        }
         // Every PSI step tells the policy what it discloses (Core v1.1); a
         // policy refuses a PSI step without this.
         var context = OutboundContext.empty
@@ -413,8 +422,15 @@ public actor DownNegotiator: DownService {
             guard let psiContext = conversations[id]?.psiContext ?? finished[id]?.psiContext else { return .ended }
             context = psiContext
         }
+        // An acceptance waiting on the owner's consent is given up once its
+        // plan's start minute is over, whenever the owner answers.
+        var watchdog: Duration?
+        if case .accept = body, let planStart {
+            let seconds = Double(planStart + 1) * 60 - clock.now().timeIntervalSince1970
+            watchdog = .milliseconds(Int64(max(0, seconds) * 1000))
+        }
         do {
-            let envelope = try await cancellableSend(body, to: peer, in: id, context: context).get()
+            let envelope = try await cancellableSend(body, to: peer, in: id, context: context, abandonAfter: watchdog).get()
             noteSent(envelope)
             return .sent
         } catch is OutboxError {
@@ -423,7 +439,9 @@ public actor DownNegotiator: DownService {
             end(id, .policy)
             return .ended
         } catch is CancellationError {
-            // Ended while waiting (withdrawn, replaced, expired, timed out).
+            // Ended while waiting (withdrawn, replaced, expired, timed out),
+            // or the watchdog gave up because the plan started.
+            if profile != nil, isLive(id) { end(id, .timedOut) }
             return .ended
         } catch {
             if profile != nil { return isLive(id) ? .lost : .ended }
@@ -442,9 +460,11 @@ public actor DownNegotiator: DownService {
     /// after consent and again right before the transport, so a cancelled
     /// send never leaves. Cancelling also resumes this call at once, so the
     /// friend's work queue is not held up by a sheet nobody will answer.
-    private func cancellableSend(_ body: MessageBody, to peer: PeerID, in id: ConversationID, context: OutboundContext) async -> Result<Envelope, any Error> {
+    private func cancellableSend(
+        _ body: MessageBody, to peer: PeerID, in id: ConversationID, context: OutboundContext, abandonAfter: Duration?
+    ) async -> Result<Envelope, any Error> {
         let card = cards[peer]
-        return await cancellable(in: id) { [outbox] in
+        return await cancellable(in: id, abandonAfter: abandonAfter) { [outbox] in
             try await outbox.send(body, to: peer, conversation: id, recipientCard: card, context: context)
         }
     }
@@ -454,7 +474,9 @@ public actor DownNegotiator: DownService {
     /// cancelled and this returns a cancellation error at once, so a stalled
     /// model call or an unanswered consent sheet never holds up the friend's
     /// work queue or outlives its deadline.
-    func cancellable<T: Sendable>(in id: ConversationID, _ work: @escaping @Sendable () async throws -> T) async -> Result<T, any Error> {
+    func cancellable<T: Sendable>(
+        in id: ConversationID, abandonAfter: Duration? = nil, _ work: @escaping @Sendable () async throws -> T
+    ) async -> Result<T, any Error> {
         let key = UUID()
         return await withCheckedContinuation { (waiter: CheckedContinuation<Result<T, any Error>, Never>) in
             let task = Task { [weak self] in
@@ -466,13 +488,43 @@ public actor DownNegotiator: DownService {
                 }
                 await self?.finishWork(key) { waiter.resume(returning: result) }
             }
-            pendingWork[key] = PendingWork(conversation: id, task: task, abandon: { waiter.resume(returning: .failure(CancellationError())) })
+            var pending = PendingWork(conversation: id, task: task, abandon: { waiter.resume(returning: .failure(CancellationError())) })
+            if let abandonAfter {
+                pending.watchdog = Task { [weak self, clock] in
+                    do { try await clock.sleep(abandonAfter) } catch { return }
+                    await self?.abandonWork(key)
+                }
+            }
+            pendingWork[key] = pending
         }
+    }
+
+    private func abandonWork(_ key: UUID) {
+        guard let pending = pendingWork.removeValue(forKey: key) else { return }
+        pending.task.cancel()
+        pending.abandon()
+    }
+
+    /// The start minute of the plan in an offer or acceptance.
+    static func planStart(of body: MessageBody) -> Int64? {
+        let terms: Terms
+        switch body {
+        case .propose(let proposal), .counter(let proposal): terms = proposal.terms
+        case .accept(let acceptance): terms = acceptance.terms
+        default: return nil
+        }
+        guard case .slots(let slots)? = terms[.time], let slot = slots.first else { return nil }
+        return slot.startMinute
+    }
+
+    static func isAhead(_ startMinute: Int64, now: Date) -> Bool {
+        startMinute >= Int64((now.timeIntervalSince1970 / 60).rounded(.down))
     }
 
     private func finishWork(_ key: UUID, resume: @Sendable () -> Void) {
         // Resume only if nobody abandoned it first: exactly once either way.
-        guard pendingWork.removeValue(forKey: key) != nil else { return }
+        guard let pending = pendingWork.removeValue(forKey: key) else { return }
+        pending.watchdog?.cancel()
         resume()
     }
 
@@ -480,6 +532,7 @@ public actor DownNegotiator: DownService {
         for (key, pending) in pendingWork where matches(pending.conversation) {
             pendingWork[key] = nil
             pending.task.cancel()
+            pending.watchdog?.cancel()
             pending.abandon()
         }
     }
