@@ -124,6 +124,35 @@ import Testing
         guard case .needsConsent = await policy.evaluate(message) else { Issue.record("expected Share after the save"); return }
     }
 
+    /// ADR 0021 amendment 12: once a stricter policy is installed, a send
+    /// cleared under the looser one and still waiting never leaves.
+    @Test func tighteningCancelsSendsStillWaiting() async throws {
+        var start = OwnerSettings()
+        try start.privacy.set(.share, for: .place)
+        let transport = HoldingTransport()
+        let maya = Fixtures.peer("Maya")
+        let app = AppModel(services: AppServices(
+            registry: SampleSkills.registry, interactions: InMemoryInteractionStore(), settings: GatedSettingsStore(start),
+            rules: InMemoryRulesStore(), peers: InMemoryPairedPeerStore([maya]),
+            makePolicy: { _, _ in FixedPolicyEngine(.allow) }, transport: transport,
+            notifier: RecordingNotifier(), localNetwork: CountingPrompter()
+        ))
+        await app.start()
+        let outbox = try #require(app.outbox)
+        let conversation = ConversationID()
+        // The first send holds in the transport; the second waits behind it.
+        let first = Task { try await outbox.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya.id, conversation: conversation) }
+        for _ in 0..<2000 where await transport.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        let second = Task { try await outbox.send(.propose(try Proposal(round: 1, terms: .empty)), to: maya.id, conversation: conversation) }
+        try await Task.sleep(for: .milliseconds(30))
+
+        await app.settings.set(.never, for: .place)
+        await transport.release()
+        await #expect(throws: (any Error).self) { try await first.value }
+        await #expect(throws: (any Error).self) { try await second.value }
+        #expect(await transport.delivered.isEmpty)
+    }
+
     @Test func theOnDeviceOnlyChoiceReachesThePolicy() async throws {
         let setup = Setup()
         await setup.app.start()
@@ -153,5 +182,32 @@ import Testing
         #expect(interaction.state == .negotiating)
         #expect(interaction.egress.count == 1)
         #expect(interaction.egress.first?.recipient == setup.maya.id)
+    }
+}
+
+/// A transport that holds every send until released, then delivers it
+/// unless the send was cancelled meanwhile.
+actor HoldingTransport: Transport {
+    nonisolated let kind = TransportKind.loopback
+    nonisolated let localPeer = PeerID.random()
+    nonisolated let events: AsyncStream<TransportEvent> = AsyncStream { _ in }
+    private var released = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private(set) var delivered: [Frame] = []
+    var waiting: Int { held.count }
+
+    func release() {
+        released = true
+        held.forEach { $0.resume() }
+        held = []
+    }
+
+    func start() async throws {}
+    func stop() async {}
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        if !released { await withCheckedContinuation { held.append($0) } }
+        try Task.checkCancellation()
+        delivered.append(frame)
     }
 }

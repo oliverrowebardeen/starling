@@ -235,7 +235,14 @@ public final class AppModel {
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
 
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
-        settings.beforeSave = { [weak self] interim in await self?.refreshPolicy(using: interim) }
+        settings.beforeSave = { [weak self] interim in
+            guard let self else { return }
+            let previous = settings.settings
+            await refreshPolicy(using: interim)
+            // A stricter policy is in place: nothing cleared under the
+            // looser one may still leave from a queue (ADR 0021 amendment 12).
+            if OwnerSettings.tightens(previous, to: interim) { await outbox?.cancelInFlight() }
+        }
         settings.onChange = { [weak self] in
             guard let self else { return }
             await refreshPolicy()
