@@ -1,0 +1,837 @@
+import Foundation
+import StarlingCore
+
+public struct SecureTransportConfiguration: Sendable {
+    /// Messages one side may send in a session before it is torn down and a
+    /// new handshake runs. Far below Noise's 2^64-1 nonce limit, so a nonce
+    /// can never repeat or wrap (ADR 0003 care requirement 3).
+    public var maxMessagesPerSession: UInt64
+    /// How long an initiator waits for handshake message 2 before retrying.
+    public var handshakeTimeout: Duration
+    /// Handshake attempts per trigger (link up, `reconnect`, session rollover).
+    public var handshakeAttempts: Int
+    /// Most peers this transport keeps idle state (replay caches) and
+    /// generations for. Only peers with a pinned key ever get state, so
+    /// this bounds memory even if many friends come and go.
+    public var maxTrackedPeers: Int
+
+    public init(
+        maxMessagesPerSession: UInt64 = 1 << 20, handshakeTimeout: Duration = .seconds(5),
+        handshakeAttempts: Int = 3, maxTrackedPeers: Int = 1_024
+    ) {
+        precondition(maxMessagesPerSession > 1 && maxMessagesPerSession < .max, "session cap must leave the reserved nonce unused")
+        self.maxMessagesPerSession = maxMessagesPerSession
+        self.handshakeTimeout = handshakeTimeout
+        self.handshakeAttempts = max(1, handshakeAttempts)
+        self.maxTrackedPeers = max(1, maxTrackedPeers)
+    }
+}
+
+/// The secure channel from ADR 0003: a `Transport` decorator that
+/// authenticates paired peers with Noise KK and encrypts every frame.
+///
+/// - The wrapped transport's `localPeer` must be this identity's key-derived
+///   `PeerID`, and it must report remote peers by theirs (ADR 0003 decision 4).
+///   A link's peer ID is only a claim; this layer checks it against the key
+///   pinned for that ID.
+/// - `peerAvailable` is emitted only once a session with the pinned key is
+///   live, and `received` only for frames that decrypt under it. Everything
+///   else (unknown keys, tampered, truncated, replayed, reordered, or forged
+///   frames) is dropped without a reply, so the wire never says why.
+/// - Plaintext frames are capped at `ProtocolLimits.maxEnvelopeBytes`, so
+///   ciphertext frames stay within `ProtocolLimits.maxFrameBytes`.
+/// - Pairing traffic for unpaired devices shares the link through
+///   `pairingLink`, which is unauthenticated at this layer.
+public actor SecureTransport: Transport {
+    public nonisolated let kind: TransportKind
+    public nonisolated let localPeer: PeerID
+    public nonisolated let events: AsyncStream<TransportEvent>
+    /// A plain `Transport` view of the same link for `PairingService`.
+    public nonisolated var pairingLink: any Transport { PairingLink(owner: self) }
+    nonisolated let pairingEvents: AsyncStream<TransportEvent>
+
+    private let inner: any Transport
+    private let identity: IdentityKeyPair
+    /// The device's pin authority, shared with every other transport and
+    /// pairing service for this identity (ADR 0100 decision 11).
+    public nonisolated let authority: PinAuthority
+    private let configuration: SecureTransportConfiguration
+    private let continuation: AsyncStream<TransportEvent>.Continuation
+    private let pairingContinuation: AsyncStream<TransportEvent>.Continuation
+
+    private enum State { case idle, started, stopped }
+    private var state = State.idle
+    private var peers: [PeerID: PeerState] = [:]
+    private var eventLoop: Task<Void, Never>?
+    private var timers: [UInt64: Task<Void, Never>] = [:]
+    private var nextHandshakeID: UInt64 = 0
+    /// Bumped whenever a peer's sessions are torn down (disconnect, unpair,
+    /// link loss, rollover). A pin lookup that started under an older
+    /// generation is stale and must not create or install a session.
+    private var generations: GenerationTable
+    /// Peers whose link is up, as the wrapped transport reports them.
+    /// Unauthenticated; kept apart from `peers` so a claim alone creates no
+    /// per-peer state, and cleared when the link goes.
+    private var linkedPeers: Set<PeerID> = []
+    /// Peers with a handshake's pin lookup in flight, so concurrent
+    /// attempts for one peer coalesce instead of each installing a session.
+    private var lookupsInFlight: Set<PeerID> = []
+    private var sendTail: Task<Void, Never>?
+    /// Frames dropped since start, for tests and diagnostics. No reasons are kept.
+    private(set) var droppedFrames = 0
+    /// How many peers this transport keeps state for, for tests.
+    var trackedPeerCount: Int { peers.count }
+    /// How many per-peer generations this transport keeps, for tests.
+    var trackedGenerationCount: Int { generations.count }
+
+    private struct Channel {
+        let id: UInt64
+        var session: NoiseSession
+        /// Whether we sent KK message 1 for this session.
+        let initiator: Bool
+        /// Whether the other side is known to use this session. A responder's
+        /// session is confirmed when it is promoted; an initiator's when any
+        /// frame from the responder decrypts under it.
+        var confirmed: Bool
+        /// The peer's epoch at the pin authority when the pin this session
+        /// was authenticated with was read. The session is usable only while
+        /// the peer's epoch still equals it (ADR 0100 decision 11).
+        let epoch: UInt64
+        /// The lowest nonce still acceptable: nonces must strictly increase.
+        var nextReceiveNonce: UInt64 = 0
+    }
+
+    private struct Initiation {
+        let id: UInt64
+        var handshake: NoiseHandshakeState
+        var attemptsLeft: Int
+        /// The epoch of the pin message 1 was built with.
+        let epoch: UInt64
+    }
+
+    private struct PeerState {
+        var announced = false
+        var current: Channel?
+        /// Receive only: the last confirmed session, kept while newer ones
+        /// await confirmation, because the peer keeps using it until one
+        /// reaches it. Survives any number of unconfirmed replacements.
+        var lastConfirmed: Channel?
+        /// Receive only: newer sessions replaced before they were confirmed
+        /// (newest last), in case the peer switched to one of them. Sized to
+        /// hold every session one restart budget can create.
+        var superseded: [Channel] = []
+        /// The timer resending our confirm until the responder acknowledges it.
+        var confirmTimer: UInt64?
+        /// Sessions abandoned for lack of an acknowledgement since the last
+        /// confirmed one. Bounds re-handshakes on a link that loses them all.
+        var unconfirmedRestarts = 0
+        /// Responder sessions awaiting their first frame, newest last.
+        var pending: [Channel] = []
+        var initiation: Initiation?
+        /// Initiator ephemeral keys already answered, to ignore replays of message 1.
+        var answeredEphemerals: [Data] = []
+        var droppedFrames = 0
+    }
+
+    static let maxPendingPerPeer = 4
+    static let maxUnconfirmedRestarts = 2
+    /// Every unconfirmed session one restart budget can create: the first
+    /// replacement plus `maxUnconfirmedRestarts` restarts. Keeping that many
+    /// means no session the peer may still use is evicted before the budget
+    /// runs out (review 3, finding 2).
+    static let maxSupersededPerPeer = maxUnconfirmedRestarts + 1
+    static let maxRememberedEphemerals = 64
+
+    /// - Parameter authority: The device's one pin authority. Pass the same
+    ///   instance to every transport (LocalP2P, Wi-Fi Aware) and pairing
+    ///   service, so a revocation through any of them reaches all of them.
+    public init(
+        wrapping inner: any Transport,
+        authority: PinAuthority,
+        configuration: SecureTransportConfiguration = SecureTransportConfiguration()
+    ) {
+        self.inner = inner
+        self.identity = authority.identity
+        self.authority = authority
+        generations = GenerationTable(capacity: configuration.maxTrackedPeers)
+        self.configuration = configuration
+        kind = inner.kind
+        localPeer = identity.peerID
+        (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
+        // Pairing traffic is unauthenticated; a bounded buffer keeps a flood
+        // from an unpaired device from growing memory while nobody pairs.
+        (pairingEvents, pairingContinuation) = AsyncStream.makeStream(
+            of: TransportEvent.self, bufferingPolicy: .bufferingNewest(64)
+        )
+    }
+
+    // MARK: Transport
+
+    public func start() async throws {
+        switch state {
+        case .started: return
+        case .stopped: throw TransportError.stopped
+        case .idle: break
+        }
+        guard inner.localPeer == localPeer else {
+            throw TransportError.failed("wrapped transport must use this identity's PeerID")
+        }
+        state = .started
+        // Revocations that start at the authority (for example from another
+        // component) end sessions here too.
+        authority.observeRevocations { [weak self] peer in await self?.endSessions(with: peer) }
+        let events = inner.events
+        eventLoop = Task { [weak self] in
+            for await event in events {
+                guard let self else { return }
+                await self.handle(event)
+            }
+            await self?.innerFinished()
+        }
+        do {
+            try await inner.start()
+        } catch {
+            await stop()
+            throw error
+        }
+    }
+
+    public func send(_ frame: Frame, to peer: PeerID) async throws {
+        guard state == .started else { throw state == .idle ? TransportError.notStarted : TransportError.stopped }
+        guard frame.bytes.count <= ProtocolLimits.maxEnvelopeBytes else {
+            throw TransportError.failed("frame exceeds \(ProtocolLimits.maxEnvelopeBytes) bytes")
+        }
+        try await serialized { transport in
+            let sealed = try transport.seal(.data, frame.bytes, to: peer)
+            try await transport.inner.send(sealed, to: peer)
+        }
+    }
+
+    public func stop() async {
+        guard state != .stopped else { return }
+        state = .stopped
+        eventLoop?.cancel()
+        eventLoop = nil
+        for timer in timers.values { timer.cancel() }
+        timers = [:]
+        peers = [:]
+        await inner.stop()
+        continuation.finish()
+        pairingContinuation.finish()
+    }
+
+    // MARK: Session control
+
+    /// Starts a fresh handshake with a pinned peer, for example right after
+    /// pairing. The current session, if any, keeps working until it succeeds.
+    public func reconnect(_ peer: PeerID) async {
+        guard state == .started else { return }
+        await initiate(with: peer)
+    }
+
+    /// Unpairs `peer`: the one call the app should use. Before its first
+    /// await it marks the peer revoked at the pin authority and ends every
+    /// session and handshake with it; then it cancels pairing ceremonies and
+    /// removes the pin under the authority's lock. No pin, session, or
+    /// pairing commit with the peer survives it (ADR 0100 decision 11).
+    public func unpair(_ peer: PeerID) async throws {
+        authority.beginRemoval(peer)
+        endSessions(with: peer)
+        try await authority.completeRemoval(peer)
+    }
+
+    /// Revokes `peer` without removing its pin: ends its session, voids pin
+    /// lookups in flight, and cancels pairing ceremonies with it. Use
+    /// `unpair(_:)` to unpair; this alone leaves the pin, so the next link-up
+    /// starts a session again.
+    public func disconnect(_ peer: PeerID) async {
+        authority.markRevoked(peer)
+        endSessions(with: peer)
+        await authority.notifyObservers(peer)
+    }
+
+    /// Registers a handler run on every revocation of a peer.
+    public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
+        authority.observeRevocations(handler)
+    }
+
+    /// Ends every session and handshake with `peer` and voids pin lookups in
+    /// flight. Synchronous, so revocation takes effect before any await.
+    private func endSessions(with peer: PeerID) {
+        tearDown(peer, announce: true)
+        // Also when there was no state yet: a first handshake may be mid-lookup.
+        generations.bump(peer)
+        // A revoked peer needs no state, not even its replay cache: it can no
+        // longer complete a handshake.
+        peers[peer] = nil
+    }
+
+    /// What this layer knows about one link: the `PeerID` the link claims,
+    /// and the static key the peer proved in the live session, if any. A
+    /// proven key always hashes to the claimed ID; a link that claims a
+    /// friend's ID without their key never gets one (ADR 0100).
+    public func status(of peer: PeerID) -> SecureLinkStatus {
+        purgeStale(peer)
+        let entry = peers[peer]
+        return SecureLinkStatus(
+            claimedPeer: peer,
+            linkUp: linkedPeers.contains(peer),
+            provenKey: entry?.current.flatMap { try? IdentityPublicKey(bytes: $0.session.remoteStatic.rawRepresentation) },
+            handshakeInProgress: entry?.initiation != nil || entry?.pending.isEmpty == false || entry?.current?.confirmed == false,
+            droppedFrames: entry?.droppedFrames ?? 0
+        )
+    }
+
+    // MARK: Inbound
+
+    private func handle(_ event: TransportEvent) async {
+        guard state == .started else { return }
+        switch event {
+        case .peerAvailable(let peer):
+            pairingContinuation.yield(event)
+            guard peer != localPeer else { return }
+            linkedPeers.insert(peer)
+            if peers[peer]?.current == nil, peers[peer]?.initiation == nil {
+                await initiate(with: peer)
+            }
+        case .peerUnavailable(let peer):
+            pairingContinuation.yield(event)
+            linkedPeers.remove(peer)
+            tearDown(peer, announce: true)
+            // Keep a pinned peer's replay cache across link flaps; forget
+            // everything else, and peers with nothing worth keeping entirely.
+            if let answered = peers[peer]?.answeredEphemerals, !answered.isEmpty {
+                peers[peer] = PeerState(answeredEphemerals: answered)
+            } else {
+                peers[peer] = nil
+            }
+        case .received(let frame, let peer):
+            guard let (type, body) = SecureWire.parse(frame) else { return drop(from: peer) }
+            switch type {
+            case .pairing:
+                // Shorter than the frame it came in, so always a valid Frame.
+                guard let inner = try? Frame(body) else { return drop(from: peer) }
+                pairingContinuation.yield(.received(inner, from: peer))
+            case .handshake1: await receiveHandshake1(body, from: peer)
+            case .handshake2: await receiveHandshake2(body, from: peer)
+            case .transport: receiveTransport(body, from: peer)
+            }
+        }
+    }
+
+    private func innerFinished() {
+        guard state == .started else { return }
+        Task { await self.stop() }
+    }
+
+    private func receiveHandshake1(_ message: Data, from peer: PeerID) async {
+        guard message.count == SecureWire.handshakeLength, peer != localPeer,
+              let (pinned, epoch) = await pinnedKey(for: peer)
+        else { return drop(from: peer) }
+        let ephemeral = Data(message.prefix(NoiseHandshakeState.dhLength))
+        if peers[peer]?.answeredEphemerals.contains(ephemeral) == true { return drop(from: peer) }
+
+        var handshake: NoiseHandshakeState
+        let reply: Data
+        do {
+            handshake = try NoiseHandshakeState(
+                pattern: .kk, initiator: false, prologue: SecureWire.kkPrologue,
+                localStatic: identity.privateKey, remoteStatic: pinned
+            )
+            guard try handshake.readMessage(message).isEmpty else { return drop(from: peer) }
+        } catch {
+            return drop(from: peer)
+        }
+
+        // Both sides initiated at once: the lower PeerID's handshake wins.
+        if peers[peer]?.initiation != nil {
+            if localPeer < peer { return }
+            peers[peer]?.initiation = nil
+        }
+
+        do {
+            reply = try handshake.writeMessage(payload: Data())
+            let session = try handshake.session()
+            guard Self.proves(session, peer) else { return drop(from: peer) }
+            var entry = peers[peer] ?? PeerState()
+            nextHandshakeID += 1
+            entry.pending.append(Channel(id: nextHandshakeID, session: session, initiator: false, confirmed: false, epoch: epoch))
+            if entry.pending.count > Self.maxPendingPerPeer { entry.pending.removeFirst() }
+            entry.answeredEphemerals.append(ephemeral)
+            if entry.answeredEphemerals.count > Self.maxRememberedEphemerals { entry.answeredEphemerals.removeFirst() }
+            peers[peer] = entry
+            trimIdlePeers()
+        } catch {
+            return drop(from: peer)
+        }
+        try? await serialized { transport in
+            try await transport.inner.send(SecureWire.frame(.handshake2, reply), to: peer)
+        }
+    }
+
+    private func receiveHandshake2(_ message: Data, from peer: PeerID) async {
+        purgeStale(peer)
+        guard message.count == SecureWire.handshakeLength, var initiation = peers[peer]?.initiation else {
+            return drop(from: peer)
+        }
+        let session: NoiseSession
+        do {
+            guard try initiation.handshake.readMessage(message).isEmpty else { return drop(from: peer) }
+            session = try initiation.handshake.session()
+        } catch {
+            return drop(from: peer)
+        }
+        // KK authenticated the responder against the key pinned at initiation,
+        // which is usable only if the peer's epoch has not moved since.
+        guard Self.proves(session, peer) else { return drop(from: peer) }
+        guard initiation.epoch == authority.epoch(of: peer) else {
+            purgeStale(peer)
+            return drop(from: peer)
+        }
+        timers.removeValue(forKey: initiation.id)?.cancel()
+        guard var entry = peers[peer] else { return }
+        entry.initiation = nil
+        entry.pending = []
+        // The responder switches only when our confirm (or data) reaches it,
+        // so keep accepting its frames under the old session until then.
+        Self.retireCurrent(&entry)
+        entry.current = Channel(id: initiation.id, session: session, initiator: true, confirmed: false, epoch: initiation.epoch)
+        peers[peer] = entry
+        armConfirmRetry(peer, channel: initiation.id, attemptsLeft: configuration.handshakeAttempts)
+        await sendControl(.confirm, to: peer)
+        announce(peer)
+    }
+
+    /// Resends our confirm until the responder acknowledges the new session.
+    /// If it never does, the session may be unusable on its side: start over,
+    /// a bounded number of times.
+    private func armConfirmRetry(_ peer: PeerID, channel: UInt64, attemptsLeft: Int) {
+        if let old = peers[peer]?.confirmTimer { timers.removeValue(forKey: old)?.cancel() }
+        nextHandshakeID += 1
+        let id = nextHandshakeID
+        peers[peer]?.confirmTimer = id
+        let timeout = configuration.handshakeTimeout
+        timers[id] = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await self?.confirmTimedOut(peer, channel: channel, timer: id, attemptsLeft: attemptsLeft)
+        }
+    }
+
+    private func confirmTimedOut(_ peer: PeerID, channel: UInt64, timer: UInt64, attemptsLeft: Int) async {
+        timers[timer] = nil
+        guard state == .started, let current = peers[peer]?.current, current.id == channel, !current.confirmed else { return }
+        if attemptsLeft > 0 {
+            armConfirmRetry(peer, channel: channel, attemptsLeft: attemptsLeft - 1)
+            await sendControl(.confirm, to: peer)
+            return
+        }
+        rollOver(peer)
+        await initiate(with: peer)
+    }
+
+    /// Sends a confirm or acknowledgement under the current session. Best
+    /// effort: a lost one is covered by the confirm retry.
+    private func sendControl(_ kind: SecureWire.PayloadKind, to peer: PeerID) async {
+        try? await serialized { transport in
+            let sealed = try transport.seal(kind, Data(), to: peer)
+            try await transport.inner.send(sealed, to: peer)
+        }
+    }
+
+    private func receiveTransport(_ body: Data, from peer: PeerID) {
+        purgeStale(peer)
+        guard let (nonce, ciphertext) = SecureWire.parseTransport(body),
+              nonce < configuration.maxMessagesPerSession,
+              var entry = peers[peer]
+        else { return drop(from: peer) }
+
+        var plaintext: Data?
+        var channelUsed: Channel?
+        if var channel = entry.current, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+            if !channel.confirmed {
+                // The responder sent under our new session, so it switched.
+                channel.confirmed = true
+                entry.lastConfirmed = nil
+                entry.superseded = []
+                entry.unconfirmedRestarts = 0
+                if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+                entry.confirmTimer = nil
+            }
+            entry.current = channel
+            (plaintext, channelUsed) = (opened, channel)
+        } else if var channel = entry.lastConfirmed, let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+            entry.lastConfirmed = channel
+            (plaintext, channelUsed) = (opened, channel)
+        } else {
+            for index in entry.superseded.indices.reversed() {
+                var channel = entry.superseded[index]
+                if let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+                    // The peer uses this session, which confirms it: it becomes
+                    // the last confirmed session, kept until a newer one is
+                    // confirmed. Older ones are no longer needed; newer ones
+                    // stay in case the peer switches again.
+                    channel.confirmed = true
+                    entry.lastConfirmed = channel
+                    entry.superseded.removeSubrange(...index)
+                    // Authenticated progress refills the restart budget.
+                    entry.unconfirmedRestarts = 0
+                    (plaintext, channelUsed) = (opened, channel)
+                    break
+                }
+            }
+        }
+        if plaintext == nil {
+            for index in entry.pending.indices.reversed() {
+                var channel = entry.pending[index]
+                if let opened = open(&channel, nonce: nonce, ciphertext: ciphertext) {
+                    // The initiator used this session, so it is live: promote it.
+                    channel.confirmed = true
+                    entry.current = channel
+                    entry.lastConfirmed = nil
+                    entry.superseded = []
+                    entry.pending = []
+                    (plaintext, channelUsed) = (opened, channel)
+                    break
+                }
+            }
+        }
+        guard let plaintext, let channelUsed, let first = plaintext.first,
+              let kind = SecureWire.PayloadKind(rawValue: first)
+        else { return drop(from: peer) }
+        var delivery: Frame?
+        if kind == .data {
+            let payload = Data(plaintext.dropFirst())
+            guard payload.count <= ProtocolLimits.maxEnvelopeBytes, let frame = try? Frame(payload) else { return drop(from: peer) }
+            delivery = frame
+        }
+        // The final epoch check, the receive-state commit, and publishing
+        // happen in one section under the authority, so no revocation on any
+        // transport can begin between them (ADR 0100 decision 11).
+        let published = try? authority.ifCurrent(peer, epoch: channelUsed.epoch) { () -> Bool in
+            peers[peer] = entry
+            announceUnchecked(peer)
+            if let delivery { continuation.yield(.received(delivery, from: peer)) }
+            return true
+        }
+        guard published == true else {
+            purgeStale(peer)
+            return drop(from: peer)
+        }
+        // Acknowledge every confirm on a session we answered, including a
+        // retry whose earlier acknowledgement was lost.
+        if kind == .confirm, !channelUsed.initiator, channelUsed.id == entry.current?.id {
+            Task { await self.sendControl(.confirmAck, to: peer) }
+        }
+    }
+
+    /// Decrypts under an explicit nonce, which must exceed every nonce already
+    /// accepted on this channel. Leaves the channel unchanged on failure.
+    private func open(_ channel: inout Channel, nonce: UInt64, ciphertext: Data) -> Data? {
+        guard nonce >= channel.nextReceiveNonce else { return nil }
+        var receive = channel.session.receive
+        receive.setNonce(nonce)
+        guard let plaintext = try? receive.decrypt(ad: Data(), ciphertext: ciphertext) else { return nil }
+        channel.session.receive = receive
+        channel.nextReceiveNonce = nonce + 1
+        return plaintext
+    }
+
+    // MARK: Outbound
+
+    /// Encrypts one payload for `peer` under the current session. Rolls the
+    /// session over instead of ever reaching the nonce cap.
+    private func seal(_ kind: SecureWire.PayloadKind, _ payload: Data, to peer: PeerID) throws -> Frame {
+        purgeStale(peer)
+        guard var channel = peers[peer]?.current else { throw TransportError.peerUnreachable(peer) }
+        let nonce = channel.session.send.nonce
+        guard nonce < configuration.maxMessagesPerSession else {
+            // We may not send on it again, but the peer may still send on it
+            // until our new session reaches it: rollOver keeps it for receiving.
+            rollOver(peer)
+            Task { await self.initiate(with: peer) }
+            throw TransportError.peerUnreachable(peer)
+        }
+        var plaintext = Data(capacity: payload.count + 1)
+        plaintext.append(kind.rawValue)
+        plaintext.append(payload)
+        // The epoch check, taking the nonce, and sealing happen in one section
+        // under the authority, so nothing is sealed under a session that a
+        // revocation on any transport has already ended (ADR 0100 decision 11).
+        let sealed = try authority.ifCurrent(peer, epoch: channel.epoch) { () throws -> Frame in
+            let ciphertext = try channel.session.send.encrypt(ad: Data(), plaintext: plaintext)
+            peers[peer]?.current = channel
+            return try SecureWire.transportFrame(nonce: nonce, ciphertext: ciphertext)
+        }
+        guard let sealed else {
+            purgeStale(peer)
+            throw TransportError.peerUnreachable(peer)
+        }
+        return sealed
+    }
+
+    fileprivate func sendPairing(_ frame: Frame, to peer: PeerID) async throws {
+        guard state == .started else { throw state == .idle ? TransportError.notStarted : TransportError.stopped }
+        let wrapped = try SecureWire.frame(.pairing, frame.bytes)
+        try await serialized { transport in try await transport.inner.send(wrapped, to: peer) }
+    }
+
+    fileprivate func startForPairing() async throws {
+        try await start()
+    }
+
+    /// Starts a KK handshake with `peer`. One attempt per peer at a time: a
+    /// call while a lookup or handshake for the peer is in flight returns
+    /// (concurrent reconnects coalesce). Admission is decided after the
+    /// awaited pin lookup, immediately before the attempt is installed, so
+    /// nothing that happened during the await is missed (ADR 0100 decision
+    /// 5). `attempts` marks a retry of an already admitted attempt.
+    private func initiate(with peer: PeerID, attempts: Int? = nil) async {
+        let isRetry = attempts != nil
+        guard state == .started, peer != localPeer, !lookupsInFlight.contains(peer) else { return }
+        if !isRetry, peers[peer]?.initiation != nil { return }
+        lookupsInFlight.insert(peer)
+        let found = await pinnedKey(for: peer)
+        lookupsInFlight.remove(peer)
+        guard let (pinned, epoch) = found else { return }
+        if !isRetry {
+            guard peers[peer]?.initiation == nil, admitHandshake(peer) else { return }
+        }
+        var handshake: NoiseHandshakeState
+        let message: Data
+        do {
+            handshake = try NoiseHandshakeState(
+                pattern: .kk, initiator: true, prologue: SecureWire.kkPrologue,
+                localStatic: identity.privateKey, remoteStatic: pinned
+            )
+            message = try handshake.writeMessage(payload: Data())
+        } catch {
+            return
+        }
+        if let previous = peers[peer]?.initiation { timers.removeValue(forKey: previous.id)?.cancel() }
+        nextHandshakeID += 1
+        let id = nextHandshakeID
+        let attemptsLeft = (attempts ?? configuration.handshakeAttempts) - 1
+        peers[peer, default: PeerState()].initiation = Initiation(id: id, handshake: handshake, attemptsLeft: attemptsLeft, epoch: epoch)
+        trimIdlePeers()
+        let timeout = configuration.handshakeTimeout
+        timers[id] = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await self?.handshakeTimedOut(peer, id: id)
+        }
+        try? await serialized { transport in
+            try await transport.inner.send(SecureWire.frame(.handshake1, message), to: peer)
+        }
+    }
+
+    private func handshakeTimedOut(_ peer: PeerID, id: UInt64) async {
+        timers[id] = nil
+        guard let initiation = peers[peer]?.initiation, initiation.id == id else { return }
+        peers[peer]?.initiation = nil
+        guard initiation.attemptsLeft > 0 else { return }
+        await initiate(with: peer, attempts: initiation.attemptsLeft)
+    }
+
+    // MARK: Helpers
+
+    /// Announces `peer` if its current session is still in the peer's
+    /// epoch, atomically with that check.
+    private func announce(_ peer: PeerID) {
+        guard let current = peers[peer]?.current else { return }
+        _ = try? authority.ifCurrent(peer, epoch: current.epoch) { announceUnchecked(peer) }
+    }
+
+    /// Announces without checking the epoch: only inside an `ifCurrent`
+    /// section that has checked it.
+    private func announceUnchecked(_ peer: PeerID) {
+        guard peers[peer]?.current != nil, peers[peer]?.announced == false else { return }
+        peers[peer]?.announced = true
+        continuation.yield(.peerAvailable(peer))
+    }
+
+    /// The one gate every new handshake passes, whatever starts it (link-up,
+    /// `reconnect`, the nonce cap, a confirm timeout), including when no
+    /// session is current (ADR 0100 decision 5). Called only from `initiate`,
+    /// after its pin lookup and immediately before it installs the attempt.
+    ///
+    /// While unconfirmed sessions are retained (a current one, or superseded
+    /// ones), a new attempt is admitted only if it spends from the restart
+    /// budget and its later retirement could not evict a retained session
+    /// the peer may still use. Otherwise it waits for authenticated progress
+    /// (which refills the budget) or a link reset (which clears everything).
+    private func admitHandshake(_ peer: PeerID) -> Bool {
+        guard let entry = peers[peer] else { return true }
+        let unconfirmedCurrent = entry.current.map { !$0.confirmed } ?? false
+        guard unconfirmedCurrent || !entry.superseded.isEmpty else { return true }
+        let retained = entry.superseded.count + (unconfirmedCurrent ? 1 : 0)
+        guard retained + 1 <= Self.maxSupersededPerPeer else { return false }
+        let restarts = entry.unconfirmedRestarts + 1
+        guard restarts <= Self.maxUnconfirmedRestarts else { return false }
+        peers[peer]?.unconfirmedRestarts = restarts
+        return true
+    }
+
+    /// Moves the current session aside for receiving only, before a newer
+    /// one replaces it. A confirmed session becomes `lastConfirmed`; an
+    /// unconfirmed one joins `superseded` and never displaces `lastConfirmed`.
+    private static func retireCurrent(_ entry: inout PeerState) {
+        guard let old = entry.current else { return }
+        entry.current = nil
+        if old.confirmed {
+            entry.lastConfirmed = old
+            entry.superseded = []
+        } else {
+            entry.superseded.append(old)
+            if entry.superseded.count > maxSupersededPerPeer { entry.superseded.removeFirst() }
+        }
+    }
+
+    /// Stops sending on the current session before a new handshake replaces
+    /// it (nonce cap, unacknowledged confirm). Unlike `tearDown`, the
+    /// receive-only sessions stay, so frames the peer sends meanwhile arrive.
+    private func rollOver(_ peer: PeerID) {
+        guard var entry = peers[peer] else { return }
+        if let initiation = entry.initiation { timers.removeValue(forKey: initiation.id)?.cancel() }
+        if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+        entry.initiation = nil
+        entry.confirmTimer = nil
+        Self.retireCurrent(&entry)
+        let wasAnnounced = entry.announced
+        entry.announced = false
+        peers[peer] = entry
+        generations.bump(peer)
+        if wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
+    }
+
+    /// Bounds idle per-peer state. Only peers with a pinned key get state,
+    /// but friends come and go: past `maxTrackedPeers`, forget idle peers
+    /// (no link, no session), which costs at most a replay cache.
+    private func trimIdlePeers() {
+        guard peers.count > configuration.maxTrackedPeers else { return }
+        let idle = peers.filter { !linkedPeers.contains($0.key) && $0.value.current == nil && $0.value.initiation == nil && $0.value.pending.isEmpty }
+        for (peer, _) in idle.prefix(peers.count - configuration.maxTrackedPeers) {
+            peers[peer] = nil
+            generations.bump(peer)
+        }
+    }
+
+    private func tearDown(_ peer: PeerID, announce: Bool) {
+        guard var state = peers[peer] else { return }
+        generations.bump(peer)
+        if let initiation = state.initiation { timers.removeValue(forKey: initiation.id)?.cancel() }
+        if let timer = state.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+        let wasAnnounced = state.announced
+        state.confirmTimer = nil
+        state.lastConfirmed = nil
+        state.superseded = []
+        state.current = nil
+        state.pending = []
+        state.initiation = nil
+        state.announced = false
+        peers[peer] = state
+        if announce, wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
+    }
+
+    /// The invariant behind every session this layer installs: the key the
+    /// peer proved hashes to the ID its link claims. Only sessions that pass
+    /// can become `current`, and only a completed handshake (initiator) or a
+    /// frame that decrypts (responder) installs one, so a failed or
+    /// unauthenticated handshake never displaces or shadows a live session.
+    private static func proves(_ session: NoiseSession, _ peer: PeerID) -> Bool {
+        (try? IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation))?.peerID == peer
+    }
+
+    /// Looks up the key pinned for `peer` through the pin authority. Returns
+    /// nil while the peer is being unpaired, and if it was revoked, torn
+    /// down, or disconnected while the lookup was suspended, so a pin read
+    /// before an unpair can never start or answer a handshake after it.
+    /// Callers create handshake state synchronously after this returns.
+    private func pinnedKey(for peer: PeerID) async -> (X25519PublicKey, epoch: UInt64)? {
+        let generation = generations.value(of: peer)
+        guard let (paired, epoch) = await authority.pinned(peer),
+              state == .started, generations.value(of: peer) == generation,
+              authority.epoch(of: peer) == epoch, !authority.isBlocked(peer),
+              let key = try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
+        else { return nil }
+        return (key, epoch)
+    }
+
+    /// Enforces the epoch rule (ADR 0100 decision 11): every session or
+    /// handshake with `peer` stamped with an older epoch than the authority's
+    /// is dead, on this transport as on every other, and is removed on first
+    /// touch. Synchronous: called before any frame is sealed or accepted.
+    private func purgeStale(_ peer: PeerID) {
+        guard var entry = peers[peer] else { return }
+        let epoch = authority.epoch(of: peer)
+        var lostCurrent = false
+        if let current = entry.current, current.epoch != epoch {
+            entry.current = nil
+            lostCurrent = true
+            if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+            entry.confirmTimer = nil
+        }
+        if let lastConfirmed = entry.lastConfirmed, lastConfirmed.epoch != epoch { entry.lastConfirmed = nil }
+        entry.superseded.removeAll { $0.epoch != epoch }
+        entry.pending.removeAll { $0.epoch != epoch }
+        if let initiation = entry.initiation, initiation.epoch != epoch {
+            timers.removeValue(forKey: initiation.id)?.cancel()
+            entry.initiation = nil
+        }
+        let wasAnnounced = entry.announced
+        if lostCurrent { entry.announced = false }
+        peers[peer] = entry
+        if lostCurrent, wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
+    }
+
+    private func drop(from peer: PeerID) {
+        droppedFrames += 1
+        peers[peer]?.droppedFrames += 1
+    }
+
+    /// Runs link sends one at a time, in call order, so explicit nonces reach
+    /// the peer in increasing order even when callers send concurrently.
+    private func serialized(_ operation: @escaping @Sendable (isolated SecureTransport) async throws -> Void) async throws {
+        let previous = sendTail
+        let task = Task {
+            await previous?.value
+            try await operation(self)
+        }
+        sendTail = Task { _ = await task.result }
+        try await task.value
+    }
+}
+
+/// `SecureTransport.pairingLink`: pairing frames only, unauthenticated.
+struct PairingLink: Transport {
+    let owner: SecureTransport
+
+    var kind: TransportKind { owner.kind }
+    var localPeer: PeerID { owner.localPeer }
+    var events: AsyncStream<TransportEvent> { owner.pairingEvents }
+
+    func start() async throws {
+        try await owner.startForPairing()
+    }
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        try await owner.sendPairing(frame, to: peer)
+    }
+
+    /// The secure transport owns the link; stopping pairing leaves it running.
+    func stop() async {}
+}
+
+/// `SecureTransport.status(of:)`: the claimed link identity next to the proven one.
+public struct SecureLinkStatus: Hashable, Sendable {
+    /// The `PeerID` the wrapped transport reports for this link. A claim.
+    public let claimedPeer: PeerID
+    public let linkUp: Bool
+    /// The static key proven in the live session, or nil if there is none.
+    /// When present, `provenKey.peerID == claimedPeer`.
+    public let provenKey: IdentityPublicKey?
+    public let handshakeInProgress: Bool
+    /// Frames from this claimed ID that were dropped (bad type, failed
+    /// handshake, failed decryption, stale nonce). No reasons are kept.
+    public let droppedFrames: Int
+}
