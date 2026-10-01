@@ -64,7 +64,7 @@ import Testing
         #expect(outcome.secureDroppedFrames == 1)
         #expect(outcome.accepted.count == 2)
         let genuine = try #require(outcome.accepted.first { $0.body.kind == .propose })
-        #expect(genuine.sequence == 0)
+        #expect(outcome.accepted.filter { $0.body.kind == .propose }.count == 1)
         #expect(outcome.provenPeer == genuine.sender)
     }
 }

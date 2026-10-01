@@ -54,14 +54,37 @@ import Testing
     }
 
     @Test func sequenceNumbersIncreasePerConversation() async throws {
-        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved))
+        let start = UInt64(Fixtures.now.timeIntervalSince1970 * 1000)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: FixedPolicyEngine(.allow),
+                            consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
         let other = ConversationID()
 
         let first = try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
         let second = try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
         let elsewhere = try await outbox.send(body, to: Fixtures.bob, conversation: other)
 
-        #expect([first.sequence, second.sequence, elsewhere.sequence] == [0, 1, 0])
+        #expect([first.sequence, second.sequence, elsewhere.sequence] == [start, start + 1, start])
+    }
+
+    /// Lane C: a relaunched app restarted at 0, and the friend's Inbox
+    /// dropped every number it had already seen as a replay.
+    @Test func aRelaunchedOutboxNeverReusesANumberTheFriendSaw() async throws {
+        let inbox = Inbox(localPeer: Fixtures.bob, now: { Fixtures.now })
+        var clock = Fixtures.now
+        for launch in 0..<2 {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let launchedAt = clock
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                                now: { launchedAt })
+            for _ in 0..<70 { try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+            for sent in await transport.sent {
+                guard case .success = await inbox.accept(sent.frame, from: Fixtures.alice) else {
+                    Issue.record("launch \(launch) had a frame dropped")
+                    return
+                }
+            }
+            clock = clock.addingTimeInterval(1)
+        }
     }
 
     @Test func transportFailuresPropagate() async throws {

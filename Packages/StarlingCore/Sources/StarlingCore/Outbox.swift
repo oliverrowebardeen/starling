@@ -44,6 +44,12 @@ public actor Outbox {
         self.now = now
     }
 
+    /// Milliseconds since 1970, or 0 for a clock set before 1970.
+    static func firstSequence(at date: Date) -> UInt64 {
+        let milliseconds = (date.timeIntervalSince1970 * 1000).rounded(.down)
+        return milliseconds > 0 ? UInt64(milliseconds) : 0
+    }
+
     /// Builds, checks, and sends one envelope. Returns what was sent.
     @discardableResult
     public func send(
@@ -58,8 +64,10 @@ public actor Outbox {
     ) async throws -> Envelope {
         // Reserve the sequence number before any suspension point so two
         // concurrent sends never share one. Gaps are fine; Inbox only
-        // requires uniqueness within its replay window.
-        let sequence = nextSequence[conversation, default: 0]
+        // requires uniqueness within its replay window. A conversation's
+        // first send on this launch starts at the clock in milliseconds, so
+        // a relaunched app never reuses a number the friend has seen.
+        let sequence = nextSequence[conversation] ?? Self.firstSequence(at: now())
         nextSequence[conversation] = sequence + 1
 
         let envelope = try Envelope(
