@@ -184,6 +184,22 @@ struct LifecycleTests {
         // A daily window shorter than one slot.
         await #expect(throws: FindATimeError.noTimesInRange) { try await a.findATime(with: [b], daily: (600, 630)) }
         #expect(world.envelopes.allSatisfy { $0.skill == nil })
+        #expect(await a.coordinator.all().allSatisfy { $0.state == .ended(.failed) })
+        await world.stop()
+    }
+
+    /// The coordinator applies `.started`; the service never reports it.
+    @Test func theServiceNeverReportsStarted() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben")
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        _ = try await a.waitForProposal()
+        let reported = await a.coordinator.log.contains { if case .lifecycle(_, .started) = $0 { true } else { false } }
+        #expect(!reported)
+        #expect(await a.coordinator.rejected.isEmpty)
+        _ = started
         await world.stop()
     }
 

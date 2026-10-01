@@ -32,12 +32,15 @@ extension FindATimeService {
             invitees: friends,
             phase: .resolving
         )
+        // The coordinator applied `.started` when the owner sent, before
+        // calling `start` (ADR 0011, amendment 13). Mirror it here without
+        // emitting it.
+        try? value.interaction.apply(.started, at: Timestamp(now))
         guard !friends.isEmpty else {
             // Nobody to ask: the app resolved no friend who runs the skill.
             emit(.unsupported, to: &value.interaction)
             return
         }
-        emit(.started, to: &value.interaction)
         initiating[id] = value
         register(id, interaction: request.interaction)
         checkpoint(id)

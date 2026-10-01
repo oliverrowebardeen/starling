@@ -261,12 +261,21 @@ final class Phone: Sendable {
             skill: FindATimeSkill.ref, rules: OwnerRules(constraints: try ConstraintSet(constraints)),
             audience: .picked(friends.map(\.id)), expiresAt: Timestamp(clock.now.addingTimeInterval(hours * 3600))
         )
-        let interaction = Interaction(skill: FindATimeSkill.ref, role: .initiator, participants: friends.map(\.id), createdAt: Timestamp(Date()))
+        // As the coordinator does (ADR 0011, amendment 13): apply `.started`
+        // when the owner sends, then start; if start throws, apply `.failed`.
+        var interaction = Interaction(skill: FindATimeSkill.ref, role: .initiator, participants: friends.map(\.id), createdAt: Timestamp(Date()))
+        try interaction.apply(.started, at: Timestamp(Date()))
         try await coordinator.begin(interaction)
-        try await service.start(SkillRequest(
-            interaction: interaction.id, conversation: interaction.conversation, intent: intent,
-            participants: friends.map(\.id), chainedFrom: chainedFrom
-        ))
+        do {
+            try await service.start(SkillRequest(
+                interaction: interaction.id, conversation: interaction.conversation, intent: intent,
+                participants: friends.map(\.id), chainedFrom: chainedFrom
+            ))
+        } catch {
+            try interaction.apply(.failed, at: Timestamp(Date()))
+            try await coordinator.begin(interaction)
+            throw error
+        }
         return interaction.id
     }
 
