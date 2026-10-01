@@ -64,7 +64,6 @@ final class DebugHarness {
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
-            describeEgress: LiveServices.describeEgress,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,
@@ -348,7 +347,7 @@ final class DemoDriver {
         guard let slot = try? TimeSlot(start: start, end: start.addingTimeInterval(2 * 3600)),
               let terms = try? Terms([.activity: .keywords([try Keyword("tacos")]), .time: .slots([slot])]) else { return }
         let request = SkillRequest(interaction: id, conversation: conversation,
-                                   intent: SkillIntent(skill: service.descriptor.ref, rules: OwnerRules(constraints: (try? ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("tacos")], avoided: []))], .time: [try Constraint(.within([slot]))]])) ?? .empty), audience: .picked([friend]), expiresAt: Timestamp(start)),
+                                   intent: SkillIntent(skill: service.descriptor.ref, rules: OwnerRules(constraints: (try? ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("tacos")], avoided: []))], .time: [try Constraint(.within([slot]))]])) ?? .empty), audience: .picked([friend]), mode: .askQuietly, expiresAt: Timestamp(start)),
                                    participants: [friend])
         requests[id] = (request, service)
         revisions[id] = 1

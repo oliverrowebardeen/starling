@@ -81,7 +81,8 @@ import Testing
         let model = SettingsModel(store: FileOwnerSettingsStore(file: file), flags: .phase1_5)
         await model.load(phaseOneSharing: [DisclosureRule(issue: .budget, action: .allowOnDevicePeers)])
         #expect(model.loadFailed)
-        #expect(model.choice(for: .budget) == .askMe)
+        // Defaults, never the Phase 1 rule: budget's default is Never (ADR 0019).
+        #expect(model.choice(for: .budget) == .never)
         #expect(model.notice != nil)
 
         await model.markLocalNetworkAsked()

@@ -316,8 +316,12 @@ public final class LifecycleCoordinator {
 
     /// Records what one send disclosed, for "What left your phone". Sends
     /// outside any interaction (hello) are not recorded here.
-    public func recordEgress(_ record: EgressRecord, conversation: ConversationID) {
-        guard var current = interaction(conversation: conversation) else { return }
+    public func recordEgress(_ record: EgressRecord, interaction id: InteractionID? = nil, conversation: ConversationID) {
+        // The interaction the service named wins: a group member sends in
+        // the starter's conversation, so the conversation alone can be
+        // ambiguous (Core v2.1, OutboundContext.interaction).
+        let owner = id.flatMap(interaction) ?? interaction(conversation: conversation)
+        guard var current = owner, current.conversation == conversation else { return }
         let before = current
         current.record(record)
         replace(current, before: before)

@@ -65,10 +65,21 @@ import Testing
         #expect(detail.timeline.map(\.text) == ["All 3 down for boba", "Boba Guys · 3 of 3 agreed", "Added to your calendar"])
         #expect(!detail.timeline.contains { !$0.isDone })
 
-        // What left the phone equals the egress log; budget, diet, and
-        // location never did.
+        // What left the phone equals the egress log; location, budget, and
+        // diet never did.
         #expect(detail.shared.map(plain) == ["Boba", "Tonight 8:13 PM to 10:14 PM", "Boba Guys"])
-        #expect(detail.kept == ["Budget", "Diet", "Exact location"])
+        #expect(detail.kept == ["Exact location", "Budget", "Diet"])
+        #expect(detail.auditIsComplete)
+    }
+
+    /// Core v2.1: a send whose items the policy could not state means
+    /// nothing can be said to have stayed on the phone.
+    @Test func anUnknownSendClaimsNothingStayed() throws {
+        var root = try planned(SampleSkills.downFor, artifacts: [])
+        root.record(EgressRecord(at: at, recipient: maya, items: [], message: MessageID(), itemsUnknown: true))
+        let detail = PlanDetail(root: root, all: [root], words: words, notes: PlanNotes(file: nil))
+        #expect(detail.kept.isEmpty)
+        #expect(!detail.auditIsComplete)
     }
 
     @Test func handOffsArePrefilledFromThePlan() throws {

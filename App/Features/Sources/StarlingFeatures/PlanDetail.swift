@@ -132,8 +132,12 @@ public struct PlanDetail: Hashable, Sendable {
     public let timeline: [TimelineEntry]
     /// What left the phone across the chain, in plain words.
     public let shared: [String]
-    /// What the chain's skills could use but never sent.
+    /// What the chain's skills could use but never sent. Empty when a send's
+    /// items are unknown: then nothing can be said to have stayed.
     public let kept: [String]
+    /// False when the policy could not say what some send included (Core
+    /// v2.1, `EgressRecord.itemsUnknown`).
+    public let auditIsComplete: Bool
     public let calendar: CalendarDraft?
     public let message: MessageDraft
     public let place: PlaceChoice?
@@ -164,6 +168,7 @@ public struct PlanDetail: Hashable, Sendable {
 
         timeline = Self.timeline(self.chain, words: words, notes: notes)
         (shared, kept) = Self.audit(self.chain, words: words)
+        auditIsComplete = self.chain.allSatisfy(\.egressIsKnown)
 
         if let plan, let time = plan.time {
             calendar = CalendarDraft(title: title, start: time.start, end: time.end, location: plan.place?.name.rawValue)
@@ -235,15 +240,13 @@ public struct PlanDetail: Hashable, Sendable {
                 for text in describe(item, words: words) where !shared.contains(text) { shared.append(text) }
             }
         }
-        var kept: [String] = []
+        // A send whose items are unknown might have carried anything.
+        guard chain.allSatisfy(\.egressIsKnown) else { return (shared, []) }
         let skills = chain.compactMap { words.registry.descriptor(for: $0.skill.id) }
         let used = skills.reduce(into: Set<PrivacyTopic>()) { $0.formUnion($1.topicsUsed) }
-        for topic in used.subtracting(sharedTopics).sorted() { kept.append(topic.label) }
-        let permissions = skills.reduce(into: Set<SystemPermission>()) { $0.formUnion($1.permissions) }
-        if permissions.contains(.locationWhenInUse) { kept.append("Exact location") }
-        if permissions.contains(.calendarFullAccess) { kept.append("Calendar details") }
-        if permissions.contains(.photoLibrary) { kept.append("Photos you didn't share") }
-        return (shared, kept)
+        // Location and calendar details are topics in Core v2.1 (ADR 0019),
+        // so what a permission reads is covered by its topic.
+        return (shared, used.subtracting(sharedTopics).sorted().map(\.label))
     }
 
     static func describe(_ item: DisclosedItem, words: InteractionWords) -> [String] {

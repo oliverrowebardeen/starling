@@ -40,7 +40,7 @@ actor FailingSkillService: SkillService {
     func request(_ skill: SkillDescriptor = SampleSkills.downFor, to peers: [PeerID]) -> SkillRequest {
         SkillRequest(
             interaction: InteractionID(), conversation: ConversationID(),
-            intent: SkillIntent(skill: skill.ref, rules: .empty, audience: .picked(peers), expiresAt: Timestamp(clock.now.addingTimeInterval(3600))),
+            intent: SkillIntent(skill: skill.ref, rules: .empty, audience: .picked(peers), mode: skill.defaultSendMode, expiresAt: Timestamp(clock.now.addingTimeInterval(3600))),
             participants: peers
         )
     }

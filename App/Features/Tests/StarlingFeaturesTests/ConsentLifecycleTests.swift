@@ -15,7 +15,7 @@ import Testing
     func started(_ lifecycle: LifecycleCoordinator) async throws -> SkillRequest {
         let request = SkillRequest(
             interaction: InteractionID(), conversation: ConversationID(),
-            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, mode: SampleSkills.downFor.defaultSendMode, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
             participants: [maya.id]
         )
         try await lifecycle.start(request, settings: SkillSettings(flags: .phase1_5))

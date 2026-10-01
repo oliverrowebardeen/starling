@@ -27,10 +27,6 @@ import Testing
                 peers: InMemoryPairedPeerStore([maya]),
                 makePolicy: { rules, _ in factory.make(rules) },
                 auditLog: observer,
-                describeEgress: { envelope, _ in
-                    guard case .propose(let proposal) = envelope.body else { return [] }
-                    return proposal.terms.values.keys.sorted().map { DisclosedItem(category: .terms, issue: $0, value: proposal.terms.values[$0]) }
-                },
                 transport: transport,
                 presentConsent: { disclosure in
                     ConsentPresentation(rows: disclosure.items.map { _ in DisplayLine(title: "G row", detail: nil) }, recipientModel: "G model", notices: ["G notice"])
@@ -106,7 +102,7 @@ import Testing
         await setup.app.start()
         let request = SkillRequest(
             interaction: InteractionID(), conversation: ConversationID(),
-            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, mode: SampleSkills.downFor.defaultSendMode, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
             participants: [setup.maya.id]
         )
         try await setup.app.lifecycle.start(request, settings: setup.app.settings.skillSettings)

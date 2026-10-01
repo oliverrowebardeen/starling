@@ -43,13 +43,19 @@ struct PlanTimelineView: View {
 struct EgressAuditView: View {
     let shared: [String]
     let kept: [String]
+    var isComplete = true
 
     var body: some View {
         LabeledContent("Shared") {
             Text(shared.isEmpty ? "Nothing yet" : shared.joined(separator: ", ")).multilineTextAlignment(.trailing)
         }
-        LabeledContent("Kept on your phone") {
-            Text(kept.isEmpty ? "Nothing else" : kept.joined(separator: ", ")).multilineTextAlignment(.trailing)
+        if isComplete {
+            LabeledContent("Kept on your phone") {
+                Text(kept.isEmpty ? "Nothing else" : kept.joined(separator: ", ")).multilineTextAlignment(.trailing)
+            }
+        } else {
+            Text("Starling couldn't confirm what one send included, so it can't say what stayed on your phone.")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 }
@@ -321,7 +327,7 @@ struct PlanDetailView: View {
                 PlanTimelineView(entries: detail.timeline)
             }
             Section("What left your phone") {
-                EgressAuditView(shared: detail.shared, kept: detail.kept)
+                EgressAuditView(shared: detail.shared, kept: detail.kept, isComplete: detail.auditIsComplete)
             }
             if root.state == .planned {
                 KeepItGoingList(app: app, root: root, detail: detail, continueWith: continueWith)
@@ -354,7 +360,7 @@ struct InteractionDetailView: View {
                     ForEach(RosterRow.rows(for: interaction.participants, friends: friendNames, me: app.localPeer)) { RosterRowView(row: $0) }
                 }
                 Section("What left your phone") {
-                    EgressAuditView(shared: detail.shared, kept: detail.kept)
+                    EgressAuditView(shared: detail.shared, kept: detail.kept, isComplete: detail.auditIsComplete)
                 }
                 if interaction.role == .initiator, !interaction.state.isFinal, interaction.state != .planned {
                     Section {

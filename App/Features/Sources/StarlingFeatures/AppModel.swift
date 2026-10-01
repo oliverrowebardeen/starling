@@ -35,9 +35,9 @@ public struct AppServices: Sendable {
     public var makePolicy: (@Sendable (OwnerRules, Bool) -> any PolicyEngine)?
     /// Lane G's audit log, called after every send.
     public var auditLog: (any OutboxObserver)?
-    /// The items a send the policy allowed without asking disclosed, for
-    /// "What left your phone" (lane G's `disclosure(for:)`).
-    public var describeEgress: @Sendable (Envelope, OutboundContext) -> [DisclosedItem]
+    /// Remembers each conversation's highest sent sequence number across
+    /// launches (Core v2.1). Nil keeps it in memory only.
+    public var sequences: (any SentSequenceStore)?
     /// The link the app's `Outbox` sends on. Nil until a transport the app
     /// may send owner data over is in the build.
     public var transport: (any Transport)?
@@ -74,7 +74,7 @@ public struct AppServices: Sendable {
         inboxEvents: AsyncStream<InboxEvent>? = nil,
         makePolicy: (@Sendable (OwnerRules, Bool) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
-        describeEgress: @escaping @Sendable (Envelope, OutboundContext) -> [DisclosedItem] = { _, _ in [] },
+        sequences: (any SentSequenceStore)? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -102,7 +102,7 @@ public struct AppServices: Sendable {
         self.inboxEvents = inboxEvents
         self.makePolicy = makePolicy
         self.auditLog = auditLog
-        self.describeEgress = describeEgress
+        self.sequences = sequences
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -180,9 +180,10 @@ public final class AppModel {
         let outbox: Outbox? = if let policy, let transport = services.transport {
             Outbox(
                 transport: transport, policy: policy, consent: consent,
-                observer: EgressObserver(forward: services.auditLog, describe: services.describeEgress) { record, conversation in
-                    recorder.lifecycle?.recordEgress(record, conversation: conversation)
-                }
+                observer: EgressObserver(forward: services.auditLog) { record, interaction, conversation in
+                    recorder.lifecycle?.recordEgress(record, interaction: interaction, conversation: conversation)
+                },
+                sequences: services.sequences
             )
         } else {
             nil

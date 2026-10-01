@@ -41,6 +41,13 @@ public actor RulesPolicy: PolicyEngine {
         isBlocked = true
     }
 
+    /// The current engine's list of what a message discloses, for the
+    /// egress log of a send allowed without a sheet (Core v2.1).
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        guard let engine else { throw DisclosureUnavailable() }
+        return try await engine.disclosedItems(for: message)
+    }
+
     public func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
         if isBlocked { return .deny(PolicyViolation(rule: Self.blockedRule)) }
         guard let engine else { return .deny(PolicyViolation(rule: Self.notLoadedRule)) }

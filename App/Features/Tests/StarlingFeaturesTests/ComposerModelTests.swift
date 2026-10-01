@@ -233,8 +233,8 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(model.participants == [h.maya.id])
         #expect(model.chain?.inputs == [.plan(plan), .timeSlot(plan.time!)])
         #expect(model.chain?.link.parent == parent.id)
-        #expect(model.chain?.adds == SkillExposure(topics: [.diet], permissions: [.locationWhenInUse]))
-        #expect(model.chainAddsNote == "This step also shares Diet and may ask for your location.")
+        #expect(model.chain?.adds == SkillExposure(topics: [.location, .diet], permissions: [.locationWhenInUse]))
+        #expect(model.chainAddsNote == "This step also uses your exact location and diet and may ask for your location.")
 
         let id = try #require(await model.send())
         let sent = try #require(await pick.started.first)

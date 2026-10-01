@@ -31,7 +31,6 @@ extension AppServices {
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
-            describeEgress: LiveServices.describeEgress,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
@@ -60,13 +59,15 @@ enum LiveServices {
                 IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
                 IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
                 IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-            ])
+            ]),
+            sendModes: [.askQuietly, .invite]
         ),
         try! SkillDescriptor(
             ref: SkillRef(.findATime, SkillVersion(1)),
             wording: SkillWording(name: "Find a time", summary: "Agree on when", startAction: "Find a time",
                                   acceptAction: "That works", declineAction: "Not then", declineNote: "If you pass, they just won't see it."),
-            buildingBlock: .privateQuery, topicsUsed: [.time, .activity], topicsRequired: [.time],
+            // Calendar details are read on the phone only (ADR 0019).
+            buildingBlock: .privateQuery, topicsUsed: [.time, .activity, .people, .calendarDetails], topicsRequired: [.time],
             permissions: [.calendarFullAccess], produces: [.timeSlot, .plan],
             intent: IntentSchema(slots: [
                 IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
@@ -77,7 +78,8 @@ enum LiveServices {
             ref: SkillRef(.pickAPlace, SkillVersion(1)),
             wording: SkillWording(name: "Pick a place", summary: "Agree on where", startAction: "Find a place",
                                   acceptAction: "Sounds good", declineAction: "Somewhere else", declineNote: "If you pass, they just won't see it."),
-            buildingBlock: .privateAggregation, topicsUsed: [.place, .budget, .diet], topicsRequired: [.place],
+            // Budget, diet, and location judge venues on the phone (ADR 0019).
+            buildingBlock: .privateAggregation, topicsUsed: [.place, .location, .budget, .diet], topicsRequired: [.place],
             permissions: [.locationWhenInUse], accepts: [.plan, .timeSlot], produces: [.placeChoice],
             intent: IntentSchema(slots: [
                 IntentSlot(.place, required: false, hint: "the kind of place or area, such as near Franklin"),
@@ -105,13 +107,6 @@ enum LiveServices {
     /// "Share" apply to paired friends only; without a store the policy asks.
     static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules, Bool) -> any PolicyEngine {
         { rules, onlyOnDevice in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: onlyOnDevice, pairedPeers: peers) }
-    }
-
-    /// The items a send the policy allowed without a sheet disclosed, the
-    /// same way the policy computes them for a sheet (ADR 0201 decision 5).
-    static let describeEgress: @Sendable (Envelope, OutboundContext) -> [DisclosedItem] = { envelope, context in
-        let message = OutboundMessage(envelope: envelope, recipientCard: nil, transport: .loopback, context: context)
-        return (try? DeterministicPolicyEngine().disclosure(for: message).items) ?? []
     }
 
     /// The local record of what left the phone. In memory only, latest 1,000

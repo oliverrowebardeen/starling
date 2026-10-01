@@ -274,6 +274,8 @@ public final class ComposerModel {
             let known = Set(friends().map(\.id))
             self.audience = .pick
             picked = Set(peers).intersection(known)
+        case .everyoneExcept, .group:
+            self.audience = .allFriends
         }
     }
 
@@ -400,7 +402,9 @@ public final class ComposerModel {
     public var chainAddsNote: String? {
         guard let adds = chain?.adds, !adds.isEmpty else { return nil }
         var parts: [String] = []
-        if !adds.topics.isEmpty { parts.append("shares \(PermissionExplanation.names(adds.topics.sorted().map(\.label)))") }
+        // "Uses", not "shares": since Core v2.1 a skill may use a topic on
+        // the phone only (ADR 0019), and the consent sheet shows what is sent.
+        if !adds.topics.isEmpty { parts.append("uses your \(PermissionExplanation.names(adds.topics.sorted().map { $0.label.lowercased() }))") }
         if !adds.permissions.isEmpty { parts.append("may ask for \(PermissionExplanation.names(adds.permissions.sorted { $0.rawValue < $1.rawValue }.map(\.label)))") }
         return "This step also " + parts.joined(separator: " and ") + "."
     }
@@ -439,7 +443,7 @@ public final class ComposerModel {
         let request = SkillRequest(
             interaction: InteractionID(),
             conversation: ConversationID(),
-            intent: SkillIntent(skill: descriptor.ref, rules: rules, audience: audienceValue, expiresAt: Timestamp(expiresAt)),
+            intent: SkillIntent(skill: descriptor.ref, rules: rules, audience: audienceValue, mode: descriptor.defaultSendMode, expiresAt: Timestamp(expiresAt)),
             participants: recipients,
             inputs: chain?.inputs ?? [],
             chainedFrom: chain?.link.parentConversation
@@ -549,11 +553,13 @@ extension PrivacyTopic {
         case .time: "Time"
         case .activity: "Activity"
         case .place: "Place"
+        case .location: "Exact location"
         case .budget: "Budget"
         case .diet: "Diet"
         case .people: "People"
         case .photos: "Photos"
         case .interests: "Interests"
+        case .calendarDetails: "Calendar details"
         }
     }
 }
