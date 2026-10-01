@@ -25,6 +25,11 @@ let package = Package(
         .package(path: "../../Packages/StarlingPolicy"),
         // P15-F exercises actual consent and pairing presentation in tests.
         .package(path: "../../App/Features"),
+        .package(path: "../../Packages/Skills/PickAPlace"),
+        .package(path: "../../Packages/StarlingChaining"),
+        .package(path: "../../Packages/Skills/SwapPhotos"),
+        .package(path: "../../Packages/Skills/FindATime"),
+        .package(path: "../../Packages/StarlingAvailability"),
     ],
     targets: [
         .target(
@@ -67,6 +72,11 @@ let package = Package(
             .product(name: "StarlingAgent", package: "StarlingAgent"),
             .product(name: "StarlingPolicy", package: "StarlingPolicy"),
             .product(name: "StarlingFeatures", package: "Features"),
+            .product(name: "PickAPlace", package: "PickAPlace"),
+            .product(name: "StarlingChaining", package: "StarlingChaining"),
+            .product(name: "StarlingSwapPhotos", package: "SwapPhotos"),
+            .product(name: "FindATime", package: "FindATime"),
+            .product(name: "StarlingAvailabilityFakes", package: "StarlingAvailability"),
         ]),
     ]
 )

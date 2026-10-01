@@ -84,9 +84,8 @@ import Testing
         let model = PairingModel(directory: directory)
         await model.pickedDevice(id: 42, name: name)
         #expect(model.selected?.peer == P15.eve)
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/46") {
-            #expect(model.nickname.isEmpty, "Peer-controlled device name became the local identity label")
-        }
+        #expect(model.nickname.isEmpty, "Peer-controlled device name became the local identity label")
+        #expect(model.suggestedName == name)
         model.nickname = "My friend Sam"
         await model.pickedDevice(id: 42, name: name)
         #expect(model.nickname == "My friend Sam")
