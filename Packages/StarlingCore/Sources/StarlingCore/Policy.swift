@@ -22,10 +22,15 @@ public struct OutboundContext: Hashable, Sendable {
     /// it. With it, the policy can see that an answer only says which of
     /// the friend's own candidates work (ADR 0019).
     public let answering: Query?
+    /// The interaction on this phone the send belongs to. A group member
+    /// sends in the starter's conversation, so the conversation alone does
+    /// not identify it (lane B). Every skill service sets it on every send.
+    public let interaction: InteractionID?
 
-    public init(psi: PSIInputs? = nil, answering: Query? = nil) {
+    public init(psi: PSIInputs? = nil, answering: Query? = nil, interaction: InteractionID? = nil) {
         self.psi = psi
         self.answering = answering
+        self.interaction = interaction
     }
 
     public static let empty = OutboundContext()
@@ -99,13 +104,18 @@ public struct Disclosure: Hashable, Sendable {
     /// same conversation still matches (ADR 0011, review of PR #45).
     public let conversation: ConversationID?
     public let skill: SkillRef?
+    /// From `OutboundContext.interaction` (v2.1): which interaction to
+    /// suspend while the sheet is up, and which one an approval belongs to.
+    public let interaction: InteractionID?
 
-    public init(recipient: PeerID, recipientModel: ModelLocality?, items: [DisclosedItem], conversation: ConversationID? = nil, skill: SkillRef? = nil) {
+    public init(recipient: PeerID, recipientModel: ModelLocality?, items: [DisclosedItem], conversation: ConversationID? = nil,
+                skill: SkillRef? = nil, interaction: InteractionID? = nil) {
         self.recipient = recipient
         self.recipientModel = recipientModel
         self.items = items
         self.conversation = conversation
         self.skill = skill
+        self.interaction = interaction
     }
 }
 

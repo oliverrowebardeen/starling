@@ -63,7 +63,7 @@ public struct DeterministicPolicyEngine: PolicyEngine {
                 }
         }
         return Disclosure(recipient: envelope.recipient, recipientModel: message.recipientCard?.model, items: items,
-                          conversation: envelope.conversation, skill: envelope.skill)
+                          conversation: envelope.conversation, skill: envelope.skill, interaction: message.context.interaction)
     }
 
     /// The protocol's form of `disclosure(for:)`, for the audit (ADR 0011
