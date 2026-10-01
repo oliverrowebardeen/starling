@@ -86,22 +86,71 @@ struct AdversarialTests {
         #expect(await maya.coordinator.incoming.count == fastConfiguration.maxLiveRequestsPerFriend)
     }
 
-    @Test func aFriendCannotProbeWithAnEndlessStreamOfRequests() async throws {
-        let (group, maya, mallory) = try await mayaAndMallory()
-        defer { Task { await group.stop() } }
-        // One place at a time, each request closed straight after, so the
-        // live limit never bites.
-        for _ in 0..<12 {
+    /// Sends one-place requests from Mallory, each closed right after.
+    func probe(_ count: Int, from mallory: Phone, to maya: Phone, spacing: Duration = .milliseconds(40)) async throws {
+        for _ in 0..<count {
             let conversation = ConversationID()
             try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
-            try await Task.sleep(for: .milliseconds(40))
+            try await Task.sleep(for: spacing)
             try await mallory.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: maya.id,
                                           conversation: conversation, skill: skill, mode: .invite)
         }
+    }
+
+    @Test func aClosedRequestStillHoldsItsSlot() async throws {
+        let (group, maya, mallory) = try await mayaAndMallory()
+        defer { Task { await group.stop() } }
+        // Each request is closed straight after its answer, but holds its
+        // slot as long as an unanswered one would.
+        try await probe(12, from: mallory, to: maya)
         try await Task.sleep(for: .milliseconds(200))
         let lists = await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }
-        #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
-        #expect(await maya.coordinator.incoming.count == fastConfiguration.maxNewRequestsPerFriendPerHour)
+        #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxLiveRequestsPerFriend)
+    }
+
+    @Test func aFriendCannotProbeWithAnEndlessStreamOfRequests() async throws {
+        // Short windows, so slots free quickly and the hourly limit is
+        // what stops the stream.
+        let short = PickAPlaceConfiguration(retryInterval: .milliseconds(10), maxRetryInterval: .milliseconds(40),
+                                            answerWindow: .milliseconds(40), confirmWindow: .milliseconds(20))
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all), configuration: short)
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all), configuration: short)
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        try await probe(12, from: mallory, to: maya, spacing: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(200))
+        let lists = await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }
+        #expect(Set(lists.map(\.conversation)).count == short.maxNewRequestsPerFriendPerHour)
+    }
+
+    /// Final privacy review of PR #55: a pass must not free the friend's
+    /// slot sooner than an ignored card does, or a fifth request would be
+    /// answered after a pass and not after silence.
+    @Test(arguments: [true, false])
+    func aPassHoldsItsSlotLikeAnIgnoredCard(mayaPasses: Bool) async throws {
+        let (group, maya, mallory) = try await mayaAndMallory()
+        defer { Task { await group.stop() } }
+        let conversations = (0..<fastConfiguration.maxLiveRequestsPerFriend).map { _ in ConversationID() }
+        for conversation in conversations {
+            try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        }
+        #expect(await eventually { await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }.count == conversations.count })
+        let terms = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
+        for conversation in conversations {
+            try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        }
+        for conversation in conversations { #expect(await maya.reaches(.proposed, in: conversation)) }
+        if mayaPasses { try await maya.pass(in: conversations[0]) }
+        try await Task.sleep(for: .milliseconds(100))
+        let sentBefore = await group.wire.sent(by: maya.id).count
+
+        // The fifth request.
+        let fifth = ConversationID()
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: fifth, skill: skill, mode: .invite)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await group.wire.sent(by: maya.id).count == sentBefore)
+        #expect(await maya.interaction(fifth) == nil)
     }
 
     @Test func aRequestWhoseOrganizerGoesSilentEnds() async throws {

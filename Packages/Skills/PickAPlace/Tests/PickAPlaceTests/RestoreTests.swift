@@ -137,10 +137,18 @@ struct RestoreTests {
         #expect(await maya.state(in: conversation) == .ended(.withdrawn))
     }
 
-    @Test func theHourlyLimitSurvivesARestart() async throws {
+    @Test(arguments: [false, true])
+    func theRequestLimitsSurviveARestart(shortSlots: Bool) async throws {
+        // With long slots, the four held slots are what survive; with short
+        // ones, the hourly limit of eight.
+        let configuration = shortSlots
+            ? PickAPlaceConfiguration(retryInterval: .milliseconds(10), maxRetryInterval: .milliseconds(40),
+                                      answerWindow: .milliseconds(40), confirmWindow: .milliseconds(20))
+            : fastConfiguration
+        let limit = shortSlots ? configuration.maxNewRequestsPerFriendPerHour : configuration.maxLiveRequestsPerFriend
         let hub = LoopbackHub()
-        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
-        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all))
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all), configuration: configuration)
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all), configuration: configuration)
         let group = try await Group([maya, mallory], hub: hub)
         defer { Task { await group.stop() } }
         let skill = PickAPlaceSkill.ref
@@ -148,22 +156,19 @@ struct RestoreTests {
             let conversation = ConversationID()
             try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
                                           conversation: conversation, skill: skill, mode: .invite)
-            try await Task.sleep(for: .milliseconds(40))
+            try await Task.sleep(for: .milliseconds(shortSlots ? 150 : 40))
             try await mallory.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: maya.id,
                                           conversation: conversation, skill: skill, mode: .invite)
         }
-        for _ in 0..<fastConfiguration.maxNewRequestsPerFriendPerHour { try await probe() }
+        for _ in 0..<limit { try await probe() }
         try await Task.sleep(for: .milliseconds(100))
         await maya.restart()
         for _ in 0..<3 { try await probe() }
         try await Task.sleep(for: .milliseconds(200))
         let lists = await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }
-        #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
+        #expect(Set(lists.map(\.conversation)).count == limit)
     }
 
-    /// ADR 0021: one conversation answers about at most 16 places per
-    /// friend, across relaunches, because the Outbox reserves every
-    /// candidate an answer covers in the conversation ledger.
     @Test func aConversationAnswersAtMostSixteenPlacesAcrossRelaunches() async throws {
         let hub = LoopbackHub()
         let venues = (0..<24).map { candidate("Venue \($0)", id: "I.venue\($0)", tier: .one, kinds: ["cafe"]) }

@@ -312,10 +312,16 @@ public actor PickAPlaceService: SkillService {
 
     /// Reads the admission log once per launch, before the first new
     /// request is admitted, and merges it with any admitted meanwhile.
+    /// How long an admitted request holds a friend's slot: as long as an
+    /// unanswered one can stay open (the answer window and three confirm
+    /// windows), however it ended.
+    var slotDuration: Duration { configuration.answerWindow + configuration.confirmWindow * 3 }
+
     func loadAdmissions() async {
         guard !admissionsLoaded else { return }
         // An unreadable ledger admits nothing: the limit must not reset.
-        guard let stored = try? await ledger.admissions(since: clock.now().addingTimeInterval(-3_600)) else { return }
+        let since = clock.now().addingTimeInterval(-max(3_600, Self.seconds(slotDuration)))
+        guard let stored = try? await ledger.admissions(since: since) else { return }
         guard !admissionsLoaded else { return }
         admissionsLoaded = true
         requestTimes.merge(stored) { current, loaded in Array(Set(current + loaded)).sorted() }

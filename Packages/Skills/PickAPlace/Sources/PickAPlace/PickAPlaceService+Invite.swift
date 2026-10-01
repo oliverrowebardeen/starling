@@ -50,18 +50,22 @@ extension PickAPlaceService {
         guard case .query(let query) = envelope.body, query.issue == .place, case .places(let candidates) = query.candidates,
               candidates.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue
         else { return }
-        let live = invites.values.filter { !$0.isFinished }
-        guard live.count < configuration.maxLiveRequests,
-              live.filter({ $0.organizer == envelope.sender }).count < configuration.maxLiveRequestsPerFriend
-        else { return }
-        let hourAgo = clock.now().addingTimeInterval(-3_600)
-        let recent = (requestTimes[envelope.sender] ?? []).filter { $0 > hourAgo }
-        guard recent.count < configuration.maxNewRequestsPerFriendPerHour else {
-            requestTimes[envelope.sender] = recent
-            return
-        }
+        // Every admitted request holds its slot until the deadline an
+        // unanswered one would hold, however it ended: a pass that freed
+        // its slot at once would let a friend tell it from an ignored card
+        // by whether a fifth request is answered (final privacy review of
+        // PR #55). Counted from the persisted admission times, so a
+        // relaunch frees nothing either.
         let now = clock.now()
-        requestTimes[envelope.sender] = recent + [now]
+        let slotStart = now.addingTimeInterval(-Self.seconds(slotDuration))
+        requestTimes = requestTimes.mapValues { $0.filter { $0 > min(slotStart, now.addingTimeInterval(-3_600)) } }.filter { !$0.value.isEmpty }
+        let held = requestTimes.values.reduce(0) { $0 + $1.filter { $0 > slotStart }.count }
+        let mine = requestTimes[envelope.sender] ?? []
+        guard held < configuration.maxLiveRequests,
+              mine.filter({ $0 > slotStart }).count < configuration.maxLiveRequestsPerFriend,
+              mine.filter({ $0 > now.addingTimeInterval(-3_600) }).count < configuration.maxNewRequestsPerFriendPerHour
+        else { return }
+        requestTimes[envelope.sender] = mine + [now]
         let conversation = envelope.conversation
         let sender = envelope.sender
         invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender,
@@ -79,7 +83,7 @@ extension PickAPlaceService {
     /// who said yes waits this long too, so it never gives up on a plan
     /// the organizer can still confirm.
     func spawnInviteDeadline(_ conversation: ConversationID) {
-        let limit = configuration.answerWindow + configuration.confirmWindow * 3
+        let limit = slotDuration
         spawn(conversation) { service in
             guard (try? await service.clock.sleep(limit)) != nil, !Task.isCancelled else { return }
             service.endInvite(conversation, event: .expired, reply: nil)

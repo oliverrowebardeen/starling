@@ -88,8 +88,9 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
 
     /// Drops what is too old to matter.
     mutating func prune(now: Date) {
-        let hourAgo = now.addingTimeInterval(-3_600)
-        admissions = admissions.mapValues { $0.filter { $0 > hourAgo } }.filter { !$0.value.isEmpty }
+        // Kept for a day: past the hourly limit and past any request's slot.
+        let dayAgo = now.addingTimeInterval(-24 * 3_600)
+        admissions = admissions.mapValues { $0.filter { $0 > dayAgo } }.filter { !$0.value.isEmpty }
         deadlines = deadlines.filter { now.timeIntervalSince($0.value.expiresAt) < Self.deadlinesLifetime }
     }
 }
