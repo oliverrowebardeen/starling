@@ -1,7 +1,7 @@
 # ADR 0100: Noise secure channel implementation
 
 - Status: Proposed
-- Date: 2026-09-30 (revised the same day after two Codex reviews of PR #16; see decisions 5, 7, and 11)
+- Date: 2026-09-30 (revised the same day after three Codex reviews of PR #16; see decisions 5, 7, 11, and 12)
 - Owner: Lane E1 (Identity and secure channel)
 
 ## Context
@@ -45,7 +45,7 @@ Noise revision 34 facts this design relies on:
    - The initiator's new session counts as confirmed once any frame from the responder decrypts under it. Until then the initiator resends `confirm` every handshake timeout, up to the attempt count.
    - Until a newer session is confirmed, the initiator keeps two kinds of session for receiving only (added after the second review, finding 2):
      - the last confirmed session, which only a confirmed session can replace, so it survives any number of unconfirmed replacements;
-     - up to two newer sessions replaced before they were confirmed, in case the responder switched to one of them.
+     - every newer session replaced before it was confirmed, up to all the sessions one restart budget can create (`maxUnconfirmedRestarts + 1`; third review, finding 2), in case the responder switched to one of them. A frame that decrypts under one of these confirms it: it becomes the last confirmed session, kept until a newer one is confirmed.
    - If no acknowledgement ever arrives, the initiator starts a new handshake.
    - **One restart budget.** Every replacement of an unconfirmed session spends from the same budget of two, refilled only when a session is confirmed or the link comes back (added after the second review, finding 3). That covers an unacknowledged confirm, the nonce cap, and an explicit `reconnect`. A link that loses every confirmation therefore ends in silence rather than in endless handshakes.
 
@@ -59,12 +59,25 @@ Noise revision 34 facts this design relies on:
    - `status(of:)` reports the claimed ID next to the proven key, plus per-claim drop counts.
 9. **Sizes.** Outgoing plaintext is capped at `ProtocolLimits.maxEnvelopeBytes` (56 KiB). Ciphertext adds 26 bytes (type, nonce, kind, tag), which stays under `maxFrameBytes` (60 KiB).
 10. **Silence.** Every rejected frame is dropped without a reply and without a distinguishing error. The only local trace is a drop counter (ADR 0003 care requirement 4).
-11. **Revocation is immediate** (added after the first review, finding HIGH 1, and extended after the second, finding 1). Unpairing must win over anything in flight for that peer.
-    - **One entry point.** `SecureTransport.unpair(_:)` removes the pin, then revokes. `disconnect(_:)` is the revoke step on its own.
-    - **Revoking** bumps a per-peer revocation generation, tears the session down, and notifies every `PairingService` on the transport, which cancels its ceremony with that peer.
-    - **Pin lookups.** Each peer also has a session generation, bumped by revocation and by every teardown or rollover. A lookup that resumes under a different generation returns nothing, and handshake state is created synchronously after that check. So a pin read before an unpair can neither start nor answer a handshake after it.
-    - **Pairing commits.** A ceremony records the revocation generation when it starts, saves only if it is unchanged, and checks again after the save. If the peer was revoked while the save was in flight, the ceremony unpairs again and ends cancelled (ADR 0101 decision 2).
-12. **Test-only dependency.** The test target depends on `StarlingTransport` for `LoopbackTransport`. The library target depends only on `StarlingCore` and Apple frameworks (CryptoKit, Security). Approved by the Orchestrator on 2026-09-30.
+11. **Revocation is immediate, and one authority orders it** (first review HIGH 1; extended after the second review's finding 1; made structural after the third review's finding 1, the third round in which unpair and pairing raced at a new await).
+
+    `PinAuthority` is the one authority over pinned keys. Every pin mutation goes through it: a pairing commit, or an unpair's removal. So does every use of a pin for a handshake. **Invariant:** once an unpair of a peer has begun, no pin for that peer survives it, no lookup that overlaps it returns a pin, and no session with the peer exists after its first await. The rules that make it hold:
+    - **Mark first.** A revocation takes its mark synchronously, before any await. It moves the peer's revocation token, and an unpair also records a removal in progress until the pin is gone. `SecureTransport.unpair(_:)` ends every session and handshake with the peer in the same synchronous step, then notifies observers (`PairingService` cancels its ceremony) and removes the pin.
+    - **One lock for mutations.** Pairing commits and unpair removals run one at a time under one async lock, so they never interleave, whatever they await. A commit saves only if the token has not moved since its ceremony began and no removal is in progress. It checks the token again after the save; if a revocation started meanwhile, it removes the pin before releasing the lock. No pin is left behind, even when the save already landed.
+    - **Lookups are refused while unpairing.** A lookup returns nothing while a removal is in progress, and discards what it read if the token moved. A pin that a commit will undo exists only while the removal mark is set: the mark is set before the commit's post-save check and cleared only after the removal, which waits for the commit to release the lock. So no lookup can return that pin. Lookups do not take the lock, so a slow save cannot stall the event loop.
+    - **Stale continuations are void.** `SecureTransport` also keeps a per-peer session generation, moved by every teardown, rollover, and revocation. A lookup that resumes under a different generation or revocation token returns nothing, and handshake state is created synchronously after that check.
+    - **Pairing cannot bypass the authority.** `PairingService` is created with the `SecureTransport` (sharing its authority and pairing link) or with an explicit `PinAuthority`, and commits only through it.
+
+    The tests hold each path at each of its awaits and check the invariant: the commit's save before and after the write, and the unpair's removal before and after the delete and its revocation notice.
+12. **Bounded state** (third review, finding 3). Only peers with a pinned key get per-peer state; link presence is a separate set cleared on link loss, so an unauthenticated claim alone leaves nothing behind. On link loss a peer keeps only its replay cache, and a revoked peer keeps nothing. Idle state past `maxTrackedPeers` (default 1,024) is forgotten.
+
+    Session generations and revocation tokens live in a bounded `GenerationTable`:
+    - Values come from a single counter that only grows.
+    - Past capacity, the oldest entry is evicted.
+    - Peers without an entry read a floor that every eviction raises above every value handed out so far.
+
+    So a reading taken before an eviction never matches after it. Eviction can only make a stale-lookup check fail (the caller tries again later), never pass wrongly.
+13. **Test-only dependency.** The test target depends on `StarlingTransport` for `LoopbackTransport`. The library target depends only on `StarlingCore` and Apple frameworks (CryptoKit, Security). Approved by the Orchestrator on 2026-09-30.
 
 ## Consequences
 
