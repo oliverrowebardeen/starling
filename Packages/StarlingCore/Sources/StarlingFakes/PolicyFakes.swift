@@ -70,8 +70,21 @@ public actor RecordingOutboxObserver: OutboxObserver {
     }
 
     public private(set) var records: [Record] = []
+    /// Envelope IDs announced through `willSend`, in order.
+    public private(set) var announced: [MessageID] = []
+    private var refuseWillSend = false
 
     public init() {}
+
+    /// Makes `willSend` throw, as an audit that cannot note the send would.
+    public func refuseNextSends() { refuseWillSend = true }
+
+    public struct Refused: Error {}
+
+    public func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
+        if refuseWillSend { throw Refused() }
+        announced.append(envelope.id)
+    }
 
     public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
         records.append(Record(envelope: envelope, context: context, decision: decision, disclosed: disclosed))
@@ -87,23 +100,71 @@ public actor RecordingOutboxObserver: OutboxObserver {
 public final class InMemorySentSequenceStore: SentSequenceStore, @unchecked Sendable {
     public struct WriteFailed: Error {}
 
+    private struct Key: Hashable { let conversation: ConversationID; let recipient: PeerID }
     private let lock = NSLock()
-    private var highest: [ConversationID: UInt64] = [:]
+    private var highest: [Key: UInt64] = [:]
     private var failing = false
 
-    public init(_ seeded: [ConversationID: UInt64] = [:]) { highest = seeded }
+    /// - Parameter seeded: highest numbers already sent, by conversation and recipient.
+    public init(_ seeded: [ConversationID: [PeerID: UInt64]] = [:]) {
+        for (conversation, recipients) in seeded {
+            for (recipient, sequence) in recipients { highest[Key(conversation: conversation, recipient: recipient)] = sequence }
+        }
+    }
 
     /// Makes every later write throw, as a full or broken disk would.
     public func failWrites() { lock.withLock { failing = true } }
 
-    public func highestSent(in conversation: ConversationID) -> UInt64? {
-        lock.withLock { highest[conversation] }
+    public func highestSent(in conversation: ConversationID, to recipient: PeerID) -> UInt64? {
+        lock.withLock { highest[Key(conversation: conversation, recipient: recipient)] }
     }
 
-    public func recordSent(_ sequence: UInt64, in conversation: ConversationID) throws {
+    public func recordSent(_ sequence: UInt64, in conversation: ConversationID, to recipient: PeerID) throws {
         try lock.withLock {
             if failing { throw WriteFailed() }
-            highest[conversation] = max(highest[conversation] ?? 0, sequence)
+            let key = Key(conversation: conversation, recipient: recipient)
+            highest[key] = max(highest[key] ?? 0, sequence)
         }
+    }
+}
+
+/// A `ConversationLedger` in memory, shared between Outbox instances to
+/// stand for one phone across relaunches. `failAll()` makes every call throw.
+public actor InMemoryConversationLedger: ConversationLedger {
+    public struct Unavailable: Error {}
+
+    private struct Key: Hashable { let peer: PeerID; let conversation: ConversationID; let issue: IssueKey }
+    private var retired: Set<ConversationID> = []
+    private var answered: [Key: Set<IssueValue>] = [:]
+    private var failing = false
+
+    public init() {}
+
+    public func failAll() { failing = true }
+
+    public func isRetired(_ conversation: ConversationID) throws -> Bool {
+        if failing { throw Unavailable() }
+        return retired.contains(conversation)
+    }
+
+    public func retire(_ conversation: ConversationID) throws {
+        if failing { throw Unavailable() }
+        retired.insert(conversation)
+        answered = answered.filter { $0.key.conversation != conversation }
+    }
+
+    public func reserve(_ candidates: [IssueValue], issue: IssueKey, to peer: PeerID, in conversation: ConversationID) throws -> Bool {
+        if failing { throw Unavailable() }
+        guard !retired.contains(conversation) else { return false }
+        let key = Key(peer: peer, conversation: conversation, issue: issue)
+        let total = answered[key, default: []].union(candidates)
+        guard total.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue else { return false }
+        answered[key] = total
+        return true
+    }
+
+    /// Distinct candidates answered so far, for tests.
+    public func answeredCount(issue: IssueKey, to peer: PeerID, in conversation: ConversationID) -> Int {
+        answered[Key(peer: peer, conversation: conversation, issue: issue)]?.count ?? 0
     }
 }

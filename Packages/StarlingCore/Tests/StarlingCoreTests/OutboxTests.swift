@@ -87,7 +87,7 @@ import Testing
                 }
             }
         }
-        #expect(store.highestSent(in: Fixtures.conversation) == UInt64(Fixtures.now.timeIntervalSince1970 * 1000) + 9)
+        #expect(store.highestSent(in: Fixtures.conversation, to: Fixtures.bob) == UInt64(Fixtures.now.timeIntervalSince1970 * 1000) + 9)
     }
 
     /// Re-review of PR #57: never wrap or repeat at the top of the range,
@@ -96,7 +96,7 @@ import Testing
         for seeded in [UInt64.max - 1, .max] {
             let transport = RecordingTransport(localPeer: Fixtures.alice)
             let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
-                                sequences: InMemorySentSequenceStore([Fixtures.conversation: seeded]), now: { Fixtures.now })
+                                sequences: InMemorySentSequenceStore([Fixtures.conversation: [Fixtures.bob: seeded]]), now: { Fixtures.now })
             await #expect(throws: OutboxError.sequenceExhausted) {
                 try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
             }

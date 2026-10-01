@@ -19,11 +19,12 @@ public struct Envelope: Hashable, Sendable, Codable {
     public let conversation: ConversationID
     public let sender: PeerID
     public let recipient: PeerID
-    /// Unique and increasing per `(sender, conversation)`. `Outbox` starts a
-    /// conversation on each launch above both the sender's clock in
+    /// Unique and increasing per `(sender, conversation)` as each receiver
+    /// sees it. `Outbox` numbers per conversation and recipient (ADR 0021),
+    /// starting each on a launch above both the sender's clock in
     /// milliseconds and the highest number its `SentSequenceStore` recorded,
-    /// so numbers keep rising across relaunches; receivers only need them
-    /// unique and increasing.
+    /// so numbers keep rising across relaunches and reveal nothing about
+    /// envelopes to anyone else.
     /// Gaps are allowed. `Inbox` rejects duplicates and anything more than
     /// `Inbox.replayWindow` below the highest value it has accepted.
     public let sequence: UInt64
