@@ -36,6 +36,16 @@ The review of PR #51 found a related gap in the audit: an `OutboxObserver` heard
 5. **Queued encrypted sends honor cancellation.** `SecureTransport` sends one at a time. A send cancelled while it waits behind another never seals or leaves. This fixes a withdrawn offer queued behind a stalled send (review of PR #51).
 6. **The app persists the ledger** (lane A), next to the `SentSequenceStore`. `StarlingFakes.InMemoryConversationLedger` is the double.
 
+### Amendment after the review of PR #60 (2026-10-01)
+
+7. **Every answer names its query.** With a ledger installed, an `.answer` that carries values must name the query it answers in `OutboundContext.answering`, with the same issue, or Outbox throws `answerWithoutItsQuery`. It reserves every candidate it covers: the query's, and anything it returns.
+8. **Numbers run per friend.** Sequence numbers are per sender, conversation, and recipient, so a friend never learns from gaps how many envelopes went to anyone else in the conversation. `SentSequenceStore` is keyed the same way.
+9. **One send per friend at a time.** Outbox numbers and sends each friend's envelopes in a conversation one at a time.
+   - A send cancelled while it waits takes no number.
+   - If the transport drops a send as cancelled before it leaves, the number is given back.
+   - Retirement is checked again at that last moment.
+   - A skill that withdraws cancels its in-flight sends first (ADR 0011), so nothing waiting goes out after a withdrawal.
+
 ## Consequences
 
 - One place to test, which lane F does: limits, retirement, failure, and restart.

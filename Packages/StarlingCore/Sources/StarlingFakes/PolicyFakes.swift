@@ -100,23 +100,30 @@ public actor RecordingOutboxObserver: OutboxObserver {
 public final class InMemorySentSequenceStore: SentSequenceStore, @unchecked Sendable {
     public struct WriteFailed: Error {}
 
+    private struct Key: Hashable { let conversation: ConversationID; let recipient: PeerID }
     private let lock = NSLock()
-    private var highest: [ConversationID: UInt64] = [:]
+    private var highest: [Key: UInt64] = [:]
     private var failing = false
 
-    public init(_ seeded: [ConversationID: UInt64] = [:]) { highest = seeded }
+    /// - Parameter seeded: highest numbers already sent, by conversation and recipient.
+    public init(_ seeded: [ConversationID: [PeerID: UInt64]] = [:]) {
+        for (conversation, recipients) in seeded {
+            for (recipient, sequence) in recipients { highest[Key(conversation: conversation, recipient: recipient)] = sequence }
+        }
+    }
 
     /// Makes every later write throw, as a full or broken disk would.
     public func failWrites() { lock.withLock { failing = true } }
 
-    public func highestSent(in conversation: ConversationID) -> UInt64? {
-        lock.withLock { highest[conversation] }
+    public func highestSent(in conversation: ConversationID, to recipient: PeerID) -> UInt64? {
+        lock.withLock { highest[Key(conversation: conversation, recipient: recipient)] }
     }
 
-    public func recordSent(_ sequence: UInt64, in conversation: ConversationID) throws {
+    public func recordSent(_ sequence: UInt64, in conversation: ConversationID, to recipient: PeerID) throws {
         try lock.withLock {
             if failing { throw WriteFailed() }
-            highest[conversation] = max(highest[conversation] ?? 0, sequence)
+            let key = Key(conversation: conversation, recipient: recipient)
+            highest[key] = max(highest[key] ?? 0, sequence)
         }
     }
 }

@@ -83,3 +83,141 @@ import Testing
         #expect(amount.candidates == [amount])
     }
 }
+
+/// Review of PR #60: the second round of checks around numbering and the ledger.
+@Suite struct OutboxAdmissionTests {
+    static let carol = try! PeerID(bytes: Data(repeating: 0xCC, count: 32))
+    static let start = UInt64(Fixtures.now.timeIntervalSince1970 * 1000)
+    static let body = MessageBody.reject(Rejection(proposal: MessageID(), reason: .noOverlap))
+
+    @Test func everyAnswerNamesItsQueryAndReservesWhatItReturns() async throws {
+        let ledger = InMemoryConversationLedger()
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            ledger: ledger, now: { Fixtures.now })
+        let yes = try Answer(query: MessageID(), issue: .activity, status: .answered, acceptable: ConversationLedgerTests.keywords(0..<10))
+        await #expect(throws: OutboxError.answerWithoutItsQuery) {
+            try await outbox.send(.answer(yes), to: Fixtures.bob, conversation: Fixtures.conversation)
+        }
+        let otherIssue = try Query(issue: .time, candidates: .slots([try TimeSlot(startMinute: 0, endMinute: 30)]))
+        await #expect(throws: OutboxError.answerWithoutItsQuery) {
+            try await outbox.send(.answer(yes), to: Fixtures.bob, conversation: Fixtures.conversation, context: OutboundContext(answering: otherIssue))
+        }
+        // A one-candidate query answered with seventeen values reserves all
+        // seventeen, which is past the limit.
+        func slots(_ count: Int64) throws -> IssueValue { .slots(try (0..<count).map { try TimeSlot(startMinute: $0 * 60, endMinute: $0 * 60 + 30) }) }
+        let narrow = try Query(issue: .time, candidates: try slots(1))
+        let wide = try Answer(query: MessageID(), issue: .time, status: .answered, acceptable: try slots(17))
+        await #expect(throws: OutboxError.answerLimitReached) {
+            try await outbox.send(.answer(wide), to: Fixtures.bob, conversation: Fixtures.conversation, context: OutboundContext(answering: narrow))
+        }
+        #expect(await transport.sent.isEmpty)
+    }
+
+    @Test func numbersRunPerFriendSoNobodySeesTrafficToOthers() async throws {
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
+        let toBob = try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        let toCarol = try await outbox.send(Self.body, to: Self.carol, conversation: Fixtures.conversation)
+        let toBobAgain = try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        #expect([toBob.sequence, toCarol.sequence, toBobAgain.sequence] == [Self.start, Self.start, Self.start + 1])
+    }
+
+    @Test func aSendCancelledWhileQueuedTakesNoNumber() async throws {
+        let transport = StallingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
+        await transport.stallNext()
+        let first = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await waitUntil { await transport.stalled }
+        let queued = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await Task.sleep(for: .milliseconds(50))
+        queued.cancel()
+        await transport.release()
+        _ = try await first.value
+        await #expect(throws: CancellationError.self) { try await queued.value }
+        let third = try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        #expect(await transport.sentSequences == [Self.start, Self.start + 1])
+        #expect(third.sequence == Self.start + 1)
+    }
+
+    @Test func aTransportThatDropsACancelledSendGivesTheNumberBack() async throws {
+        let transport = StallingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
+        await transport.cancelNext()
+        await #expect(throws: CancellationError.self) {
+            try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        }
+        let next = try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        #expect(next.sequence == Self.start)
+    }
+
+    @Test func aConversationRetiredWhileASendWaitsStopsIt() async throws {
+        let ledger = InMemoryConversationLedger()
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let observer = GatedObserver()
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            observer: observer, ledger: ledger, now: { Fixtures.now })
+        let send = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await waitUntil { await observer.waiting }
+        try await ledger.retire(Fixtures.conversation)
+        await observer.release()
+        await #expect(throws: OutboxError.conversationRetired) { try await send.value }
+        #expect(await transport.sent.isEmpty)
+    }
+
+    func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
+        for _ in 0..<400 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("timed out")
+    }
+}
+
+/// Holds one send until released, or drops one as cancelled.
+actor StallingTransport: Transport {
+    nonisolated let kind = TransportKind.loopback
+    nonisolated let localPeer: PeerID
+    nonisolated let events: AsyncStream<TransportEvent>
+    private(set) var sentSequences: [UInt64] = []
+    private(set) var stalled = false
+    private var stallArmed = false
+    private var cancelArmed = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    init(localPeer: PeerID) {
+        self.localPeer = localPeer
+        events = AsyncStream { _ in }
+    }
+
+    func stallNext() { stallArmed = true }
+    func cancelNext() { cancelArmed = true }
+    func release() { waiter?.resume(); waiter = nil; stalled = false }
+    func start() async throws {}
+    func stop() async {}
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        if cancelArmed { cancelArmed = false; throw CancellationError() }
+        if stallArmed {
+            stallArmed = false
+            stalled = true
+            await withCheckedContinuation { waiter = $0 }
+        }
+        sentSequences.append(try EnvelopeCodec().decode(frame.bytes).sequence)
+    }
+}
+
+/// Holds willSend until released.
+actor GatedObserver: OutboxObserver {
+    private(set) var waiting = false
+    private var gate: CheckedContinuation<Void, Never>?
+
+    func release() { gate?.resume(); gate = nil }
+
+    func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
+        waiting = true
+        await withCheckedContinuation { gate = $0 }
+    }
+
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+}

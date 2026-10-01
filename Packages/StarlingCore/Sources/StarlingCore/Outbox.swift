@@ -16,6 +16,9 @@ public enum OutboxError: Error, Hashable, Sendable {
     /// than `ProtocolLimits.maxCandidatesAnsweredPerIssue` allows in this
     /// conversation; nothing was sent (ADR 0021).
     case answerLimitReached
+    /// With a ledger installed, an answer must name the query it answers in
+    /// `OutboundContext.answering`, with the same issue; nothing was sent.
+    case answerWithoutItsQuery
 }
 
 /// Told about every envelope the transport accepted, for example to keep an
@@ -49,11 +52,11 @@ extension OutboxObserver {
 /// fast and thread-safe. The app persists it; without one, a conversation
 /// restarts at the clock in milliseconds.
 public protocol SentSequenceStore: Sendable {
-    func highestSent(in conversation: ConversationID) -> UInt64?
+    func highestSent(in conversation: ConversationID, to recipient: PeerID) -> UInt64?
     /// Durably records `sequence` before the envelope leaves. Throwing stops
     /// the send, so a number is never sent without being recorded, and a
     /// later `highestSent` must reflect every recorded number.
-    func recordSent(_ sequence: UInt64, in conversation: ConversationID) throws
+    func recordSent(_ sequence: UInt64, in conversation: ConversationID, to recipient: PeerID) throws
 }
 
 /// The only sanctioned way to send a message.
@@ -70,7 +73,13 @@ public actor Outbox {
     private let sequences: (any SentSequenceStore)?
     private let ledger: (any ConversationLedger)?
     private let now: @Sendable () -> Date
-    private var nextSequence: [ConversationID: UInt64] = [:]
+    /// Numbers run per conversation and recipient, so a friend never sees
+    /// how many envelopes went to anyone else (review of PR #60).
+    private struct SequenceKey: Hashable { let conversation: ConversationID; let recipient: PeerID }
+    private var nextSequence: [SequenceKey: UInt64] = [:]
+    /// Each key's sends are numbered and handed to the transport one at a
+    /// time, so a send cancelled while it waits takes no number.
+    private var tails: [SequenceKey: Task<Void, Never>] = [:]
 
     public init(
         transport: any Transport,
@@ -152,14 +161,16 @@ public actor Outbox {
         try Task.checkCancellation()
 
         // The ledger (ADR 0021): nothing goes out in a conversation that has
-        // ended, and an answer first reserves the candidates it covers, so
-        // no friend learns about more than the limit in one conversation,
-        // whatever the skill remembers. A ledger that cannot answer stops the
-        // send.
+        // ended, and an answer first reserves every candidate it covers (the
+        // query's and anything it returns), so no friend learns about more
+        // than the limit in one conversation, whatever the skill remembers.
+        // A ledger that cannot answer stops the send.
         if let ledger {
             guard try await !ledger.isRetired(conversation) else { throw OutboxError.conversationRetired }
-            if case .answer(let answer) = body, let query = context.answering, answer.issue == query.issue {
-                guard try await ledger.reserve(query.candidates.candidates, issue: query.issue, to: recipient, in: conversation) else {
+            if case .answer(let answer) = body, let acceptable = answer.acceptable {
+                guard let query = context.answering, query.issue == answer.issue else { throw OutboxError.answerWithoutItsQuery }
+                let covered = Array(Set(query.candidates.candidates).union(acceptable.candidates))
+                guard try await ledger.reserve(covered, issue: query.issue, to: recipient, in: conversation) else {
                     throw OutboxError.answerLimitReached
                 }
             }
@@ -173,37 +184,67 @@ public actor Outbox {
         }
         try await observer?.outbox(willSend: draft, context: context, decision: decision, disclosed: disclosed)
 
+        // Wait for this friend's earlier sends in the conversation, then
+        // number and send. The caller's cancellation reaches the queued send.
+        let key = SequenceKey(conversation: conversation, recipient: recipient)
+        let previous = tails[key]
+        let work = Task { () async throws -> Envelope in
+            await previous?.value
+            return try await self.numberAndSend(draft, key: key)
+        }
+        tails[key] = Task { _ = await work.result }
+        let envelope = try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        await observer?.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
+        return envelope
+    }
+
+    /// Numbers `draft` and hands it to the transport. Runs once this key's
+    /// earlier send has finished, so nothing else is numbered meanwhile.
+    private func numberAndSend(_ draft: Envelope, key: SequenceKey) async throws -> Envelope {
         // Last point before anything leaves: a cancelled send never goes out,
-        // including one cancelled while the checks above were running.
+        // including one cancelled while it waited, and nothing goes out in a
+        // conversation retired while this send waited (ADR 0021).
+        try Task.checkCancellation()
+        if let ledger, try await ledger.isRetired(key.conversation) { throw OutboxError.conversationRetired }
         try Task.checkCancellation()
 
-        // Number the envelope now, with no suspension before the transport
-        // takes it. A denied, declined, or cancelled send consumes no number,
-        // so the friend sees no gap that says a send was refused (review of
-        // PR #53). A conversation's first send on this launch starts at the
-        // clock in milliseconds, so a relaunched app never reuses a number
-        // the friend has seen, and above anything the sequence store says
-        // was sent before, in case the clock moved back. The send time is
-        // now too: a consent sheet can take longer than a receiver's age
-        // limit.
+        // Number the envelope now. A denied, declined, or cancelled send
+        // consumes no number, so the friend sees no gap that says a send was
+        // refused (review of PR #53). A conversation's first send to a
+        // friend on this launch starts at the clock in milliseconds and above
+        // anything the sequence store recorded, so a relaunch keeps rising
+        // even if the clock moved back. The send time is now too: a consent
+        // sheet can take longer than a receiver's age limit.
         let sentAt = now()
         let sequence: UInt64
-        if let next = nextSequence[conversation] {
+        if let next = nextSequence[key] {
             sequence = next
         } else {
-            let recorded = sequences?.highestSent(in: conversation)
+            let recorded = sequences?.highestSent(in: key.conversation, to: key.recipient)
             guard recorded != .max else { throw OutboxError.sequenceExhausted }
             sequence = max(Self.firstSequence(at: sentAt), recorded.map { $0 + 1 } ?? 0)
         }
         guard sequence != .max else { throw OutboxError.sequenceExhausted }
-        nextSequence[conversation] = sequence + 1
-        try sequences?.recordSent(sequence, in: conversation)
+        try sequences?.recordSent(sequence, in: key.conversation, to: key.recipient)
+        nextSequence[key] = sequence + 1
         let envelope = try Envelope(
-            version: draft.version, id: draft.id, conversation: conversation, sender: draft.sender, recipient: recipient,
-            sequence: sequence, sentAt: Timestamp(sentAt), body: body, skill: skill, mode: mode, chainedFrom: chainedFrom
+            version: draft.version, id: draft.id, conversation: draft.conversation, sender: draft.sender, recipient: draft.recipient,
+            sequence: sequence, sentAt: Timestamp(sentAt), body: draft.body, skill: draft.skill, mode: draft.mode, chainedFrom: draft.chainedFrom
         )
-        try await transport.send(Frame(codec.encode(envelope)), to: recipient)
-        await observer?.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
+        do {
+            try await transport.send(Frame(codec.encode(envelope)), to: key.recipient)
+        } catch is CancellationError {
+            // The transport dropped it before it left (a send queued behind
+            // another, for example). Give the number back so the next send
+            // takes it and the friend sees no gap. Nothing else on this key
+            // was numbered meanwhile.
+            nextSequence[key] = sequence
+            throw CancellationError()
+        }
         return envelope
     }
 }
