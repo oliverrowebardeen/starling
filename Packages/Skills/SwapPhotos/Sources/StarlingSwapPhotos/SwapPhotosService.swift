@@ -46,7 +46,7 @@ public actor SwapPhotosService: SkillService {
         /// The offer went out; collecting acceptances.
         case offered(Terms, accepted: Set<PeerID>)
         /// A friend's offer, waiting for the owner's answer.
-        case invited(from: PeerID, offer: MessageID, terms: Terms, revision: UInt32)
+        case invited(from: PeerID, offer: MessageID, proposal: Proposal, revision: UInt32)
         /// The owner said yes to this revision of a friend's offer.
         case accepted(revision: UInt32)
     }
@@ -129,9 +129,13 @@ public actor SwapPhotosService: SkillService {
             emit(interaction, .ownerPassed)
             forget(interaction)
 
-        case (.invited(let from, let offer, let terms, let revision), .accept(let accepted)) where accepted == revision:
+        case (.invited(let from, let offer, let proposal, let revision), .accept(let accepted)) where accepted == revision:
             sessions[interaction]?.advance(to: .accepted(revision: revision))
-            guard await send([(.accept(Acceptance(proposal: offer, terms: terms)), from)], in: interaction, session: session) else { return }
+            // Exactly the friend's offer, passed as `accepting` so the policy
+            // sees a yes to their own terms (ADR 0019 amendment 10).
+            guard await send([(.accept(Acceptance(proposal: offer, terms: proposal.terms)), from)], in: interaction, session: session,
+                             accepting: proposal)
+            else { return }
             emit(interaction, .ownerAccepted(revision: revision))
 
         case (.invited, .pass):
@@ -155,14 +159,14 @@ public actor SwapPhotosService: SkillService {
     /// newer offer replaced the card while the send was in flight, the result
     /// belongs to a step that no longer exists and is dropped (ADR 0011
     /// amendment 14).
-    private func send(_ messages: [(MessageBody, PeerID)], in interaction: InteractionID, session: Session) async -> Bool {
+    private func send(_ messages: [(MessageBody, PeerID)], in interaction: InteractionID, session: Session, accepting: Proposal? = nil) async -> Bool {
         let outbox = outbox
         let skill = descriptor.ref
         let step = sessions[interaction]?.stepID
         let task = Task {
             for (body, peer) in messages {
                 try Task.checkCancellation()
-                try await outbox.send(body, to: peer, conversation: session.conversation, context: OutboundContext(interaction: interaction),
+                try await outbox.send(body, to: peer, conversation: session.conversation, context: OutboundContext(interaction: interaction, accepting: accepting),
                                       skill: skill, mode: .invite, chainedFrom: session.chainedFrom)
             }
         }
@@ -227,7 +231,7 @@ public actor SwapPhotosService: SkillService {
         let id = InteractionID()
         let revision: UInt32 = 1
         sessions[id] = Session(conversation: envelope.conversation, chainedFrom: chainedFrom, participants: [envelope.sender],
-                               step: .invited(from: envelope.sender, offer: envelope.id, terms: offer.terms, revision: revision))
+                               step: .invited(from: envelope.sender, offer: envelope.id, proposal: offer, revision: revision))
         byConversation[envelope.conversation] = id
         continuation.yield(.incoming(id, conversation: envelope.conversation, from: envelope.sender, chainedFrom: chainedFrom))
         emit(id, .proposalReady(SkillProposal(revision: revision, participants: [envelope.sender, me], terms: offer.terms)))
@@ -248,7 +252,7 @@ public actor SwapPhotosService: SkillService {
                   let count = Self.photoCount(offer.terms), (1...SwapPhotos.maxPhotos).contains(count)
             else { return }
             let next = revision + 1
-            session.advance(to: .invited(from: envelope.sender, offer: envelope.id, terms: offer.terms, revision: next))
+            session.advance(to: .invited(from: envelope.sender, offer: envelope.id, proposal: offer, revision: next))
             sessions[id] = session
             emit(id, .proposalReady(SkillProposal(revision: next, participants: [envelope.sender, me], terms: offer.terms)))
 

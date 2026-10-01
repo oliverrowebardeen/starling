@@ -34,6 +34,16 @@ import Testing
         let acceptance = try #require(await friendPolicy.evaluated.first)
         #expect(acceptance.envelope.mode == .invite)
         #expect(acceptance.context.interaction == id)
+        // The acceptance names the offer it accepts, exactly as offered.
+        let offered = try Proposal(round: 0, terms: Terms([.photos: .count(5)]))
+        #expect(acceptance.context.accepting == offered)
+        guard case .accept(let accepted) = acceptance.envelope.body else {
+            Issue.record("expected an acceptance")
+            return
+        }
+        #expect(offered.isAcceptedAsOffered(by: accepted))
+        // The owner's own offers accept nothing.
+        #expect(offers.allSatisfy { $0.context.accepting == nil })
     }
 
     @Test func swapPhotosOnlyInvites() async throws {
