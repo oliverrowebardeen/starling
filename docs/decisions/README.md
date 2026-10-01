@@ -17,6 +17,9 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0111](0111-wifi-aware-services-entitlement-and-pairing.md) | Wi-Fi Aware services, entitlement, and pairing views | Proposed |
 | [0130](0130-deterministic-disclosure-and-consent.md) | Deterministic disclosure and explicit consent | Proposed |
 | [0131](0131-core-v11-policy-integration.md) | Use Core v1.1 egress context and audit callbacks | Proposed |
+| [0140](0140-app-composition-and-release-without-fakes.md) | App composition, and Release builds without StarlingFakes | Proposed |
+| [0141](0141-mandatory-rules-review-and-intent-merge.md) | Mandatory review of interpreted rules, and merging rules into Down intents | Proposed |
+| [0142](0142-consent-notification-and-permission-ux.md) | Consent sheet, match notifications, and permission prompts | Proposed |
 | [0170](0170-app-icon-from-an-icon-composer-bundle.md) | App icon from an Icon Composer bundle, wired through XcodeGen | Proposed |
 | [0171](0171-icon-group-shadow-at-20-percent.md) | App icon group shadow at 20 percent | Proposed |
 | [0172](0172-status-mark-drawn-live-with-even-odd.md) | Status mark drawn live with an even-odd knockout, in its own package | Proposed |

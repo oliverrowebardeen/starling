@@ -22,7 +22,7 @@ if [ "$branch" != main ]; then
   git -C "$work" merge -q --no-edit "origin/$branch" || fail "merge conflict with main"
 fi
 
-# The same two jobs as .github/workflows/ci.yml, in the same order.
+# The same jobs and steps as .github/workflows/ci.yml, in the same order.
 echo "== packages"
 "$work/Tools/test-all.sh" || fail "package tests"
 
@@ -33,6 +33,7 @@ xcodebuild build -quiet \
   -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath "$work/.build-app" \
   CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES || fail "app build"
+"$work/Tools/check-release-no-fakes.sh" "$work/.build-release" || fail "Release build or no-fakes check"
 
 cleanup
 echo "GATE PASS ($branch)"
