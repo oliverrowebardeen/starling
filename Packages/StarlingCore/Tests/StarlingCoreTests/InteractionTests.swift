@@ -171,6 +171,26 @@ import Testing
         #expect(throws: InvalidTransition.self) { try InteractionState.done.applying(.blockedByPrivacy) }
     }
 
+    /// Lanes C and D: a sheet that died with the app, or a send cancelled
+    /// while its sheet was up, must not leave the interaction suspended.
+    @Test func aCancelledConsentRequestResumesWithoutAnApproval() throws {
+        var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        try interaction.apply(.started, at: Self.at(1))
+        try interaction.apply(.consentNeeded(request: 1), at: Self.at(2))
+        try interaction.apply(.consentNeeded(request: 2), at: Self.at(3))
+        // After a restart the coordinator cancels what died with the app.
+        var restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(interaction))
+        try restored.apply(.consentCancelled(request: 1), at: Self.at(4))
+        #expect(restored.state == .awaitingConsent(resume: .negotiating) && restored.pendingConsents == [2])
+        try restored.apply(.consentCancelled(request: 2), at: Self.at(5))
+        #expect(restored.state == .negotiating && restored.pendingConsents.isEmpty)
+        // Nothing can cancel a request that is not open, or reopen one.
+        #expect(throws: UnknownConsentRequest.self) { try restored.apply(.consentCancelled(request: 2), at: Self.at(6)) }
+        #expect(throws: UnknownConsentRequest.self) { try restored.apply(.consentNeeded(request: 2), at: Self.at(6)) }
+        try restored.apply(.proposalReady(Self.proposal(1)), at: Self.at(7))
+        #expect(restored.state == .proposed)
+    }
+
     /// Review 2 of PR #45: two sends in one interaction ask at once.
     @Test func overlappingConsentRequestsResumeOnlyWhenAllAreApproved() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))

@@ -127,6 +127,10 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     case consentNeeded(request: UInt32)
     /// The owner approved that request.
     case consentGiven(request: UInt32)
+    /// The send waiting on a consent sheet was cancelled, or its sheet died
+    /// with the app: the owner gave no answer and nothing was sent. Resumes
+    /// the step when it was the last open request, like `consentGiven`.
+    case consentCancelled(request: UInt32)
     /// The agent needs its owner to answer this question. The content
     /// travels with the event, so the stored question is always the one
     /// the state machine is waiting on.
@@ -225,6 +229,7 @@ extension InteractionState {
         // Another send asks while a sheet is already up: still suspended.
         case (.awaitingConsent(let resume), .consentNeeded): return .awaitingConsent(resume: resume)
         case (.awaitingConsent(let resume), .consentGiven): return resume.state
+        case (.awaitingConsent(let resume), .consentCancelled): return resume.state
         case (.awaitingConsent, .ownerPassed): return .ended(.declined)
         // The others gave up while the sheet was open.
         case (.awaitingConsent, .noAgreement): return .ended(.nobodyUp)
@@ -383,7 +388,7 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
             guard revision == pendingQuestion?.revision else { throw StaleQuestion(current: pendingQuestion?.revision, event: event) }
         case .consentNeeded(let request):
             guard request > consentWatermark else { throw UnknownConsentRequest(request: request) }
-        case .consentGiven(let request):
+        case .consentGiven(let request), .consentCancelled(let request):
             guard pendingConsents.contains(request) else { throw UnknownConsentRequest(request: request) }
             // Other requests are still open: stay suspended, with no new
             // state in the history.
@@ -410,7 +415,7 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         case .consentNeeded(let request):
             pendingConsents.insert(request)
             consentWatermark = request
-        case .consentGiven(let request): pendingConsents.remove(request)
+        case .consentGiven(let request), .consentCancelled(let request): pendingConsents.remove(request)
         default: break
         }
         if next.isFinal {
