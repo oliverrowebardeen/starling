@@ -13,6 +13,7 @@ extension DownForService {
     /// Starts the request's run with `peer`, as the starter, if the request
     /// is still gathering its own group.
     func initiate(_ id: InteractionID, with peer: PeerID) async {
+        if requests[id]?.record.mode == .invite { return await invite(id, peer) }
         guard canStart(id, with: peer), let request = requests[id] else { return }
         let tokens = request.profile.tokens(now: clock.now())
         guard !tokens.slots.isEmpty else { return }
@@ -93,14 +94,16 @@ extension DownForService {
     func receive(_ envelope: Envelope) async {
         let key = RunKey(conversation: envelope.conversation, peer: envelope.sender)
         let signature = Signature(envelope.body)
+        // A conversation keeps the mode it began with: a quiet ask never
+        // becomes a card, and an invitation never turns quiet.
+        if let mode = runs[key]?.mode ?? finished[key]?.mode, envelope.mode != mode { return }
         if let run = runs[key] {
             runs[key]?.lastInbound = envelope.id
             // The starter is still there: a member's wait starts over.
             if run.role == .member, run.phase == .proposed || run.phase == .accepted { refreshDeadline(key) }
             if let signature, let reply = run.replies[signature] {
                 if case .offer = signature { runs[key]?.proposalEnvelopes.append(envelope.id) }
-                let context: OutboundContext = if case .psi = reply { run.psiContext } else { .empty }
-                await replay(reply, answering: envelope, for: run.request, chainedFrom: run.chainedFrom, context: context)
+                await replay(reply, answering: envelope, for: run.request, mode: run.mode, chainedFrom: run.chainedFrom, psi: run.psiContext)
                 return
             }
             await dispatch(envelope, in: key)
@@ -109,9 +112,11 @@ extension DownForService {
             // peer lost our last message. A request withdrawn since sends
             // nothing (review of PR #56, finding 2).
             guard requests[record.request]?.mirror.state == .planned, let signature, let reply = record.replies[signature] else { return }
-            await replay(reply, answering: envelope, for: record.request, chainedFrom: record.chainedFrom, context: .empty)
-        } else if case .psi(let frame) = envelope.body {
+            await replay(reply, answering: envelope, for: record.request, mode: record.mode, chainedFrom: record.chainedFrom, psi: nil)
+        } else if case .psi(let frame) = envelope.body, envelope.mode == .askQuietly {
             await respond(to: envelope, frame: frame)
+        } else if case .propose(let proposal) = envelope.body, envelope.mode == .invite {
+            await receiveInvitation(proposal, envelope: envelope)
         }
     }
 
@@ -132,12 +137,12 @@ extension DownForService {
     // MARK: - Mutual interest (PSI)
 
     private func handlePSI(_ frame: PSIFrame, in key: RunKey) async {
-        guard let run = runs[key], run.phase == .psi, frame.session == run.psiSessionID,
+        guard let run = runs[key], let session = run.psi, run.phase == .psi, frame.session == run.psiSessionID,
               frame.step == run.nextInboundPSIStep, frame.step < UInt8.max - 1
         else { return }
         let step: PSIStep
         do {
-            step = try await run.psi.handle(frame.payload)
+            step = try await session.handle(frame.payload)
         } catch {
             // Oversized or malformed peer set: stop without a word.
             return end(key, .failed)
@@ -164,7 +169,7 @@ extension DownForService {
         guard var run = runs[key] else { return }
         switch result {
         case .intersection(let shared)?:
-            let slots = run.tokens.slots(in: shared)
+            let slots = run.tokens?.slots(in: shared) ?? []
             guard !slots.isEmpty else { return end(key, .noOverlap) }
             run.overlap = slots
         case .cardinality(let count)?:
@@ -192,27 +197,28 @@ extension DownForService {
         guard let run = runs[key], let request = requests[run.request] else { return }
         var bodies: [MessageBody] = []
         var pending: Set<IssueKey> = []
-        let liked = Array(request.profile.liked.prefix(ProtocolLimits.maxKeywordsPerValue))
+        let liked = Array(request.profile.liked.prefix(ProtocolLimits.maxCandidatesAnsweredPerIssue))
+        runs[key]?.askedActivities = liked
         if let query = try? Query(issue: .activity, candidates: .keywords(liked)) {
             bodies.append(.query(query))
             pending.insert(.activity)
-        }
-        if let cap = request.profile.budgetCap, let query = try? Query(issue: .budget, candidates: .amount(cap)) {
-            bodies.append(.query(query))
-            pending.insert(.budget)
         }
         runs[key]?.pendingQueries = pending
         await transmit(bodies, in: key, awaitingReply: true)
     }
 
     private func handleQuery(_ query: Query, envelope: Envelope, in key: RunKey) async {
-        // A starter asks about activity and budget, once each. Anything else,
-        // or a second query on the same issue, gets no answer and no model call.
+        // A starter asks about activity, once, with at most 16 candidates
+        // (ADR 0019 decision 6). Anything else, or a second query, gets no
+        // answer and no model call. Budget never leaves the phone: it is
+        // the owner's own limit, applied to any plan before it shows.
         guard let run = runs[key], run.role == .member, run.phase == .details,
-              [IssueKey.activity, .budget].contains(query.issue), !run.answeredIssues.contains(query.issue),
+              query.issue == .activity, !run.answeredIssues.contains(query.issue),
+              case .keywords(let asked) = query.candidates, asked.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue,
               engage(run.request, in: key), let profile = requests[run.request]?.profile
         else { return }
         runs[key]?.answeredIssues.insert(query.issue)
+        runs[key]?.receivedQueries[envelope.id] = query
 
         let value: IssueValue?
         switch (query.issue, query.candidates) {
@@ -226,10 +232,9 @@ extension DownForService {
                 matches = (try? await cancellable(run: key, request: run.request) { [model] in try await model.match(wanted: liked, offered: usable).value }.get()) ?? []
                 guard runs[key] != nil else { return }
             }
-            // After the model: code decides what counts.
+            // After the model: code decides what counts. The answer is a
+            // subset of the starter's own candidates: a yes or no on each.
             value = .keywords(profile.acceptableActivities(candidates: candidates, matches: matches))
-        case (.budget, .amount(let amount)):
-            value = profile.budgetAnswer(for: amount).map(IssueValue.amount)
         default:
             value = nil
         }
@@ -270,9 +275,9 @@ extension DownForService {
               let issue = run.queries[answer.query], answer.issue == issue, run.pendingQueries.contains(issue)
         else { return }
         switch (issue, answer.acceptable) {
-        case (.activity, .keywords(let keywords)?): run.activityAnswer = keywords
+        // Only the starter's own candidates count, whatever the answer says.
+        case (.activity, .keywords(let keywords)?): run.activityAnswer = keywords.filter(Set(run.askedActivities).contains)
         case (.activity, _): run.activityAnswer = []
-        case (.budget, .amount(let amount)?): run.budgetAnswer = amount
         default: break
         }
         run.pendingQueries.remove(issue)
@@ -293,6 +298,12 @@ extension DownForService {
         guard let run = runs[key], run.role == .member, [.details, .proposed, .accepted].contains(run.phase),
               let request = requests[run.request], request.engagement == .member(key)
         else { return }
+        // An invitation is one offer: its resends are duplicates, and a
+        // different offer in the same conversation is ignored.
+        if run.mode == .invite {
+            if proposal.terms == run.terms { runs[key]?.proposalEnvelopes.append(envelope.id) }
+            return
+        }
         let terms = proposal.terms
         // Rounds only rise. An older round (a retry of round 0 in a fresh
         // envelope) is stale, and a second set of terms for the same round
@@ -340,13 +351,23 @@ extension DownForService {
     private func handleConfirmation(_ acceptance: Acceptance, in key: RunKey) {
         // The confirmation must name a proposal envelope that carried the
         // terms the owner accepted.
-        guard let run = runs[key], run.phase == .accepted, let terms = run.terms, acceptance.terms == terms,
-              run.proposalEnvelopes.contains(acceptance.proposal),
-              let revision = requests[run.request]?.mirror.proposalRevision
+        guard let run = runs[key], run.phase == .accepted, let terms = run.terms, run.proposalEnvelopes.contains(acceptance.proposal),
+              let request = requests[run.request], let revision = request.mirror.proposalRevision
         else { return }
+        // A quiet ask confirms the exact terms; an invitation's confirmation
+        // may add the roster of everyone who said I'm in, which must name
+        // the starter first and this phone, and nothing else may differ.
+        switch run.mode {
+        case .askQuietly:
+            guard acceptance.terms == terms else { return }
+        case .invite:
+            guard Self.confirms(acceptance.terms, invitation: terms),
+                  request.profile.permits(acceptance.terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now())
+            else { return }
+        }
         // Everyone in the plan said yes to exactly these terms.
         guard report(run.request, .everyoneConfirmed(revision: revision)) else { return }
-        produceArtifacts(run.request, terms: terms, origin: key.conversation, peer: key.peer)
+        produceArtifacts(run.request, terms: acceptance.terms, origin: key.conversation, peer: key.peer)
         end(key, .matched)
         armCleanup(run.request)
     }
@@ -391,7 +412,8 @@ extension DownForService {
             guard run.role == .member, run.phase == .accepted, let terms = run.terms, let proposal = run.proposalEnvelopes.last else { return }
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)
         case .confirm:
-            if run.role == .hub, let terms = run.terms, let proposal = run.acceptedProposal {
+            // The group's terms: for an invitation, with the roster added.
+            if run.role == .hub, let terms = request.group?.terms, let proposal = run.acceptedProposal {
                 _ = await send(.accept(Acceptance(proposal: proposal, terms: terms)), in: key)
             }
             // Sent, lost, or impossible: the plan does not wait on it. A

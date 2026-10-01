@@ -27,9 +27,10 @@ public enum DownFor {
         ref: ref,
         wording: wording,
         buildingBlock: .mutualReveal,
-        // Place is read from the owner's words ("nothing far") as a chip,
-        // but never sent: Pick a place agrees on venues (ADR 0012).
-        // The roster travels under people once a plan forms.
+        // Place and budget are read from the owner's words as chips but
+        // never sent: Pick a place agrees on venues (ADR 0012), and budget
+        // stays on the phone (ADR 0019 makes Never its default). The roster
+        // travels under people once a group plan forms.
         topicsUsed: [.time, .activity, .place, .budget, .people],
         topicsRequired: [.time, .activity],
         accepts: [.timeSlot],
@@ -39,6 +40,9 @@ public enum DownFor {
             IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
             IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
             IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-        ])
+        ]),
+        // Ask quietly by default: mutual reveal. Invite shows the request to
+        // friends directly (ADR 0020).
+        sendModes: [.askQuietly, .invite]
     )
 }

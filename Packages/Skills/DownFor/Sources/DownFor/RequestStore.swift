@@ -10,10 +10,27 @@ public struct DownForRequestRecord: Hashable, Sendable, Codable {
     public let skill: SkillRef
     public let rules: OwnerRules
     public let audience: Audience
+    public let mode: SendMode
     public let expiresAt: Timestamp
     public let participants: [PeerID]
     public let inputs: [Artifact]
     public let chainedFrom: ConversationID?
+
+    /// The record of an invitee's card: the friend's invitation, which
+    /// lasts until the plan it names starts. The invitee's rules are not
+    /// involved; the owner decides by looking at the card.
+    init(invitation interaction: InteractionID, conversation: ConversationID, from starter: PeerID, until expiresAt: Timestamp, chainedFrom: ConversationID?) {
+        self.interaction = interaction
+        self.conversation = conversation
+        skill = DownFor.ref
+        rules = .empty
+        audience = .picked([starter])
+        mode = .invite
+        self.expiresAt = expiresAt
+        participants = [starter]
+        inputs = []
+        self.chainedFrom = chainedFrom
+    }
 
     init(_ request: SkillRequest) {
         interaction = request.interaction
@@ -21,6 +38,7 @@ public struct DownForRequestRecord: Hashable, Sendable, Codable {
         skill = request.intent.skill
         rules = request.intent.rules
         audience = request.intent.audience
+        mode = request.intent.mode
         expiresAt = request.intent.expiresAt
         participants = request.participants
         inputs = request.inputs

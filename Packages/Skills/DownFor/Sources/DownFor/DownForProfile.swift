@@ -22,8 +22,6 @@ struct DownForProfile: Sendable {
     /// Soft preferences, in the owner's order, never including an avoided one.
     let liked: [Keyword]
     let avoided: Set<Keyword>
-    /// The lowest `atMost` on the budget.
-    let budgetCap: MoneyAmount?
 
     /// - Parameter inputs: Artifacts from a chained skill. An agreed
     ///   `TimeSlot` narrows the request to that slot.
@@ -38,22 +36,15 @@ struct DownForProfile: Sendable {
 
         var liked: [Keyword] = []
         var avoided = Set<Keyword>()
-        var cap: MoneyAmount?
         for constraint in self.constraints[.activity] {
             if case .prefers(let like, let avoid) = constraint.rule {
                 liked += like
                 avoided.formUnion(avoid)
             }
         }
-        for constraint in self.constraints[.budget] {
-            if case .atMost(let limit) = constraint.rule, cap == nil || (cap!.currency == limit.currency && limit.minorUnits < cap!.minorUnits) {
-                cap = limit
-            }
-        }
         var seen = Set<Keyword>()
         self.liked = liked.filter { !avoided.contains($0) && seen.insert($0).inserted }
         self.avoided = avoided
-        budgetCap = cap
     }
 
     /// The free half-hours from `now` until the request expires, as a PSI set.
@@ -113,14 +104,6 @@ struct DownForProfile: Sendable {
             accepted.insert(match.offered)
         }
         return usable.filter(accepted.contains)
-    }
-
-    /// The acceptable part of "up to `candidate`": up to the lower of the two
-    /// caps. Nil (decline) when the currencies differ.
-    func budgetAnswer(for candidate: MoneyAmount) -> MoneyAmount? {
-        guard let cap = budgetCap else { return candidate }
-        guard cap.currency == candidate.currency else { return nil }
-        return cap.minorUnits < candidate.minorUnits ? cap : candidate
     }
 
     // MARK: - Reading plans

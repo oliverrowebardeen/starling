@@ -83,12 +83,13 @@ extension DownForService {
             end(key, .failed)
             return .ended
         }
-        let context: OutboundContext = if case .psi = body { run.psiContext } else { .empty }
+        let context = Self.context(for: body, run: run)
         let step = Step(run: run, request: request)
         let card = cards[key.peer]
         let chainedFrom = run.chainedFrom
+        let mode = run.mode
         let result = await cancellable(run: key, request: run.request) { [outbox] in
-            try await outbox.send(body, to: key.peer, conversation: key.conversation, recipientCard: card, context: context, skill: DownFor.ref, chainedFrom: chainedFrom)
+            try await outbox.send(body, to: key.peer, conversation: key.conversation, recipientCard: card, context: context, skill: DownFor.ref, mode: mode, chainedFrom: chainedFrom)
         }
         switch result {
         case .success(let envelope):
@@ -118,6 +119,18 @@ extension DownForService {
         }
     }
 
+    /// What the policy and the coordinator need beside the envelope (Core
+    /// v2.1): the interaction every send belongs to, the PSI inputs for a
+    /// PSI step, and for an answer the friend's own query, so the policy can
+    /// see the answer only picks among the friend's candidates (ADR 0019).
+    static func context(for body: MessageBody, run: Run) -> OutboundContext {
+        switch body {
+        case .psi: run.psiContext
+        case .answer(let answer): OutboundContext(answering: run.receivedQueries[answer.query], interaction: run.request)
+        default: OutboundContext(interaction: run.request)
+        }
+    }
+
     /// The step a send was made for: the run's phase and terms and the
     /// interaction's proposal revision.
     struct Step: Equatable {
@@ -136,24 +149,32 @@ extension DownForService {
     /// plan" notice. Only for a request that is still live: nothing leaves
     /// for one that ended. Tracked by request, so ending it cancels the
     /// send. Failures are ignored; the peer's own deadline covers them.
-    func deliver(_ body: MessageBody, to key: RunKey, for request: InteractionID, chainedFrom: ConversationID?, context: OutboundContext = .empty) async {
+    func deliver(_ body: MessageBody, to key: RunKey, for request: InteractionID, mode: SendMode, chainedFrom: ConversationID?, context: OutboundContext) async {
         guard requests[request] != nil else { return }
         let card = cards[key.peer]
         _ = await cancellable(run: nil, request: request) { [outbox] in
-            try await outbox.send(body, to: key.peer, conversation: key.conversation, recipientCard: card, context: context, skill: DownFor.ref, chainedFrom: chainedFrom)
+            try await outbox.send(body, to: key.peer, conversation: key.conversation, recipientCard: card, context: context, skill: DownFor.ref, mode: mode, chainedFrom: chainedFrom)
         }
     }
 
     func tell(_ notice: Notice, _ reason: Rejection.Reason) async {
-        await deliver(.reject(Rejection(proposal: notice.lastInbound ?? MessageID(), reason: reason)), to: notice.key, for: notice.request, chainedFrom: notice.chainedFrom)
+        await deliver(
+            .reject(Rejection(proposal: notice.lastInbound ?? MessageID(), reason: reason)), to: notice.key, for: notice.request,
+            mode: notice.mode, chainedFrom: notice.chainedFrom, context: OutboundContext(interaction: notice.request)
+        )
     }
 
-    func replay(_ reply: Reply, answering envelope: Envelope, for request: InteractionID, chainedFrom: ConversationID?, context: OutboundContext) async {
+    func replay(_ reply: Reply, answering envelope: Envelope, for request: InteractionID, mode: SendMode, chainedFrom: ConversationID?, psi: OutboundContext?) async {
         guard let body = try? reply.body(answering: envelope) else { return }
         // A replayed offer or acceptance is only worth sending while its
         // plan is still ahead.
         if let start = Self.planStart(of: body), !DownForProfile.hasNotStarted(start, now: clock.now()) { return }
-        await deliver(body, to: RunKey(conversation: envelope.conversation, peer: envelope.sender), for: request, chainedFrom: chainedFrom, context: context)
+        let context: OutboundContext = switch (body, envelope.body) {
+        case (.psi, _): psi ?? OutboundContext(interaction: request)
+        case (.answer, .query(let query)): OutboundContext(answering: query, interaction: request)
+        default: OutboundContext(interaction: request)
+        }
+        await deliver(body, to: RunKey(conversation: envelope.conversation, peer: envelope.sender), for: request, mode: mode, chainedFrom: chainedFrom, context: context)
     }
 
     private func noteSent(_ envelope: Envelope, in key: RunKey) {
@@ -305,7 +326,7 @@ extension DownForService {
         cancelWork { $0.run == key }
         diagnostics.outcomes[outcome, default: 0] += 1
         if outcome == .matched {
-            finished[key] = Finished(request: run.request, replies: run.replies, chainedFrom: run.chainedFrom)
+            finished[key] = Finished(request: run.request, replies: run.replies, chainedFrom: run.chainedFrom, mode: run.mode)
             finishedOrder.append(key)
             while finishedOrder.count > configuration.maxFinishedRuns { finished[finishedOrder.removeFirst()] = nil }
         }

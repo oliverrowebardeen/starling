@@ -15,7 +15,9 @@ extension DownForService {
     /// none in the quiet period after the request began, which gives a
     /// lower starter's retries time to arrive.
     func considerProposing(_ id: InteractionID) {
-        guard let request = requests[id], request.engagement == .hub, request.group == nil, request.mirror.state == .negotiating else { return }
+        guard let request = requests[id], request.invitation == nil, request.engagement == .hub, request.group == nil,
+              request.mirror.state == .negotiating
+        else { return }
         let all = runs.values.filter { $0.request == id }
         guard !all.contains(where: { $0.phase == .psi || $0.phase == .details }) else { return }
         let mine = all.filter { $0.role == .hub }
@@ -54,10 +56,10 @@ extension DownForService {
         var candidates: [PeerID: CandidateAnswers] = [:]
         for peer in peers {
             guard let run = runs[RunKey(conversation: request.conversation, peer: peer)], let overlap = run.overlap else { continue }
-            candidates[peer] = CandidateAnswers(overlap: overlap, activities: run.activityAnswer ?? [], budget: run.budgetAnswer)
+            candidates[peer] = CandidateAnswers(overlap: overlap, activities: run.activityAnswer ?? [])
         }
         guard let plan = GroupPlanner.plan(
-            hub: localPeer, liked: request.profile.liked, budgetCap: request.profile.budgetCap,
+            hub: localPeer, liked: request.profile.liked,
             candidates: candidates, maxMinutes: configuration.maxPlanMinutes, now: clock.now()
         ), plan.members.allSatisfy({ request.profile.permits(plan.terms, me: localPeer, hub: localPeer, member: $0, now: clock.now()) })
         else { return nil }
@@ -120,6 +122,15 @@ extension DownForService {
         group.window?.cancel()
         requests[id]?.group = nil
         let remaining = group.members.filter { !peers.contains($0) && runs[RunKey(conversation: request.conversation, peer: $0)] != nil }
+        if request.invitation != nil {
+            // An invitation's plan does not change; only who is in it does.
+            guard !remaining.isEmpty else {
+                endRequest(id, with: .noAgreement)
+                return
+            }
+            for peer in remaining { runs[RunKey(conversation: request.conversation, peer: peer)]?.accepted = false }
+            return showInvitation(to: remaining, in: id)
+        }
         for peer in remaining { runs[RunKey(conversation: request.conversation, peer: peer)]?.phase = .ready }
         guard let plan = plan(for: remaining, in: id) else {
             endRequest(id, with: .noAgreement)
@@ -134,7 +145,7 @@ extension DownForService {
 
     /// When a proposal's window passes: friends who have not said "I'm in"
     /// are left out, and a starter who has not either lets the group go.
-    private func armWindow(_ id: InteractionID, revision: UInt32) {
+    func armWindow(_ id: InteractionID, revision: UInt32) {
         let window = configuration.ownerWindow
         requests[id]?.group?.window = Task { [weak self, clock] in
             do { try await clock.sleep(window) } catch { return }
@@ -173,8 +184,8 @@ extension DownForService {
 
     func handleAccept(_ acceptance: Acceptance, in key: RunKey) {
         guard let run = runs[key], run.role == .hub, run.phase == .proposed, let terms = run.terms,
-              acceptance.terms == terms, run.proposalEnvelopes.contains(acceptance.proposal),
-              requests[run.request]?.group?.terms == terms
+              acceptance.terms == terms, run.proposalEnvelopes.contains(acceptance.proposal), let request = requests[run.request],
+              request.invitation != nil ? request.group == nil : request.group?.terms == terms
         else { return }
         runs[key]?.accepted = true
         runs[key]?.acceptedProposal = acceptance.proposal
@@ -183,6 +194,7 @@ extension DownForService {
         runs[key]?.outstanding = []
         runs[key]?.timerToken += 1
         timers.removeValue(forKey: key)?.cancel()
+        if request.invitation != nil { return invitationAccepted(in: run.request) }
         checkComplete(run.request)
     }
 
@@ -198,7 +210,10 @@ extension DownForService {
         group.window?.cancel()
         requests[id]?.group = group
         for key in keys {
-            runs[key]?.replies[.accept(group.terms)] = .confirm(group.terms)
+            // Keyed by what the member accepted, which for an invitation is
+            // the invitation without the roster.
+            let accepted = runs[key]?.terms ?? group.terms
+            runs[key]?.replies[.accept(accepted)] = .confirm(group.terms)
             enqueue(.act(key, .confirm), for: key.peer)
         }
     }
@@ -233,47 +248,6 @@ extension DownForService {
             report(id, .unsupported)
         } else {
             endRequest(id, with: .noAgreement)
-        }
-    }
-
-    // MARK: - Consent on the lifecycle
-
-    struct ConsentTicket: Sendable {
-        let interaction: InteractionID
-        let request: UInt32
-        let disclosure: Disclosure
-    }
-
-    /// The Outbox is about to show a consent sheet for one of this skill's
-    /// sends. Suspends the interaction it belongs to, unless the owner
-    /// already approved this exact disclosure in it.
-    func consentWillStart(_ disclosure: Disclosure) -> ConsentTicket? {
-        guard disclosure.skill?.id == DownFor.ref.id, let conversation = disclosure.conversation,
-              let id = requests.values.first(where: { $0.conversation == conversation })?.id
-                ?? runs[RunKey(conversation: conversation, peer: disclosure.recipient)]?.request,
-              let request = requests[id], !request.approved.contains(disclosure)
-        else { return nil }
-        let number = request.mirror.consentWatermark + 1
-        guard report(id, .consentNeeded(request: number)) else { return nil }
-        requests[id]?.openConsents[number] = disclosure
-        return ConsentTicket(interaction: id, request: number, disclosure: disclosure)
-    }
-
-    func consentDidEnd(_ ticket: ConsentTicket, _ outcome: ConsentOutcome) {
-        let id = ticket.interaction
-        guard requests[id]?.openConsents.removeValue(forKey: ticket.request) != nil else { return }
-        switch outcome {
-        case .approved:
-            requests[id]?.approved.insert(ticket.disclosure)
-            guard report(id, .consentGiven(request: ticket.request)) else { return }
-            // Work that waited for the sheet: a starter's proposal or its
-            // confirmations.
-            considerProposing(id)
-            checkComplete(id)
-        case .declined:
-            // "Don't send" ends the request and nothing more leaves for it.
-            // The coordinator applies the pass itself.
-            endQuietly(id, .ownerPassed)
         }
     }
 }

@@ -28,6 +28,7 @@ public actor DownForService: SkillService {
     let model: any AgentModel
     let psi: any PSIProvider
     let store: any DownForRequestStore
+    let pairedPeers: (any PairedPeerStore)?
     let clock: SkillClock
     let timeZone: TimeZone
     let configuration: DownForConfiguration
@@ -65,11 +66,9 @@ public actor DownForService: SkillService {
         /// Friends this request is done with: no overlap, a refusal, a pass.
         var settled: Set<PeerID> = []
         var unsupported: Set<PeerID> = []
-        /// Disclosures the owner approved in this request, so a retry of the
-        /// same send does not suspend the interaction again.
-        var approved: Set<Disclosure> = []
-        var openConsents: [UInt32: Disclosure] = [:]
         var timer: Task<Void, Never>?
+        /// Invite mode: the plan the invitation offers.
+        var invitation: Terms?
         /// When this phone took the request on, for the quiet period
         /// before the starter proposes.
         var since = ContinuousClock.now
@@ -92,6 +91,10 @@ public actor DownForService: SkillService {
     var finished: [RunKey: Finished] = [:]
     var finishedOrder: [RunKey] = []
     var reachable: Set<PeerID> = []
+    /// Conversations of requests that ended, so a late retry in one is never
+    /// taken for a new request. Bounded; the oldest are forgotten first.
+    var endedConversations: Set<ConversationID> = []
+    var endedOrder: [ConversationID] = []
     var cards: [PeerID: AgentCard] = [:]
 
     var workers: [PeerID: (queue: AsyncStream<Work>.Continuation, task: Task<Void, Never>)] = [:]
@@ -126,16 +129,21 @@ public actor DownForService: SkillService {
     /// - Parameters:
     ///   - localPeer: This phone's ID (the Outbox transport's `localPeer`),
     ///     which orders starters when two requests reach each other.
-    ///   - outbox: The app's Outbox. Its consent provider should be wrapped
-    ///     with `consentRelay(wrapping:)` so consent shows on the lifecycle.
+    ///   - outbox: The app's Outbox. Every send names its interaction in
+    ///     `OutboundContext.interaction`, so the coordinator's consent
+    ///     provider knows which interaction a sheet suspends (amendment 15).
     ///   - model: Used for one job: matching a starter's activities against
     ///     the owner's (ADR 0121).
+    ///   - pairedPeers: When given, an invitation is shown only from a
+    ///     paired friend. The secure channel admits only paired friends
+    ///     anyway (ADR 0003); this is the service's own check.
     public init(
         localPeer: PeerID,
         outbox: Outbox,
         model: any AgentModel,
         psi: any PSIProvider,
         store: any DownForRequestStore = InMemoryDownForRequestStore(),
+        pairedPeers: (any PairedPeerStore)? = nil,
         clock: SkillClock = .system,
         timeZone: TimeZone = .current,
         configuration: DownForConfiguration = DownForConfiguration()
@@ -145,6 +153,7 @@ public actor DownForService: SkillService {
         self.model = model
         self.psi = psi
         self.store = store
+        self.pairedPeers = pairedPeers
         self.clock = clock
         self.timeZone = timeZone
         self.configuration = configuration
@@ -192,6 +201,10 @@ public actor DownForService: SkillService {
         try? mirror.apply(.started, at: Timestamp(now))
         var state = Request(record: record, profile: profile, mirror: mirror)
         state.unsupported = Set(Self.unsupported(among: participants, cards: cards).keys)
+        if record.mode == .invite {
+            guard let terms = invitationTerms(for: profile, now: now) else { throw DownForError.noAvailableTime }
+            state.invitation = terms
+        }
         requests[request.interaction] = state
         try? await store.save(record)
 
@@ -201,6 +214,7 @@ public actor DownForService: SkillService {
             return
         }
         armExpiry(request.interaction)
+        if record.mode == .invite { armInvitationWindow(request.interaction) }
         for peer in participants { enqueue(.start(request.interaction), for: peer) }
     }
 
@@ -233,14 +247,6 @@ public actor DownForService: SkillService {
         endRequest(interaction, with: .withdrawn)
     }
 
-    /// The request a conversation's sends belong to on this phone: its own
-    /// conversation, or a run it answers in another starter's conversation
-    /// with `peer`. For the app, to tie a consent sheet or an egress record
-    /// to the right interaction.
-    public func interaction(for conversation: ConversationID, peer: PeerID) -> InteractionID? {
-        requests.values.first { $0.conversation == conversation }?.id ?? runs[RunKey(conversation: conversation, peer: peer)]?.request
-    }
-
     /// Every event from the app's Inbox loop. Returns at once; work for each
     /// friend runs in order on its own task, so a consent sheet or a slow
     /// model call never holds up the loop.
@@ -256,7 +262,12 @@ public actor DownForService: SkillService {
         case .message(let envelope):
             if case .hello(let card) = envelope.body {
                 learn(card, from: envelope.sender)
-            } else if let skill = envelope.skill, skill.id == DownFor.ref.id, skill.version.isCompatible(with: DownFor.ref.version) {
+            } else if let skill = envelope.skill, skill.id == DownFor.ref.id, skill.version.isCompatible(with: DownFor.ref.version),
+                      let mode = envelope.mode, descriptor.sendModes.contains(mode),
+                      !endedConversations.contains(envelope.conversation) {
+                // A mode the skill does not offer is ignored like any unknown
+                // request (ADR 0020 decision 5), and so is a late retry for a
+                // conversation that already ended (ADR 0011, amendment 15).
                 enqueue(.message(envelope), for: envelope.sender)
             }
         case .dropped:
@@ -264,8 +275,15 @@ public actor DownForService: SkillService {
         }
     }
 
+    /// Rebuilds after a restart. The coordinator has already closed any
+    /// consent request left open (amendment 15), and passes interactions
+    /// that ended in the last 24 hours too, so late retries for them are
+    /// ignored rather than opened again.
     public func restore(_ interactions: [Interaction]) async {
         let now = clock.now()
+        for interaction in interactions where interaction.skill.id == DownFor.ref.id && interaction.state.isFinal {
+            markEnded(interaction.conversation)
+        }
         for interaction in interactions where interaction.skill.id == DownFor.ref.id && requests[interaction.id] == nil {
             switch interaction.state {
             case .planned:
@@ -360,10 +378,21 @@ public actor DownForService: SkillService {
         continuation.yield(.produced(id, artifact))
     }
 
+    static let maxEndedConversations = 1_024
+
+    func markEnded(_ conversation: ConversationID) {
+        guard endedConversations.insert(conversation).inserted else { return }
+        endedOrder.append(conversation)
+        while endedOrder.count > Self.maxEndedConversations { endedConversations.remove(endedOrder.removeFirst()) }
+    }
+
     /// Forgets a request that reached a final state, ending its runs
     /// silently. A planned request stays until its plan ends.
     func discard(_ id: InteractionID, keepingRecord: Bool = false) {
         guard let request = requests.removeValue(forKey: id) else { return }
+        // Its own conversation (for an invitee, the invitation's) is over. A
+        // group it only answered is not: that starter may ask again.
+        if !keepingRecord { markEnded(request.conversation) }
         request.timer?.cancel()
         request.quiet?.cancel()
         request.group?.window?.cancel()
@@ -447,7 +476,10 @@ public actor DownForService: SkillService {
     static func placeholder(for interaction: Interaction) -> DownForRequestRecord {
         DownForRequestRecord(SkillRequest(
             interaction: interaction.id, conversation: interaction.conversation,
-            intent: SkillIntent(skill: interaction.skill, rules: .empty, audience: .picked(interaction.participants), expiresAt: interaction.createdAt),
+            intent: SkillIntent(
+                skill: interaction.skill, rules: .empty, audience: .picked(interaction.participants),
+                mode: interaction.role == .invitee ? .invite : .askQuietly, expiresAt: interaction.createdAt
+            ),
             participants: interaction.participants
         ))
     }

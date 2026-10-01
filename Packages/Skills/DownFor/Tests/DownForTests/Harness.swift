@@ -23,33 +23,83 @@ func testClock(speedup: Int = 1_000, now: @escaping @Sendable () -> Date = { T.n
     })
 }
 
-/// Plays the app's lifecycle coordinator: applies every event to a real
-/// `Interaction`, the way lane A's coordinator will, and records any event
-/// the state machine refuses.
+/// Plays the app's lifecycle coordinator (ADR 0011, amendments 13 to 15):
+/// applies every event to a real `Interaction`, records any the state
+/// machine refuses, creates invitee interactions on `incoming`, applies the
+/// consent events itself, and queues progress that arrives while a consent
+/// sheet is up until the step resumes.
 actor Lifecycle {
     private(set) var interactions: [InteractionID: Interaction] = [:]
+    /// Everything the service reported, in order.
     private(set) var events: [SkillEvent] = []
     private(set) var refused: [String] = []
     private(set) var artifacts: [InteractionID: [Artifact]] = [:]
+    private var queued: [InteractionID: [InteractionEvent]] = [:]
+    private var consentNumbers: [InteractionID: UInt32] = [:]
 
     func create(_ interaction: Interaction) { interactions[interaction.id] = interaction }
 
     func apply(_ event: SkillEvent) {
         events.append(event)
         switch event {
-        case .incoming(let id, _, _, _):
-            refused.append("unexpected incoming \(id)")
+        case .incoming(let id, let conversation, let from, let chainedFrom):
+            guard interactions[id] == nil else { return refused.append("incoming twice \(id)") }
+            _ = chainedFrom
+            interactions[id] = Interaction(id: id, conversation: conversation, skill: DownFor.ref, role: .invitee, participants: [from], createdAt: Timestamp(T.now))
         case .lifecycle(let id, let lifecycle):
-            guard var interaction = interactions[id] else { return refused.append("unknown \(id)") }
-            do {
-                try interaction.apply(lifecycle, at: Timestamp(T.now))
-                interactions[id] = interaction
-            } catch {
-                refused.append("\(lifecycle) in \(interaction.state): \(error)")
+            if case .awaitingConsent = interactions[id]?.state, Self.waitsOutASheet(lifecycle) {
+                queued[id, default: []].append(lifecycle)
+                return
             }
+            applyNow(lifecycle, to: id)
         case .produced(let id, let artifact):
             interactions[id]?.record(artifact)
             artifacts[id, default: []].append(artifact)
+        }
+    }
+
+    private static func waitsOutASheet(_ event: InteractionEvent) -> Bool {
+        switch event {
+        case .ownerNeeded, .proposalReady, .everyoneConfirmed: true
+        default: false
+        }
+    }
+
+    private func applyNow(_ event: InteractionEvent, to id: InteractionID) {
+        guard var interaction = interactions[id] else { return refused.append("unknown \(id)") }
+        do {
+            try interaction.apply(event, at: Timestamp(T.now))
+            interactions[id] = interaction
+        } catch {
+            refused.append("\(event) in \(interaction.state): \(error)")
+        }
+    }
+
+    // The coordinator's consent events, from `Disclosure.interaction`.
+
+    func consentAsked(_ id: InteractionID) -> UInt32? {
+        guard let interaction = interactions[id], !interaction.state.isFinal else { return nil }
+        let number = max(consentNumbers[id] ?? 0, interaction.consentWatermark) + 1
+        consentNumbers[id] = number
+        do {
+            try interactions[id]!.apply(.consentNeeded(request: number), at: Timestamp(T.now))
+            return number
+        } catch {
+            return nil
+        }
+    }
+
+    func consentAnswered(_ id: InteractionID, request: UInt32, _ outcome: ConsentOutcome) {
+        // A final event already closed the request (amendment 15).
+        guard let interaction = interactions[id], !interaction.state.isFinal else { return }
+        switch outcome {
+        case .approved:
+            applyNow(.consentGiven(request: request), to: id)
+            if case .awaitingConsent = interactions[id]?.state { return }
+            for event in queued.removeValue(forKey: id) ?? [] { applyNow(event, to: id) }
+        case .declined:
+            queued[id] = nil
+            applyNow(.ownerPassed, to: id)
         }
     }
 
@@ -58,8 +108,35 @@ actor Lifecycle {
     func reached(_ state: InteractionState, _ id: InteractionID) -> Bool {
         interactions[id]?.history.contains { $0.state == state } ?? false
     }
+    /// The lifecycle events the service reported.
     var lifecycleEvents: [InteractionEvent] {
         events.compactMap { if case .lifecycle(_, let event) = $0 { event } else { nil } }
+    }
+    /// Invitee interactions the service created.
+    var invitations: [InteractionID] {
+        events.compactMap { if case .incoming(let id, _, _, _) = $0 { id } else { nil } }
+    }
+}
+
+/// The app's consent provider as the coordinator runs it: asks the owner
+/// (here a scripted or gated provider) and applies the consent events to
+/// the interaction the disclosure names.
+struct CoordinatorConsent: ConsentProvider {
+    let owner: any ConsentProvider
+    let lifecycle: Lifecycle
+
+    func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        let request = await disclosure.interaction.asyncMap { await lifecycle.consentAsked($0) } ?? nil
+        let outcome = await owner.requestConsent(for: disclosure)
+        if let id = disclosure.interaction, let request { await lifecycle.consentAnswered(id, request: request, outcome) }
+        return outcome
+    }
+}
+
+extension Optional {
+    func asyncMap<T>(_ transform: (Wrapped) async -> T) async -> T? {
+        guard let value = self else { return nil }
+        return await transform(value)
     }
 }
 
@@ -70,13 +147,12 @@ actor Wire {
     func sent(by peer: PeerID) -> [Envelope] { envelopes.filter { $0.sender == peer } }
 }
 
-/// One phone: transport, Outbox with the consent relay, Inbox loop, the
-/// Down for... service, and the lifecycle it reports to.
+/// One phone: transport, Outbox with the coordinator's consent provider,
+/// Inbox loop, the Down for... service, and the lifecycle it reports to.
 final class Phone: Sendable {
     let name: String
     let id: PeerID
     let transport: LoopbackTransport
-    let relay: DownForConsentRelay
     let service: DownForService
     let lifecycle = Lifecycle()
     let store: any DownForRequestStore
@@ -84,16 +160,18 @@ final class Phone: Sendable {
 
     init(
         name: String, id: PeerID, hub: LoopbackHub, model: any AgentModel, policy: any PolicyEngine, consent: any ConsentProvider,
-        psi: any PSIProvider, clock: SkillClock, configuration: DownForConfiguration, store: any DownForRequestStore = InMemoryDownForRequestStore()
+        psi: any PSIProvider, clock: SkillClock, configuration: DownForConfiguration, store: any DownForRequestStore = InMemoryDownForRequestStore(),
+        pairedPeers: (any PairedPeerStore)? = nil
     ) {
         self.name = name
         self.id = id
         self.store = store
         transport = LoopbackTransport(localPeer: id, hub: hub)
-        relay = DownForConsentRelay(wrapping: consent)
-        let outbox = Outbox(transport: transport, policy: policy, consent: relay)
-        service = DownForService(localPeer: id, outbox: outbox, model: model, psi: psi, store: store, clock: clock, timeZone: T.utc, configuration: configuration)
-        relay.attach(service)
+        let outbox = Outbox(transport: transport, policy: policy, consent: CoordinatorConsent(owner: consent, lifecycle: lifecycle))
+        service = DownForService(
+            localPeer: id, outbox: outbox, model: model, psi: psi, store: store, pairedPeers: pairedPeers,
+            clock: clock, timeZone: T.utc, configuration: configuration
+        )
     }
 
     func start() async throws {
@@ -120,7 +198,7 @@ final class Phone: Sendable {
     func down(
         for activities: [String], time: [TimeSlot]? = [T.slot(19, 23)], with friends: [Phone], avoided: [String] = [],
         budget: Int64? = nil, expires: Date = T.at(24), chainedFrom: ConversationID? = nil, inputs: [Artifact] = [],
-        extraParticipants: [PeerID] = []
+        extraParticipants: [PeerID] = [], mode: SendMode = .askQuietly
     ) async throws -> InteractionID {
         let id = InteractionID()
         let conversation = ConversationID()
@@ -132,7 +210,7 @@ final class Phone: Sendable {
         await lifecycle.create(interaction)
         let intent = SkillIntent(
             skill: DownFor.ref, rules: try T.rules(time: time, liked: activities, avoided: avoided, maxBudget: budget),
-            audience: .picked(participants), expiresAt: Timestamp(expires)
+            audience: .picked(participants), mode: mode, expiresAt: Timestamp(expires)
         )
         try await service.start(SkillRequest(interaction: id, conversation: conversation, intent: intent, participants: participants, inputs: inputs, chainedFrom: chainedFrom))
         return id
@@ -215,7 +293,15 @@ final class World: Sendable {
         for phone in phones {
             let refused = await phone.lifecycle.refused
             #expect(refused.isEmpty, "\(phone.name) refused: \(refused)")
-            #expect(await !phone.lifecycle.lifecycleEvents.contains(.started), "\(phone.name) reported started")
+            let reported = await phone.lifecycle.lifecycleEvents
+            #expect(!reported.contains(.started), "\(phone.name) reported started")
+            // Consent and plan ends are the coordinator's (amendment 15).
+            #expect(!reported.contains { event in
+                switch event {
+                case .consentNeeded, .consentGiven, .consentCancelled, .planEnded: true
+                default: false
+                }
+            }, "\(phone.name) reported a coordinator's event")
         }
     }
 }
@@ -254,7 +340,7 @@ func consentForEverything() -> FixedPolicyEngine {
     FixedPolicyEngine { message in
         .needsConsent(Disclosure(
             recipient: message.envelope.recipient, recipientModel: nil, items: [],
-            conversation: message.envelope.conversation, skill: message.envelope.skill
+            conversation: message.envelope.conversation, skill: message.envelope.skill, interaction: message.context.interaction
         ))
     }
 }

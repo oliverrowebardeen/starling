@@ -54,7 +54,8 @@ import Testing
         try await Task.sleep(for: .milliseconds(300))
         // The coordinator applies the pass; the service adds nothing and
         // sends nothing more, retries included.
-        #expect(await a.lifecycle.state(mine) == .awaitingConsent(resume: .negotiating))
+        #expect(await a.lifecycle.state(mine) == .ended(.declined))
+        #expect(await a.lifecycle.lifecycleEvents.isEmpty)
         #expect(await world.wire.sent(by: a.id).isEmpty)
         #expect(await consent.requests == 1)
         await world.expectCleanLifecycles()
@@ -315,8 +316,8 @@ final class Mallory: Sendable {
     }
 
     @discardableResult
-    func send(_ body: MessageBody, to peer: PeerID, in conversation: ConversationID) async throws -> Envelope {
-        try await outbox.send(body, to: peer, conversation: conversation, skill: DownFor.ref)
+    func send(_ body: MessageBody, to peer: PeerID, in conversation: ConversationID, mode: SendMode = .askQuietly) async throws -> Envelope {
+        try await outbox.send(body, to: peer, conversation: conversation, skill: DownFor.ref, mode: mode)
     }
 
     func next(_ kind: MessageBody.Kind, in conversation: ConversationID? = nil) async throws -> Envelope {

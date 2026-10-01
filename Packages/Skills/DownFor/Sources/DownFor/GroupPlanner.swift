@@ -8,9 +8,6 @@ struct CandidateAnswers: Hashable, Sendable {
     let overlap: [TimeSlot]
     /// The starter's activities this friend accepts.
     let activities: [Keyword]
-    /// The friend's answer to the budget query: the lower of the two caps,
-    /// or nil if it was not asked or was declined.
-    let budget: MoneyAmount?
 }
 
 /// Builds the group plan from every friend's private answers (private
@@ -28,7 +25,6 @@ enum GroupPlanner {
     static func plan(
         hub: PeerID,
         liked: [Keyword],
-        budgetCap: MoneyAmount?,
         candidates: [PeerID: CandidateAnswers],
         maxMinutes: Int64,
         now: Date
@@ -58,12 +54,6 @@ enum GroupPlanner {
 
         var values: [IssueKey: IssueValue] = [.time: .slots([time]), .activity: .keywords([best.activity])]
         if best.members.count >= 2 { values[.people] = .peers([hub] + best.members) }
-        // The lowest cap anyone named. Every answer is already at or below
-        // the starter's own cap, in its currency.
-        let budgets = best.members.compactMap { candidates[$0]!.budget } + (budgetCap.map { [$0] } ?? [])
-        if let lowest = budgets.filter({ $0.currency == budgetCap?.currency }).min(by: { $0.minorUnits < $1.minorUnits }) {
-            values[.budget] = .amount(lowest)
-        }
         guard let terms = try? Terms(values) else { return nil }
         return (terms, best.members)
     }

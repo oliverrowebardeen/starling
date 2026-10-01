@@ -12,6 +12,7 @@ struct RunKey: Hashable, Sendable {
 /// What is needed to tell a friend "no plan" after the run is gone.
 struct Notice: Sendable {
     let key: RunKey
+    let mode: SendMode
     /// The request the notice is sent for; it goes only while that is live.
     let request: InteractionID
     let chainedFrom: ConversationID?
@@ -45,11 +46,15 @@ struct Run: Sendable {
     var phase = Phase.psi
     /// The starter's `chainedFrom`, carried on every envelope of the run.
     let chainedFrom: ConversationID?
+    /// The starter's send mode, carried on every envelope of the run: a
+    /// member echoes the mode it received (ADR 0020).
+    let mode: SendMode
     let psiSessionID: UUID
-    let psi: any PSISession
-    let tokens: SlotTokenSet
+    /// Nil for an invitation, which skips mutual reveal.
+    let psi: (any PSISession)?
+    let tokens: SlotTokenSet?
     /// Told to the policy with every PSI step: the provider and the free
-    /// slots the set was built from (Core v1.1).
+    /// slots the set was built from (Core v1.1), and the interaction.
     let psiContext: OutboundContext
     var nextInboundPSIStep: UInt8
     var overlap: [TimeSlot]?
@@ -58,10 +63,12 @@ struct Run: Sendable {
     var queries: [MessageID: IssueKey] = [:]
     var pendingQueries: Set<IssueKey> = []
     var activityAnswer: [Keyword]?
-    var budgetAnswer: MoneyAmount?
+    var askedActivities: [Keyword] = []
 
-    // Member: issues answered, each once.
+    // Member: issues answered, each once, and the queries by envelope, so
+    // each answer tells the policy which query it answers.
     var answeredIssues: Set<IssueKey> = []
+    var receivedQueries: [MessageID: Query] = [:]
 
     /// Hub: every envelope that carried the current proposal to the member.
     /// Member: every envelope the current proposal arrived in.
@@ -90,19 +97,37 @@ struct Run: Sendable {
     /// work (and without a second model call).
     var replies: [Signature: Reply] = [:]
 
+    /// A quiet ask: mutual reveal first.
     init(key: RunKey, request: InteractionID, role: Role, chainedFrom: ConversationID?, psiSessionID: UUID, psi: any PSISession, tokens: SlotTokenSet, provider: PSIProviderDescriptor) {
         self.key = key
         self.request = request
         self.role = role
         self.chainedFrom = chainedFrom
+        mode = .askQuietly
         self.psiSessionID = psiSessionID
         self.psi = psi
         self.tokens = tokens
-        psiContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: provider, inputs: [.time: .slots(tokens.slots)]))
+        psiContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: provider, inputs: [.time: .slots(tokens.slots)]), interaction: request)
         nextInboundPSIStep = role == .hub ? 1 : 0
     }
 
-    var notice: Notice { Notice(key: key, request: request, chainedFrom: chainedFrom, lastInbound: lastInbound) }
+    /// An invitation: the starter's proposal goes straight to the friend.
+    init(invitation key: RunKey, request: InteractionID, role: Role, chainedFrom: ConversationID?, terms: Terms) {
+        self.key = key
+        self.request = request
+        self.role = role
+        self.chainedFrom = chainedFrom
+        mode = .invite
+        psiSessionID = UUID()
+        psi = nil
+        tokens = nil
+        psiContext = OutboundContext(interaction: request)
+        nextInboundPSIStep = 0
+        phase = .proposed
+        self.terms = terms
+    }
+
+    var notice: Notice { Notice(key: key, mode: mode, request: request, chainedFrom: chainedFrom, lastInbound: lastInbound) }
 
     /// A run we started whose first PSI step the friend has not answered:
     /// it has learned nothing from the friend.
@@ -117,6 +142,7 @@ struct Finished: Sendable {
     let request: InteractionID
     let replies: [Signature: Reply]
     let chainedFrom: ConversationID?
+    let mode: SendMode
 }
 
 /// How a run ended. Never shown to anyone; only the request's lifecycle is.

@@ -61,9 +61,8 @@ import Testing
         // The model claims every pair, the avoided one included.
         let matches = candidates.map { KeywordMatch(wanted: T.keyword("food"), offered: $0, strength: .satisfies) }
             + [KeywordMatch(wanted: T.keyword("invented"), offered: T.keyword("movie"), strength: .equivalent)]
+        // A subset of the starter's own candidates: a yes or no on each.
         #expect(profile.acceptableActivities(candidates: candidates, matches: matches) == ["boba run", "movie"].map(T.keyword))
-        #expect(profile.budgetAnswer(for: T.usd(30)) == T.usd(15))
-        #expect(profile.budgetAnswer(for: try MoneyAmount(minorUnits: 100, currency: "EUR")) == nil)
     }
 }
 
@@ -71,8 +70,8 @@ import Testing
     let hub = PeerID.random()
     let peers = (0..<3).map { _ in PeerID.random() }.sorted()
 
-    func answers(_ slots: [TimeSlot], _ activities: [String], budget: Int64? = nil) -> CandidateAnswers {
-        CandidateAnswers(overlap: slots, activities: activities.map(T.keyword), budget: budget.map(T.usd))
+    func answers(_ slots: [TimeSlot], _ activities: [String]) -> CandidateAnswers {
+        CandidateAnswers(overlap: slots, activities: activities.map(T.keyword))
     }
 
     func halfHours(_ from: Double, _ to: Double) -> [TimeSlot] {
@@ -81,10 +80,10 @@ import Testing
 
     @Test func picksThePlanThatIncludesTheMostFriends() throws {
         let (terms, members) = try #require(GroupPlanner.plan(
-            hub: hub, liked: ["boba", "tacos"].map(T.keyword), budgetCap: T.usd(20),
+            hub: hub, liked: ["boba", "tacos"].map(T.keyword),
             candidates: [
-                peers[0]: answers(halfHours(19, 21), ["boba"], budget: 15),
-                peers[1]: answers(halfHours(20, 22), ["boba", "tacos"], budget: 12),
+                peers[0]: answers(halfHours(19, 21), ["boba"]),
+                peers[1]: answers(halfHours(20, 22), ["boba", "tacos"]),
                 peers[2]: answers(halfHours(19, 20), ["tacos"]),
             ],
             maxMinutes: 120, now: T.now
@@ -94,32 +93,32 @@ import Testing
         #expect(terms[.people] == .peers([hub, peers[0], peers[1]]))
         #expect(terms[.activity] == .keywords([T.keyword("boba")]))
         #expect(terms[.time] == .slots([T.slot(20, 21)]))
-        #expect(terms[.budget] == .amount(T.usd(12)))
+        // Budget never leaves the phone (ADR 0019).
+        #expect(terms[.budget] == nil)
     }
 
     @Test func tiesGoToTheStartersFirstChoiceThenTheEarliestTime() throws {
         let (terms, members) = try #require(GroupPlanner.plan(
-            hub: hub, liked: ["boba", "tacos"].map(T.keyword), budgetCap: nil,
+            hub: hub, liked: ["boba", "tacos"].map(T.keyword),
             candidates: [peers[0]: answers(halfHours(19, 23), ["tacos", "boba"])],
             maxMinutes: 120, now: T.now
         ))
         #expect(terms[.activity] == .keywords([T.keyword("boba")]))
         #expect(terms[.time] == .slots([T.slot(19, 21)]))
-        #expect(terms[.budget] == nil)
         // A pair: no roster on the wire.
         #expect(members == [peers[0]] && terms[.people] == nil)
     }
 
     @Test func noSharedActivityMeansNoPlan() {
         #expect(GroupPlanner.plan(
-            hub: hub, liked: [T.keyword("boba")], budgetCap: nil,
+            hub: hub, liked: [T.keyword("boba")],
             candidates: [peers[0]: answers(halfHours(19, 21), [])], maxMinutes: 120, now: T.now
         ) == nil)
     }
 
     @Test func slotsThatHaveStartedAreSkipped() throws {
         let (terms, _) = try #require(GroupPlanner.plan(
-            hub: hub, liked: [T.keyword("boba")], budgetCap: nil,
+            hub: hub, liked: [T.keyword("boba")],
             candidates: [peers[0]: answers(halfHours(19, 21), ["boba"])], maxMinutes: 120, now: T.at(19.6)
         ))
         #expect(terms[.time] == .slots([T.slot(20, 21)]))
