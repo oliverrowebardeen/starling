@@ -73,7 +73,7 @@ extension DownForService {
         let revision = (request.mirror.proposalRevision ?? 0) + 1
         // A proposal round is bounded on the wire; so are re-plans.
         guard revision <= UInt32(ProtocolLimits.maxNegotiationRounds) else {
-            endRequest(id, with: .noAgreement, telling: .tooManyRounds)
+            endRequest(id, with: .noAgreement)
             return
         }
         let card = SkillProposal(revision: revision, participants: roster, terms: terms, plan: DownForProfile.plan(from: terms, origin: request.conversation, hub: localPeer, member: first))
@@ -122,14 +122,14 @@ extension DownForService {
         let remaining = group.members.filter { !peers.contains($0) && runs[RunKey(conversation: request.conversation, peer: $0)] != nil }
         for peer in remaining { runs[RunKey(conversation: request.conversation, peer: peer)]?.phase = .ready }
         guard let plan = plan(for: remaining, in: id) else {
-            endRequest(id, with: .noAgreement, telling: .noOverlap)
+            endRequest(id, with: .noAgreement)
             return
         }
         let before = requests[id]?.mirror.proposalRevision
         propose(plan.terms, to: plan.members, in: id)
         // Could not show the new card (a consent sheet is up): nobody is up
         // for the old one any more.
-        if requests[id]?.mirror.proposalRevision == before { endRequest(id, with: .noAgreement, telling: .noOverlap) }
+        if requests[id]?.mirror.proposalRevision == before { endRequest(id, with: .noAgreement) }
     }
 
     /// When a proposal's window passes: friends who have not said "I'm in"
@@ -145,7 +145,7 @@ extension DownForService {
     private func windowPassed(_ id: InteractionID, revision: UInt32) {
         guard let request = requests[id], let group = request.group, group.revision == revision, group.confirming == nil else { return }
         guard group.ownerAccepted else {
-            endRequest(id, with: .expired, telling: .expired)
+            endRequest(id, with: .expired)
             return
         }
         let late = group.members.filter { runs[RunKey(conversation: request.conversation, peer: $0)]?.accepted != true }
@@ -177,6 +177,7 @@ extension DownForService {
               requests[run.request]?.group?.terms == terms
         else { return }
         runs[key]?.accepted = true
+        runs[key]?.acceptedProposal = acceptance.proposal
         runs[key]?.phase = .accepted
         // Stop resending the proposal. The window bounds the wait from here.
         runs[key]?.outstanding = []
@@ -213,7 +214,7 @@ extension DownForService {
         guard confirming.isEmpty, report(id, .everyoneConfirmed(revision: group.revision)) else { return }
         produceArtifacts(id, terms: group.terms, origin: request.conversation, peer: group.members[0])
         for key in runs.keys where runs[key]?.request == id { end(key, .matched) }
-        armPlanEnd(id)
+        armCleanup(id)
     }
 
     // MARK: - Nobody up
@@ -231,7 +232,7 @@ extension DownForService {
         if participants.isSubset(of: request.unsupported) {
             report(id, .unsupported)
         } else {
-            endRequest(id, with: .noAgreement, telling: nil)
+            endRequest(id, with: .noAgreement)
         }
     }
 

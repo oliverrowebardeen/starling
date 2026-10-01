@@ -96,8 +96,11 @@ import Testing
         try await a.waitForProposal(ids[0])
         try await c.waitForProposal(ids[2])
         try await eventually("held") { await policy.held == 1 }
-        try await c.service.answer(ids[2], with: .pass)
-        // A re-plans for two while the send of revision 1 is still in flight.
+        // C's card now says it cannot run Down for... (an update, say): A
+        // drops C at once and re-plans for two while the send of revision 1
+        // is still in flight.
+        let card = try AgentCard(model: .onDevice, capabilities: [], skills: [])
+        await a.service.handle(.message(try Envelope(conversation: ConversationID(), sender: c.id, recipient: a.id, sequence: 0, sentAt: Timestamp(T.now), body: .hello(card))))
         try await a.waitForProposal(ids[0], revision: 2)
 
         // Now revision 1's send is denied: a superseded step says nothing.

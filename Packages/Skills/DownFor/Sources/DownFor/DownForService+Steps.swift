@@ -61,11 +61,16 @@ extension DownForService {
             }
             // Committed to a lower starter already: that group comes first.
             if case .member(let current) = request.engagement, current.peer < peer { continue }
-            guard request.runs[peer, default: 0] < configuration.maxRunsPerPeer else { continue }
-            // Our own run with this friend gives way to theirs.
+            // Our own run with this friend gives way to theirs. Only a run we
+            // started that the friend never answered is given back to the
+            // run cap (both started at once, ADR 0120 item 2); every run a
+            // friend starts counts, so fresh conversations cannot probe our
+            // free time past the cap.
+            let refundable = runs.values.filter { $0.request == request.id && $0.key.peer == peer && $0.isUnansweredStart }.count
+            guard request.runs[peer, default: 0] - refundable < configuration.maxRunsPerPeer else { continue }
             for key in runs.keys where runs[key]?.request == request.id && key.peer == peer {
+                if runs[key]?.isUnansweredStart == true { requests[request.id]?.runs[peer, default: 1] -= 1 }
                 end(key, .yielded, react: false)
-                requests[request.id]?.runs[peer, default: 1] -= 1
             }
             let tokens = request.profile.tokens(now: clock.now())
             guard !tokens.slots.isEmpty,
@@ -95,14 +100,16 @@ extension DownForService {
             if let signature, let reply = run.replies[signature] {
                 if case .offer = signature { runs[key]?.proposalEnvelopes.append(envelope.id) }
                 let context: OutboundContext = if case .psi = reply { run.psiContext } else { .empty }
-                await replay(reply, answering: envelope, chainedFrom: run.chainedFrom, context: context)
+                await replay(reply, answering: envelope, for: run.request, chainedFrom: run.chainedFrom, context: context)
                 return
             }
             await dispatch(envelope, in: key)
         } else if let record = finished[key] {
-            // Only a plan is worth repeating: the peer lost our last message.
-            guard let signature, let reply = record.replies[signature] else { return }
-            await replay(reply, answering: envelope, chainedFrom: record.chainedFrom, context: .empty)
+            // Only a plan is worth repeating, and only while it stands: the
+            // peer lost our last message. A request withdrawn since sends
+            // nothing (review of PR #56, finding 2).
+            guard requests[record.request]?.mirror.state == .planned, let signature, let reply = record.replies[signature] else { return }
+            await replay(reply, answering: envelope, for: record.request, chainedFrom: record.chainedFrom, context: .empty)
         } else if case .psi(let frame) = envelope.body {
             await respond(to: envelope, frame: frame)
         }
@@ -287,10 +294,17 @@ extension DownForService {
               let request = requests[run.request], request.engagement == .member(key)
         else { return }
         let terms = proposal.terms
+        // Rounds only rise. An older round (a retry of round 0 in a fresh
+        // envelope) is stale, and a second set of terms for the same round
+        // is not to be trusted (review of PR #56, finding 5).
+        if let highest = run.highestRound {
+            guard proposal.round >= highest else { return }
+            if proposal.round == highest, run.terms != terms { return }
+        }
         guard request.profile.permits(terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now()) else {
             // Not a plan this owner can be in: no card, and the starter
-            // carries on without us.
-            enqueue(.notify(run.notice, .policy), for: key.peer)
+            // carries on without us. It reads as an ordinary no.
+            enqueue(.notify(run.notice, .noOverlap), for: key.peer)
             return end(key, .rejected)
         }
         if run.terms == terms {
@@ -305,6 +319,7 @@ extension DownForService {
         // next resend brings it back.
         guard report(run.request, .proposalReady(card)) else { return }
         if let old = run.terms { runs[key]?.replies[.offer(old)] = nil }
+        runs[key]?.highestRound = proposal.round
         runs[key]?.terms = terms
         runs[key]?.accepted = false
         runs[key]?.phase = .proposed
@@ -323,14 +338,17 @@ extension DownForService {
     }
 
     private func handleConfirmation(_ acceptance: Acceptance, in key: RunKey) {
+        // The confirmation must name a proposal envelope that carried the
+        // terms the owner accepted.
         guard let run = runs[key], run.phase == .accepted, let terms = run.terms, acceptance.terms == terms,
+              run.proposalEnvelopes.contains(acceptance.proposal),
               let revision = requests[run.request]?.mirror.proposalRevision
         else { return }
         // Everyone in the plan said yes to exactly these terms.
         guard report(run.request, .everyoneConfirmed(revision: revision)) else { return }
         produceArtifacts(run.request, terms: terms, origin: key.conversation, peer: key.peer)
         end(key, .matched)
-        armPlanEnd(run.request)
+        armCleanup(run.request)
     }
 
     /// A member's run ended without a plan. With a card already shown, the
@@ -340,7 +358,7 @@ extension DownForService {
         // A run we were only answering: our own group may go ahead now.
         guard request.engagement == .member(key) else { return considerProposing(id) }
         if request.mirror.proposal != nil {
-            endRequest(id, with: .noAgreement, telling: nil)
+            endRequest(id, with: .noAgreement)
             return
         }
         requests[id]?.engagement = .hub
@@ -373,8 +391,11 @@ extension DownForService {
             guard run.role == .member, run.phase == .accepted, let terms = run.terms, let proposal = run.proposalEnvelopes.last else { return }
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)
         case .confirm:
-            guard run.role == .hub, let terms = run.terms else { return }
-            _ = await send(.accept(Acceptance(proposal: run.proposalEnvelopes.last ?? MessageID(), terms: terms)), in: key)
+            if run.role == .hub, let terms = run.terms, let proposal = run.acceptedProposal {
+                _ = await send(.accept(Acceptance(proposal: proposal, terms: terms)), in: key)
+            }
+            // Sent, lost, or impossible: the plan does not wait on it. A
+            // member who missed it retries, and gets the cached reply.
             confirmationSent(run.request, to: key.peer)
         }
     }

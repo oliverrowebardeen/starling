@@ -12,6 +12,8 @@ struct RunKey: Hashable, Sendable {
 /// What is needed to tell a friend "no plan" after the run is gone.
 struct Notice: Sendable {
     let key: RunKey
+    /// The request the notice is sent for; it goes only while that is live.
+    let request: InteractionID
     let chainedFrom: ConversationID?
     let lastInbound: MessageID?
 }
@@ -65,6 +67,12 @@ struct Run: Sendable {
     /// Member: every envelope the current proposal arrived in.
     var proposalEnvelopes: [MessageID] = []
     var terms: Terms?
+    /// Member: the highest proposal round received. A lower round, even in
+    /// a fresh envelope, is an old proposal and never replaces the card.
+    var highestRound: UInt16?
+    /// Hub: the proposal envelope the member's acceptance named, which the
+    /// confirmation names back.
+    var acceptedProposal: MessageID?
     /// Hub: the member accepted `terms`. Member: we did.
     var accepted = false
     var lastInbound: MessageID?
@@ -94,12 +102,19 @@ struct Run: Sendable {
         nextInboundPSIStep = role == .hub ? 1 : 0
     }
 
-    var notice: Notice { Notice(key: key, chainedFrom: chainedFrom, lastInbound: lastInbound) }
+    var notice: Notice { Notice(key: key, request: request, chainedFrom: chainedFrom, lastInbound: lastInbound) }
+
+    /// A run we started whose first PSI step the friend has not answered:
+    /// it has learned nothing from the friend.
+    var isUnansweredStart: Bool { role == .hub && phase == .psi && nextInboundPSIStep == 1 }
 }
 
 /// What stays of a run that ended in a plan, so a late retry of the peer's
 /// last message (a lost confirmation) still gets its reply.
 struct Finished: Sendable {
+    /// The request whose plan this was. Replies are replayed only while it
+    /// is planned, and dropped when it ends.
+    let request: InteractionID
     let replies: [Signature: Reply]
     let chainedFrom: ConversationID?
 }

@@ -132,27 +132,28 @@ extension DownForService {
         }
     }
 
-    /// Sends outside any live run: a cached reply replayed, or a "no plan"
-    /// notice. Failures are ignored; the peer's own deadline covers them.
-    /// Still tracked by request, so withdrawing cancels it.
-    func deliver(_ body: MessageBody, to key: RunKey, chainedFrom: ConversationID?, context: OutboundContext = .empty) async {
+    /// Sends outside a run's own steps: a cached reply replayed, or a "no
+    /// plan" notice. Only for a request that is still live: nothing leaves
+    /// for one that ended. Tracked by request, so ending it cancels the
+    /// send. Failures are ignored; the peer's own deadline covers them.
+    func deliver(_ body: MessageBody, to key: RunKey, for request: InteractionID, chainedFrom: ConversationID?, context: OutboundContext = .empty) async {
+        guard requests[request] != nil else { return }
         let card = cards[key.peer]
-        let request = runs[key]?.request ?? requests.values.first { $0.conversation == key.conversation }?.id
         _ = await cancellable(run: nil, request: request) { [outbox] in
             try await outbox.send(body, to: key.peer, conversation: key.conversation, recipientCard: card, context: context, skill: DownFor.ref, chainedFrom: chainedFrom)
         }
     }
 
     func tell(_ notice: Notice, _ reason: Rejection.Reason) async {
-        await deliver(.reject(Rejection(proposal: notice.lastInbound ?? MessageID(), reason: reason)), to: notice.key, chainedFrom: notice.chainedFrom)
+        await deliver(.reject(Rejection(proposal: notice.lastInbound ?? MessageID(), reason: reason)), to: notice.key, for: notice.request, chainedFrom: notice.chainedFrom)
     }
 
-    func replay(_ reply: Reply, answering envelope: Envelope, chainedFrom: ConversationID?, context: OutboundContext) async {
+    func replay(_ reply: Reply, answering envelope: Envelope, for request: InteractionID, chainedFrom: ConversationID?, context: OutboundContext) async {
         guard let body = try? reply.body(answering: envelope) else { return }
         // A replayed offer or acceptance is only worth sending while its
         // plan is still ahead.
         if let start = Self.planStart(of: body), !DownForProfile.hasNotStarted(start, now: clock.now()) { return }
-        await deliver(body, to: RunKey(conversation: envelope.conversation, peer: envelope.sender), chainedFrom: chainedFrom, context: context)
+        await deliver(body, to: RunKey(conversation: envelope.conversation, peer: envelope.sender), for: request, chainedFrom: chainedFrom, context: context)
     }
 
     private func noteSent(_ envelope: Envelope, in key: RunKey) {
@@ -304,7 +305,7 @@ extension DownForService {
         cancelWork { $0.run == key }
         diagnostics.outcomes[outcome, default: 0] += 1
         if outcome == .matched {
-            finished[key] = Finished(replies: run.replies, chainedFrom: run.chainedFrom)
+            finished[key] = Finished(request: run.request, replies: run.replies, chainedFrom: run.chainedFrom)
             finishedOrder.append(key)
             while finishedOrder.count > configuration.maxFinishedRuns { finished[finishedOrder.removeFirst()] = nil }
         }

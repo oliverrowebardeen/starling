@@ -217,7 +217,7 @@ public actor DownForService: SkillService {
             // "If you pass, they just won't see it": the group carries on
             // without the owner, or ends for everyone the same way silence
             // would.
-            guard endRequest(interaction, with: .ownerPassed, telling: .declinedByOwner) else { throw DownForError.notWaitingForOwner }
+            guard endRequest(interaction, with: .ownerPassed) else { throw DownForError.notWaitingForOwner }
         case .accept(let revision):
             guard revision == request.mirror.proposalRevision else { throw DownForError.staleProposal(current: request.mirror.proposalRevision) }
             guard request.mirror.state == .proposed else { throw DownForError.notWaitingForOwner }
@@ -230,7 +230,7 @@ public actor DownForService: SkillService {
     /// including one waiting on a consent sheet. Nothing more leaves for it;
     /// friends learn nothing beyond "no plan", when their own wait runs out.
     public func withdraw(_ interaction: InteractionID) async {
-        endRequest(interaction, with: .withdrawn, telling: nil)
+        endRequest(interaction, with: .withdrawn)
     }
 
     /// The request a conversation's sends belong to on this phone: its own
@@ -272,7 +272,7 @@ public actor DownForService: SkillService {
                 guard let record = try? await store.record(for: interaction.id) ?? Self.placeholder(for: interaction) else { continue }
                 let profile = DownForProfile(rules: record.rules, inputs: record.inputs, expiresAt: record.expiresAt.date, timeZone: timeZone)
                 requests[interaction.id] = Request(record: record, profile: profile, mirror: interaction)
-                armPlanEnd(interaction.id)
+                armCleanup(interaction.id)
             case .negotiating where interaction.role == .initiator:
                 // Runs in flight died with the old process; their peers time
                 // out. Start fresh ones under the same conversation.
@@ -329,15 +329,13 @@ public actor DownForService: SkillService {
         return true
     }
 
-    /// Reports a final `event` and, if it applied, tells every friend whose
-    /// run got past PSI "no plan" (`reason`), so their side ends now rather
-    /// than at a timeout. Nobody's owner sees why.
+    /// Reports a final `event`. Nothing is sent: a pass, a withdrawal, an
+    /// expiry, or a group that fell apart all look to friends like someone
+    /// who stopped answering, with the same content and timing, so nobody
+    /// can tell a pass from not taking part (review of PR #56, finding 4).
     @discardableResult
-    func endRequest(_ id: InteractionID, with event: InteractionEvent, telling reason: Rejection.Reason?) -> Bool {
-        let told = runs.values.filter { $0.request == id && $0.phase != .psi }.map(\.notice)
-        guard report(id, event) else { return false }
-        if let reason { for notice in told { enqueue(.notify(notice, reason), for: notice.key.peer) } }
-        return true
+    func endRequest(_ id: InteractionID, with event: InteractionEvent) -> Bool {
+        report(id, event)
     }
 
     /// Ends the request without reporting: the coordinator applies `event`
@@ -358,6 +356,7 @@ public actor DownForService: SkillService {
     }
 
     func produce(_ id: InteractionID, _ artifact: Artifact) {
+        requests[id]?.mirror.record(artifact)
         continuation.yield(.produced(id, artifact))
     }
 
@@ -370,6 +369,10 @@ public actor DownForService: SkillService {
         request.group?.window?.cancel()
         for key in runs.keys where runs[key]?.request == id { end(key, .withdrawn) }
         cancelWork { $0.request == id }
+        // A plan's cached replies go with it: nothing is replayed for a
+        // request that ended (review of PR #56, finding 2).
+        for key in finished.keys where finished[key]?.request == id { finished[key] = nil }
+        finishedOrder.removeAll { finished[$0] == nil }
         guard !keepingRecord else { return }
         let store = store
         Task { try? await store.remove(id) }
@@ -403,19 +406,26 @@ public actor DownForService: SkillService {
         guard let request = requests[id] else { return }
         switch request.mirror.state {
         // Nobody was up for it before the request ran out.
-        case .negotiating, .awaitingConsent(resume: .negotiating): endRequest(id, with: .noAgreement, telling: .expired)
+        case .negotiating, .awaitingConsent(resume: .negotiating): endRequest(id, with: .noAgreement)
         case .planned, .done, .ended: return
-        default: endRequest(id, with: .expired, telling: .expired)
+        default: endRequest(id, with: .expired)
         }
     }
 
-    func armPlanEnd(_ id: InteractionID) {
+    /// How long after a plan ends its request is kept, to answer a member's
+    /// late retry with the confirmation it lost.
+    static let planGrace: TimeInterval = 30 * 60
+
+    /// Forgets a planned request a while after its plan ends. The
+    /// coordinator applies `planEnded` itself (ADR 0011, amendment 15), so
+    /// this reports nothing.
+    func armCleanup(_ id: InteractionID) {
         guard let end = requests[id]?.mirror.plan?.endsAt else { return }
-        let delay = end.timeIntervalSince(clock.now())
+        let delay = end.addingTimeInterval(Self.planGrace).timeIntervalSince(clock.now())
         requests[id]?.timer?.cancel()
         requests[id]?.timer = Task { [weak self, clock] in
             do { try await clock.sleep(.milliseconds(Int64(max(0, delay) * 1000))) } catch { return }
-            await self?.report(id, .planEnded)
+            await self?.discard(id)
         }
     }
 
