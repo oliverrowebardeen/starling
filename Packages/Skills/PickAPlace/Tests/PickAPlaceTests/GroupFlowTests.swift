@@ -159,6 +159,24 @@ struct GroupFlowTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    @Test func theConfirmDeadlineHoldsBeforeTheOwnerTaps() async throws {
+        let quick = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                            answerWindow: .seconds(3), confirmWindow: .milliseconds(400))
+        let (group, oliver, maya, jake) = try await threeFriends(configuration: quick)
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        try await maya.accept(in: conversation)
+
+        // Jake never answers, and the deadline passes before Oliver taps.
+        #expect(await jake.reaches(.ended(.expired), in: conversation, within: 2))
+        try await oliver.accept(in: conversation)
+        #expect(await oliver.reaches(.planned, in: conversation, within: 0.5))
+        #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, maya.id] })
+        #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aFriendWhomNothingFitsStaysSilentAndIsLeftOut() async throws {
         let (group, oliver, maya, jake) = try await threeFriends(
             jakeLimits: limits(budget: 5, needs: ["halal"], avoid: ["boba"]),

@@ -36,6 +36,12 @@ struct Organizer {
     /// Friends who passed or took their yes back. Final: a late or
     /// repeated yes from them is ignored, so a withdrawal is never undone.
     var passed: Set<PeerID> = []
+    /// Friends who had not answered the proposal when the confirm deadline
+    /// passed. Final, like a pass.
+    var timedOut: Set<PeerID> = []
+    /// When friends who have not answered the proposal are left out. An
+    /// absolute time, so it holds whether or not the owner has tapped yet.
+    var confirmDeadline: Date?
     var ownerAccepted = false
     var finalTerms: Terms?
     var confirmationsRepeated: [PeerID: Int] = [:]
@@ -54,7 +60,7 @@ struct Organizer {
     var stillInvolved: [PeerID] {
         switch phase {
         case .asking: friends.filter { !out.contains($0) }
-        case .proposing: invited.filter { !passed.contains($0) }
+        case .proposing: invited.filter { !passed.contains($0) && !timedOut.contains($0) }
         case .settled, .ended: []
         }
     }
@@ -167,7 +173,7 @@ extension PickAPlaceService {
         case (.asking, .reject):
             organizer.out.insert(sender)
         case (.proposing, .accept(let acceptance)):
-            guard organizer.invited.contains(sender), !organizer.passed.contains(sender),
+            guard organizer.invited.contains(sender), !organizer.passed.contains(sender), !organizer.timedOut.contains(sender),
                   acceptance.terms == organizer.proposal?.terms,
                   organizer.proposeIDs[sender]?.contains(acceptance.proposal) == true
             else { return }
@@ -239,13 +245,15 @@ extension PickAPlaceService {
     }
 
     func startProposing(_ conversation: ConversationID) {
-        guard let organizer = organized[conversation] else { return }
+        guard var organizer = organized[conversation] else { return }
+        let deadline = organizer.confirmDeadline ?? clock.now().addingTimeInterval(Self.seconds(configuration.confirmWindow))
+        organizer.confirmDeadline = deadline
+        organized[conversation] = organizer
         for friend in organizer.invited {
             spawn(conversation) { await $0.keepProposing(conversation, friend) }
         }
-        let window = configuration.confirmWindow
         spawn(conversation) { service in
-            guard (try? await service.clock.sleep(window)) != nil, !Task.isCancelled else { return }
+            guard await service.sleep(until: deadline) else { return }
             service.confirmWindowClosed(conversation)
         }
     }
@@ -253,7 +261,8 @@ extension PickAPlaceService {
     func keepProposing(_ conversation: ConversationID, _ friend: PeerID) async {
         var interval = configuration.retryInterval
         while let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal,
-              organizer.invited.contains(friend), !organizer.accepted.contains(friend), !organizer.passed.contains(friend) {
+              organizer.invited.contains(friend), !organizer.accepted.contains(friend), !organizer.passed.contains(friend),
+              !organizer.timedOut.contains(friend) {
             do {
                 let round = UInt16(min(proposal.revision - 1, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
                 let sent = try await send(.propose(Proposal(round: round, terms: proposal.terms)), to: friend,
@@ -298,15 +307,30 @@ extension PickAPlaceService {
 
     func tryFinalize(_ conversation: ConversationID) {
         guard let organizer = organized[conversation], organizer.phase == .proposing, organizer.ownerAccepted else { return }
-        guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.passed.contains($0) }) else { return }
+        guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.passed.contains($0) || organizer.timedOut.contains($0) })
+        else { return }
         finalize(conversation)
     }
 
-    /// Friends who have not answered by now are left out; the owner's own
-    /// yes is still needed.
+    /// The confirm deadline: friends who have not answered are left out now
+    /// and hear the request expired, whether or not the owner has tapped.
+    /// The owner's yes, now or later, confirms with whoever said yes.
     func confirmWindowClosed(_ conversation: ConversationID) {
-        guard let organizer = organized[conversation], organizer.phase == .proposing, organizer.ownerAccepted else { return }
-        finalize(conversation)
+        guard var organizer = organized[conversation], organizer.phase == .proposing else { return }
+        let silent = organizer.invited.filter {
+            !organizer.accepted.contains($0) && !organizer.passed.contains($0) && !organizer.timedOut.contains($0)
+        }
+        organizer.timedOut.formUnion(silent)
+        organized[conversation] = organizer
+        let chainedFrom = organizer.chainedFrom
+        for friend in silent {
+            let lastHeard = organizer.lastHeard[friend]
+            spawn(conversation) { service in
+                await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: .expired)), to: friend,
+                                      conversation: conversation, chainedFrom: chainedFrom)
+            }
+        }
+        tryFinalize(conversation)
     }
 
     /// Confirms the place with everyone who said yes.
@@ -315,7 +339,9 @@ extension PickAPlaceService {
               case .places(let places)? = proposal.terms[.place], let place = places.first
         else { return }
         let yes = organizer.invited.filter(organizer.accepted.contains)
-        let silent = organizer.invited.filter { !organizer.accepted.contains($0) && !organizer.passed.contains($0) }
+        let silent = organizer.invited.filter {
+            !organizer.accepted.contains($0) && !organizer.passed.contains($0) && !organizer.timedOut.contains($0)
+        }
         guard !yes.isEmpty else {
             endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
             return
