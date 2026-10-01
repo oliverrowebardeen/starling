@@ -15,12 +15,6 @@ public protocol PickAPlaceLedger: Sendable {
     func pendingWithdrawals() async throws -> [PendingWithdrawal]
     func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws
     func clearWithdrawal(_ conversation: ConversationID) async throws
-    /// Every candidate this phone has said yes or no about in a
-    /// conversation, across relaunches, so a friend learns about at most
-    /// `ProtocolLimits.maxCandidatesAnsweredPerIssue` of them (ADR 0019,
-    /// decision 6). Recorded before an answer leaves.
-    func answeredCandidates(in conversation: ConversationID) async throws -> Set<PlaceChoice>
-    func recordAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) async throws
     /// An organizer's clock: when its request expires, and its confirm
     /// deadline once it has proposed. A restored organizer keeps them.
     func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines?
@@ -37,12 +31,6 @@ public struct RequestDeadlines: Codable, Hashable, Sendable {
         self.expiresAt = expiresAt
         self.confirmDeadline = confirmDeadline
     }
-}
-
-/// Candidates answered in one conversation.
-public struct AnsweredCandidates: Codable, Hashable, Sendable {
-    public var candidates: Set<PlaceChoice>
-    public var since: Date
 }
 
 /// A yes this phone took back, waiting for the organizer to acknowledge it.
@@ -77,44 +65,33 @@ public struct LedgerUnavailable: Error, Hashable, Sendable {
 public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     public var admissions: [PeerID: [Date]] = [:]
     public var withdrawals: [ConversationID: PendingWithdrawal] = [:]
-    public var answered: [ConversationID: AnsweredCandidates] = [:]
     public var deadlines: [ConversationID: RequestDeadlines] = [:]
 
     public init() {}
 
-    /// How long answered candidates are kept: past any request's life, and
-    /// past the day of ended requests a restart restores.
-    public static let answeredLifetime: TimeInterval = 48 * 3_600
+    /// How long an organizer's deadlines are kept after its request
+    /// expires: past the day of ended requests a restart restores.
+    public static let deadlinesLifetime: TimeInterval = 48 * 3_600
 
     /// How long a withdrawal is retried before the organizer is assumed gone.
     public static let withdrawalLifetime: TimeInterval = 24 * 3_600
 
-    private enum CodingKeys: String, CodingKey { case admissions, withdrawals, answered, deadlines }
+    private enum CodingKeys: String, CodingKey { case admissions, withdrawals, deadlines }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         admissions = try c.decodeIfPresent([PeerID: [Date]].self, forKey: .admissions) ?? [:]
         withdrawals = try c.decodeIfPresent([ConversationID: PendingWithdrawal].self, forKey: .withdrawals) ?? [:]
-        answered = try c.decodeIfPresent([ConversationID: AnsweredCandidates].self, forKey: .answered) ?? [:]
         deadlines = try c.decodeIfPresent([ConversationID: RequestDeadlines].self, forKey: .deadlines) ?? [:]
     }
 
-    mutating func addAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) {
-        if var entry = answered[conversation] {
-            entry.candidates.formUnion(candidates)
-            answered[conversation] = entry
-        } else {
-            answered[conversation] = AnsweredCandidates(candidates: candidates, since: date)
-        }
-    }
 
     /// Drops what is too old to matter.
     mutating func prune(now: Date) {
         let hourAgo = now.addingTimeInterval(-3_600)
         admissions = admissions.mapValues { $0.filter { $0 > hourAgo } }.filter { !$0.value.isEmpty }
         withdrawals = withdrawals.filter { now.timeIntervalSince($0.value.since) < Self.withdrawalLifetime }
-        answered = answered.filter { now.timeIntervalSince($0.value.since) < Self.answeredLifetime }
-        deadlines = deadlines.filter { now.timeIntervalSince($0.value.expiresAt) < Self.answeredLifetime }
+        deadlines = deadlines.filter { now.timeIntervalSince($0.value.expiresAt) < Self.deadlinesLifetime }
     }
 }
 
@@ -123,13 +100,10 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
 public actor InMemoryPickAPlaceLedger: PickAPlaceLedger {
     public private(set) var state = PickAPlaceLedgerState()
     public var failing = false
-    /// Fails only the answered-candidate records.
-    public var failingAnswered = false
 
     public init() {}
 
     public func setFailing(_ failing: Bool) { self.failing = failing }
-    public func setFailingAnswered(_ failing: Bool) { failingAnswered = failing }
 
     public func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines? {
         guard !failing else { throw LedgerUnavailable() }
@@ -141,15 +115,7 @@ public actor InMemoryPickAPlaceLedger: PickAPlaceLedger {
         state.deadlines[conversation] = deadlines
     }
 
-    public func answeredCandidates(in conversation: ConversationID) async throws -> Set<PlaceChoice> {
-        guard !failing, !failingAnswered else { throw LedgerUnavailable() }
-        return state.answered[conversation]?.candidates ?? []
-    }
 
-    public func recordAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) async throws {
-        guard !failing, !failingAnswered else { throw LedgerUnavailable() }
-        state.addAnswered(candidates, in: conversation, at: date)
-    }
 
     public func admissions(since date: Date) async throws -> [PeerID: [Date]] {
         guard !failing else { throw LedgerUnavailable() }
@@ -201,9 +167,6 @@ public actor UserDefaultsPickAPlaceLedger: PickAPlaceLedger {
         Array(try read().withdrawals.values)
     }
 
-    public func answeredCandidates(in conversation: ConversationID) async throws -> Set<PlaceChoice> {
-        try read().answered[conversation]?.candidates ?? []
-    }
 
     public func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines? {
         try read().deadlines[conversation]
@@ -213,9 +176,6 @@ public actor UserDefaultsPickAPlaceLedger: PickAPlaceLedger {
         try update(now: Date()) { $0.deadlines[conversation] = deadlines }
     }
 
-    public func recordAnswered(_ candidates: Set<PlaceChoice>, in conversation: ConversationID, at date: Date) async throws {
-        try update(now: date) { $0.addAnswered(candidates, in: conversation, at: date) }
-    }
 
     public func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws {
         try update(now: Date()) { $0.withdrawals[withdrawal.conversation] = withdrawal }

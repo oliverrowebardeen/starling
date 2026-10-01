@@ -51,8 +51,12 @@ struct AdversarialTests {
             // A query about something other than places.
             .query(try Query(issue: .budget, candidates: .amount(usd(5)))),
         ]
+        // Mallory's own Outbox requires an answer to name a query; a stray
+        // answer names one it never received.
+        let stray = OutboundContext(answering: try Query(issue: .place, candidates: .places([Venues.bobaGuys.choice])))
         for body in bodies {
-            try await mallory.outbox.send(body, to: maya.id, conversation: ConversationID(), skill: skill, mode: .invite, chainedFrom: ConversationID())
+            try await mallory.outbox.send(body, to: maya.id, conversation: ConversationID(), context: body.kind == .answer ? stray : .empty,
+                                          skill: skill, mode: .invite, chainedFrom: ConversationID())
         }
         try await Task.sleep(for: .milliseconds(200))
         #expect(await maya.coordinator.incoming.isEmpty)

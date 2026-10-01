@@ -161,49 +161,39 @@ struct RestoreTests {
         #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
     }
 
-    /// Re-review of PR #55, finding 1: a relaunch never lets a friend ask
-    /// about more places in the same conversation.
-    @Test func aRelaunchNeverOpensNewCandidates() async throws {
+    /// ADR 0021: one conversation answers about at most 16 places per
+    /// friend, across relaunches, because the Outbox reserves every
+    /// candidate an answer covers in the conversation ledger.
+    @Test func aConversationAnswersAtMostSixteenPlacesAcrossRelaunches() async throws {
         let hub = LoopbackHub()
-        let pho = candidate("Pho Hoa", id: "I.pho", tier: .one, kinds: ["restaurant"])
-        let maps = FakeMaps(Venues.all + [pho])
+        let venues = (0..<24).map { candidate("Venue \($0)", id: "I.venue\($0)", tier: .one, kinds: ["cafe"]) }
+        let maps = FakeMaps(venues)
         let maya = Phone("Maya", hub: hub, maps: maps)
         let mallory = Phone("Mallory", hub: hub, maps: maps)
         let group = try await Group([maya, mallory], hub: hub)
         defer { Task { await group.stop() } }
-        let skill = PickAPlaceSkill.ref
         let conversation = ConversationID()
-        func ask(_ places: [PlaceChoice]) async throws {
+        for round in 0..<3 {
+            if round > 0 { await maya.restart() }
+            let places = venues[(round * 8)..<(round * 8 + 8)].map(\.choice)
             try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places(places))), to: maya.id,
-                                          conversation: conversation, skill: skill, mode: .invite)
+                                          conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite)
+            try await Task.sleep(for: .milliseconds(200))
         }
-        let first = [Venues.bobaGuys.choice, Venues.teaLab.choice]
-        try await ask(first)
-        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
-
-        for _ in 0..<2 {
-            await maya.restart()
-            try await ask([Venues.fancy.choice, pho.choice])
-            try await Task.sleep(for: .milliseconds(150))
+        let answered = await group.wire.sent(by: maya.id).flatMap { envelope -> [PlaceChoice] in
+            if case .answer(let answer) = envelope.body, case .places(let places)? = answer.acceptable { places } else { [] }
         }
-        let answered = await group.wire.sent(by: maya.id).compactMap { envelope -> [PlaceChoice]? in
-            if case .answer(let answer) = envelope.body, case .places(let places)? = answer.acceptable { places } else { nil }
-        }
-        #expect(answered.allSatisfy { Set($0).isSubset(of: first) })
-        #expect(try await maya.ledger.answeredCandidates(in: conversation) == Set(first))
-
-        // The same places again are still answered.
-        try await ask(first)
-        #expect(await eventually { await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }.count >= 2 })
+        #expect(Set(answered).count == ProtocolLimits.maxCandidatesAnsweredPerIssue)
+        #expect(Set(answered).isSubset(of: venues[0..<16].map(\.choice)))
     }
 
-    @Test func anUnavailableLedgerAnswersNothing() async throws {
+    @Test func anUnavailableConversationLedgerAnswersNothing() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
         let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all))
         let group = try await Group([maya, mallory], hub: hub)
         defer { Task { await group.stop() } }
-        await maya.ledger.setFailingAnswered(true)
+        await maya.conversations.failAll()
         try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice, Venues.fancy.choice]))),
                                       to: maya.id, conversation: ConversationID(), skill: PickAPlaceSkill.ref, mode: .invite)
         try await Task.sleep(for: .milliseconds(200))
@@ -311,7 +301,7 @@ struct RestoreTests {
         let service = PickAPlaceService(
             localPeer: .random(), outbox: Outbox(transport: RecordingTransport(), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved)),
             pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty },
-            ledger: InMemoryPickAPlaceLedger()
+            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger()
         )
         let now = Timestamp(Date())
         let otherVersion = Interaction(skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), role: .invitee, participants: [.random()], createdAt: now)

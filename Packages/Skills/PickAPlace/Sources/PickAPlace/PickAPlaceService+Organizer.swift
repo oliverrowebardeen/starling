@@ -115,6 +115,7 @@ extension PickAPlaceService {
         guard !friends.isEmpty else {
             organized[conversation]?.phase = .ended
             rememberOrganizer(conversation)
+            retire(conversation)
             // Negotiating, so the state machine ends it as unsupported.
             emit(request.interaction, .unsupported)
             return
@@ -220,8 +221,8 @@ extension PickAPlaceService {
             organized[conversation] = organizer
             withdrawAfterConfirmation(sender, in: conversation)
             return
-        case (.ended, .reject):
-            acknowledge(envelope)
+        case (.ended, _):
+            // Retired: nothing more is sent here (ADR 0021).
             return
         case (.settled, .accept(let acceptance)):
             // A friend who said yes did not hear the confirmation: repeat
@@ -453,14 +454,10 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         cancelTasks(conversation)
         emit(organizer.id, .withdrawn)
-        let chainedFrom = organizer.chainedFrom
-        for friend in roster where friend != localPeer {
-            let lastHeard = organizer.lastHeard[friend]
-            spawn(conversation) { service in
-                await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: .noOverlap)), to: friend,
-                                      conversation: conversation, chainedFrom: chainedFrom)
-            }
+        let goodbyes: [(PeerID, MessageBody)] = roster.filter { $0 != localPeer }.map {
+            ($0, .reject(Rejection(proposal: organizer.lastHeard[$0] ?? MessageID(), reason: .noOverlap)))
         }
+        retire(conversation, after: goodbyes, chainedFrom: organizer.chainedFrom)
     }
 
     /// Takes a friend out of a confirmed plan: everyone left gets the
@@ -474,8 +471,10 @@ extension PickAPlaceService {
         let remaining = roster.filter { $0 != friend }
         guard remaining.count >= 2, let attendees = try? Attendees(remaining) else {
             // Nobody else is left to meet.
+            organizer.phase = .ended
             organized[conversation] = organizer
             emit(organizer.id, .failed)
+            retire(conversation)
             return
         }
         var values = terms.values
@@ -507,14 +506,10 @@ extension PickAPlaceService {
         cancelTasks(conversation)
         rememberOrganizer(conversation)
         if let event { emit(organizer.id, event) }
-        let chainedFrom = organizer.chainedFrom
-        for friend in tell {
-            let lastHeard = organizer.lastHeard[friend]
-            spawn(conversation) { service in
-                await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: reason)), to: friend,
-                                      conversation: conversation, chainedFrom: chainedFrom)
-            }
+        let goodbyes: [(PeerID, MessageBody)] = tell.map {
+            ($0, .reject(Rejection(proposal: organizer.lastHeard[$0] ?? MessageID(), reason: reason)))
         }
+        retire(conversation, after: goodbyes, chainedFrom: organizer.chainedFrom)
     }
 
     /// Keeps a bounded number of finished requests, so late messages are

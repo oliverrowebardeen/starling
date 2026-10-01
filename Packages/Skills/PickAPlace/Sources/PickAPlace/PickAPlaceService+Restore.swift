@@ -30,9 +30,17 @@ extension PickAPlaceService {
         for interaction in interactions where interaction.skill.id == descriptor.id {
             switch interaction.state {
             case .drafting: continue
-            case .planned, .done, .ended:
-                markEnded(interaction.conversation, organizedHere: interaction.role == .initiator)
-                if interaction.role == .initiator, interaction.state == .planned { resumeSettled(interaction) }
+            case .planned:
+                // A confirmed plan stays open for a shorter roster or a
+                // call-off; one this phone cannot rebuild is retired.
+                let rebuilt = interaction.role == .initiator ? resumeSettled(interaction) : resumePlannedInvite(interaction)
+                if !rebuilt { try? await outbox.retire(interaction.conversation) }
+                continue
+            case .done, .ended:
+                // Retired on every ending (ADR 0021), again here in case the
+                // app stopped before it did; a yes still being taken back is
+                // retired once the organizer hears it.
+                if pendingWithdrawals[interaction.conversation] == nil { try? await outbox.retire(interaction.conversation) }
                 continue
             default: break
             }
@@ -42,18 +50,21 @@ extension PickAPlaceService {
             if isNew, interaction.skill.version.isCompatible(with: descriptor.ref.version) {
                 resumed = interaction.role == .initiator ? await resumeOrganizer(interaction) : await resumeInvite(interaction)
             }
-            if !resumed { emit(interaction.id, .failed) }
+            if !resumed {
+                emit(interaction.id, .failed)
+                try? await outbox.retire(conversation)
+            }
         }
     }
 
     /// A settled organizer that can repeat its confirmation, from the stored
     /// proposal and the attendees it produced.
-    private func resumeSettled(_ interaction: Interaction) {
+    @discardableResult
+    private func resumeSettled(_ interaction: Interaction) -> Bool {
         let conversation = interaction.conversation
         guard organized[conversation] == nil, let proposal = interaction.proposal, let (place, roster) = Self.parts(of: proposal),
-              roster.first == localPeer,
-              let attendees = interaction.artifacts.lazy.compactMap({ if case .attendees(let people) = $0 { people.peers } else { nil } }).first
-        else { return }
+              roster.first == localPeer, let attendees = Self.attendees(of: interaction)
+        else { return false }
         var values = proposal.terms.values
         values[.people] = .peers(attendees)
         var organizer = Organizer(
@@ -68,6 +79,32 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         conversationOf[interaction.id] = conversation
         rememberOrganizer(conversation)
+        return true
+    }
+
+    static func attendees(of interaction: Interaction) -> [PeerID]? {
+        interaction.artifacts.compactMap { if case .attendees(let people) = $0 { people.peers } else { nil } }.last
+    }
+
+    /// A friend's confirmed plan, so a shorter roster or a call-off still
+    /// reaches it, and it can still be withdrawn.
+    private func resumePlannedInvite(_ interaction: Interaction) -> Bool {
+        let conversation = interaction.conversation
+        guard invites[conversation] == nil, let proposal = interaction.proposal, let (place, _) = Self.parts(of: proposal),
+              let roster = Self.attendees(of: interaction), let organizer = roster.first, organizer != localPeer, roster.contains(localPeer)
+        else { return false }
+        var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
+                            candidates: [place])
+        invite.announced = true
+        invite.acceptable = [place]
+        invite.revision = proposal.revision
+        invite.proposal = proposal
+        invite.accepted = true
+        invite.finished = true
+        invite.finalRoster = roster
+        invites[conversation] = invite
+        conversationOf[interaction.id] = conversation
+        return true
     }
 
     /// The live step under any open consent sheet. The sheet itself did not
@@ -127,13 +164,12 @@ extension PickAPlaceService {
         case .negotiating:
             // The coordinator recorded the friend who asked.
             guard let organizer = interaction.participants.first, organizer != localPeer else { return false }
-            // The candidates already answered, from the ledger, so only that
-            // set is answered again. With none recorded, the list never
-            // left, and the organizer's next query sets them. An unreadable
-            // ledger leaves the request unable to answer at all.
-            guard let answered = try? await ledger.answeredCandidates(in: conversation) else { return false }
+            // A retired conversation is never resumed. The organizer's next
+            // query sets the candidates; the Outbox keeps the conversation
+            // within its answer budget across relaunches (ADR 0021).
+            guard let retired = try? await conversations.isRetired(conversation), !retired else { return false }
             var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
-                                candidates: Array(answered))
+                                candidates: [])
             invite.announced = true
             invite.revision = interaction.proposalRevision ?? 0
             invites[conversation] = invite

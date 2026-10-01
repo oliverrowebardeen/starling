@@ -125,6 +125,11 @@ public actor PickAPlaceService: SkillService {
     let maps: any PlaceSearching
     let ownerLimits: @Sendable () async -> ConstraintSet
     let ledger: any PickAPlaceLedger
+    /// The phone's one record of retired conversations and candidates
+    /// answered (ADR 0021). The Outbox enforces it on every send; the
+    /// service checks it before opening a request and before an ordinary
+    /// no, and retires through `Outbox.retire(_:)`.
+    let conversations: any ConversationLedger
     /// Whether `requestTimes` has been loaded from `admissions` this launch.
     var admissionsLoaded = false
     let clock: PickAPlaceClock
@@ -137,14 +142,6 @@ public actor PickAPlaceService: SkillService {
     /// Ended invites and organizers, oldest first, for pruning.
     var endedInvites: [ConversationID] = []
     var endedOrganizers: [ConversationID] = []
-    /// Conversations that ended before this launch, oldest first, bounded.
-    /// A message for one opens nothing.
-    var endedConversations: Set<ConversationID> = []
-    /// The ended conversations this phone organized. Only an organizer
-    /// acknowledges a rejection; a friend never does, so two phones can
-    /// never acknowledge each other's acknowledgments.
-    var endedOrganized: Set<ConversationID> = []
-    var endedConversationOrder: [ConversationID] = []
     /// Yeses taken back, retried until the organizer acknowledges them.
     var pendingWithdrawals: [ConversationID: PendingWithdrawal] = [:]
     /// When each friend started requests on this phone, within the last hour.
@@ -171,6 +168,8 @@ public actor PickAPlaceService: SkillService {
     ///   - ownerLimits: The owner's standing budget, diet, and place limits,
     ///     for requests from friends. The organizer's own limits come with
     ///     its `SkillIntent`.
+    ///   - conversations: The `ConversationLedger` the app's Outbox enforces
+    ///     (ADR 0021).
     ///   - ledger: What must survive a relaunch (`UserDefaultsPickAPlaceLedger`
     ///     in the app).
     public init(
@@ -181,6 +180,7 @@ public actor PickAPlaceService: SkillService {
         maps: any PlaceSearching,
         ownerLimits: @escaping @Sendable () async -> ConstraintSet,
         ledger: any PickAPlaceLedger,
+        conversations: any ConversationLedger,
         clock: PickAPlaceClock = .system,
         configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
     ) {
@@ -191,6 +191,7 @@ public actor PickAPlaceService: SkillService {
         self.maps = maps
         self.ownerLimits = ownerLimits
         self.ledger = ledger
+        self.conversations = conversations
         self.clock = clock
         self.configuration = configuration
         (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
@@ -246,25 +247,25 @@ public actor PickAPlaceService: SkillService {
         // Any rejection from the organizer acknowledges a withdrawal: it
         // has left this phone out, or ended the request.
         if case .reject = envelope.body, pendingWithdrawals[conversation]?.organizer == envelope.sender {
-            pendingWithdrawals[conversation] = nil
-            spawn(conversation) { try? await $0.ledger.clearWithdrawal(conversation) }
+            withdrawalAcknowledged(conversation)
         }
         if organized[conversation] != nil {
             organizerReceived(envelope)
         } else if invites[conversation] != nil {
             inviteReceived(envelope)
-        } else if endedConversations.contains(conversation) {
-            // A friend still taking back a yes in a request this phone
-            // organized, and that ended before this launch, hears it is
-            // over, so it stops retrying.
-            if case .reject = envelope.body, endedOrganized.contains(conversation) { acknowledge(envelope) }
+        } else if pendingWithdrawals[conversation] != nil {
+            // Taken back, waiting for the organizer to hear it: nothing
+            // reopens it.
             return
         } else if skill.version.isCompatible(with: descriptor.ref.version) {
+            // A retired conversation is never opened again; a ledger that
+            // cannot say opens nothing (ADR 0021).
+            guard let retired = try? await conversations.isRetired(conversation), !retired else { return }
             await loadAdmissions()
             // Loading suspended: another message may have opened it.
             if invites[conversation] != nil {
                 inviteReceived(envelope)
-            } else if organized[conversation] == nil, admissionsLoaded {
+            } else if organized[conversation] == nil, pendingWithdrawals[conversation] == nil, admissionsLoaded {
                 newInvite(envelope)
             }
         }
@@ -273,21 +274,18 @@ public actor PickAPlaceService: SkillService {
         // would let a friend make this phone send without limit.
     }
 
-    /// Remembers a conversation that ended, so it is never opened again.
-    func markEnded(_ conversation: ConversationID, organizedHere: Bool) {
-        if organizedHere { endedOrganized.insert(conversation) }
-        guard endedConversations.insert(conversation).inserted else { return }
-        endedConversationOrder.append(conversation)
-        while endedConversationOrder.count > Self.maxEndedMarkers {
-            let oldest = endedConversationOrder.removeFirst()
-            endedConversations.remove(oldest)
-            endedOrganized.remove(oldest)
+    /// Ends `conversation` for good (ADR 0021): sends the goodbyes first,
+    /// since retiring cancels sends still in flight, then retires it
+    /// through the Outbox, which records it in the ledger. Nothing is sent
+    /// in it, and nothing reopens it, ever again.
+    func retire(_ conversation: ConversationID, after goodbyes: [(PeerID, MessageBody)] = [], chainedFrom: ConversationID? = nil) {
+        spawn(conversation) { service in
+            for (peer, body) in goodbyes {
+                await service.trySend(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
+            }
+            try? await service.outbox.retire(conversation)
         }
     }
-
-    /// Ended conversations remembered from before this launch: a day of
-    /// requests, with room to spare.
-    static let maxEndedMarkers = 512
 
     /// Tells a friend its rejection was heard, with an ordinary no, so a
     /// withdrawal stops being retried. One reply per rejection received.

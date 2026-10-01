@@ -152,8 +152,12 @@ struct GroupFlowTests {
         // proposal; Jake sends a yes that names no proposal Oliver sent.
         let proposals = await group.wire.envelopes.filter { $0.body.kind == .propose && $0.recipient == maya.id }
         let terms = try #require(await oliver.interaction(conversation)?.proposal?.terms)
-        try await maya.outbox.send(.accept(Acceptance(proposal: try #require(proposals.last).id, terms: terms)), to: oliver.id,
-                                   conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite)
+        // Maya's own phone has retired the conversation and sends nothing
+        // more, so the late yes is one already in flight, injected here.
+        let late = try Envelope(conversation: conversation, sender: maya.id, recipient: oliver.id, sequence: 900, sentAt: Timestamp(Date()),
+                                body: .accept(Acceptance(proposal: try #require(proposals.last).id, terms: terms)),
+                                skill: PickAPlaceSkill.ref, mode: .invite)
+        try await group.hub.inject(Frame(EnvelopeCodec().encode(late)), claimedSender: maya.id, to: oliver.id)
         try await jake.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: oliver.id,
                                    conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite)
         try await Task.sleep(for: .milliseconds(100))

@@ -260,6 +260,9 @@ final class Phone: Sendable {
     let staged = StagedCandidates()
     /// Shared by every service this phone runs, as the app's log would be.
     let ledger = InMemoryPickAPlaceLedger()
+    /// The phone's conversation ledger (ADR 0021), enforced by its Outbox
+    /// and kept across restarts, as the app keeps it.
+    let conversations = InMemoryConversationLedger()
     let coordinator = Coordinator()
     let consent: CoordinatorConsent
     /// Every send the Outbox made, with its context.
@@ -285,13 +288,13 @@ final class Phone: Sendable {
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
-        outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: sends)
+        outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: sends, ledger: conversations)
         card = try! AgentCard(model: model, capabilities: [], skills: skills)
-        let (peer, outbox, store, staged, ledger) = (key.peerID, outbox, store, staged, ledger)
+        let (peer, outbox, store, staged, ledger, conversations) = (key.peerID, outbox, store, staged, ledger, conversations)
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }
         makeService = {
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
-                              ownerLimits: readLimits, ledger: ledger, clock: .system, configuration: configuration)
+                              ownerLimits: readLimits, ledger: ledger, conversations: conversations, clock: .system, configuration: configuration)
         }
         current = Mutex(makeService())
     }

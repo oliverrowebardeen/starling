@@ -165,18 +165,16 @@ extension PickAPlaceService {
             invites[conversation]?.acceptable = acceptable
             invites[conversation]?.facts = facts
         }
-        let saysNo = acceptable.isEmpty && organizerIsOnDevice(invite.organizer)
-        // A yes or no about a candidate is recorded before it leaves; if the
-        // record cannot be kept, or the conversation would pass its limit,
-        // nothing is answered (re-review of PR #55, finding 1).
-        if !acceptable.isEmpty || saysNo {
-            guard await recordAnswered(candidates, in: conversation) else { return }
-        }
         guard !acceptable.isEmpty else {
             // The no goes out without asking only to an organizer whose
             // agent runs on its phone, where the policy needs no sheet; to
             // anyone else the phone stays silent rather than show the owner
-            // a sheet for a request it never showed them.
+            // a sheet for a request it never showed them. A no about these
+            // candidates teaches as much as a list, so it spends the same
+            // budget first: the Outbox reserves an answer's candidates, and
+            // the service reserves a no's (ADR 0021).
+            var saysNo = false
+            if organizerIsOnDevice(invite.organizer) { saysNo = await reserve(candidates, to: invite.organizer, in: conversation) }
             endInvite(conversation, event: .noAgreement, reply: saysNo ? .noOverlap : nil)
             return
         }
@@ -195,21 +193,21 @@ extension PickAPlaceService {
             case OutboxError.denied: endInvite(conversation, event: .blockedByPrivacy, reply: nil)
             // The coordinator applies the pass.
             case OutboxError.consentDeclined: endInvite(conversation, event: nil, reply: nil)
+            // The conversation's answer budget is spent, or it was retired,
+            // or the ledger cannot say: nothing more is answered here.
+            case OutboxError.answerLimitReached, OutboxError.conversationRetired, OutboxError.answerWithoutItsQuery:
+                endInvite(conversation, event: .noAgreement, reply: nil)
             // The organizer asks again.
             default: break
             }
         }
     }
 
-    /// Adds `candidates` to the conversation's answered set in the ledger.
-    /// False when the ledger is unavailable or the set would pass
-    /// `ProtocolLimits.maxCandidatesAnsweredPerIssue`.
-    func recordAnswered(_ candidates: [PlaceChoice], in conversation: ConversationID) async -> Bool {
-        guard let previous = try? await ledger.answeredCandidates(in: conversation) else { return false }
-        let all = previous.union(candidates)
-        guard all.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue else { return false }
-        guard all != previous else { return true }
-        return (try? await ledger.recordAnswered(all, in: conversation, at: clock.now())) != nil
+    /// Spends the conversation's answer budget on a no about `places`
+    /// (ADR 0021). False when the ledger refuses or cannot say.
+    func reserve(_ places: [PlaceChoice], to organizer: PeerID, in conversation: ConversationID) async -> Bool {
+        guard !places.isEmpty else { return true }
+        return (try? await conversations.reserve(IssueValue.places(places).candidates, issue: .place, to: organizer, in: conversation)) == true
     }
 
     func organizerIsOnDevice(_ peer: PeerID) -> Bool {
@@ -260,8 +258,11 @@ extension PickAPlaceService {
               invite.proposal?.terms != proposal.terms
         else { return }
         guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
-            // A private limit: an ordinary no, like a list where nothing fits.
-            endInvite(conversation, event: .noAgreement, reply: .noOverlap)
+            // A private limit: an ordinary no, like a list where nothing
+            // fits, once it has spent the budget for the place.
+            let saysNo = await reserve([place], to: invite.organizer, in: conversation)
+            guard isCurrent(conversation, generation: generation) else { return }
+            endInvite(conversation, event: .noAgreement, reply: saysNo ? .noOverlap : nil)
             return
         }
         let revision = invite.revision + 1
@@ -429,8 +430,9 @@ extension PickAPlaceService {
         }
         // Taking a yes back must reach the organizer, or it would confirm a
         // roster with someone who left: the no is kept in the ledger and
-        // retried until the organizer acknowledges it, across relaunches.
-        endInvite(conversation, event: event, reply: nil)
+        // retried until the organizer acknowledges it, across relaunches,
+        // and only then is the conversation retired.
+        endInvite(conversation, event: event, reply: nil, retiring: false)
         startWithdrawal(invite)
     }
 
@@ -446,6 +448,15 @@ extension PickAPlaceService {
         guard let invite = invites[conversation], invite.finalRoster != nil else { return }
         invites[conversation]?.finalRoster = nil
         emit(invite.id, .withdrawn)
+        retire(conversation)
+    }
+
+    /// The organizer heard this phone take its yes back: nothing more is
+    /// owed, so the conversation is retired.
+    func withdrawalAcknowledged(_ conversation: ConversationID) {
+        pendingWithdrawals[conversation] = nil
+        spawn(conversation) { try? await $0.ledger.clearWithdrawal(conversation) }
+        retire(conversation)
     }
 
     /// Sends the no again, with backoff, until the organizer acknowledges it
@@ -457,8 +468,8 @@ extension PickAPlaceService {
             var interval = service.configuration.retryInterval
             while service.pendingWithdrawals[conversation] == withdrawal {
                 guard service.clock.now().timeIntervalSince(withdrawal.since) < PickAPlaceLedgerState.withdrawalLifetime else {
-                    service.pendingWithdrawals[conversation] = nil
-                    try? await service.ledger.clearWithdrawal(conversation)
+                    // A day without an answer: the organizer is gone.
+                    service.withdrawalAcknowledged(conversation)
                     return
                 }
                 let rejection = Rejection(proposal: withdrawal.proposal ?? MessageID(), reason: .noOverlap)
@@ -470,18 +481,19 @@ extension PickAPlaceService {
         }
     }
 
-    /// Ends this phone's part. `reply` is sent only for the owner's own
-    /// explicit choices, never for a private limit.
-    func endInvite(_ conversation: ConversationID, event: InteractionEvent?, reply: Rejection.Reason?) {
+    /// Ends this phone's part, sends `reply` if any, and retires the
+    /// conversation (ADR 0021). A yes taken back retires it only once the
+    /// organizer has heard the no (`retiring: false`).
+    func endInvite(_ conversation: ConversationID, event: InteractionEvent?, reply: Rejection.Reason?, retiring: Bool = true) {
         guard let invite = invites[conversation], !invite.isFinished else { return }
         invites[conversation]?.finished = true
         cancelTasks(conversation)
         if invite.announced, let event { emit(invite.id, event) }
-        if let reply {
-            let rejection = Rejection(proposal: invite.proposeID ?? invite.lastQuery ?? MessageID(), reason: reply)
-            spawn(conversation) { service in
-                await service.trySend(.reject(rejection), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
-            }
+        if retiring {
+            let goodbye: [(PeerID, MessageBody)] = reply.map {
+                [(invite.organizer, .reject(Rejection(proposal: invite.proposeID ?? invite.lastQuery ?? MessageID(), reason: $0)))]
+            } ?? []
+            retire(conversation, after: goodbye, chainedFrom: invite.chainedFrom)
         }
         remember(conversation)
     }
