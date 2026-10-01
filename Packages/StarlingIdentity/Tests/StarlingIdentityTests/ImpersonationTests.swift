@@ -220,7 +220,7 @@ import Testing
     /// over and over. None of it may leave state behind.
     @Test func unauthenticatedIdentitiesLeaveNoState() async throws {
         let link = RecordingTransport(localPeer: bobKey.peerID)
-        let secure = SecureTransport(wrapping: link, identity: bobKey, pairedPeers: InMemoryPairedPeerStore())
+        let secure = SecureTransport(wrapping: link, authority: PinAuthority(identity: bobKey, store: InMemoryPairedPeerStore()))
         try await secure.start()
         let visits = 1_000
         for _ in 0..<visits {

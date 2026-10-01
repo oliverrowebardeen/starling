@@ -18,7 +18,7 @@ struct PairingDevice {
     static func make(hub: LoopbackHub, identity: IdentityKeyPair = .generate(), configuration: PairingConfiguration = .fast) async throws -> PairingDevice {
         let store = InMemoryPairedPeerStore()
         let link = GatedLink(LoopbackTransport(localPeer: identity.peerID, hub: hub))
-        let service = PairingService(identity: identity, pins: PinAuthority(store: store), link: link, configuration: configuration)
+        let service = PairingService(authority: PinAuthority(identity: identity, store: store), link: link, configuration: configuration)
         try await service.start()
         return PairingDevice(identity: identity, store: store, link: link, service: service)
     }
@@ -306,7 +306,7 @@ extension Recorder where Element == PairingEvent {
     @Test func invalidRequestsThrow() async throws {
         let hub = LoopbackHub()
         let identity = IdentityKeyPair.generate()
-        let service = PairingService(identity: identity, pins: PinAuthority(store: InMemoryPairedPeerStore()), link: LoopbackTransport(localPeer: identity.peerID, hub: hub))
+        let service = PairingService(authority: PinAuthority(identity: identity, store: InMemoryPairedPeerStore()), link: LoopbackTransport(localPeer: identity.peerID, hub: hub))
         await #expect(throws: PairingServiceError.notStarted) { try await service.pair(with: .random(), nickname: "Bob") }
         try await service.start()
         await #expect(throws: PairingServiceError.cannotPairWithSelf) { try await service.pair(with: identity.peerID, nickname: "Me") }
@@ -332,8 +332,8 @@ extension Recorder where Element == PairingEvent {
         let hub = LoopbackHub()
         let alice = try await Node.make("alice", hub: hub)
         let bob = try await Node.make("bob", hub: hub)
-        let alicePairing = PairingService(identity: alice.identity, secureTransport: alice.secure, configuration: .fast)
-        let bobPairing = PairingService(identity: bob.identity, secureTransport: bob.secure, configuration: .fast)
+        let alicePairing = PairingService(secureTransport: alice.secure, configuration: .fast)
+        let bobPairing = PairingService(secureTransport: bob.secure, configuration: .fast)
         try await alicePairing.start()
         try await bobPairing.start()
 
@@ -383,8 +383,8 @@ extension Recorder where Element == PairingEvent {
         try await bob.secure.start()
         try await alice.waitForPeer(bob.id)
         try await bob.waitForPeer(alice.id)
-        let alicePairing = PairingService(identity: alice.identity, secureTransport: alice.secure, configuration: .fast)
-        let bobPairing = PairingService(identity: bob.identity, secureTransport: bob.secure, configuration: .fast)
+        let alicePairing = PairingService(secureTransport: alice.secure, configuration: .fast)
+        let bobPairing = PairingService(secureTransport: bob.secure, configuration: .fast)
         try await alicePairing.start()
         try await bobPairing.start()
         let sa = try await alicePairing.pair(with: bob.id, nickname: "Bob")
@@ -511,5 +511,81 @@ extension Recorder where Element == PairingEvent {
         try await settle()
         #expect(await alice.secure.status(of: bob.id).provenKey == nil)
         withExtendedLifetime(repair.services) {}
+    }
+}
+
+/// Review 4 finding 2: a device runs one SecureTransport per link type
+/// (LocalP2P and Wi-Fi Aware) over one identity and one pinned-peer store.
+/// Revocation must reach every one of them, and pairing on any of them.
+@Suite struct SharedAuthorityTests {
+    let aliceKey = IdentityKeyPair.generate()
+    let bobKey = IdentityKeyPair.generate()
+
+    struct TwoLinks {
+        let aliceLocal: Node, aliceAware: Node, bobLocal: Node, bobAware: Node
+    }
+
+    func connectedOverTwoLinks() async throws -> TwoLinks {
+        let local = LoopbackHub()
+        let aware = LoopbackHub()
+        let aliceLocal = try await Node.make("alice-local", hub: local, identity: aliceKey, pins: [bobKey])
+        let aliceAware = try await Node.make("alice-aware", hub: aware, sharing: aliceLocal)
+        let bobLocal = try await Node.make("bob-local", hub: local, identity: bobKey, pins: [aliceKey])
+        let bobAware = try await Node.make("bob-aware", hub: aware, sharing: bobLocal)
+        for node in [aliceLocal, aliceAware, bobLocal, bobAware] { try await node.secure.start() }
+        try await aliceLocal.waitForPeer(bobKey.peerID)
+        try await aliceAware.waitForPeer(bobKey.peerID)
+        try await bobLocal.waitForPeer(aliceKey.peerID)
+        try await bobAware.waitForPeer(aliceKey.peerID)
+        return TwoLinks(aliceLocal: aliceLocal, aliceAware: aliceAware, bobLocal: bobLocal, bobAware: bobAware)
+    }
+
+    /// Unpairing through the LocalP2P transport ends the Wi-Fi Aware session too.
+    @Test func unpairingThroughOneTransportEndsTheSessionOnEvery() async throws {
+        let links = try await connectedOverTwoLinks()
+        let bob = bobKey.peerID
+        try await links.aliceLocal.secure.unpair(bob)
+        try await settle()
+
+        #expect(try await links.aliceLocal.store.peer(for: bob) == nil)
+        #expect(await links.aliceLocal.secure.status(of: bob).provenKey == nil)
+        #expect(await links.aliceAware.secure.status(of: bob).provenKey == nil)
+        try? await links.bobAware.secure.send(Frame(Data("over wi-fi aware".utf8)), to: aliceKey.peerID)
+        try? await links.bobLocal.secure.send(Frame(Data("over localp2p".utf8)), to: aliceKey.peerID)
+        try await settle()
+        #expect(await links.aliceAware.events.received.isEmpty)
+        #expect(await links.aliceLocal.events.received.isEmpty)
+    }
+
+    /// A re-pair running over the Wi-Fi Aware transport cannot restore a pin
+    /// that an unpair through the LocalP2P transport removed.
+    @Test func aCommitOnAnotherTransportCannotRestoreTheUnpairedPin() async throws {
+        let links = try await connectedOverTwoLinks()
+        let (alice, bob) = (aliceKey.peerID, bobKey.peerID)
+        let alicePairing = PairingService(secureTransport: links.aliceAware.secure, configuration: .fast)
+        let bobPairing = PairingService(secureTransport: links.bobAware.secure, configuration: .fast)
+        try await alicePairing.start()
+        try await bobPairing.start()
+        let sa = try await alicePairing.pair(with: bob, nickname: "Bob")
+        let sb = try await bobPairing.pair(with: alice, nickname: "Alice")
+        let ea = await Recorder.recording(sa.events)
+        _ = try await ea.waitForCode()
+
+        await links.aliceLocal.store.arm(.saveAfterWrite)
+        await sa.confirm(codesMatch: true)
+        await sb.confirm(codesMatch: true)
+        try await eventually("alice's commit is held after its write") { await links.aliceLocal.store.suspended(at: .saveAfterWrite) == 1 }
+        let unpair = Task { try await links.aliceLocal.secure.unpair(bob) }
+        try await settle()
+        await links.aliceLocal.store.release(.saveAfterWrite)
+        try await unpair.value
+        try await settle()
+
+        if case .paired = try await ea.waitForOutcome() { Issue.record("alice re-pinned bob over the other transport") }
+        #expect(try await links.aliceLocal.store.peer(for: bob) == nil)
+        await links.aliceAware.secure.reconnect(bob)
+        try await settle()
+        #expect(await links.aliceAware.secure.status(of: bob).provenKey == nil)
+        withExtendedLifetime([alicePairing, bobPairing]) {}
     }
 }

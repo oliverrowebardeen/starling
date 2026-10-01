@@ -34,10 +34,10 @@ import Testing
         let identity = IdentityKeyPair.generate()
         let link = RecordingTransport(localPeer: identity.peerID)
         let configuration = SecureTransportConfiguration(maxTrackedPeers: 16)
-        let secure = SecureTransport(wrapping: link, identity: identity, pairedPeers: InMemoryPairedPeerStore(), configuration: configuration)
+        let secure = SecureTransport(wrapping: link, authority: PinAuthority(identity: identity, store: InMemoryPairedPeerStore(), capacity: 16), configuration: configuration)
         try await secure.start()
         for _ in 0..<500 { await secure.disconnect(.random()) }
         #expect(await secure.trackedGenerationCount <= 16)
-        #expect(secure.pins.trackedTokenCount <= 16)
+        #expect(secure.authority.trackedTokenCount <= 16)
     }
 }

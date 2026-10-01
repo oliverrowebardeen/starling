@@ -52,9 +52,9 @@ public actor SecureTransport: Transport {
 
     private let inner: any Transport
     private let identity: IdentityKeyPair
-    /// The authority over this transport's pinned keys. Pairing commits and
-    /// unpairs go through it (ADR 0100 decision 11).
-    public nonisolated let pins: PinAuthority
+    /// The device's pin authority, shared with every other transport and
+    /// pairing service for this identity (ADR 0100 decision 11).
+    public nonisolated let authority: PinAuthority
     private let configuration: SecureTransportConfiguration
     private let continuation: AsyncStream<TransportEvent>.Continuation
     private let pairingContinuation: AsyncStream<TransportEvent>.Continuation
@@ -133,15 +133,17 @@ public actor SecureTransport: Transport {
     static let maxSupersededPerPeer = maxUnconfirmedRestarts + 1
     static let maxRememberedEphemerals = 64
 
+    /// - Parameter authority: The device's one pin authority. Pass the same
+    ///   instance to every transport (LocalP2P, Wi-Fi Aware) and pairing
+    ///   service, so a revocation through any of them reaches all of them.
     public init(
         wrapping inner: any Transport,
-        identity: IdentityKeyPair,
-        pairedPeers: any PairedPeerStore,
+        authority: PinAuthority,
         configuration: SecureTransportConfiguration = SecureTransportConfiguration()
     ) {
         self.inner = inner
-        self.identity = identity
-        pins = PinAuthority(store: pairedPeers, capacity: configuration.maxTrackedPeers)
+        self.identity = authority.identity
+        self.authority = authority
         generations = GenerationTable(capacity: configuration.maxTrackedPeers)
         self.configuration = configuration
         kind = inner.kind
@@ -168,7 +170,7 @@ public actor SecureTransport: Transport {
         state = .started
         // Revocations that start at the authority (for example from another
         // component) end sessions here too.
-        pins.observeRevocations { [weak self] peer in await self?.endSessions(with: peer) }
+        authority.observeRevocations { [weak self] peer in await self?.endSessions(with: peer) }
         let events = inner.events
         eventLoop = Task { [weak self] in
             for await event in events {
@@ -226,9 +228,9 @@ public actor SecureTransport: Transport {
     /// removes the pin under the authority's lock. No pin, session, or
     /// pairing commit with the peer survives it (ADR 0100 decision 11).
     public func unpair(_ peer: PeerID) async throws {
-        pins.beginRemoval(peer)
+        authority.beginRemoval(peer)
         endSessions(with: peer)
-        try await pins.completeRemoval(peer)
+        try await authority.completeRemoval(peer)
     }
 
     /// Revokes `peer` without removing its pin: ends its session, voids pin
@@ -236,14 +238,14 @@ public actor SecureTransport: Transport {
     /// `unpair(_:)` to unpair; this alone leaves the pin, so the next link-up
     /// starts a session again.
     public func disconnect(_ peer: PeerID) async {
-        pins.markRevoked(peer)
+        authority.markRevoked(peer)
         endSessions(with: peer)
-        await pins.notifyObservers(peer)
+        await authority.notifyObservers(peer)
     }
 
     /// Registers a handler run on every revocation of a peer.
     public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
-        pins.observeRevocations(handler)
+        authority.observeRevocations(handler)
     }
 
     /// Ends every session and handshake with `peer` and voids pin lookups in
@@ -679,9 +681,9 @@ public actor SecureTransport: Transport {
     /// Callers create handshake state synchronously after this returns.
     private func pinnedKey(for peer: PeerID) async -> X25519PublicKey? {
         let generation = generations.value(of: peer)
-        guard let (paired, token) = await pins.pinned(peer),
+        guard let (paired, token) = await authority.pinned(peer),
               state == .started, generations.value(of: peer) == generation,
-              pins.revocationToken(of: peer) == token, !pins.isRemoving(peer)
+              authority.revocationToken(of: peer) == token, !authority.isRemoving(peer)
         else { return nil }
         return try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
     }

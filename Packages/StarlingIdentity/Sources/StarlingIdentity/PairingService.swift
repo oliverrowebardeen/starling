@@ -36,28 +36,26 @@ public actor PairingService {
     private var ceremonies: [PeerID: PairingCeremony] = [:]
     private var loop: Task<Void, Never>?
 
-    /// Pairs over `secureTransport.pairingLink` and commits pins through
-    /// `secureTransport.pins`, so unpairing is ordered against every commit.
+    /// Pairs over `secureTransport.pairingLink` and commits pins through its
+    /// authority, so unpairing is ordered against every commit.
     public init(
-        identity: IdentityKeyPair,
         secureTransport: SecureTransport,
         configuration: PairingConfiguration = PairingConfiguration(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.init(identity: identity, pins: secureTransport.pins, link: secureTransport.pairingLink, configuration: configuration, now: now)
+        self.init(authority: secureTransport.authority, link: secureTransport.pairingLink, configuration: configuration, now: now)
     }
 
-    /// Pairs over any link. Pins are committed only through `pins`, the
-    /// authority every unpair also goes through.
+    /// Pairs over any link as `authority.identity`. Pins are committed only
+    /// through `authority`, the one every unpair also goes through.
     public init(
-        identity: IdentityKeyPair,
-        pins: PinAuthority,
+        authority: PinAuthority,
         link: any Transport,
         configuration: PairingConfiguration = PairingConfiguration(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.identity = identity
-        self.pins = pins
+        self.identity = authority.identity
+        self.pins = authority
         self.link = link
         self.configuration = configuration
         self.now = now

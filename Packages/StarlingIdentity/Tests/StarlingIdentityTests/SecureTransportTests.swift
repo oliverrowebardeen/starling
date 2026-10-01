@@ -191,7 +191,7 @@ import Testing
     @Test func wrappedTransportMustUseTheIdentityPeerID() async throws {
         let hub = LoopbackHub()
         let link = LoopbackTransport(localPeer: .random(), hub: hub)
-        let secure = SecureTransport(wrapping: link, identity: aliceKey, pairedPeers: InMemoryPairedPeerStore())
+        let secure = SecureTransport(wrapping: link, authority: PinAuthority(identity: aliceKey, store: InMemoryPairedPeerStore()))
         await #expect(throws: TransportError.self) { try await secure.start() }
     }
 

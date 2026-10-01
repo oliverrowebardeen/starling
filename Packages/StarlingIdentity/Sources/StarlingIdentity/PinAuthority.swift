@@ -2,9 +2,11 @@ import Foundation
 import StarlingCore
 import Synchronization
 
-/// The one authority over pinned keys: every pin mutation (a pairing
-/// commit, an unpair) and every pin use (a handshake's lookup) goes through
-/// it, so unpairing is ordered against all of them (ADR 0100 decision 11).
+/// The one authority over a device's pinned keys: every pin mutation (a
+/// pairing commit, an unpair) and every pin use (a handshake's lookup) goes
+/// through it, so unpairing is ordered against all of them (ADR 0100
+/// decision 11). It is identity-scoped: the app creates one per identity and
+/// store and injects it into every `SecureTransport` and `PairingService`.
 ///
 /// Invariant: once `beginRemoval(_:)` has run for a peer, no pin for that
 /// peer survives the removal, and no lookup that overlaps it returns a pin.
@@ -20,6 +22,7 @@ import Synchronization
 ///   what it read if the token moved. A pin a commit is about to undo exists
 ///   only while the removal mark is set, so no lookup can return it.
 public final class PinAuthority: Sendable {
+    public let identity: IdentityKeyPair
     public let store: any PairedPeerStore
 
     private struct State {
@@ -34,7 +37,8 @@ public final class PinAuthority: Sendable {
 
     /// - Parameter capacity: Most peers whose revocation tokens are kept;
     ///   older ones are evicted safely (see `GenerationTable`).
-    public init(store: any PairedPeerStore, capacity: Int = 1_024) {
+    public init(identity: IdentityKeyPair, store: any PairedPeerStore, capacity: Int = 1_024) {
+        self.identity = identity
         self.store = store
         state = Mutex(State(tokens: GenerationTable(capacity: capacity)))
     }

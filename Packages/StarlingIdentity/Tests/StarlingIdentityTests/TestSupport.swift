@@ -251,6 +251,7 @@ struct Node {
     let name: String
     let identity: IdentityKeyPair
     let store: GatedPairedPeerStore
+    let authority: PinAuthority
     let link: any Transport
     let secure: SecureTransport
     let events: Recorder<TransportEvent>
@@ -265,9 +266,22 @@ struct Node {
         let store = GatedPairedPeerStore(try pins.map { try PairedPeer(publicKey: $0.publicKey, nickname: "friend", pairedAt: Timestamp(Date())) })
         let loopback = LoopbackTransport(localPeer: identity.peerID, hub: hub)
         let link: any Transport = if intercept { InterceptingLink(loopback) } else if faulty { FaultyLink(loopback) } else { loopback }
-        let secure = SecureTransport(wrapping: link, identity: identity, pairedPeers: store, configuration: configuration)
+        let authority = PinAuthority(identity: identity, store: store)
+        let secure = SecureTransport(wrapping: link, authority: authority, configuration: configuration)
         let events = await Recorder.recording(secure.events)
-        return Node(name: name, identity: identity, store: store, link: link, secure: secure, events: events)
+        return Node(name: name, identity: identity, store: store, authority: authority, link: link, secure: secure, events: events)
+    }
+
+    /// A second transport for the same device (for example Wi-Fi Aware next
+    /// to LocalP2P): same identity, same pinned-peer store, another link.
+    static func make(
+        _ name: String, hub: LoopbackHub, sharing device: Node,
+        configuration: SecureTransportConfiguration = SecureTransportConfiguration(handshakeTimeout: .milliseconds(200))
+    ) async throws -> Node {
+        let link = LoopbackTransport(localPeer: device.identity.peerID, hub: hub)
+        let secure = SecureTransport(wrapping: link, authority: device.authority, configuration: configuration)
+        let events = await Recorder.recording(secure.events)
+        return Node(name: name, identity: device.identity, store: device.store, authority: device.authority, link: link, secure: secure, events: events)
     }
 
     func pin(_ other: IdentityKeyPair) async throws {
