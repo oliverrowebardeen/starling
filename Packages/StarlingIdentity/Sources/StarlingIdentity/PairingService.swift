@@ -64,7 +64,7 @@ public actor PairingService {
     /// Starts the link (if needed) and begins listening for pairing traffic.
     public func start() async throws {
         guard loop == nil else { return }
-        pins.observeRevocations { [weak self] peer in await self?.revoked(peer) }
+        pins.observeRevocations { [weak self] peer, epoch in await self?.revocationNotice(peer, epoch: epoch) }
         let events = link.events
         loop = Task { [weak self] in
             for await event in events {
@@ -104,8 +104,12 @@ public actor PairingService {
     }
 
     /// Unpairing wins: a ceremony with a revoked peer ends now.
-    private func revoked(_ peer: PeerID) async {
-        await ceremonies[peer]?.revoke()
+    /// A revocation notice from the authority, carrying the epoch the
+    /// revocation produced. It can arrive late, after a new ceremony with the
+    /// peer has started, so it ends only a ceremony that started under an
+    /// older epoch.
+    func revocationNotice(_ peer: PeerID, epoch: UInt64) async {
+        await ceremonies[peer]?.revoke(startedBefore: epoch)
     }
 
     private func finished(_ ceremony: PairingCeremony, peer: PeerID) {
@@ -216,9 +220,12 @@ actor PairingCeremony: PairingSession {
         await end(.cancelled, notice: .cancel)
     }
 
-    /// The owner unpaired this peer while the ceremony ran. A ceremony that
-    /// is already saving is caught by the epoch check in `PinAuthority.commit`.
-    func revoke() async {
+    /// The owner unpaired or disconnected this peer, producing `epoch`. Ends
+    /// the ceremony only if it started under an older epoch; a ceremony that
+    /// started after the revocation is left alone. One that is already
+    /// saving is caught by the epoch check in `PinAuthority.commit`.
+    func revoke(startedBefore epoch: UInt64) async {
+        guard revocationEpoch < epoch else { return }
         await end(.cancelled, notice: .cancel)
     }
 

@@ -435,7 +435,7 @@ extension Recorder where Element == PairingEvent {
         let heardBefore = await alice.events.received.count
         let notice = Gate()
         if suspension == .unpairRevocationNotice {
-            await alice.secure.observeRevocations { _ in await notice.wait() }
+            await alice.secure.observeRevocations { _, _ in await notice.wait() }
         }
 
         switch suspension {
@@ -734,6 +734,51 @@ extension Recorder where Element == PairingEvent {
         await links.aliceAware.secure.reconnect(bob)
         try await settle()
         #expect(await links.aliceAware.secure.status(of: bob).provenKey == nil)
+        withExtendedLifetime([alicePairing, bobPairing]) {}
+    }
+}
+
+/// Issue #32: unpairing must not depend on the network. A pairing ceremony
+/// with the peer is running, so unpair's revocation tells it to cancel, and
+/// the ceremony's cancel notice to the peer is a network send. With Alice's
+/// link stalled, unpair must still finish and the pin must be gone before
+/// the stall clears.
+@Suite struct UnpairIndependenceTests {
+    @Test func unpairFinishesAndDeletesThePinWhileSendsAreStalled() async throws {
+        let aliceKey = IdentityKeyPair.generate()
+        let bobKey = IdentityKeyPair.generate()
+        let hub = LoopbackHub()
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], gated: true)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey])
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        let alicePairing = PairingService(secureTransport: alice.secure, configuration: .fast)
+        let bobPairing = PairingService(secureTransport: bob.secure, configuration: .fast)
+        try await alicePairing.start()
+        try await bobPairing.start()
+        let sa = try await alicePairing.pair(with: bob.id, nickname: "Bob")
+        let sb = try await bobPairing.pair(with: alice.id, nickname: "Alice")
+        let ea = await Recorder.recording(sa.events)
+        let eb = await Recorder.recording(sb.events)
+        _ = try await ea.waitForCode()
+        _ = try await eb.waitForCode()
+
+        let link = try #require(alice.link as? GatedLink)
+        await link.armSendGate()
+        let finished = Flag()
+        let unpair = Task {
+            try await alice.secure.unpair(bob.id)
+            _ = finished.set()
+        }
+        try await eventually("unpair finishes while every send is stalled") { finished.isSet }
+        #expect(try await alice.store.peer(for: bob.id) == nil)
+        #expect(await alice.secure.status(of: bob.id).provenKey == nil)
+
+        await link.releaseSends()
+        try await unpair.value
+        #expect(try await ea.waitForOutcome() == .failed(.cancelled))
         withExtendedLifetime([alicePairing, bobPairing]) {}
     }
 }

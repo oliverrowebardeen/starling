@@ -38,7 +38,7 @@ public final class PinAuthority: Sendable {
         var flags: [PeerID: Flags] = [:]
         var locked = false
         var waiters: [CheckedContinuation<Void, Never>] = []
-        var observers: [@Sendable (PeerID) async -> Void] = []
+        var observers: [@Sendable (PeerID, UInt64) async -> Void] = []
 
         func blocked(_ peer: PeerID) -> Bool { !(flags[peer]?.isClear ?? true) }
 
@@ -113,10 +113,11 @@ public final class PinAuthority: Sendable {
     /// How many epochs are kept, for tests.
     var trackedTokenCount: Int { state.withLock { $0.epochs.count } }
 
-    /// Registers a handler run after every revocation and rollback. For
-    /// liveness only (ending sessions promptly, cancelling ceremonies):
-    /// correctness rests on the per-frame epoch check.
-    public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
+    /// Registers a handler run after every revocation and rollback, in its
+    /// own task and never awaited by the revocation. For liveness only
+    /// (ending sessions promptly, cancelling ceremonies): correctness rests
+    /// on the per-frame epoch check.
+    public func observeRevocations(_ handler: @escaping @Sendable (PeerID, UInt64) async -> Void) {
         state.withLock { $0.observers.append(handler) }
     }
 
@@ -131,13 +132,18 @@ public final class PinAuthority: Sendable {
 
     /// Revokes `peer` without removing its pin.
     public func revoke(_ peer: PeerID) async {
-        markRevoked(peer)
-        await notifyObservers(peer)
+        let epoch = markRevoked(peer)
+        notifyObservers(peer, epoch: epoch)
     }
 
-    /// `revoke`'s synchronous half: the epoch moves. Never awaits.
-    func markRevoked(_ peer: PeerID) {
-        state.withLock { $0.epochs.bump(peer) }
+    /// `revoke`'s synchronous half: the epoch moves. Never awaits. Returns
+    /// the epoch the revocation produced.
+    @discardableResult
+    func markRevoked(_ peer: PeerID) -> UInt64 {
+        state.withLock {
+            $0.epochs.bump(peer)
+            return $0.epochs.value(of: peer)
+        }
     }
 
     /// `unpair`'s synchronous half: the epoch moves and a removal is in
@@ -152,35 +158,47 @@ public final class PinAuthority: Sendable {
     /// `unpair`'s asynchronous half. Deletes the pin under the pin lock, then
     /// moves the epoch again and ends the removal. If the delete fails, the
     /// peer stays quarantined (lookups refused) and the error is rethrown.
+    /// The only thing it awaits is Keychain I/O: observers are notified
+    /// afterwards and not awaited, because a ceremony's cancel notice is a
+    /// network send that can stall (issue #32).
     func completeRemoval(_ peer: PeerID) async throws {
-        await notifyObservers(peer)
         do {
             try await serialized { try await self.store.remove(peer) }
         } catch {
-            endRemoval(peer, deleted: false)
+            notifyObservers(peer, epoch: endRemoval(peer, deleted: false))
             throw error
         }
-        endRemoval(peer, deleted: true)
+        notifyObservers(peer, epoch: endRemoval(peer, deleted: true))
     }
 
-    private func endRemoval(_ peer: PeerID, deleted: Bool) {
+    /// Ends a removal and returns the epoch it produced.
+    private func endRemoval(_ peer: PeerID, deleted: Bool) -> UInt64 {
         state.withLock {
             $0.epochs.bump(peer)
             $0.update(peer) {
                 $0.removing -= 1
                 $0.quarantined = !deleted
             }
+            return $0.epochs.value(of: peer)
         }
     }
 
-    func notifyObservers(_ peer: PeerID) async {
+    /// Tells every observer about a revocation of `peer` without waiting for
+    /// them, one task per observer so a stalled one cannot hold up another.
+    /// Observers are for liveness only (ending sessions promptly, cancelling
+    /// ceremonies), so nothing a revocation guarantees waits on them.
+    ///
+    /// Each observer gets the epoch the revocation produced, so it can clean
+    /// up only what was authenticated or started under an older epoch and
+    /// leave anything newer alone, however late the notice arrives.
+    func notifyObservers(_ peer: PeerID, epoch: UInt64) {
         let observers = state.withLock { $0.observers }
-        for observer in observers { await observer(peer) }
+        for observer in observers { Task { await observer(peer, epoch) } }
     }
 
     // MARK: Pairing
 
-    private enum CommitResult: Sendable { case refused, committed, rolledBack }
+    private enum CommitResult: Sendable { case refused, committed, rolledBack(epoch: UInt64) }
 
     /// Saves `peer` if its epoch is still `epoch` (read when the ceremony
     /// started) and nothing is removing or quarantining it. If the epoch
@@ -215,22 +233,34 @@ public final class PinAuthority: Sendable {
             guard !stands else { return .committed }
             // Roll back. The commit stays in progress (lookups refused) until
             // the delete is done; if it fails, the peer is quarantined.
-            var deleted = false
-            defer {
-                self.state.withLock {
-                    $0.epochs.bump(id)
-                    $0.update(id) {
-                        $0.committing -= 1
-                        $0.quarantined = !deleted
-                    }
-                }
+            do {
+                try await self.store.remove(id)
+            } catch {
+                _ = self.endRollback(id, deleted: false)
+                throw error
             }
-            try await self.store.remove(id)
-            deleted = true
-            return .rolledBack
+            return .rolledBack(epoch: self.endRollback(id, deleted: true))
         }
-        if result == .rolledBack { await notifyObservers(id) }
-        return result == .committed
+        switch result {
+        case .committed: return true
+        case .refused: return false
+        case .rolledBack(let epoch):
+            notifyObservers(id, epoch: epoch)
+            return false
+        }
+    }
+
+    /// Ends a rollback: the epoch moves again, the commit ends, and a failed
+    /// delete quarantines the peer. Returns the epoch it produced.
+    private func endRollback(_ peer: PeerID, deleted: Bool) -> UInt64 {
+        state.withLock {
+            $0.epochs.bump(peer)
+            $0.update(peer) {
+                $0.committing -= 1
+                $0.quarantined = !deleted
+            }
+            return $0.epochs.value(of: peer)
+        }
     }
 
     // MARK: Lookups

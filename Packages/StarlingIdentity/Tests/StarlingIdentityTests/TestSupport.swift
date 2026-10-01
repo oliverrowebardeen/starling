@@ -291,12 +291,12 @@ struct Node {
 
     static func make(
         _ name: String, hub: LoopbackHub, identity: IdentityKeyPair = .generate(),
-        pins: [IdentityKeyPair] = [], intercept: Bool = false, faulty: Bool = false,
+        pins: [IdentityKeyPair] = [], intercept: Bool = false, faulty: Bool = false, gated: Bool = false,
         configuration: SecureTransportConfiguration = SecureTransportConfiguration(handshakeTimeout: .milliseconds(200))
     ) async throws -> Node {
         let store = GatedPairedPeerStore(try pins.map { try PairedPeer(publicKey: $0.publicKey, nickname: "friend", pairedAt: Timestamp(Date())) })
         let loopback = LoopbackTransport(localPeer: identity.peerID, hub: hub)
-        let link: any Transport = if intercept { InterceptingLink(loopback) } else if faulty { FaultyLink(loopback) } else { loopback }
+        let link: any Transport = if intercept { InterceptingLink(loopback) } else if faulty { FaultyLink(loopback) } else if gated { GatedLink(loopback) } else { loopback }
         let authority = PinAuthority(identity: identity, store: store)
         let secure = SecureTransport(wrapping: link, authority: authority, configuration: configuration)
         let events = await Recorder.recording(secure.events)
