@@ -19,19 +19,19 @@ enum Fixtures {
     static let plan = try! Plan(origin: parentConversation, attendees: Attendees([me, maya, jake]), activity: Keyword("boba"), time: tonight)
 
     static func request(chainedFrom: ConversationID? = parentConversation, inputs: [Artifact] = [.plan(plan)], participants: [PeerID] = [maya, jake],
-                        skill: SkillRef = SwapPhotos.descriptor.ref) -> SkillRequest {
+                        skill: SkillRef = SwapPhotos.descriptor.ref, mode: SendMode = .invite) -> SkillRequest {
         SkillRequest(
             interaction: InteractionID(), conversation: ConversationID(),
-            intent: SkillIntent(skill: skill, rules: .empty, audience: .picked(participants), expiresAt: at(minutes: 24 * 60)),
+            intent: SkillIntent(skill: skill, rules: .empty, audience: .picked(participants), mode: mode, expiresAt: at(minutes: 24 * 60)),
             participants: participants, inputs: inputs, chainedFrom: chainedFrom
         )
     }
 
     static func offer(count: Int = 5, from sender: PeerID = maya, to recipient: PeerID = me, conversation: ConversationID = ConversationID(),
                       chainedFrom: ConversationID? = parentConversation, skill: SkillRef = SwapPhotos.descriptor.ref,
-                      terms: Terms? = nil) throws -> Envelope {
+                      mode: SendMode = .invite, terms: Terms? = nil) throws -> Envelope {
         try Envelope(conversation: conversation, sender: sender, recipient: recipient, sequence: 0, sentAt: Timestamp(afterTonight),
-                     body: .propose(Proposal(round: 0, terms: terms ?? Terms([.photos: .count(count)]))), skill: skill, chainedFrom: chainedFrom)
+                     body: .propose(Proposal(round: 0, terms: terms ?? Terms([.photos: .count(count)]))), skill: skill, mode: mode, chainedFrom: chainedFrom)
     }
 }
 
@@ -150,7 +150,8 @@ struct Phone {
         let terms = try Terms([.photos: .count(3)])
         for (sender, accepted) in [(Fixtures.maya, terms), (Fixtures.stranger, terms), (Fixtures.jake, try Terms([.photos: .count(9)]))] {
             let reply = try Envelope(conversation: request.conversation, sender: sender, recipient: Fixtures.me, sequence: 0, sentAt: Timestamp(Fixtures.afterTonight),
-                                     body: .accept(Acceptance(proposal: offer.id, terms: accepted)), skill: SwapPhotos.descriptor.ref, chainedFrom: Fixtures.parentConversation)
+                                     body: .accept(Acceptance(proposal: offer.id, terms: accepted)), skill: SwapPhotos.descriptor.ref, mode: .invite,
+                                     chainedFrom: Fixtures.parentConversation)
             await phone.service.handle(.message(reply))
         }
         // The stranger is not in the plan, and Jake accepted other terms.

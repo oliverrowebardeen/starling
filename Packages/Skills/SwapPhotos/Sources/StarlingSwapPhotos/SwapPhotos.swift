@@ -26,7 +26,9 @@ public enum SwapPhotos {
         produces: [],
         intent: IntentSchema(slots: [IntentSlot(.photos, required: false, hint: "which photos, such as from tonight")],
                              asksForAudience: false, asksForExpiry: false),
-        chainTrigger: .afterPlanEnds
+        chainTrigger: .afterPlanEnds,
+        // Invite only: Ask quietly needs mutual reveal (ADR 0020).
+        sendModes: [.invite]
     )
 
     /// The most photos one offer can name.

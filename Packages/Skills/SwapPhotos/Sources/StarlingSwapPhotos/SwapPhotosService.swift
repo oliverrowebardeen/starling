@@ -2,7 +2,8 @@ import Foundation
 import StarlingCore
 
 public enum SwapPhotosError: Error, Hashable, Sendable {
-    /// The request is for another skill, or an incompatible version.
+    /// The request is for another skill, an incompatible version, or a send
+    /// mode the skill does not offer.
     case wrongSkill
     /// Swap photos only runs as a link chained after a plan.
     case notChained
@@ -84,7 +85,9 @@ public actor SwapPhotosService: SkillService {
     // MARK: - As the one who opted in
 
     public func start(_ request: SkillRequest) async throws {
-        guard request.intent.skill.id == descriptor.id, request.intent.skill.version.isCompatible(with: descriptor.ref.version) else {
+        guard request.intent.skill.id == descriptor.id, request.intent.skill.version.isCompatible(with: descriptor.ref.version),
+              descriptor.sendModes.contains(request.intent.mode)
+        else {
             throw SwapPhotosError.wrongSkill
         }
         guard let chainedFrom = request.chainedFrom else { throw SwapPhotosError.notChained }
@@ -153,7 +156,8 @@ public actor SwapPhotosService: SkillService {
         let task = Task {
             for (body, peer) in messages {
                 try Task.checkCancellation()
-                try await outbox.send(body, to: peer, conversation: session.conversation, skill: skill, chainedFrom: session.chainedFrom)
+                try await outbox.send(body, to: peer, conversation: session.conversation, context: OutboundContext(interaction: interaction),
+                                      skill: skill, mode: .invite, chainedFrom: session.chainedFrom)
             }
         }
         inFlight[interaction] = task
@@ -189,8 +193,11 @@ public actor SwapPhotosService: SkillService {
     // MARK: - As a friend
 
     public func handle(_ event: InboxEvent) async {
+        // Only the modes this skill offers: anything else is ignored like an
+        // unknown request, so a quiet ask never becomes a card (ADR 0020).
         guard case .message(let envelope) = event, let skill = envelope.skill, skill.id == descriptor.id,
-              skill.version.isCompatible(with: descriptor.ref.version), envelope.recipient == me
+              skill.version.isCompatible(with: descriptor.ref.version), envelope.recipient == me,
+              let mode = envelope.mode, descriptor.sendModes.contains(mode)
         else { return }
 
         if let id = byConversation[envelope.conversation] {
