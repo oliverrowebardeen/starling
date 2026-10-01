@@ -94,6 +94,7 @@ struct PrivacyTests {
             #expect(Canary.leaks(in: String(describing: disclosure)).isEmpty)
         }
         // Ben's phone sent a plain "no plan", never his answer.
+        try await eventually("Ben's no plan on the wire") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .reject } }
         let fromBen = world.envelopes.filter { $0.sender == b.id && $0.skill != nil }.map(\.body.kind)
         #expect(fromBen == [.reject])
         // Ben's sheet opened and his decline ended his side as declined.

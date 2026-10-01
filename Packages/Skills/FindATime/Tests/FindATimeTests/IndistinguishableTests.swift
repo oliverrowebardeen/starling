@@ -37,25 +37,30 @@ struct IndistinguishableTests {
         world.envelopes.filter { $0.sender == friend.id && $0.skill != nil }
     }
 
-    static func expectPlainNo(_ envelope: Envelope?, about message: MessageID, after previous: Envelope?) {
-        guard let envelope, case .reject(let rejection) = envelope.body else {
-            Issue.record("expected one rejection, got \(String(describing: envelope?.body.kind))")
-            return
+    /// The friend's envelopes, in order: the conversation's first number
+    /// starts at the send time, and each next one is one more, so no
+    /// refused send left a gap. Retries may repeat a message (the starter
+    /// retried before the reply arrived); every rejection is the plain one.
+    static func expectNoGapsAndPlainNoes(_ sent: [Envelope], about starterMessages: Set<MessageID>) {
+        let ordered = sent.sorted { $0.sequence < $1.sequence }
+        guard let first = ordered.first else { Issue.record("the friend sent nothing"); return }
+        // Whole milliseconds, rounded down; Timestamp rounds to nearest.
+        let sentAt = UInt64(first.sentAt.millisecondsSince1970)
+        #expect(first.sequence == sentAt || first.sequence + 1 == sentAt, "a gap shows a refused send")
+        for (previous, next) in zip(ordered, ordered.dropFirst()) {
+            #expect(next.sequence == previous.sequence + 1, "a gap shows a refused send")
         }
-        #expect(rejection.reason == .noOverlap)
-        #expect(rejection.proposal == message)
-        #expect(envelope.version == Envelope.currentVersion)
-        #expect(envelope.skill == FindATimeSkill.ref)
-        #expect(envelope.mode == .invite)
-        #expect(envelope.chainedFrom == nil)
-        if let previous {
-            #expect(envelope.sequence == previous.sequence + 1, "a gap shows a refused send")
-        } else {
-            // The conversation's first number is the send time in whole
-            // milliseconds (rounded down; Timestamp rounds to nearest).
-            let sentAt = UInt64(envelope.sentAt.millisecondsSince1970)
-            #expect(envelope.sequence == sentAt || envelope.sequence + 1 == sentAt, "a gap shows a refused send")
+        for envelope in ordered {
+            #expect(envelope.version == Envelope.currentVersion)
+            #expect(envelope.skill == FindATimeSkill.ref)
+            #expect(envelope.mode == .invite)
+            #expect(envelope.chainedFrom == nil)
+            if case .reject(let rejection) = envelope.body {
+                #expect(rejection.reason == .noOverlap)
+                #expect(starterMessages.contains(rejection.proposal))
+            }
         }
+        #expect(ordered.last?.body.kind == .reject)
     }
 
     @Test(arguments: Answering.allCases)
@@ -76,11 +81,15 @@ struct IndistinguishableTests {
             try await b.service.answer(asked, with: .pass)
         }
         try await a.waitForState(started, .ended(.nobodyUp))
+        // The hub records deliveries on its own task: wait for the rejection,
+        // then a moment more so anything sent after it would show too.
+        try await eventually("Ben's rejection on the wire") { Self.sent(by: b, in: world).contains { $0.body.kind == .reject } }
         try await Task.sleep(for: .milliseconds(60))
-        let query = world.envelopes.first { $0.sender == a.id && $0.body.kind == .query }!
+        let queries = Set(world.envelopes.filter { $0.sender == a.id && $0.body.kind == .query }.map(\.id))
         let sent = Self.sent(by: b, in: world)
-        #expect(sent.count == 1)
-        Self.expectPlainNo(sent.first, about: query.id, after: nil)
+        // Nothing but plain noes: no answer ever left.
+        #expect(sent.allSatisfy { $0.body.kind == .reject })
+        Self.expectNoGapsAndPlainNoes(sent, about: queries)
         // Only Ben's own phone knows why.
         let ended = await b.coordinator.invitee()?.state
         switch answering {
@@ -106,11 +115,16 @@ struct IndistinguishableTests {
         let (card, _) = try await b.waitForProposal()
         if agreeing == .pass { try await b.service.answer(card, with: .pass) } else { try await b.accept(card) }
         try await a.waitForState(started, .ended(.nobodyUp))
+        try await eventually("Ben's rejection on the wire") { Self.sent(by: b, in: world).contains { $0.body.kind == .reject } }
         try await Task.sleep(for: .milliseconds(60))
-        let proposal = world.envelopes.last { $0.sender == a.id && $0.body.kind == .propose }!
+        let proposals = Set(world.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.map(\.id))
         let sent = Self.sent(by: b, in: world)
-        #expect(sent.map(\.body.kind) == [.answer, .reject])
-        Self.expectPlainNo(sent.last, about: proposal.id, after: sent.first)
+        // Answers (one, or replays of it), then plain noes; never an acceptance.
+        let kinds = sent.sorted { $0.sequence < $1.sequence }.map(\.body.kind)
+        #expect(kinds.first == .answer)
+        #expect(!kinds.contains(.accept))
+        #expect(kinds.drop { $0 == .answer }.allSatisfy { $0 == .reject })
+        Self.expectNoGapsAndPlainNoes(sent, about: proposals)
         await world.stop()
     }
 }

@@ -83,8 +83,12 @@ struct LifecycleTests {
         try await b.waitForState(bAsked, .ended(.nobodyUp))
         try await c.waitForState(cAsked, .ended(.declined))
         // On the wire, "none of these" and a pass are the same message.
+        try await eventually("both replies on the wire") {
+            Set(world.envelopes.filter { $0.recipient == a.id && $0.skill != nil }.map(\.sender)) == [b.id, c.id]
+        }
         let replies = world.envelopes.filter { $0.recipient == a.id && $0.skill != nil }
-        #expect(replies.count == 2)
+        // At least one from each; a retried query gets the same reply again.
+        #expect(Set(replies.map(\.sender)) == [b.id, c.id])
         for reply in replies {
             guard case .reject(let rejection) = reply.body else { Issue.record("expected a rejection"); continue }
             #expect(rejection.reason == .noOverlap)

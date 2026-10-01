@@ -210,9 +210,8 @@ struct AdversarialTests {
         // Mallory was never asked; Ben's real phone is silenced, so a forged
         // answer under Ben's name would have to come through Ben's key.
         try await mallory.send(.answer(steer), to: a, conversation: conversation)
-        try await Task.sleep(for: .milliseconds(60))
+        try await eventually("Mallory's answer refused") { await a.service.diagnostics.ignored["answer out of turn", default: 0] >= 1 }
         #expect(await a.coordinator.interaction(started)?.state == .negotiating)
-        #expect(await a.service.diagnostics.ignored["answer out of turn", default: 0] >= 1)
 
         // The same answer as if from Ben (Loopback cannot authenticate; the
         // secure channel would drop this, so the check here is the last line).

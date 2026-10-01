@@ -38,44 +38,46 @@ enum Canary {
 }
 
 /// The app's lifecycle coordinator, reduced to what tests need: it applies
-/// every event to an `InteractionStore` and keeps what it could not apply.
+/// every event to its interactions and keeps what it could not apply.
+///
+/// Each read, apply, and write happens without suspending, so two events
+/// can never interleave and lose an update (a consent approval saved over a
+/// withdrawal, say). Lane A's coordinator needs the same property.
 actor Coordinator {
-    let store = InMemoryInteractionStore()
+    private var items: [InteractionID: Interaction] = [:]
     private(set) var log: [SkillEvent] = []
     private(set) var rejected: [SkillEvent] = []
     private(set) var produced: [InteractionID: [Artifact]] = [:]
+    private(set) var consents: [InteractionEvent] = []
+    private var queued: [InteractionID: [InteractionEvent]] = [:]
 
-    func consume(_ event: SkillEvent) async {
+    func consume(_ event: SkillEvent) {
         log.append(event)
-        do {
-            switch event {
-            case .incoming(let id, let conversation, let from, _):
-                try await store.save(Interaction(
-                    id: id, conversation: conversation, skill: FindATimeSkill.ref, role: .invitee,
-                    participants: [from], createdAt: Timestamp(Date())
-                ))
-            case .lifecycle(let id, let lifecycle):
-                guard var interaction = try await store.interaction(id) else { rejected.append(event); return }
-                // Progress during a consent suspension waits for the step to
-                // resume (ADR 0011, amendment 15).
-                if case .awaitingConsent = interaction.state, Self.waitsForConsent(lifecycle) {
-                    queued[id, default: []].append(lifecycle)
-                    return
-                }
-                try interaction.apply(lifecycle, at: Timestamp(Date()))
-                try await store.save(interaction)
-            case .produced(let id, let artifact):
-                produced[id, default: []].append(artifact)
-                guard var interaction = try await store.interaction(id) else { return }
-                interaction.record(artifact)
-                try await store.save(interaction)
+        switch event {
+        case .incoming(let id, let conversation, let from, _):
+            items[id] = Interaction(
+                id: id, conversation: conversation, skill: FindATimeSkill.ref, role: .invitee,
+                participants: [from], createdAt: Timestamp(Date())
+            )
+        case .lifecycle(let id, let lifecycle):
+            guard var interaction = items[id] else { rejected.append(event); return }
+            // Progress during a consent suspension waits for the step to
+            // resume (ADR 0011, amendment 15).
+            if case .awaitingConsent = interaction.state, Self.waitsForConsent(lifecycle) {
+                queued[id, default: []].append(lifecycle)
+                return
             }
-        } catch {
-            rejected.append(event)
+            do {
+                try interaction.apply(lifecycle, at: Timestamp(Date()))
+                items[id] = interaction
+            } catch {
+                rejected.append(event)
+            }
+        case .produced(let id, let artifact):
+            produced[id, default: []].append(artifact)
+            items[id]?.record(artifact)
         }
     }
-
-    private var queued: [InteractionID: [InteractionEvent]] = [:]
 
     private static func waitsForConsent(_ event: InteractionEvent) -> Bool {
         switch event {
@@ -84,40 +86,40 @@ actor Coordinator {
         }
     }
 
-    private func drainQueue(_ id: InteractionID) async {
-        guard var interaction = try? await store.interaction(id) else { return }
+    private func drainQueue(_ id: InteractionID) {
+        guard var interaction = items[id] else { return }
         if case .awaitingConsent = interaction.state { return }
         for event in queued.removeValue(forKey: id) ?? [] {
             do { try interaction.apply(event, at: Timestamp(Date())) } catch { rejected.append(.lifecycle(id, event)) }
         }
-        try? await store.save(interaction)
+        items[id] = interaction
     }
 
-    func begin(_ interaction: Interaction) async throws { try await store.save(interaction) }
+    func begin(_ interaction: Interaction) { items[interaction.id] = interaction }
 
     /// At launch the coordinator closes consent requests whose sheets died
     /// with the old process, before `restore(_:)` (ADR 0011, amendment 15).
-    func closeDeadSheets() async {
-        for var interaction in (try? await store.all()) ?? [] where !interaction.pendingConsents.isEmpty {
+    func closeDeadSheets() {
+        for (id, var interaction) in items where !interaction.pendingConsents.isEmpty {
             for request in interaction.pendingConsents.sorted() {
                 try? interaction.apply(.consentCancelled(request: request), at: Timestamp(Date()))
             }
-            try? await store.save(interaction)
-            await drainQueue(interaction.id)
+            items[id] = interaction
+            drainQueue(id)
         }
     }
 
     /// Opens a consent request on the interaction the send names
-    /// (`Disclosure.interaction`, Core v2.1). The interaction may not be in
-    /// the store yet when the sheet opens, so it waits briefly for it.
+    /// (`Disclosure.interaction`, Core v2.1). The interaction may not be
+    /// recorded yet when the sheet opens, so it waits briefly for it.
     func openConsent(_ id: InteractionID?) async -> UInt32? {
         guard let id else { return nil }
         for _ in 0..<200 {
-            if var interaction = try? await store.interaction(id) {
+            if var interaction = items[id] {
                 if interaction.state.isFinal { return nil }
                 let request = interaction.consentWatermark + 1
                 if (try? interaction.apply(.consentNeeded(request: request), at: Timestamp(Date()))) != nil {
-                    try? await store.save(interaction)
+                    items[id] = interaction
                     consents.append(.consentNeeded(request: request))
                     return request
                 }
@@ -129,25 +131,23 @@ actor Coordinator {
 
     /// Closes the request the sheet opened: given on approval, the owner's
     /// pass on a decline.
-    func closeConsent(_ id: InteractionID?, request: UInt32?, approved: Bool) async {
-        guard let id, let request, var interaction = try? await store.interaction(id), !interaction.state.isFinal else { return }
+    func closeConsent(_ id: InteractionID?, request: UInt32?, approved: Bool) {
+        guard let id, let request, var interaction = items[id], !interaction.state.isFinal else { return }
         let event: InteractionEvent = approved ? .consentGiven(request: request) : .ownerPassed
         do {
             try interaction.apply(event, at: Timestamp(Date()))
-            try? await store.save(interaction)
+            items[id] = interaction
             consents.append(event)
         } catch {
             rejected.append(.lifecycle(id, event))
         }
-        await drainQueue(id)
+        drainQueue(id)
     }
 
-    private(set) var consents: [InteractionEvent] = []
-
-    func all() async -> [Interaction] { (try? await store.all()) ?? [] }
-    func interaction(_ id: InteractionID) async -> Interaction? { try? await store.interaction(id) }
-    func invitee() async -> Interaction? { await all().first { $0.role == .invitee } }
-    func initiator() async -> Interaction? { await all().first { $0.role == .initiator } }
+    func all() -> [Interaction] { items.values.sorted { $0.createdAt < $1.createdAt } }
+    func interaction(_ id: InteractionID) -> Interaction? { items[id] }
+    func invitee() -> Interaction? { all().first { $0.role == .invitee } }
+    func initiator() -> Interaction? { all().first { $0.role == .initiator } }
 }
 
 /// A `Transport` that silently loses chosen outbound envelopes, as a flaky
@@ -370,7 +370,7 @@ final class Phone: Sendable {
         // when the owner sends, then start; if start throws, apply `.failed`.
         var interaction = Interaction(skill: FindATimeSkill.ref, role: .initiator, participants: friends.map(\.id), createdAt: Timestamp(Date()))
         try interaction.apply(.started, at: Timestamp(Date()))
-        try await coordinator.begin(interaction)
+        await coordinator.begin(interaction)
         do {
             try await service.start(SkillRequest(
                 interaction: interaction.id, conversation: interaction.conversation, intent: intent,
@@ -378,7 +378,7 @@ final class Phone: Sendable {
             ))
         } catch {
             try interaction.apply(.failed, at: Timestamp(Date()))
-            try await coordinator.begin(interaction)
+            await coordinator.begin(interaction)
             throw error
         }
         return interaction.id

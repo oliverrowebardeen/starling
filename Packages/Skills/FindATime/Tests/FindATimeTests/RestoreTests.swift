@@ -120,13 +120,13 @@ struct RestoreTests {
         let a = world.phone("Ana")
         try await world.start()
         let orphan = Interaction(skill: FindATimeSkill.ref, role: .invitee, participants: [PeerID.random()], createdAt: Timestamp(Date()))
-        try await a.coordinator.begin(orphan)
+        await a.coordinator.begin(orphan)
         await a.service.restore([orphan])
         try await a.waitForState(orphan.id, .ended(.failed))
 
         // Other skills' interactions are not this service's to touch.
         let other = Interaction(skill: SkillRef(.downFor, SkillVersion(1)), role: .invitee, participants: [PeerID.random()], createdAt: Timestamp(Date()))
-        try await a.coordinator.begin(other)
+        await a.coordinator.begin(other)
         await a.service.restore([other])
         try await Task.sleep(for: .milliseconds(50))
         #expect(await a.coordinator.interaction(other.id)?.state == .negotiating)
@@ -171,7 +171,7 @@ struct CrashWindowTests {
 
         // Roll Ben's stored interaction back to before the card.
         let stored = await b.coordinator.interaction(bCard)!
-        try await b.coordinator.begin(Interaction(
+        await b.coordinator.begin(Interaction(
             id: stored.id, conversation: stored.conversation, skill: stored.skill, role: .invitee,
             participants: stored.participants, createdAt: stored.createdAt
         ))
@@ -205,7 +205,7 @@ struct CrashWindowTests {
         try confirmed.apply(.started, at: stored.createdAt)
         try confirmed.apply(.proposalReady(stored.proposal!), at: stored.createdAt)
         try confirmed.apply(.ownerAccepted(revision: 1), at: stored.createdAt)
-        try await a.coordinator.begin(confirmed)
+        await a.coordinator.begin(confirmed)
         await a.restart()
         try await a.waitForState(started, .planned)
         #expect(await a.coordinator.interaction(started)?.plan == stored.plan)
@@ -234,7 +234,7 @@ struct CrashWindowTests {
                                      participants: stored.participants, createdAt: stored.createdAt)
         try rolledBack.apply(.proposalReady(first), at: stored.createdAt)
         try rolledBack.apply(.ownerAccepted(revision: 1), at: stored.createdAt)
-        try await b.coordinator.begin(rolledBack)
+        await b.coordinator.begin(rolledBack)
         let acceptancesBefore = world.envelopes.filter { $0.sender == b.id && $0.body.kind == .accept }.count
         await b.restart()
         try await b.greetAgain(world)
@@ -276,7 +276,7 @@ struct CrashWindowTests {
         try rolledBack.apply(.started, at: stored.createdAt)
         try rolledBack.apply(.proposalReady(first), at: stored.createdAt)
         try rolledBack.apply(.ownerAccepted(revision: 1), at: stored.createdAt)
-        try await a.coordinator.begin(rolledBack)
+        await a.coordinator.begin(rolledBack)
         await a.restart()
         try await a.greetAgain(world)
 
@@ -337,15 +337,21 @@ struct CrashWindowTests {
         let (asked, _) = try await target.waitForQuestion()
         try await target.service.answer(asked, with: .pass)
         try await target.waitForState(asked, .ended(.declined))
+        // The pass's "no plan" leaves before the app quits.
+        try await eventually("the first no plan") { world.envelopes.contains { $0.sender == target.id && $0.body.kind == .reject } }
 
         await target.restart()
         try await target.greetAgain(world)
         try await mallory.send(query, to: target, conversation: conversation)
-        try await Task.sleep(for: .milliseconds(100))
+        // The late query gets "no plan" again...
+        try await eventually("a second no plan") {
+            world.envelopes.filter { $0.sender == target.id && $0.body.kind == .reject }.count == 2
+        }
+        // ...and never a new card.
+        try await Task.sleep(for: .milliseconds(60))
         let cards = await target.coordinator.all()
         #expect(cards.count == 1)
         #expect(cards.first?.state == .ended(.declined))
-        #expect(world.envelopes.filter { $0.sender == target.id && $0.body.kind == .reject }.count == 2)
         await world.stop()
     }
 }
