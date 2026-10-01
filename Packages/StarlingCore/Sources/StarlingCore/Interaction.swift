@@ -121,8 +121,11 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     /// The owner sent the request (initiator), or the agent started handling
     /// an incoming one (invitee).
     case started
-    case consentNeeded
-    case consentGiven
+    /// A send is waiting on the consent sheet. `request` tells overlapping
+    /// requests in one interaction apart.
+    case consentNeeded(request: UInt32)
+    /// The owner approved that request.
+    case consentGiven(request: UInt32)
     case ownerNeeded
     case ownerAnswered
     /// A proposal card is ready. Revisions only increase; a newer one
@@ -148,6 +151,15 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
 public struct InvalidTransition: Error, Hashable, Sendable {
     public let from: InteractionState
     public let event: InteractionEvent
+}
+
+/// A consent completion for a request this interaction is not waiting on,
+/// or a request ID used twice: a late or replayed completion never resumes
+/// a later suspension.
+public struct UnknownConsentRequest: Error, Hashable, Sendable {
+    public let request: UInt32
+
+    public init(request: UInt32) { self.request = request }
 }
 
 /// An acceptance or confirmation for a proposal that is no longer the
@@ -184,6 +196,8 @@ extension InteractionState {
         case (.awaitingOwner, .consentNeeded): return .awaitingConsent(resume: .awaitingOwner)
         case (.proposed, .consentNeeded): return .awaitingConsent(resume: .proposed)
         case (.confirmed, .consentNeeded): return .awaitingConsent(resume: .confirmed)
+        // Another send asks while a sheet is already up: still suspended.
+        case (.awaitingConsent(let resume), .consentNeeded): return .awaitingConsent(resume: resume)
         case (.awaitingConsent(let resume), .consentGiven): return resume.state
         case (.awaitingConsent, .ownerPassed): return .ended(.declined)
         // The others gave up while the sheet was open.
@@ -280,6 +294,9 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     public private(set) var egress: [EgressRecord]
     /// The revision of the proposal the owner is looking at or accepted.
     public private(set) var proposalRevision: UInt32?
+    /// Consent requests still waiting on the owner. The interaction resumes
+    /// only when the last one is approved.
+    public private(set) var pendingConsents: Set<UInt32>
 
     /// An initiator starts while drafting; an invitee starts negotiating,
     /// because its agent is already handling the request.
@@ -305,6 +322,7 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         artifacts = []
         egress = []
         proposalRevision = nil
+        pendingConsents = []
     }
 
     public var updatedAt: Timestamp { history.last?.at ?? createdAt }
@@ -317,13 +335,33 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
             if let current = proposalRevision, revision <= current { throw StaleProposal(current: current, event: event) }
         case .ownerAccepted(let revision), .everyoneConfirmed(let revision):
             guard revision == proposalRevision else { throw StaleProposal(current: proposalRevision, event: event) }
+        case .consentNeeded(let request):
+            guard !pendingConsents.contains(request) else { throw UnknownConsentRequest(request: request) }
+        case .consentGiven(let request):
+            guard pendingConsents.contains(request) else { throw UnknownConsentRequest(request: request) }
+            // Other requests are still open: stay suspended, with no new
+            // state in the history.
+            if pendingConsents.count > 1, case .awaitingConsent = state {
+                pendingConsents.remove(request)
+                return
+            }
         default:
             break
         }
         let next = try state.applying(event)
+        // A second request while a sheet is already up changes nothing the
+        // timeline shows; every other event, a replacement proposal
+        // included, is recorded.
+        let alreadySuspended: Bool = if case .consentNeeded = event, case .awaitingConsent = state { true } else { false }
         state = next
-        history.append(StateChange(state: next, at: time))
-        if case .proposalReady(let revision) = event { proposalRevision = revision }
+        if !alreadySuspended { history.append(StateChange(state: next, at: time)) }
+        switch event {
+        case .proposalReady(let revision): proposalRevision = revision
+        case .consentNeeded(let request): pendingConsents.insert(request)
+        case .consentGiven(let request): pendingConsents.remove(request)
+        default: break
+        }
+        if next.isFinal { pendingConsents = [] }
     }
 
     public mutating func setParticipants(_ peers: [PeerID]) { participants = peers }
