@@ -111,7 +111,17 @@ package struct LinkTable: Sendable {
             // the old link is likely dead (for example after an app restart)
             // and the newer one wins. A link in the other direction wins only
             // if it is the preferred one.
-            guard existing.direction == direction || direction == preferred else { return admission }
+            guard existing.direction == direction || direction == preferred else {
+                // The link loses, but its hello still names the peer behind
+                // the device. Keep that, unless another peer's link holds the
+                // device: the surviving link may not know its device (the
+                // radio cannot always name an incoming one), and the app maps
+                // a picked device to a peer through this table.
+                if let device, !links.values.contains(where: { $0.device == device && $0.peer != peer }) {
+                    peersByDevice[device] = peer
+                }
+                return admission
+            }
             announce = existing.state != .active
             admission.closed.append(existing.id)
         }

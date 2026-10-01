@@ -335,6 +335,78 @@ private func frame(_ index: Int) throws -> Frame {
         for phone in [a, b, c] { await phone.transport.stop() }
     }
 
+    // MARK: Picked device to PeerID
+
+    private func device(_ target: String, seenBy phone: String, in air: FakeAir) async throws -> WiFiAwarePairedDevice {
+        let id = try #require(await air.deviceID(of: target, seenBy: phone))
+        return WiFiAwarePairedDevice(id: id, name: target)
+    }
+
+    @Test func mapsAPickedDeviceToItsPeerOnceTheHelloArrives() async throws {
+        let air = FakeAir()
+        await air.pair("a", "b")
+        let a = await Phone("a", air: air)
+        let b = await Phone("b", air: air)
+        let bOnA = try await device("b", seenBy: "a", in: air)
+        #expect(await a.transport.peerID(for: bOnA) == nil)
+
+        try await a.transport.start()
+        try await b.transport.start()
+        await eventually("linked") { await a.available(b) == 1 }
+        #expect(await a.transport.peerID(for: bOnA) == b.peer)
+        #expect(await b.transport.peerID(for: try await device("a", seenBy: "b", in: air)) == a.peer)
+
+        // Still known after the link drops, so a pairing can start right away.
+        await air.setInRange("a", "b", false)
+        await eventually("dropped") { await a.unavailable(b) == 1 }
+        #expect(await a.transport.peerID(for: bOnA) == b.peer)
+
+        await a.transport.stop()
+        await b.transport.stop()
+    }
+
+    @Test func waitsForTheHelloOfAPickedDevice() async throws {
+        let air = FakeAir()
+        await air.pair("a", "b")
+        let a = await Phone("a", air: air)
+        let b = await Phone("b", air: air)
+        let bOnA = try await device("b", seenBy: "a", in: air)
+        try await a.transport.start()
+
+        let transport = a.transport
+        let lookup = Task { await transport.peerID(for: bOnA, waitingUpTo: .seconds(5)) }
+        try await Task.sleep(for: .milliseconds(100))
+        try await b.transport.start()
+        #expect(await lookup.value == b.peer)
+
+        await a.transport.stop()
+        await b.transport.stop()
+    }
+
+    @Test func waitingForAPickedDeviceEndsWithNilOnTimeoutStopOrCancel() async throws {
+        let air = FakeAir()
+        await air.pair("a", "b")
+        let a = await Phone("a", air: air)
+        let bOnA = try await device("b", seenBy: "a", in: air)
+        try await a.transport.start()
+        let transport = a.transport
+
+        let started = ContinuousClock.now
+        #expect(await transport.peerID(for: bOnA, waitingUpTo: .milliseconds(100)) == nil)
+        #expect(ContinuousClock.now - started >= .milliseconds(100))
+
+        let cancelled = Task { await transport.peerID(for: bOnA, waitingUpTo: .seconds(30)) }
+        try await Task.sleep(for: .milliseconds(50))
+        cancelled.cancel()
+        #expect(await cancelled.value == nil)
+
+        let stopped = Task { await transport.peerID(for: bOnA, waitingUpTo: .seconds(30)) }
+        try await Task.sleep(for: .milliseconds(50))
+        await transport.stop()
+        #expect(await stopped.value == nil)
+        #expect(await transport.peerID(for: bOnA, waitingUpTo: .seconds(30)) == nil)
+    }
+
     @Test func keepsOneLinkPerPairedDevice() async throws {
         let air = FakeAir()
         let names = ["a", "b", "c", "d"]
