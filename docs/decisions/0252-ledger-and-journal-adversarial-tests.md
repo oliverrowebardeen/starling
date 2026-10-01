@@ -12,7 +12,9 @@ conversation retirement into a shared ConversationLedger enforced by Outbox.
 They also add a throwing pre-send observer, cancellation of retired sends, and
 sequence numbers per recipient. The app and skills install these contracts in
 their own lanes. F must distinguish testing the contract from proving durable
-storage and actual service integration.
+storage and actual service integration. PR #61 (`e9eb84a`) adds the last policy
+check, cancelInFlight, cancellation before a retirement write, and a requirement
+for services to retire before announcing their terminal event.
 
 ## Decision
 
@@ -42,6 +44,15 @@ storage and actual service integration.
    takes no number and a transport cancellation returns its number. After a
    restart with a backward clock, the durable sequence store can leave one gap,
    as ADR 0021 amendment 11 explicitly permits. Do not misreport it as a new leak.
+7. Replace actual Policy engines while a send waits at the journal or per-friend
+   queue. Exercise Never after Share or approved Ask me, and Ask me after Share.
+   New denial surfaces as OutboxError.denied; a newly required consent surfaces
+   as policyChangedDuringConsent. Both stop before numbering. Stable approval
+   and relaxed policy are positive controls. Exercise cancelInFlight across
+   recipients and conversations, and a failed retirement write in the real
+   secure-queue case. Service retirement-before-terminal ordering, the app's
+   policy installation, and latched storage failures remain real integration
+   cases, not properties asserted about a fabricated service implementation.
 
 ## Consequences
 

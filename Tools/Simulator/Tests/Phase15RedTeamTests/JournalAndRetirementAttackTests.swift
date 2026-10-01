@@ -48,7 +48,8 @@ import Testing
         }
     }
 
-    @Test func retirementCancelsAnOfferInsideTheSecureQueueBehindAnotherConversation() async throws {
+    @Test(arguments: [false, true])
+    func retirementCancelsAnOfferInsideTheSecureQueueEvenIfTheWriteFails(retirementWriteFails: Bool) async throws {
         // The injected link delay keeps a sealed send in flight while the next
         // conversation waits inside the real SecureTransport queue.
         let simulation = Simulation(latency: .seconds(1), now: { P15.date }, security: .secureChannel)
@@ -76,7 +77,12 @@ import Testing
             // Require the injected suspension to be live, rather than treating
             // a send already delivered as evidence about queue cancellation.
             try #require(await transport.completed.isEmpty)
-            try await outbox.retire(withdrawn)
+            if retirementWriteFails {
+                await ledger.failAll()
+                await #expect(throws: InMemoryConversationLedger.Unavailable.self) { try await outbox.retire(withdrawn) }
+            } else {
+                try await outbox.retire(withdrawn)
+            }
             let delivered = try await first.value
             await #expect(throws: CancellationError.self) { try await queued.value }
             try await Simulation.eventually("the unrelated conversation still arrives") { await bob.received.contains(delivered) }
@@ -84,9 +90,15 @@ import Testing
             #expect(await transport.completed.map(\.conversation) == [other])
             #expect(await journal.settled.map(\.conversation) == [other])
             #expect(await journal.pending.values.map(\.draft.conversation) == [withdrawn])
-            #expect(try await ledger.isRetired(withdrawn))
-            await #expect(throws: OutboxError.conversationRetired) {
-                try await outbox.send(Self.ordinaryNo, to: bob.id, conversation: withdrawn)
+            if retirementWriteFails {
+                await #expect(throws: InMemoryConversationLedger.Unavailable.self) {
+                    try await outbox.send(Self.ordinaryNo, to: bob.id, conversation: withdrawn)
+                }
+            } else {
+                #expect(try await ledger.isRetired(withdrawn))
+                await #expect(throws: OutboxError.conversationRetired) {
+                    try await outbox.send(Self.ordinaryNo, to: bob.id, conversation: withdrawn)
+                }
             }
             await simulation.stop()
         } catch {
@@ -226,6 +238,119 @@ import Testing
         #expect(afterRestart.sequence == reused.sequence + 2) // ADR 0021 amendment 11.
         #expect(await wire.captured.map(\.sequence) == [initial.sequence, afterQueued.sequence, reused.sequence, afterRestart.sequence])
     }
+
+    enum PolicyChange: CaseIterable, Sendable {
+        case shareToNever, askToNever, shareToAsk, unchangedApproval, askToShare
+        var initial: SharingChoice {
+            switch self { case .shareToNever, .shareToAsk: .share; default: .askMe }
+        }
+        var final: SharingChoice {
+            switch self {
+            case .shareToNever, .askToNever: .never
+            case .shareToAsk, .unchangedApproval: .askMe
+            case .askToShare: .share
+            }
+        }
+        var failure: OutboxError? {
+            switch self {
+            case .shareToNever, .askToNever: .denied(PolicyViolation(rule: PolicyRuleID.never, issue: .place))
+            case .shareToAsk: .policyChangedDuringConsent
+            case .unchangedApproval, .askToShare: nil
+            }
+        }
+    }
+
+    @Test(arguments: PolicyChange.allCases, [false, true])
+    func lastPolicyCheckHonorsPrivacyChangesAfterJournalOrSameFriendQueue(change: PolicyChange, queued: Bool) async throws {
+        let friend = try PairedPeer(publicKey: IdentityPublicKey(hex: String(repeating: "bb", count: 32)), nickname: "Sam", pairedAt: P15.now)
+        let peers = InMemoryPairedPeerStore([friend])
+        func engine(_ choice: SharingChoice) throws -> DeterministicPolicyEngine {
+            DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty,
+                disclosure: try PrivacySettings([.place: choice]).disclosureRules), pairedPeers: peers)
+        }
+        let policy = ReplaceablePolicy(try engine(change.initial))
+        let wire = LedgerWire(blocking: queued)
+        let journal = LedgerJournal(blocking: !queued)
+        let ledger = InMemoryConversationLedger()
+        let sequences = InMemorySentSequenceStore()
+        let consent = ScriptedConsentProvider(.approved)
+        let outbox = Outbox(transport: wire, policy: policy, consent: consent, observer: journal,
+                            sequences: sequences, ledger: ledger, now: { P15.date })
+        let conversation = ConversationID()
+        let blocking: Task<Envelope, any Error>? = queued ? Task {
+            try await outbox.send(Self.ordinaryNo, to: friend.id, conversation: conversation,
+                                  recipientCard: P15.card([SampleSkills.pickAPlace.ref]))
+        } : nil
+        defer { blocking?.cancel(); Task { await wire.release(); await journal.release() } }
+        if queued { try await Simulation.eventually("earlier send blocks this friend's queue") { await wire.waiting } }
+        let value = try P15.value(.place)
+        let terms = try Terms([.place: value])
+        let privateSend = Task {
+            try await outbox.send(.propose(Proposal(round: 0, terms: terms)), to: friend.id, conversation: conversation,
+                recipientCard: P15.card([SampleSkills.pickAPlace.ref]), skill: SampleSkills.pickAPlace.ref, mode: .invite)
+        }
+        defer { privateSend.cancel() }
+        try await Simulation.eventually("private send cleared the original policy and consent") {
+            await journal.pending.count == (queued ? 2 : 1)
+        }
+        let numbered = sequences.highestSent(in: conversation, to: friend.id)
+        await policy.install(try engine(change.final))
+        await journal.release()
+        await wire.release()
+        if let blocking { _ = try await blocking.value }
+        if let failure = change.failure {
+            await #expect(throws: failure) { try await privateSend.value }
+            #expect(sequences.highestSent(in: conversation, to: friend.id) == numbered)
+            #expect(await journal.pending.count == 1)
+        } else {
+            let sent = try await privateSend.value
+            #expect(await wire.captured.contains(sent))
+            #expect(await journal.pending.isEmpty)
+        }
+        let successful = (queued ? 1 : 0) + (change.failure == nil ? 1 : 0)
+        #expect(await wire.captured.count == successful)
+        #expect(await journal.settled.count == successful)
+        // A newly required consent does not silently reuse an earlier allow.
+        // An unchanged explicit approval remains a valid positive control.
+        #expect(await consent.requests.count == (change.initial == .askMe ? 1 : 0))
+    }
+
+    @Test func cancelInFlightStopsAllWaitingConversationsAndRecipientsWithoutRetiringThem() async throws {
+        let wire = LedgerWire(blocking: true)
+        let ledger = InMemoryConversationLedger()
+        let journal = LedgerJournal()
+        let sequences = InMemorySentSequenceStore()
+        let outbox = Outbox(transport: wire, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            observer: journal, sequences: sequences, ledger: ledger, now: { P15.date })
+        let one = ConversationID(), two = ConversationID()
+        let scopes = [(one, P15.bob), (one, P15.eve), (two, P15.bob), (two, P15.eve)]
+        let sends = scopes.map { conversation, peer in
+            Task { try await outbox.send(Self.ordinaryNo, to: peer, conversation: conversation) }
+        }
+        defer { for send in sends { send.cancel() }; Task { await wire.release() } }
+        try await Simulation.eventually("every scope waits inside transport") { await wire.entered.count == scopes.count }
+        let numbered = scopes.map { sequences.highestSent(in: $0.0, to: $0.1) }
+        await outbox.cancelInFlight()
+        await wire.release()
+        for send in sends { await #expect(throws: CancellationError.self) { try await send.value } }
+        #expect(await wire.captured.isEmpty)
+        #expect(await journal.pending.count == scopes.count)
+        #expect(await journal.settled.isEmpty)
+        for (index, scope) in scopes.enumerated() {
+            #expect(try await !ledger.isRetired(scope.0))
+            let fresh = try await outbox.send(Self.ordinaryNo, to: scope.1, conversation: scope.0)
+            #expect(fresh.sequence == numbered[index])
+        }
+        #expect(await wire.captured.count == scopes.count)
+    }
+}
+
+private actor ReplaceablePolicy: PolicyEngine {
+    private var engine: any PolicyEngine
+    init(_ engine: any PolicyEngine) { self.engine = engine }
+    func install(_ engine: any PolicyEngine) { self.engine = engine }
+    func evaluate(_ message: OutboundMessage) async -> PolicyDecision { await engine.evaluate(message) }
+    func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] { try await engine.disclosedItems(for: message) }
 }
 
 private actor LedgerJournal: OutboxObserver {
@@ -281,16 +406,18 @@ private actor LedgerWire: Transport {
     private let failAfterCapture: Bool
     private var blocking: Bool
     private var dropNext = false
-    private var waiter: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
     private(set) var waiting = false
+    private(set) var entered: [Envelope] = []
     private(set) var captured: [Envelope] = []
     init(failAfterCapture: Bool = false, blocking: Bool = false) { self.failAfterCapture = failAfterCapture; self.blocking = blocking }
     func start() async throws {}
     func stop() async { release() }
-    func release() { blocking = false; waiter?.resume(); waiter = nil }
+    func release() { blocking = false; waiting = false; for waiter in waiters { waiter.resume() }; waiters = [] }
     func cancelNext() { dropNext = true }
     func send(_ frame: Frame, to peer: PeerID) async throws {
-        if blocking { waiting = true; await withCheckedContinuation { waiter = $0 } }
+        entered.append(try EnvelopeCodec().decode(frame.bytes))
+        if blocking { waiting = true; await withCheckedContinuation { waiters.append($0) } }
         try Task.checkCancellation()
         if dropNext { dropNext = false; throw CancellationError() }
         captured.append(try EnvelopeCodec().decode(frame.bytes))
