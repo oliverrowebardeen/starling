@@ -61,4 +61,20 @@ import Testing
         #expect(sheet.rows[1].detail.contains("no readable input value"))
         #expect(sheet.psiNotice?.contains("does not independently verify") == true)
     }
+
+    /// Review 2 of PR #45: two rosters of the same size must not look alike,
+    /// and friends appear by the owner's name for them.
+    @Test func rostersNameEveryoneTheyShare() throws {
+        let alice = Fixtures.alice, bob = Fixtures.bob.id
+        let c = PeerID.random(), d = PeerID.random()
+        func detail(_ peers: [PeerID], names: [PeerID: String] = [:]) -> String {
+            let item = DisclosedItem(category: .terms, issue: .people, value: .peers(peers))
+            return ConsentSheetModel(disclosure: Disclosure(recipient: bob, recipientModel: .onDevice, items: [item]),
+                                     peerName: { names[$0] }).rows[0].detail
+        }
+        #expect(detail([alice, bob, c]) != detail([alice, bob, d]))
+        let named = detail([alice, bob, c], names: [alice: "Maya", bob: "Jake"])
+        #expect(named.contains("Maya") && named.contains("Jake") && named.contains(c.short))
+        #expect(!named.contains(alice.short))
+    }
 }
