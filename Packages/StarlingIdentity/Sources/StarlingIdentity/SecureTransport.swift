@@ -808,14 +808,22 @@ public actor SecureTransport: Transport {
 
     /// Runs link sends one at a time, in call order, so explicit nonces reach
     /// the peer in increasing order even when callers send concurrently.
+    /// Cancelling the caller cancels its queued send: one still waiting
+    /// behind an earlier send never seals or leaves (review of PR #51, a
+    /// withdrawn offer queued behind a stalled send).
     private func serialized(_ operation: @escaping @Sendable (isolated SecureTransport) async throws -> Void) async throws {
         let previous = sendTail
         let task = Task {
             await previous?.value
+            try Task.checkCancellation()
             try await operation(self)
         }
         sendTail = Task { _ = await task.result }
-        try await task.value
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 }
 
