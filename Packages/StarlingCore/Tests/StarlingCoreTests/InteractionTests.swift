@@ -13,9 +13,9 @@ import Testing
             (.started, .negotiating, .inProgress),
             (.consentNeeded, .awaitingConsent, .needsYou),
             (.consentGiven, .negotiating, .inProgress),
-            (.proposalReady, .proposed, .needsYou),
-            (.ownerAccepted, .confirmed, .inProgress),
-            (.everyoneConfirmed, .planned, .comingUp),
+            (.proposalReady(revision: 1), .proposed, .needsYou),
+            (.ownerAccepted(revision: 1), .confirmed, .inProgress),
+            (.everyoneConfirmed(revision: 1), .planned, .comingUp),
             (.planEnded, .done, .history),
         ]
         for (index, (event, state, section)) in events.enumerated() {
@@ -31,7 +31,7 @@ import Testing
     @Test func passingAndSilenceEndWithoutAPlan() throws {
         var passed = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
         #expect(passed.state == .negotiating)
-        try passed.apply(.proposalReady, at: Self.at(1))
+        try passed.apply(.proposalReady(revision: 1), at: Self.at(1))
         try passed.apply(.ownerPassed, at: Self.at(2))
         #expect(passed.state == .ended(.declined))
 
@@ -44,7 +44,7 @@ import Testing
 
     @Test func finalStatesAcceptNothingSoLateEventsCannotReviveThem() throws {
         for final in [InteractionState.done, .ended(.declined), .ended(.expired)] {
-            for event in [InteractionEvent.started, .proposalReady, .everyoneConfirmed, .withdrawn] {
+            for event in [InteractionEvent.started, .proposalReady(revision: 1), .everyoneConfirmed(revision: 1), .withdrawn] {
                 #expect(throws: InvalidTransition.self) { try final.applying(event) }
             }
         }
@@ -52,9 +52,11 @@ import Testing
 
     @Test func eventsOutOfOrderAreRejectedAndLeaveTheInteractionUnchanged() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
-        for event in [InteractionEvent.ownerAccepted, .everyoneConfirmed, .planEnded, .consentGiven] {
+        for event in [InteractionEvent.planEnded, .consentGiven, .ownerAnswered] {
             #expect(throws: InvalidTransition.self) { try interaction.apply(event, at: Self.at(1)) }
         }
+        // No proposal yet, so any acceptance is stale.
+        #expect(throws: StaleProposal.self) { try interaction.apply(.ownerAccepted(revision: 1), at: Self.at(1)) }
         #expect(interaction.state == .drafting && interaction.history.count == 1)
         try interaction.apply(.withdrawn, at: Self.at(1))
         #expect(interaction.state == .ended(.withdrawn))
@@ -90,5 +92,30 @@ import Testing
         let all = [photos, unrelated, place, root]
         #expect(all.chain(from: root.id).map(\.id) == [root.id, place.id, photos.id])
         #expect(all.chain(from: place.id).map(\.id) == [place.id, photos.id])
+    }
+
+    /// The review's race: the owner taps "I'm in" on proposal 1 after the
+    /// service has already shown proposal 2.
+    @Test func anAnswerToAnOlderProposalNeverAcceptsNewerTerms() throws {
+        var interaction = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
+        try interaction.apply(.proposalReady(revision: 1), at: Self.at(1))
+        try interaction.apply(.proposalReady(revision: 2), at: Self.at(2))
+        #expect(interaction.proposalRevision == 2)
+        #expect(throws: StaleProposal(current: 2, event: .ownerAccepted(revision: 1))) {
+            try interaction.apply(.ownerAccepted(revision: 1), at: Self.at(3))
+        }
+        #expect(interaction.state == .proposed)
+        // Revisions only move forward.
+        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(revision: 2), at: Self.at(3)) }
+        #expect(throws: StaleProposal.self) { try interaction.apply(.proposalReady(revision: 1), at: Self.at(3)) }
+
+        try interaction.apply(.ownerAccepted(revision: 2), at: Self.at(4))
+        // Someone else passed; the agents propose again, and an old
+        // confirmation cannot plan the new terms.
+        try interaction.apply(.proposalReady(revision: 3), at: Self.at(5))
+        #expect(throws: StaleProposal.self) { try interaction.apply(.everyoneConfirmed(revision: 2), at: Self.at(6)) }
+        try interaction.apply(.ownerAccepted(revision: 3), at: Self.at(6))
+        try interaction.apply(.everyoneConfirmed(revision: 3), at: Self.at(7))
+        #expect(interaction.state == .planned)
     }
 }

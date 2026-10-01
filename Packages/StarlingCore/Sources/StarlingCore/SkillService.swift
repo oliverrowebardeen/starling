@@ -58,11 +58,15 @@ public struct SkillRequest: Hashable, Sendable {
 /// The availability source's time-only `OwnerQuestion` stays for Phase 2's
 /// `AvailabilitySource`.
 public struct SkillQuestion: Hashable, Sendable {
+    /// Increases with each question in an interaction, so an answer to an
+    /// older question is never taken for a newer one.
+    public let revision: UInt32
     public let issue: IssueKey
     public let candidates: IssueValue
     public let asker: PeerID?
 
-    public init(issue: IssueKey, candidates: IssueValue, asker: PeerID?) {
+    public init(revision: UInt32, issue: IssueKey, candidates: IssueValue, asker: PeerID?) {
+        self.revision = revision
         self.issue = issue
         self.candidates = candidates
         self.asker = asker
@@ -71,22 +75,29 @@ public struct SkillQuestion: Hashable, Sendable {
 
 /// The owner's answer through the shared screens.
 public enum OwnerAnswer: Hashable, Sendable {
-    /// "I'm in", or yes to a question.
-    case accept
+    /// "I'm in" to exactly this proposal revision. A service rejects an
+    /// acceptance for any revision but the one it last proposed.
+    case accept(proposal: UInt32)
     /// "Not tonight", or no.
     case pass
-    /// A typed answer to a `SkillQuestion`, such as the slots that work.
-    case reply(IssueValue)
+    /// A typed answer to the `SkillQuestion` with this revision, such as the
+    /// slots that work.
+    case reply(question: UInt32, IssueValue)
 }
 
 /// A proposal card's facts. Wording comes from `SkillModel.proposalText`,
 /// with a template fallback in the skill's package.
 public struct SkillProposal: Hashable, Sendable {
+    /// Increases with each proposal in an interaction; the card, the
+    /// owner's answer, and `InteractionEvent.proposalReady` carry it.
+    public let revision: UInt32
+    /// Everyone in the plan the proposal would make, the owner included.
     public let participants: [PeerID]
     public let terms: Terms
     public let plan: Plan?
 
-    public init(participants: [PeerID], terms: Terms, plan: Plan? = nil) {
+    public init(revision: UInt32, participants: [PeerID], terms: Terms, plan: Plan? = nil) {
+        self.revision = revision
         self.participants = participants
         self.terms = terms
         self.plan = plan

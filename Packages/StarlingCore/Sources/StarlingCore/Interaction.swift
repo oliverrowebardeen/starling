@@ -108,12 +108,15 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     case consentGiven
     case ownerNeeded
     case ownerAnswered
-    case proposalReady
-    /// The owner said yes ("I'm in").
-    case ownerAccepted
+    /// A proposal card is ready. Revisions only increase; a newer one
+    /// replaces any proposal the owner has not answered.
+    case proposalReady(revision: UInt32)
+    /// The owner said yes ("I'm in") to exactly this proposal revision.
+    case ownerAccepted(revision: UInt32)
     /// The owner passed ("Not tonight") or declined consent.
     case ownerPassed
-    case everyoneConfirmed
+    /// Everyone accepted exactly this proposal revision.
+    case everyoneConfirmed(revision: UInt32)
     /// Negotiation ended with no agreement.
     case noAgreement
     case expired
@@ -128,6 +131,19 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
 public struct InvalidTransition: Error, Hashable, Sendable {
     public let from: InteractionState
     public let event: InteractionEvent
+}
+
+/// An acceptance or confirmation for a proposal that is no longer the
+/// current one, or a proposal that does not move the revision forward.
+/// The owner's tap on an older card never accepts newer terms.
+public struct StaleProposal: Error, Hashable, Sendable {
+    public let current: UInt32?
+    public let event: InteractionEvent
+
+    public init(current: UInt32?, event: InteractionEvent) {
+        self.current = current
+        self.event = event
+    }
 }
 
 extension InteractionState {
@@ -240,6 +256,8 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     public let chain: ChainLink?
     public private(set) var artifacts: [Artifact]
     public private(set) var egress: [EgressRecord]
+    /// The revision of the proposal the owner is looking at or accepted.
+    public private(set) var proposalRevision: UInt32?
 
     /// An initiator starts while drafting; an invitee starts negotiating,
     /// because its agent is already handling the request.
@@ -264,6 +282,7 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         self.chain = chain
         artifacts = []
         egress = []
+        proposalRevision = nil
     }
 
     public var updatedAt: Timestamp { history.last?.at ?? createdAt }
@@ -271,9 +290,18 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     /// Applies `event`, recording the new state. Throws `InvalidTransition`
     /// and leaves the interaction unchanged if the event does not apply.
     public mutating func apply(_ event: InteractionEvent, at time: Timestamp) throws {
+        switch event {
+        case .proposalReady(let revision):
+            if let current = proposalRevision, revision <= current { throw StaleProposal(current: current, event: event) }
+        case .ownerAccepted(let revision), .everyoneConfirmed(let revision):
+            guard revision == proposalRevision else { throw StaleProposal(current: proposalRevision, event: event) }
+        default:
+            break
+        }
         let next = try state.applying(event)
         state = next
         history.append(StateChange(state: next, at: time))
+        if case .proposalReady(let revision) = event { proposalRevision = revision }
     }
 
     public mutating func setParticipants(_ peers: [PeerID]) { participants = peers }

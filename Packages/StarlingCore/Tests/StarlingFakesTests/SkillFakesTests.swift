@@ -15,11 +15,11 @@ import Testing
     @Test func scriptedServiceRecordsAndEmits() async throws {
         let service = ScriptedSkillService(descriptor: SampleSkills.downFor)
         let id = InteractionID()
-        await service.emit(.lifecycle(id, .proposalReady))
-        try await service.answer(id, with: .accept)
+        await service.emit(.lifecycle(id, .proposalReady(revision: 1)))
+        try await service.answer(id, with: .accept(proposal: 1))
         var iterator = service.events.makeAsyncIterator()
-        #expect(await iterator.next() == .lifecycle(id, .proposalReady))
-        #expect(await service.answers.map(\.1) == [.accept])
+        #expect(await iterator.next() == .lifecycle(id, .proposalReady(revision: 1)))
+        #expect(await service.answers.map(\.1) == [.accept(proposal: 1)])
     }
 
     @Test func inMemoryStoreFindsByConversation() async throws {
