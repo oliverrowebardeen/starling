@@ -243,6 +243,26 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(lifecycle.interaction(id)?.chain?.parent == parent.id)
     }
 
+    /// Location is asked when the owner wants nearby places, not at start.
+    @Test func nearbyPlacesAskForLocationThroughTheSheet() async throws {
+        let h = try await ComposerHarness(skillModel: nil)
+        let location = FakeAccess(.locationWhenInUse)
+        let gate = PermissionGate(access: [location])
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [pick], store: InMemoryInteractionStore(), now: h.clock.closure)
+        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: gate,
+                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
+        await model.choose(.pickAPlace)
+        #expect(await location.requests == 0)
+        let asking = Task { await model.suggestNearby() }
+        await eventually { gate.pending != nil }
+        #expect(gate.pending?.permission == .locationWhenInUse)
+        gate.proceed()
+        await asking.value
+        #expect(model.chips.first == "Nearby")
+        #expect(await location.requests == 1)
+    }
+
     @Test func cancelClearsTheDraft() async throws {
         let h = try await ComposerHarness()
         h.model.text = "boba"

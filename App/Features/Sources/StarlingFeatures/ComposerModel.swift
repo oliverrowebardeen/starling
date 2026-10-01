@@ -105,7 +105,9 @@ public final class ComposerModel {
     private let friends: @MainActor () -> [PairedPeer]
     private let savedRules: @MainActor () -> OwnerRules?
     private let localPeer: PeerID?
-    private let beforeFirstRequest: @MainActor () async -> Void
+    /// Runs before every send: the first time, the deliberate Local Network
+    /// prompt and the radios (ADR 0013).
+    public var beforeFirstRequest: @MainActor () async -> Void
     private let now: @Sendable () -> Date
     private let timeZone: TimeZone
 
@@ -437,6 +439,27 @@ public final class ComposerModel {
         } catch {
             notice = Self.refusalNote(error, descriptor)
             return nil
+        }
+    }
+
+    /// "Suggest places near me" in Pick a place: location is asked here,
+    /// the first time the owner wants nearby places, not when the skill
+    /// starts (ADR 0013 decision 2). Granted adds "nearby" to the chips;
+    /// otherwise the owner types an area.
+    public func suggestNearby() async {
+        guard let descriptor else { return }
+        let names = audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
+        switch await permissions.prepare(.locationWhenInUse, for: descriptor, friends: names, settings: settings) {
+        case .granted, .limited:
+            var all = constraints.constraints
+            guard let nearby = try? Keyword("nearby"), let rule = try? Constraint(.prefers(liked: [nearby], avoided: [])) else { return }
+            if !(all[.place] ?? []).contains(rule) { all[.place, default: []].append(rule) }
+            if let updated = try? ConstraintSet(all) { constraints = updated }
+            notice = nil
+        case .askInstead(let fallback):
+            notice = fallback ?? "Type an area instead, like near Franklin."
+        case .unavailable:
+            notice = "Type an area instead, like near Franklin."
         }
     }
 
