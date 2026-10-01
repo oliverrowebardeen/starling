@@ -31,6 +31,35 @@ struct GroupFlowTests {
         return (group, oliver, maya, jake)
     }
 
+    @Test func deniedLocationStillEndsInAPlanThroughManualEntry() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        // Oliver asks for places nearby, sees Starling's sheet, taps
+        // Continue, and chooses Don't Allow on the system alert.
+        let location = FakeLocation(.notDetermined, answersAlertWith: .denied)
+        let finder = PlaceFinder(search: FakeMaps(Venues.all), location: location)
+        #expect(await finder.find("dinner", near: .nearby) == .needsLocationPermission)
+        #expect(await finder.allowLocationAndFind("dinner") == .manualEntry(.locationDenied))
+        #expect(await location.alertsShown == 1)
+        #expect(await location.positionReads == 0)
+
+        // He types two places instead.
+        let typed = [try PlaceCandidate.manual("Grandma's Kitchen"), try PlaceCandidate.manual("Taco Truck on 5th")]
+        let conversation = try await oliver.organize(typed, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        for phone in [oliver, maya, jake] { try await phone.accept(in: conversation) }
+        for phone in [oliver, maya, jake] {
+            #expect(await phone.reaches(.planned, in: conversation))
+            #expect(await phone.agreedPlace(in: conversation) == typed[0].choice)
+        }
+        // A typed place has no coordinate, and nobody's position travels.
+        let places: [PlaceChoice] = await group.wire.values.flatMap { (_, value) -> [PlaceChoice] in
+            if case .places(let list) = value { list } else { [] }
+        }
+        #expect(!places.isEmpty && places.allSatisfy { $0.coordinate == nil && $0.mapItemID == nil })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aGroupOfThreeAgreesOnAPlace() async throws {
         let (group, oliver, maya, jake) = try await threeFriends()
         defer { Task { await group.stop() } }
