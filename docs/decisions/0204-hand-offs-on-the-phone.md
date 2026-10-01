@@ -18,6 +18,8 @@ Verified in the iOS 27 SDK headers and Apple's documentation (2026-10-01): `EKEv
 4. **Directions** opens the venue by its Maps identifier when the plan has one, otherwise by its coordinate and name, otherwise a Maps search for the name. Maps routes from the owner's location itself.
 5. **The timeline records hand-offs the owner completed**: a saved calendar event, a sent message, and opening directions. Cancelled sheets are not recorded.
 6. **App Intents**: one intent, "What's my next plan?", with App Shortcuts phrases. It reads the interactions on the phone and answers in a sentence; it changes nothing and sends nothing.
+   - **It runs only on an unlocked phone.** `AppIntent.authenticationPolicy` defaults to `alwaysAllowed`, which "allows the intent to run without authentication, including when the device is locked", and the answer names friends, a time, and a place. Every intent that reads plans or names sets `requiresLocalDeviceAuthentication` ("requires the person to unlock the device running the intent"). Review of PR #54, finding 1.
+   - The intents live in StarlingFeatures, made available to the app with `AppIntentsPackage`, so `swift test` checks the policy of every intent in `StarlingIntents.readingPersonalData`. The app registers the live plan reader with `AppDependencyManager` at launch. The built app's `Metadata.appintents` lists `StarlingFeatures.NextPlanIntent` with that policy.
 
 ## Consequences
 
@@ -32,5 +34,8 @@ Verified in the iOS 27 SDK headers and Apple's documentation (2026-10-01): `EKEv
 - `CNContactPickerViewController`: https://developer.apple.com/documentation/contactsui/cncontactpickerviewcontroller
 - `MKMapItem.openInMaps(launchOptions:)`: https://developer.apple.com/documentation/mapkit/mkmapitem/openinmaps(launchoptions:)
 - `AppShortcutsProvider`: https://developer.apple.com/documentation/appintents/appshortcutsprovider
+- `AppIntent.authenticationPolicy`: https://developer.apple.com/documentation/appintents/appintent/authenticationpolicy
+- `IntentAuthenticationPolicy.requiresLocalDeviceAuthentication`: https://developer.apple.com/documentation/appintents/intentauthenticationpolicy/requireslocaldeviceauthentication
+- `AppIntentsPackage`: https://developer.apple.com/documentation/appintents/appintentspackage
 - iOS 27.0 SDK headers: `MapKit/MKMapItem.h`, `MapKit/MKMapItemRequest.h`, `MapKit/MKMapItemIdentifier.h`
 - ADRs 0018 and 0200

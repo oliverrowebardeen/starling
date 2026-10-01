@@ -1,3 +1,4 @@
+import AppIntents
 import StarlingFeatures
 import StarlingIdentity
 import SwiftUI
@@ -9,6 +10,7 @@ struct StarlingApp: App {
 
     init() {
         UserNotificationsNotifier.shared.install()
+        AppDependencyManager.shared.add(dependency: PlanReader.live)
     }
 
     var body: some Scene {
