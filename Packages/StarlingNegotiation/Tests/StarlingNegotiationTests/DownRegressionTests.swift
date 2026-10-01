@@ -120,10 +120,10 @@ import Testing
         let start = clock.now
         var index = 0
         // Distinct activity and budget queries every 10 ms until Ben's
-        // conversation ends, or 2 s (ten times the 2 x 5 x 20 ms details
+        // conversation ends, or 4 s (four times the 2 x 25 x 20 ms details
         // deadline). Before the fix, each answer reset the deadline, so the
         // flood kept the conversation alive indefinitely.
-        while clock.now - start < .seconds(2), await !ben.negotiator.conversations.isEmpty || index == 0 {
+        while clock.now - start < .seconds(4), await !ben.negotiator.conversations.isEmpty || index == 0 {
             let query = index.isMultiple(of: 2)
                 ? try Query(issue: .activity, candidates: .keywords([T.keyword("food"), T.keyword("item \(index)")]))
                 : try Query(issue: .budget, candidates: .amount(T.usd(Int64(index + 1))))
@@ -217,9 +217,9 @@ import Testing
         try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
         try await answerer.want(time: [T.slot(19, 22)], liked: ["food"])
 
-        // The details deadline is 200 ms and the stall 30 s; 2 s leaves room
+        // The details deadline is 1 s and the stall 30 s; 4 s leaves room
         // for a loaded machine.
-        try await eventually(timeout: .seconds(2), "the stalled conversation timed out") {
+        try await eventually(timeout: .seconds(4), "the stalled conversation timed out") {
             let started = await calls.value
             let timedOut = await answerer.negotiator.diagnostics.outcomes[.timedOut]
             return started == 1 && timedOut == 1
@@ -240,7 +240,7 @@ import Testing
         let consent = GatedConsentProvider(remembersApprovals: true)
         // A consent wait is bounded by its step's deadline (ADR 0120, item
         // 19). 200 ms retries give the owner a 1 s step, well past the pause
-        // below; the default 20 ms test retries would give only 100 ms.
+        // below and past one retry tick.
         let slow = DownConfiguration(retryInterval: .milliseconds(200), maxAttempts: 5)
         // The answer takes longer than one retry tick, so the starter resends
         // its approved query before the answer arrives, and that resend goes
@@ -349,7 +349,7 @@ import Testing
         }
         try await eventually("ben's first PSI send waits for consent") { await consent.pending == 1 }
 
-        // 5 ticks of 20 ms; the sheet stays unanswered throughout.
+        // 25 ticks of 20 ms; the sheet stays unanswered throughout.
         try await eventually(timeout: .seconds(2), "the run timed out") { await ben.negotiator.conversations.isEmpty }
         #expect(await ben.negotiator.diagnostics.outcomes[.timedOut] == 1)
         #expect(await consent.pending == 1)
@@ -461,6 +461,23 @@ import Testing
         try await world["ben"].want(time: [T.slot(19, 22)])
         try await eventually("both matched") { await matchCounts(world["ana"], world["ben"]) == [1, 1] }
         await world.expectNoFalseMatches()
+        await world.stop()
+    }
+
+    /// The shared test settings must leave room for a step that takes a
+    /// while, like a busy machine (load average about 35 made
+    /// maybeIsRevealedOnlyInsideTheFinalAccepts time out once) or a slow
+    /// model call. Here one phone answers in 150 ms.
+    @Test func theDefaultTestSettingsTolerateASlowStep() async throws {
+        let slowAnswer = ScriptedAgentModel(onMatch: { wanted, offered in
+            try await Task.sleep(for: .milliseconds(150))
+            return ScriptedAgentModel.exactMatches(wanted: wanted, offered: offered)
+        })
+        let world = DownWorld(["ana", "ben"], model: slowAnswer)
+        try await world.start()
+        try await world["ana"].want(time: [T.slot(19, 22)], liked: ["food"])
+        try await world["ben"].want(time: [T.slot(19, 22)], liked: ["food"])
+        try await eventually("both matched") { await matchCounts(world["ana"], world["ben"]) == [1, 1] }
         await world.stop()
     }
 

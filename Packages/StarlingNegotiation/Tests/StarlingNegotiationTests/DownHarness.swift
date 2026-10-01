@@ -6,9 +6,11 @@ import StarlingTransport
 import Synchronization
 import Testing
 
-/// Retries every 20 ms and gives up on a step after 100 ms, so failure paths
-/// finish quickly over a zero-latency hub.
-let fastConfiguration = DownConfiguration(retryInterval: .milliseconds(20), maxAttempts: 5)
+/// Retries every 20 ms, so lost frames recover quickly over a zero-latency
+/// hub, and gives up on a step after 500 ms (1 s for the details phase).
+/// A tighter budget (5 attempts, 100 ms) made healthy flows time out on a
+/// loaded machine.
+let fastConfiguration = DownConfiguration(retryInterval: .milliseconds(20), maxAttempts: 25)
 /// Real timers, but wall time pinned to `T.now` so slots are deterministic.
 let pinnedClock = DownClock(now: { T.now }, sleep: { try await Task.sleep(for: $0) })
 
