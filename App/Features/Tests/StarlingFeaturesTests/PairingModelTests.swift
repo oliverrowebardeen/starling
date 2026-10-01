@@ -4,85 +4,128 @@ import StarlingFakes
 import StarlingFeatures
 import Testing
 
+/// A directory over scripted sessions, recording what the model asks for.
+final class ScriptedDirectory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started: [(PeerID, String)] = []
+    private var finished: [PairedPeer] = []
+    let candidates: [PairingCandidate]
+    let makeSession: @Sendable (PairingCandidate, String) async throws -> any PairingSession
+
+    init(candidates: [PairingCandidate], makeSession: @escaping @Sendable (PairingCandidate, String) async throws -> any PairingSession) {
+        self.candidates = candidates
+        self.makeSession = makeSession
+    }
+
+    var starts: [(PeerID, String)] { lock.withLock { started } }
+    var paired: [PairedPeer] { lock.withLock { finished } }
+
+    var directory: PairingDirectory {
+        PairingDirectory(
+            localPeer: PeerID.random(),
+            candidates: { [candidates] in candidates },
+            pair: { [self] candidate, nickname in
+                lock.withLock { started.append((candidate.peer, nickname)) }
+                return try await makeSession(candidate, nickname)
+            },
+            paired: { [self] peer in lock.withLock { finished.append(peer) } }
+        )
+    }
+}
+
+@MainActor
+func readyToPair(_ model: PairingModel) async {
+    await model.refreshCandidates()
+    model.selected = model.candidates.first
+    model.nickname = "Maya"
+}
+
 @MainActor
 @Suite struct PairingModelTests {
-    func model(peer: PairedPeer, store: InMemoryPairedPeerStore) -> PairingModel {
-        PairingModel(makeSession: { ScriptedPairingSession(code: "482 913", peer: peer) }, store: store)
+    static let maya = Fixtures.peer("Phone")
+    static let candidate = PairingCandidate(peer: maya.id, link: "Wi-Fi Aware")
+
+    static func scripted(code: String = "482 913") -> ScriptedDirectory {
+        let peer = maya
+        return ScriptedDirectory(candidates: [candidate]) { _, nickname in
+            ScriptedPairingSession(code: code, peer: try PairedPeer(publicKey: peer.publicKey, nickname: nickname, pairedAt: peer.pairedAt))
+        }
     }
 
-    func settle(_ model: PairingModel, until predicate: (PairingModel.Phase) -> Bool) async {
-        await eventually { predicate(model.phase) }
+    @Test func listsNearbyPhonesAndNeedsAChoiceAndANameFirst() async {
+        let model = PairingModel(directory: Self.scripted().directory)
+        await model.refreshCandidates()
+        #expect(model.candidates == [Self.candidate])
+        #expect(!model.canStart)
+        model.selected = Self.candidate
+        #expect(!model.canStart, "a nickname is needed before the ceremony (lane E1 saves it with the pin)")
+        model.nickname = "Maya"
+        #expect(model.canStart)
     }
 
-    @Test func showsTheCodeThenNamesAndSavesTheFriend() async throws {
-        let store = InMemoryPairedPeerStore()
-        let maya = Fixtures.peer("Phone")
-        let model = model(peer: maya, store: store)
+    @Test func showsTheCodeThenFinishesWithTheNamedFriend() async throws {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await readyToPair(model)
 
         await model.start()
-        await settle(model) { $0 == .comparing(code: "482 913") }
+        await eventually { model.phase == .comparing(code: "482 913") }
         #expect(model.phase == .comparing(code: "482 913"))
+        #expect(directory.starts.map(\.1) == ["Maya"])
 
         await model.confirm(codesMatch: true)
-        await settle(model) { if case .naming = $0 { true } else { false } }
-        #expect(model.phase == .naming(maya))
-        #expect(model.nickname == "Phone")
-
-        model.nickname = "Maya"
-        await model.saveNickname()
-
-        let saved = try #require(try await store.peer(for: maya.id))
-        #expect(saved.nickname == "Maya")
-        #expect(model.phase == .paired(saved))
+        await eventually { if case .paired = model.phase { true } else { false } }
+        guard case .paired(let peer) = model.phase else { Issue.record("expected paired"); return }
+        #expect(peer.nickname == "Maya")
+        #expect(directory.paired.map(\.id) == [Self.maya.id], "the app reconnects the links after pairing")
     }
 
-    @Test func mismatchedCodesFailAndSaveNothing() async throws {
-        let store = InMemoryPairedPeerStore()
-        let model = model(peer: Fixtures.peer("Maya"), store: store)
+    @Test func mismatchedCodesFailAndFinishNothing() async throws {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await readyToPair(model)
         await model.start()
-        await settle(model) { if case .comparing = $0 { true } else { false } }
+        await eventually { if case .comparing = model.phase { true } else { false } }
 
         await model.confirm(codesMatch: false)
-        await settle(model) { if case .failed = $0 { true } else { false } }
+        await eventually { if case .failed = model.phase { true } else { false } }
 
         #expect(model.phase == .failed(.codeMismatch))
-        #expect(try await store.all().isEmpty)
+        #expect(directory.paired.isEmpty)
     }
 
     @Test func cancelEndsTheCeremony() async throws {
-        let model = model(peer: Fixtures.peer("Maya"), store: InMemoryPairedPeerStore())
+        let model = PairingModel(directory: Self.scripted().directory)
+        await readyToPair(model)
         await model.start()
-        await settle(model) { if case .comparing = $0 { true } else { false } }
+        await eventually { if case .comparing = model.phase { true } else { false } }
         await model.cancel()
-        await settle(model) { if case .failed = $0 { true } else { false } }
+        await eventually { if case .failed = model.phase { true } else { false } }
         #expect(model.phase == .failed(.cancelled))
     }
 
     @Test func confirmIsIgnoredBeforeACodeIsShown() async {
-        let model = model(peer: Fixtures.peer("Maya"), store: InMemoryPairedPeerStore())
+        let model = PairingModel(directory: Self.scripted().directory)
         await model.confirm(codesMatch: true)
         #expect(model.phase == .idle)
     }
 
-    @Test func invalidNicknameKeepsTheNamingStep() async throws {
-        let store = InMemoryPairedPeerStore()
-        let model = model(peer: Fixtures.peer("Maya"), store: store)
-        await model.start()
-        await settle(model) { if case .comparing = $0 { true } else { false } }
-        await model.confirm(codesMatch: true)
-        await settle(model) { if case .naming = $0 { true } else { false } }
-
+    @Test func anInvalidNicknameIsRefusedBeforeTheCeremony() async {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await readyToPair(model)
         model.nickname = "   "
-        await model.saveNickname()
-
-        guard case .naming = model.phase else { Issue.record("expected naming, got \(model.phase)"); return }
-        #expect(model.notice != nil)
-        #expect(try await store.all().isEmpty)
+        #expect(!model.canStart)
+        await model.start()
+        #expect(model.phase == .idle)
+        #expect(directory.starts.isEmpty)
     }
 
-    @Test func factoryFailureIsReported() async {
+    @Test func aFailureToStartIsReported() async {
         struct NoLink: Error {}
-        let model = PairingModel(makeSession: { throw NoLink() }, store: InMemoryPairedPeerStore())
+        let directory = ScriptedDirectory(candidates: [Self.candidate]) { _, _ in throw NoLink() }
+        let model = PairingModel(directory: directory.directory)
+        await readyToPair(model)
         await model.start()
         #expect(model.phase == .failed(.transportFailed))
     }
@@ -120,7 +163,8 @@ import Testing
 
     @Test func endingWhileComparingCancelsTheCeremony() async {
         let session = CountingSession()
-        let model = PairingModel(makeSession: { session }, store: InMemoryPairedPeerStore())
+        let model = PairingModel(directory: ScriptedDirectory(candidates: [PairingModelTests.candidate]) { _, _ in session }.directory)
+        await readyToPair(model)
         await model.start()
         await eventually { model.phase == .comparing(code: "123 456") }
 
@@ -133,10 +177,11 @@ import Testing
 
     @Test func endingWhileTheSessionIsStillStartingCancelsItOnArrival() async {
         let session = CountingSession()
-        let model = PairingModel(makeSession: {
+        let model = PairingModel(directory: ScriptedDirectory(candidates: [PairingModelTests.candidate]) { _, _ in
             try await Task.sleep(for: .milliseconds(50))
             return session
-        }, store: InMemoryPairedPeerStore())
+        }.directory)
+        await readyToPair(model)
         let starting = Task { await model.start() }
         await eventually { model.phase == .starting }
 
@@ -148,19 +193,18 @@ import Testing
     }
 
     @Test func endingAfterPairingChangesNothing() async throws {
-        let store = InMemoryPairedPeerStore()
-        let peer = Fixtures.peer("Maya")
-        let model = PairingModel(makeSession: { ScriptedPairingSession(code: "1", peer: peer) }, store: store)
+        let directory = PairingModelTests.scripted(code: "1")
+        let model = PairingModel(directory: directory.directory)
+        await readyToPair(model)
         await model.start()
         await eventually { model.phase == .comparing(code: "1") }
         await model.confirm(codesMatch: true)
-        await eventually { if case .naming = model.phase { true } else { false } }
-        await model.saveNickname()
+        await eventually { if case .paired = model.phase { true } else { false } }
         let paired = model.phase
 
         await model.end()
         #expect(model.phase == paired)
-        #expect(try await store.all().count == 1)
+        #expect(directory.paired.count == 1)
     }
 }
 

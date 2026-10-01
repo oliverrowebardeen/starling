@@ -60,7 +60,7 @@ final class DebugHarness {
                 // the insecure PSI stub until Nightjar.
                 DownNegotiator(localPeer: ownerID, outbox: outbox, pairedPeers: peers, model: agent, psi: InsecurePSIStub())
             },
-            makePairingSession: { await DebugHarness.scriptedPairing() },
+            pairing: scriptedPairing(),
             inboxEvents: inboxEvents,
             makePolicy: LiveServices.policy(peers: peers),
             auditLog: LiveServices.auditLog,
@@ -74,10 +74,20 @@ final class DebugHarness {
         )
     }
 
-    /// A ceremony that shows a random code and pairs with a new random key.
-    static func scriptedPairing() -> any PairingSession {
-        let code = String(format: "%03d %03d", Int.random(in: 0...999), Int.random(in: 0...999))
-        return ScriptedPairingSession(code: code, peer: randomPeer(nickname: "Test friend"))
+    /// Until the Debug harness runs lane E1's pairing (next commit): one
+    /// demo phone whose ceremony is scripted, saved to the in-memory friends.
+    func scriptedPairing() -> PairingDirectory {
+        let peers = peers
+        let demo = Self.randomPeer(nickname: "Demo phone")
+        return PairingDirectory(
+            localPeer: owner.id,
+            candidates: { [PairingCandidate(peer: demo.id, link: "Demo (scripted)")] },
+            pair: { _, nickname in
+                let code = String(format: "%03d %03d", Int.random(in: 0...999), Int.random(in: 0...999))
+                return ScriptedPairingSession(code: code, peer: try PairedPeer(publicKey: demo.publicKey, nickname: nickname, pairedAt: Timestamp(Date())))
+            },
+            paired: { peer in try? await peers.save(peer) }
+        )
     }
 
     static func randomPeer(nickname: String) -> PairedPeer {

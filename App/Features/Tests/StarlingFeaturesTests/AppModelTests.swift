@@ -36,7 +36,7 @@ actor StoppableScriptedDown: StoppableDownService {
             rules: InMemoryRulesStore(),
             peers: peers,
             makeDownService: makeDown,
-            makePairingSession: { ScriptedPairingSession(code: "123 456", peer: Fixtures.peer("Test")) },
+            pairing: PairingModelTests.scripted().directory,
             inboxEvents: inbox,
             makePolicy: { _ in FixedPolicyEngine(.allow) },
             transport: transport,

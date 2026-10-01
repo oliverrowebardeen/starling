@@ -21,7 +21,7 @@ extension AppServices {
             rules: LiveServices.rulesStore(),
             peers: nil,
             makeDownService: nil,
-            makePairingSession: nil,
+            pairing: nil,
             makePolicy: LiveServices.policy(peers: nil),
             auditLog: LiveServices.auditLog,
             agentCard: LiveServices.agentCard(locality: .onDevice),

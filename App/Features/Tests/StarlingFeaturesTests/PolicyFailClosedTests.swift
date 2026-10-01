@@ -50,7 +50,7 @@ actor ClearGatedDownService: DownService {
             rules: rules,
             peers: InMemoryPairedPeerStore(),
             makeDownService: { _ in down },
-            makePairingSession: nil,
+            pairing: nil,
             makePolicy: EngineFactory().make,
             transport: RecordingTransport(),
             notifier: RecordingNotifier(),

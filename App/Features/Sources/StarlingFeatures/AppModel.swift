@@ -20,8 +20,9 @@ public struct AppServices: Sendable {
     /// consent sheet, the audit log) so every Down send is judged the same
     /// way. Its local peer must be the Outbox transport's.
     public var makeDownService: (@Sendable (Outbox) -> any DownService)?
-    /// Lanes E1 and E2's pairing ceremony.
-    public var makePairingSession: PairingSessionFactory?
+    /// Lane E1's pairing over the app's links, or nil if pairing is not in
+    /// this build.
+    public var pairing: PairingDirectory?
     /// The app's one `Inbox` stream (v1.1: `Inbox.events(from:)` over the
     /// secure channel). `AppModel` is its single consumer and routes every
     /// event to the features; nil until a transport is in the build.
@@ -53,7 +54,7 @@ public struct AppServices: Sendable {
         rules: any RulesStore,
         peers: (any PairedPeerStore)?,
         makeDownService: (@Sendable (Outbox) -> any DownService)?,
-        makePairingSession: PairingSessionFactory?,
+        pairing: PairingDirectory?,
         inboxEvents: AsyncStream<InboxEvent>? = nil,
         makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
@@ -71,7 +72,7 @@ public struct AppServices: Sendable {
         self.rules = rules
         self.peers = peers
         self.makeDownService = makeDownService
-        self.makePairingSession = makePairingSession
+        self.pairing = pairing
         self.inboxEvents = inboxEvents
         self.makePolicy = makePolicy
         self.auditLog = auditLog
@@ -228,7 +229,7 @@ public final class AppModel {
 
     /// A fresh ceremony model, or nil if pairing is not in this build.
     public func makePairing() -> PairingModel? {
-        guard let factory = services.makePairingSession, let peers = services.peers else { return nil }
-        return PairingModel(makeSession: factory, store: peers)
+        guard let directory = services.pairing, services.peers != nil else { return nil }
+        return PairingModel(directory: directory)
     }
 }
