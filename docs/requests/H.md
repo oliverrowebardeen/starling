@@ -67,4 +67,4 @@ So after the system pairs two phones over Wi-Fi Aware, the app cannot offer "pai
 
 **Why:** E1 asks the app never to write the paired-peer store directly. A rename is a store write (`save` of the same key with a new nickname), and if it raced an unpair it could put a removed pin back.
 
-**Status:** lane E1 agreed and is writing `PinAuthority.rename` (docs/requests/E1.md, answers to lane H). Meanwhile Debug builds offer rename by writing the store directly; Release does not offer it. Nicknames are set at pairing in both.
+**Status:** resolved. Lane E1 merged `PinAuthority.rename` (#36), and both builds rename through it.

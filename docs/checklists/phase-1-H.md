@@ -5,7 +5,7 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, signed, on one iP
 ## Onboarding
 
 1. Launch Starling. Expect: "Welcome to Starling" with the test-build note. Tap Continue.
-2. Tap Continue on "Find friends nearby". Expect: the iOS Local Network alert within 2 seconds. Tap Allow. Expect: "Only real matches" within 2 seconds after answering.
+2. Tap Continue on "Find friends nearby". Expect: the iOS Local Network alert within 2 seconds, and not before this screen (the radios wait for it). Tap Allow. Expect: "Only real matches" within 2 seconds after answering.
 3. Tap "Allow notifications". Expect: the iOS notifications alert. Tap Allow. Expect: the rules editor.
 4. Type "No plans before 10. Never share where I am. Vegetarian." and tap "Turn into rules". Expect: a review within about 10 seconds with a Time row (10:00 AM to midnight) and a sharing rule for Place set to "Never share". Any row with an orange note was not in your words.
 5. Change or delete any wrong row, tap "Save rules", then Done. Expect: the Down? tab.
@@ -17,7 +17,7 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, signed, on one iP
 
 ## Friends and pairing
 
-8. Friends tab. Expect: "Sim friend" with a green dot within 5 seconds (its secure session is up). Tap Sim friend, rename to "Sim F", Save. Expect: the name changes (Debug only; Release does not offer rename until lane E1's rename lands).
+8. Friends tab. Expect: "Sim friend" with a green dot within 5 seconds (its secure session is up). Tap Sim friend, rename to "Sim F", Save. Expect: the name changes.
 9. Tap +. Expect: the pairing sheet. On a Wi-Fi Aware iPhone, "Let a friend find this phone" and "Find a friend's phone"; elsewhere, a note that this iPhone can't pair over Wi-Fi Aware. Below: "Phones nearby", "This phone is" followed by 8 characters, a name field, and Pair disabled. With one phone, expect "Looking for nearby phones..." and nothing to pick. Close.
 10. Developer > Fakes: tap "Add a sample friend". Friends tab: swipe left on it, Unpair, confirm. Expect: it disappears.
 
