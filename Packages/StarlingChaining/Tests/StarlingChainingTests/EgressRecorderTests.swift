@@ -74,7 +74,7 @@ actor GatedSink: EgressSink {
         let store = InMemoryInteractionStore(interactions)
         let provider = ScriptedConsentProvider(consent)
         let policy = base ?? DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: privacy.disclosureRules))
-        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), now: { Fixtures.date(minutes: 12) })
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: InMemoryEgressJournal(), now: { Fixtures.date(minutes: 12) })
         let transport = RecordingTransport(localPeer: Fixtures.me)
         let outbox = Outbox(transport: transport, policy: ChainedFromPolicy(wrapping: policy, store: store), consent: provider,
                             observer: recorder, now: { Fixtures.date(minutes: 11) })
@@ -174,7 +174,7 @@ actor GatedSink: EgressSink {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
         let sink = FlakySink(store: store, failBefore: 2)
-        let recorder = EgressRecorder(sink: sink)
+        let recorder = EgressRecorder(sink: sink, journal: InMemoryEgressJournal())
         let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let terms = try Terms([.budget: .amount(try MoneyAmount(minorUnits: 1200))])
@@ -205,7 +205,7 @@ actor GatedSink: EgressSink {
     @Test func aRetryAfterALostAnswerDoesNotRecordTwice() async throws {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
-        let recorder = EgressRecorder(sink: FlakySink(store: store, failAfter: 1))
+        let recorder = EgressRecorder(sink: FlakySink(store: store, failAfter: 1), journal: InMemoryEgressJournal())
         let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
@@ -218,7 +218,7 @@ actor GatedSink: EgressSink {
     @Test func aNewSendRetriesEarlierFailuresFirst() async throws {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
-        let recorder = EgressRecorder(sink: FlakySink(store: store, failBefore: 1))
+        let recorder = EgressRecorder(sink: FlakySink(store: store, failBefore: 1), journal: InMemoryEgressJournal())
         let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let first = try await outbox.send(.propose(try Proposal(round: 0, terms: Terms([.budget: .amount(try MoneyAmount(minorUnits: 1))]))),
@@ -233,7 +233,7 @@ actor GatedSink: EgressSink {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
         let sink = FlakySink(store: store, failBefore: Int.max)
-        let recorder = EgressRecorder(sink: sink)
+        let recorder = EgressRecorder(sink: sink, journal: InMemoryEgressJournal())
         let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let other = ConversationID()
@@ -252,7 +252,7 @@ actor GatedSink: EgressSink {
         let first = try Fixtures.plannedDownFor(), second = try Fixtures.plannedDownFor(), third = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([first, second, third])
         let sink = GatedSink(store: store, failing: true)
-        let recorder = EgressRecorder(sink: sink)
+        let recorder = EgressRecorder(sink: sink, journal: InMemoryEgressJournal())
         let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let offer = MessageBody.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms()))
@@ -284,5 +284,71 @@ actor GatedSink: EgressSink {
         for plan in [first, second, third] {
             #expect(try await store.interaction(plan.id)?.egress.count == 1)
         }
+    }
+
+    /// A plan whose Pick a place link's send failed to record, then the app
+    /// quit. `journal` stands in for the file on disk.
+    static func failedBeforeRestart() async throws -> (plan: Interaction, link: Interaction, store: InMemoryInteractionStore, journal: InMemoryEgressJournal) {
+        let plan = try Fixtures.plannedDownFor()
+        let link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        let store = InMemoryInteractionStore([plan, link])
+        let journal = InMemoryEgressJournal()
+        let before = EgressRecorder(sink: GatedSink(store: store, failing: true), journal: journal)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: before)
+        try await outbox.send(.propose(try Proposal(round: 0, terms: placeTerms())), to: Fixtures.maya, conversation: link.conversation,
+                              skill: link.skill, mode: .invite, chainedFrom: plan.conversation)
+        #expect(await before.unconfirmedConversations == [link.conversation])
+        return (plan, link, store, journal)
+    }
+
+    @Test func uncertaintySurvivesARestartWhileTheStoreIsStillDown() async throws {
+        let (plan, link, store, journal) = try await Self.failedBeforeRestart()
+        // Relaunch: the stored link looks complete on its own.
+        let stored = try await store.all()
+        #expect(try #require(stored.first { $0.id == link.id }).egressIsKnown)
+        let after = EgressRecorder(sink: GatedSink(store: store, failing: true), journal: journal)
+        // In memory alone, a new recorder knows nothing (the review's case).
+        #expect(await after.unconfirmedConversations.isEmpty)
+        await after.recover()
+        #expect(await after.unconfirmedConversations == [link.conversation])
+        // So What left your phone does not claim the link's topics stayed.
+        let timeline = try #require(PlanTimeline(for: plan.id, in: stored, registry: SampleSkills.registry,
+                                                 unconfirmed: await after.unconfirmedConversations))
+        #expect(timeline.whatLeft.unconfirmed == [link.id])
+        #expect(!timeline.whatLeft.kept.contains(.topic(.place)))
+        #expect(!timeline.whatLeft.kept.contains(.topic(.diet)))
+        #expect(try await journal.unresolved().count == 1)
+    }
+
+    @Test func aRestartWithTheStoreBackRecordsTheSendOnceAndClearsTheJournal() async throws {
+        let (_, link, store, journal) = try await Self.failedBeforeRestart()
+        let after = EgressRecorder(sink: GatedSink(store: store, failing: false), journal: journal)
+        await after.recover()
+        #expect(await after.unconfirmedConversations.isEmpty)
+        #expect(try await store.interaction(link.id)?.egress.map(\.topics) == [[.place, .diet]])
+        #expect(try await journal.unresolved().isEmpty)
+        // Recovering again changes nothing.
+        await after.recover()
+        #expect(try await store.interaction(link.id)?.egress.count == 1)
+    }
+
+    @Test func theJournalHoldsASendBeforeAnyWriteIsAttempted() async throws {
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let journal = InMemoryEgressJournal()
+        let sink = GatedSink(store: store, failing: false)
+        await sink.hold()
+        let recorder = EgressRecorder(sink: sink, journal: journal)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let sending = Task { try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya,
+                                                   conversation: plan.conversation) }
+        await sink.gate.arrived()
+        // The write is under way; the journal already has the send.
+        #expect(try await journal.unresolved().map(\.conversation) == [plan.conversation])
+        await sink.gate.open()
+        _ = try await sending.value
+        #expect(try await journal.unresolved().isEmpty)
     }
 }

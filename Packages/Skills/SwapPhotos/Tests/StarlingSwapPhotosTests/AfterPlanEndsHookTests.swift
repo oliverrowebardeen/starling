@@ -67,7 +67,7 @@ import Testing
         let transport = RecordingTransport(localPeer: Fixtures.me)
         let consent = ScriptedConsentProvider(.approved)
         let policy = DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: Self.swapOn.privacy.disclosureRules))
-        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), now: { clock.now })
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: InMemoryEgressJournal(), now: { clock.now })
         let outbox = Outbox(transport: transport, policy: ChainedFromPolicy(wrapping: policy, store: store), consent: consent,
                             observer: recorder, now: { clock.now })
         let service = SwapPhotosService(outbox: outbox, me: Fixtures.me, planLookup: { _ in Fixtures.plan }, now: { clock.now })

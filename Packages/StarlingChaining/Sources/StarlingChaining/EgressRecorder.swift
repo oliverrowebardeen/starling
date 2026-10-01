@@ -26,11 +26,54 @@ public protocol EgressSink: Sendable {
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool
 }
 
+/// One send whose record is not yet confirmed on its interaction.
+public struct EgressJournalEntry: Hashable, Sendable, Codable {
+    public let message: MessageID
+    public let conversation: ConversationID
+    public let record: EgressRecord
+
+    public init(message: MessageID, conversation: ConversationID, record: EgressRecord) {
+        self.message = message
+        self.conversation = conversation
+        self.record = record
+    }
+}
+
+/// Durable memory of the sends the recorder has not yet confirmed, so the
+/// audit's uncertainty survives a restart: an entry is written before the
+/// first attempt to record the send and removed only once the record is on
+/// its interaction. The app keeps it on disk (lane A); a restarted recorder
+/// reads it in `recover()`. `InMemoryEgressJournal` is for tests.
+public protocol EgressJournal: Sendable {
+    func remember(_ entry: EgressJournalEntry) async throws
+    func forget(_ message: MessageID) async throws
+    /// Every entry not yet forgotten, oldest first.
+    func unresolved() async throws -> [EgressJournalEntry]
+}
+
+/// An `EgressJournal` in memory. Survives a recorder, not the app: tests
+/// share one between two recorders to stand in for a restart.
+public actor InMemoryEgressJournal: EgressJournal {
+    private var entries: [EgressJournalEntry] = []
+
+    public init() {}
+
+    public func remember(_ entry: EgressJournalEntry) async throws {
+        guard !entries.contains(where: { $0.message == entry.message }) else { return }
+        entries.append(entry)
+    }
+
+    public func forget(_ message: MessageID) async throws { entries.removeAll { $0.message == message } }
+    public func unresolved() async throws -> [EgressJournalEntry] { entries }
+}
+
 /// Install with `Outbox(observer:)`.
 ///
 /// Every send stays unresolved, and its conversation unconfirmed, from the
 /// moment Outbox reports it until the sink has put its record on the
-/// interaction: through a write under way, a failure, and a retry alike.
+/// interaction: through a write under way, a failure, a retry, and a
+/// restart alike. The journal holds it until then; call `recover()` at
+/// launch, before showing any audit.
 public actor EgressRecorder: OutboxObserver {
     /// At most this many unresolved sends are kept for a retry; past that the
     /// oldest is dropped, and its conversation stays unconfirmed for good.
@@ -42,6 +85,7 @@ public actor EgressRecorder: OutboxObserver {
     }
 
     private let sink: any EgressSink
+    private let journal: any EgressJournal
     private let now: @Sendable () -> Date
     /// Sends not yet confirmed on their interaction, by envelope, oldest first.
     private var pending: [MessageID: Pending] = [:]
@@ -49,6 +93,9 @@ public actor EgressRecorder: OutboxObserver {
     /// Sends whose sink call is under way, so two retries never write one
     /// send at the same time.
     private var attempting: Set<MessageID> = []
+    /// Sends whose journal entry is still being written. None is written to
+    /// the sink before its uncertainty is durable.
+    private var journaling: Set<MessageID> = []
     /// Conversations that lost a record for good (the retry queue was full).
     private var lost: Set<ConversationID> = []
 
@@ -61,10 +108,33 @@ public actor EgressRecorder: OutboxObserver {
     public private(set) var unexplained = 0
     /// Write attempts the sink rejected, retries included.
     public private(set) var failedWrites = 0
+    /// Journal operations that failed. A send whose entry could not be
+    /// written is still recorded if the sink works; if both fail, its
+    /// uncertainty lasts only until the app quits.
+    public private(set) var journalFailures = 0
+    /// The journal could not be read at launch, so the app cannot know which
+    /// logs are complete: it should not claim anything stayed on the phone.
+    public private(set) var journalUnreadable = false
 
-    public init(sink: any EgressSink, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(sink: any EgressSink, journal: any EgressJournal, now: @escaping @Sendable () -> Date = { Date() }) {
         self.sink = sink
+        self.journal = journal
         self.now = now
+    }
+
+    /// At launch: brings back every send the journal still holds, so its
+    /// conversation is unconfirmed again, and retries them.
+    public func recover() async {
+        let entries: [EgressJournalEntry]
+        do {
+            entries = try await journal.unresolved()
+        } catch {
+            journalUnreadable = true
+            journalFailures += 1
+            return
+        }
+        for entry in entries { track(entry.message, Pending(conversation: entry.conversation, record: entry.record)) }
+        await retryPending()
     }
 
     /// `disclosed` is what Outbox reports: the consent sheet's items, or for
@@ -77,8 +147,16 @@ public actor EgressRecorder: OutboxObserver {
         let record = EgressRecord(at: Timestamp(now()), recipient: envelope.recipient, items: disclosed ?? [],
                                   message: envelope.id, itemsUnknown: disclosed == nil)
         // Tracked before the first suspension, so the conversation is
-        // unconfirmed from the moment the send is reported.
+        // unconfirmed from the moment the send is reported, and journaled
+        // before any write, so that survives a restart.
         track(envelope.id, Pending(conversation: envelope.conversation, record: record))
+        journaling.insert(envelope.id)
+        do {
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record))
+        } catch {
+            journalFailures += 1
+        }
+        journaling.remove(envelope.id)
         await retryPending()
     }
 
@@ -92,7 +170,7 @@ public actor EgressRecorder: OutboxObserver {
     /// written. Each stays unresolved until its own write lands. The app calls
     /// it when the store recovers; every new send also runs it.
     public func retryPending() async {
-        for message in order where pending[message] != nil && !attempting.contains(message) {
+        for message in order where pending[message] != nil && !attempting.contains(message) && !journaling.contains(message) {
             await attempt(message)
         }
     }
@@ -110,7 +188,8 @@ public actor EgressRecorder: OutboxObserver {
         pending[message] = item
         order.append(message)
         // Over the limit: drop the oldest send not being written.
-        if order.count > Self.maxPending, let oldest = order.first(where: { !attempting.contains($0) }) {
+        // Its journal entry stays, so a restart brings it back.
+        if order.count > Self.maxPending, let oldest = order.first(where: { !attempting.contains($0) && !journaling.contains($0) }) {
             if let dropped = pending.removeValue(forKey: oldest) { lost.insert(dropped.conversation) }
             order.removeAll { $0 == oldest }
         }
@@ -122,15 +201,19 @@ public actor EgressRecorder: OutboxObserver {
         defer { attempting.remove(message) }
         do {
             if try await !sink.appendEgress(item.record, conversation: item.conversation) { unattributed += 1 }
-            resolve(message)
+            await resolve(message)
         } catch {
             failedWrites += 1
         }
     }
 
-    private func resolve(_ message: MessageID) {
+    /// The record is on its interaction: only now is the journal entry
+    /// removed. If removing it fails, a restart retries a record that
+    /// `Interaction.record` then ignores.
+    private func resolve(_ message: MessageID) async {
         pending[message] = nil
         order.removeAll { $0 == message }
+        do { try await journal.forget(message) } catch { journalFailures += 1 }
     }
 }
 
