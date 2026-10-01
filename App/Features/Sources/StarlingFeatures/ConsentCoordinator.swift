@@ -77,7 +77,12 @@ public protocol ConsentTracking: AnyObject {
     /// Returns the consent request ID the interaction now waits on, or nil
     /// when no interaction owns the conversation.
     func consentRequested(conversation: ConversationID) -> UInt32?
-    func consentAnswered(conversation: ConversationID, request: UInt32, approved: Bool)
+    /// Returns whether the answer applied. An approval that did not apply
+    /// (the interaction ended, or the request was closed) is a decline.
+    func consentAnswered(conversation: ConversationID, request: UInt32, approved: Bool) -> Bool
+    /// Whether the conversation's interaction has ended, so nothing more may
+    /// be sent for it.
+    func isFinished(conversation: ConversationID) -> Bool
 }
 
 extension LifecycleCoordinator: ConsentTracking {}
@@ -151,6 +156,9 @@ public final class ConsentCoordinator: ConsentProvider {
     }
 
     public func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        // A send for an interaction that already ended never goes out, even
+        // with an approval remembered from before it ended.
+        if let conversation = disclosure.conversation, tracker?.isFinished(conversation: conversation) == true { return .declined }
         if isRemembered(disclosure) { return .approved }
         var friends: [PeerID: String] = [:]
         for peer in (try? await peers?.all()) ?? [] { friends[peer.id] = peer.nickname }
@@ -203,9 +211,22 @@ public final class ConsentCoordinator: ConsentProvider {
     /// kept for later.
     public func answer(_ outcome: ConsentOutcome, to id: Request.ID) {
         guard let current, current.id == id else { return }
-        if outcome == .approved { approvals[current.disclosure] = now() }
-        for pending in queue where pending.request.disclosure == current.disclosure {
-            resolve(pending.request.id, outcome)
+        let disclosure = current.disclosure
+        var applied = false
+        for pending in queue where pending.request.disclosure == disclosure {
+            if resolve(pending.request.id, outcome) == .approved { applied = true }
+        }
+        // Remember only an approval that actually let a send go out.
+        if outcome == .approved, applied { approvals[disclosure] = now() }
+    }
+
+    /// The interaction that owns `conversation` ended: its queued sheets are
+    /// withdrawn as declines and its remembered approvals forgotten, so a
+    /// late answer can never send for it.
+    public func invalidate(conversation: ConversationID) {
+        for key in approvals.keys where key.conversation == conversation { approvals[key] = nil }
+        for pending in queue where pending.request.disclosure.conversation == conversation {
+            resolve(pending.request.id, .declined, report: false)
         }
     }
 
@@ -229,13 +250,22 @@ public final class ConsentCoordinator: ConsentProvider {
         if current == nil { current = pending.request }
     }
 
-    private func resolve(_ id: Request.ID, _ outcome: ConsentOutcome) {
-        guard let index = queue.firstIndex(where: { $0.request.id == id }) else { return }
+    /// Settles one request and returns what the send is told. An approval
+    /// the lifecycle could not apply, because the interaction ended or the
+    /// request was closed meanwhile, becomes a decline: nothing is sent.
+    @discardableResult
+    private func resolve(_ id: Request.ID, _ outcome: ConsentOutcome, report: Bool = true) -> ConsentOutcome? {
+        guard let index = queue.firstIndex(where: { $0.request.id == id }) else { return nil }
         let pending = queue.remove(at: index)
+        var final = outcome
         if let tracked = pending.tracked, let conversation = pending.request.disclosure.conversation {
-            tracker?.consentAnswered(conversation: conversation, request: tracked, approved: outcome == .approved)
+            let applied = report ? (tracker?.consentAnswered(conversation: conversation, request: tracked, approved: outcome == .approved) ?? false) : false
+            if !applied { final = .declined }
+        } else if let conversation = pending.request.disclosure.conversation, tracker?.isFinished(conversation: conversation) == true {
+            final = .declined
         }
-        pending.continuation.resume(returning: outcome)
+        pending.continuation.resume(returning: final)
         if current?.id == id { current = queue.first?.request }
+        return final
     }
 }

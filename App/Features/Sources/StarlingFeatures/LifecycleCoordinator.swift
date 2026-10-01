@@ -75,6 +75,14 @@ public final class LifecycleCoordinator {
     /// Called after every applied change with the record before and after,
     /// for notifications. Not called for dropped events.
     public var onChange: @MainActor (_ before: Interaction?, _ after: Interaction) -> Void = { _, _ in }
+    /// Called when an interaction reaches a final state, so the consent
+    /// sheets still queued for its conversation are withdrawn.
+    public var onFinished: @MainActor (_ conversation: ConversationID) -> Void = { _ in }
+
+    /// How long an ended interaction is still handed to `restore(_:)`, so a
+    /// service can ignore a late retry instead of reopening it (ADR 0011
+    /// amendment 15).
+    public static let recentlyEnded: TimeInterval = 24 * 3600
 
     public let registry: SkillRegistry
     private let services: [SkillID: any SkillService]
@@ -85,6 +93,10 @@ public final class LifecycleCoordinator {
     private var starting: Task<Void, Never>?
     private var dirty: [InteractionID] = []
     private var writer: Task<Void, Never>?
+    /// Progress a service reported while its interaction was suspended on a
+    /// consent sheet, in order, applied once the step resumes (amendment 15).
+    private var deferred: [InteractionID: [InteractionEvent]] = [:]
+    private var ticker: Task<Void, Never>?
 
     public init(registry: SkillRegistry, services: [any SkillService], store: any InteractionStore, now: @escaping @Sendable () -> Date = { Date() }) {
         self.registry = registry
@@ -130,8 +142,9 @@ public final class LifecycleCoordinator {
         if let file = store as? FileInteractionStore, await file.quarantined != nil {
             notice = "Your earlier plans couldn't be read, so Home starts empty. Nothing was sent."
         }
+        let cutoff = Timestamp(now().addingTimeInterval(-Self.recentlyEnded))
         for (id, service) in services {
-            let live = interactions.filter { $0.skill.id == id && !$0.state.isFinal }
+            let live = interactions.filter { $0.skill.id == id && (!$0.state.isFinal || $0.updatedAt >= cutoff) }
             await service.restore(live)
         }
         for service in services.values {
@@ -143,6 +156,14 @@ public final class LifecycleCoordinator {
             })
         }
         isLoaded = true
+        tick()
+        // Plans end while the app runs too, not only at launch.
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                self?.tick()
+            }
+        }
     }
 
     /// Every Inbox event goes to every service, once restore has run.
@@ -152,6 +173,8 @@ public final class LifecycleCoordinator {
     }
 
     public func shutdown() async {
+        ticker?.cancel()
+        ticker = nil
         for loop in loops { loop.cancel() }
         loops = []
         for service in services.values { await service.shutdown() }
@@ -175,6 +198,10 @@ public final class LifecycleCoordinator {
         case .lifecycle(let id, let lifecycle):
             guard let current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
             guard current.skill.id == skill.id else { return drop(event, id, skill.id, .wrongSkill) }
+            if case .awaitingConsent = current.state, Self.waitsForConsent(lifecycle) {
+                deferred[id, default: []].append(lifecycle)
+                return
+            }
             apply(lifecycle, to: id, reportedAs: event, skill: skill.id)
         case .produced(let id, let artifact):
             guard var current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
@@ -264,9 +291,27 @@ public final class LifecycleCoordinator {
 
     /// The owner answered that sheet. Approval resumes the interrupted step
     /// once no other request is open; anything else ends it declined.
-    public func consentAnswered(conversation: ConversationID, request: UInt32, approved: Bool) {
-        guard let current = interaction(conversation: conversation) else { return }
-        apply(approved ? .consentGiven(request: request) : .ownerPassed, to: current.id, reportedAs: nil, skill: current.skill.id)
+    /// Returns whether the answer applied. An approval that does not apply
+    /// (the interaction ended, or the request is unknown or was already
+    /// closed) must not let the send go out.
+    @discardableResult
+    public func consentAnswered(conversation: ConversationID, request: UInt32, approved: Bool) -> Bool {
+        guard let current = interaction(conversation: conversation) else { return false }
+        return apply(approved ? .consentGiven(request: request) : .ownerPassed, to: current.id, reportedAs: nil, skill: current.skill.id)
+    }
+
+    /// Whether the conversation belongs to an interaction that has ended, so
+    /// nothing more may be sent for it, even with a remembered approval.
+    public func isFinished(conversation: ConversationID) -> Bool {
+        interaction(conversation: conversation)?.state.isFinal ?? false
+    }
+
+    /// Progress that waits while a consent sheet is up. Ends apply at once.
+    static func waitsForConsent(_ event: InteractionEvent) -> Bool {
+        switch event {
+        case .ownerNeeded, .proposalReady, .everyoneConfirmed: true
+        default: false
+        }
     }
 
     /// Records what one send disclosed, for "What left your phone". Sends
@@ -327,6 +372,28 @@ public final class LifecycleCoordinator {
         interactions[index] = item
         markDirty(item.id)
         onChange(before, item)
+        if item.state.isFinal, !before.state.isFinal {
+            deferred[item.id] = nil
+            onFinished(item.conversation)
+        } else if case .awaitingConsent = before.state, !isSuspended(item) {
+            drainDeferred(item.id)
+        }
+    }
+
+    private func isSuspended(_ item: Interaction) -> Bool {
+        if case .awaitingConsent = item.state { true } else { false }
+    }
+
+    /// Applies progress held during a suspension, in order, stopping if one
+    /// suspends the interaction again.
+    private func drainDeferred(_ id: InteractionID) {
+        while let next = deferred[id]?.first {
+            deferred[id]?.removeFirst()
+            if deferred[id]?.isEmpty == true { deferred[id] = nil }
+            guard let current = interaction(id) else { return }
+            apply(next, to: id, reportedAs: nil, skill: current.skill.id)
+            if let after = interaction(id), isSuspended(after) || after.state.isFinal { return }
+        }
     }
 
     private func drop(_ event: SkillEvent, _ id: InteractionID?, _ skill: SkillID, _ reason: DroppedEvent.Reason) {

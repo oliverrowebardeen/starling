@@ -58,19 +58,36 @@ actor FailingSkillService: SkillService {
 
     // MARK: Launch
 
-    @Test func launchRestoresEachServicesLiveInteractionsOnly() async throws {
+    /// Amendment 15: restore gets live interactions and those that ended in
+    /// the last 24 hours, so a service can ignore a late retry.
+    @Test func launchRestoresLiveAndRecentlyEndedInteractions() async throws {
         var live = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
         try live.apply(.started, at: Timestamp(clock.now))
-        var finished = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
-        try finished.apply(.withdrawn, at: Timestamp(clock.now))
+        var recent = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        try recent.apply(.withdrawn, at: Timestamp(clock.now.addingTimeInterval(-23 * 3600)))
+        var old = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now.addingTimeInterval(-30 * 3600)))
+        try old.apply(.withdrawn, at: Timestamp(clock.now.addingTimeInterval(-25 * 3600)))
         let invitee = Interaction(skill: SampleSkills.findATime.ref, role: .invitee, participants: [jake], createdAt: Timestamp(clock.now))
-        let lifecycle = coordinator(store: InMemoryInteractionStore([live, finished, invitee]))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([live, recent, old, invitee]))
 
         await lifecycle.start()
-        #expect(lifecycle.interactions.count == 3)
-        #expect(await down.restored == [live])
+        #expect(lifecycle.interactions.count == 4)
+        #expect(Set(await down.restored.map(\.id)) == [live.id, recent.id])
         #expect(await time.restored == [invitee])
         #expect(lifecycle.isLoaded)
+    }
+
+    /// Amendment 15: plans end at launch, not only when the owner returns.
+    @Test func plansThatEndedWhileClosedEndAtLaunch() async throws {
+        var planned = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya, jake], createdAt: Timestamp(clock.now))
+        for event: InteractionEvent in [.started, .proposalReady(try proposal(1)), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try planned.apply(event, at: Timestamp(clock.now))
+        }
+        let start = clock.now.addingTimeInterval(-3 * 3600)
+        planned.record(.plan(try Plan(origin: planned.conversation, attendees: Attendees([maya, jake]), activity: Keyword("boba"), time: TimeSlot(start: start, end: start.addingTimeInterval(3600)))))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([planned]))
+        await lifecycle.start()
+        #expect(lifecycle.interaction(planned.id)?.state == .done)
     }
 
     @Test func inboxEventsReachEveryServiceOnlyAfterRestore() async throws {
@@ -324,6 +341,46 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.map(\.reason) == [.unknownConsentRequest(UnknownConsentRequest(request: first))])
         lifecycle.consentAnswered(conversation: sent.conversation, request: third, approved: false)
         #expect(lifecycle.interaction(id)?.state == .ended(.declined))
+    }
+
+    /// Amendment 15: a proposal or question reported while a sheet is up
+    /// is kept and applied, in order, once the step resumes.
+    @Test func progressDuringASuspensionAppliesAfterItResumes() async throws {
+        let lifecycle = coordinator()
+        let sent = request(to: [maya])
+        let id = try await lifecycle.start(sent, settings: Self.settings)
+        let first = try #require(lifecycle.consentRequested(conversation: sent.conversation))
+        let second = try #require(lifecycle.consentRequested(conversation: sent.conversation))
+        await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
+        await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(2))), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(id)?.state == .awaitingConsent(resume: .negotiating))
+        #expect(lifecycle.dropped.isEmpty)
+
+        lifecycle.consentAnswered(conversation: sent.conversation, request: first, approved: true)
+        #expect(lifecycle.interaction(id)?.proposal == nil, "still suspended on the second sheet")
+        lifecycle.consentAnswered(conversation: sent.conversation, request: second, approved: true)
+        #expect(lifecycle.interaction(id)?.state == .proposed)
+        #expect(lifecycle.interaction(id)?.proposalRevision == 2)
+        #expect(lifecycle.dropped.isEmpty)
+    }
+
+    /// A final event during a suspension applies at once and ends the
+    /// pending sheets with it; held progress is discarded.
+    @Test func anEndDuringASuspensionAppliesAtOnce() async throws {
+        let lifecycle = coordinator()
+        var finished: [ConversationID] = []
+        lifecycle.onFinished = { finished.append($0) }
+        let sent = request(to: [maya])
+        let id = try await lifecycle.start(sent, settings: Self.settings)
+        let request = try #require(lifecycle.consentRequested(conversation: sent.conversation))
+        await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
+        await lifecycle.handle(.lifecycle(id, .noAgreement), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(id)?.state == .ended(.nobodyUp))
+        #expect(lifecycle.interaction(id)?.pendingConsents.isEmpty == true)
+        #expect(finished == [sent.conversation])
+        #expect(!lifecycle.consentAnswered(conversation: sent.conversation, request: request, approved: true))
+        #expect(lifecycle.interaction(id)?.proposal == nil)
+        #expect(lifecycle.isFinished(conversation: sent.conversation))
     }
 
     @Test func consentOutsideAnyInteractionIsNotTracked() async throws {

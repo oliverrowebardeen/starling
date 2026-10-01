@@ -68,6 +68,46 @@ import Testing
         #expect(lifecycle.dropped.isEmpty)
     }
 
+    /// Review of PR #54, finding 3: a sheet still queued when its
+    /// interaction ends is withdrawn as a decline, and nothing is sent.
+    @Test func aQueuedSheetForAnEndedInteractionCannotBeApproved() async throws {
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down], store: InMemoryInteractionStore())
+        let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([maya]))
+        consent.tracker = lifecycle
+        lifecycle.onFinished = { consent.invalidate(conversation: $0) }
+        let request = try await started(lifecycle)
+        let sent = try disclosure(request.conversation)
+        let ask = Task { await consent.requestConsent(for: sent) }
+        await eventually { consent.current != nil }
+        let sheet = try #require(consent.current)
+
+        await lifecycle.withdraw(request.interaction)
+        #expect(await ask.value == .declined)
+        #expect(consent.current == nil)
+        // A late tap on the sheet that was on screen does nothing.
+        consent.answer(.approved, to: sheet.id)
+        // And a retry for the ended interaction is declined at once.
+        #expect(await consent.requestConsent(for: sent) == .declined)
+    }
+
+    /// An approval the lifecycle cannot apply is a decline, and it is not
+    /// remembered for later sends.
+    @Test func anApprovalThatDoesNotApplyIsADecline() async throws {
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down], store: InMemoryInteractionStore())
+        let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([maya]))
+        consent.tracker = lifecycle
+        let request = try await started(lifecycle)
+        let sent = try disclosure(request.conversation)
+        let ask = Task { await consent.requestConsent(for: sent) }
+        await eventually { consent.current != nil }
+        // The interaction ends without the coordinator's hook, so the sheet
+        // is still up when the owner approves.
+        await lifecycle.handle(.lifecycle(request.interaction, .expired), from: SampleSkills.downFor)
+        consent.answer(.approved, to: consent.current!.id)
+        #expect(await ask.value == .declined)
+        #expect(await consent.requestConsent(for: sent) == .declined)
+    }
+
     /// Issue #46: one row per person, two friends with one nickname told
     /// apart, the owner as "You", and a stranger shown with their full ID
     /// and no symbol.
