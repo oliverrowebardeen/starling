@@ -149,11 +149,17 @@ public struct ChainPlanner: Sendable {
     /// the topics and permissions of every skill in its chain that the owner
     /// said yes to (confirmed, planned, or done). A link the owner declined
     /// or that never got a yes grants nothing.
+    ///
+    /// The owner approved a skill at the version that ran, so only that exact
+    /// `SkillRef` counts. If this build registers another version (one that
+    /// may use more topics or permissions), what was approved is unknown and
+    /// the interaction grants nothing, so a link that adds anything asks
+    /// again.
     public func grantedExposure(for interaction: Interaction, in interactions: [Interaction]) -> SkillExposure {
         let root = Self.root(of: interaction, in: interactions)
         return interactions.chain(from: root).reduce(SkillExposure.none) { granted, item in
             guard item.history.contains(where: { Self.ownerSaidYes($0.state) }),
-                  let descriptor = registry.descriptor(for: item.skill.id)
+                  let descriptor = registry.descriptor(for: item.skill.id), descriptor.ref == item.skill
             else { return granted }
             return granted.union(descriptor.exposure)
         }

@@ -189,4 +189,25 @@ import Testing
         slotOnly.record(.timeSlot(Fixtures.tonight))
         #expect(planner.suggestions(after: slotOnly.id, in: [slotOnly], settings: settings, cards: Fixtures.cards()).isEmpty)
     }
+
+    @Test func onlyTheVersionTheOwnerApprovedCountsAsGranted() throws {
+        // This build's Pick a place is 1.1 and also uses people.
+        let newer = try SkillDescriptor(
+            ref: SkillRef(.pickAPlace, SkillVersion(1, 1)), wording: SampleSkills.pickAPlace.wording, buildingBlock: .privateAggregation,
+            topicsUsed: SampleSkills.pickAPlace.topicsUsed.union([.people]), topicsRequired: [.place],
+            permissions: SampleSkills.pickAPlace.permissions, accepts: [.plan, .timeSlot], produces: [.placeChoice],
+            intent: SampleSkills.pickAPlace.intent
+        )
+        let planner = ChainPlanner(registry: try SkillRegistry([SampleSkills.downFor, newer]), me: Fixtures.me)
+        let plan = try Fixtures.plannedDownFor()
+        // Earlier, the owner said yes to Pick a place 1.0.
+        let earlier = try Self.link(after: plan, reaching: Self.agreed())
+        #expect(earlier.skill == SampleSkills.pickAPlace.ref)
+        // 1.0's approval does not cover 1.1: everything 1.1 adds over Down
+        // for… needs a fresh consent, people included.
+        let row = try #require(planner.suggestions(after: plan.id, in: [plan, earlier], settings: settings, cards: Fixtures.cards()).first)
+        #expect(row.skill.ref == newer.ref)
+        #expect(row.adds == SkillExposure(topics: [.location, .diet, .people], permissions: [.locationWhenInUse]))
+        #expect(planner.grantedExposure(for: plan, in: [plan, earlier]) == SampleSkills.downFor.exposure)
+    }
 }
