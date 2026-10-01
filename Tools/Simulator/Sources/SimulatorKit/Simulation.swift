@@ -1,26 +1,50 @@
 import Foundation
 import StarlingCore
 import StarlingFakes
+import StarlingIdentity
 import StarlingTransport
 
 public enum SimulationError: Error {
     case timedOut(String)
 }
 
+/// How simulated agents' links are protected.
+public enum LinkSecurity: Sendable {
+    /// Bare Loopback, as in Phase 0: a link's claimed peer ID is believed.
+    case none
+    /// Each agent has its own identity key and runs lane E1's
+    /// `SecureTransport` over Loopback, and every two agents are pinned to
+    /// each other as if they had paired in person (ADR 0003). Peer IDs come
+    /// from random keys, so they differ from run to run.
+    case secureChannel
+}
+
 /// N simulated agents on one Loopback hub.
 public actor Simulation {
     public nonisolated let hub: LoopbackHub
+    public nonisolated let security: LinkSecurity
     public private(set) var agents: [SimulatedAgent] = []
     private var generator: SeededPeerGenerator
     private let now: @Sendable () -> Date
+    /// Each secure agent's pinned friends, keyed by its peer ID.
+    private var pinStores: [PeerID: InMemoryPairedPeerStore] = [:]
+    private var publicKeys: [PeerID: (name: String, key: IdentityPublicKey)] = [:]
 
     /// - Parameters:
-    ///   - seed: Makes peer IDs, and so every transcript, reproducible.
+    ///   - seed: Makes peer IDs, and so every transcript, reproducible
+    ///     (bare Loopback only; see `LinkSecurity.secureChannel`).
     ///   - now: Clock shared by all agents.
-    public init(seed: UInt64 = 1, latency: Duration = .zero, now: @escaping @Sendable () -> Date = { Date() }) {
+    ///   - security: Bare Loopback by default.
+    public init(
+        seed: UInt64 = 1,
+        latency: Duration = .zero,
+        now: @escaping @Sendable () -> Date = { Date() },
+        security: LinkSecurity = .none
+    ) {
         hub = LoopbackHub(latency: latency)
         generator = SeededPeerGenerator(seed: seed)
         self.now = now
+        self.security = security
     }
 
     @discardableResult
@@ -32,18 +56,52 @@ public actor Simulation {
         consent: any ConsentProvider = ScriptedConsentProvider(.approved)
     ) async throws -> SimulatedAgent {
         let card = try AgentCard(model: model, capabilities: [.down])
-        let agent = SimulatedAgent(
-            name: name,
-            transport: LoopbackTransport(localPeer: PeerID.random(using: &generator), hub: hub),
-            card: card,
-            behavior: behavior,
-            policy: policy,
-            consent: consent,
-            now: now
-        )
+        let agent: SimulatedAgent
+        switch security {
+        case .none:
+            agent = SimulatedAgent(
+                name: name,
+                transport: LoopbackTransport(localPeer: PeerID.random(using: &generator), hub: hub),
+                card: card,
+                behavior: behavior,
+                policy: policy,
+                consent: consent,
+                now: now
+            )
+        case .secureChannel:
+            let secure = try await makeSecureTransport(name)
+            agent = SimulatedAgent(
+                name: name,
+                transport: secure,
+                secureTransport: secure,
+                card: card,
+                behavior: behavior,
+                policy: policy,
+                consent: consent,
+                now: now
+            )
+        }
         agents.append(agent)
         try await agent.start()
         return agent
+    }
+
+    /// A new identity whose secure channel trusts every agent already here,
+    /// and which every agent already here trusts. The pins are written
+    /// before the newcomer's link comes up, so they stand in for a finished
+    /// pairing ceremony; nothing else writes these stores.
+    private func makeSecureTransport(_ name: String) async throws -> SecureTransport {
+        let identity = IdentityKeyPair.generate()
+        let pairedAt = Timestamp(now())
+        let store = InMemoryPairedPeerStore()
+        for (peer, other) in publicKeys {
+            try await store.save(PairedPeer(publicKey: other.key, nickname: other.name, pairedAt: pairedAt))
+            try await pinStores[peer]?.save(PairedPeer(publicKey: identity.publicKey, nickname: name, pairedAt: pairedAt))
+        }
+        pinStores[identity.peerID] = store
+        publicKeys[identity.peerID] = (name, identity.publicKey)
+        let link = LoopbackTransport(localPeer: identity.peerID, hub: hub)
+        return SecureTransport(wrapping: link, authority: PinAuthority(identity: identity, store: store))
     }
 
     /// Waits until every agent has every other agent's card.

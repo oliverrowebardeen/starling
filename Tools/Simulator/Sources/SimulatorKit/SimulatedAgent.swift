@@ -1,5 +1,6 @@
 import Foundation
 import StarlingCore
+import StarlingIdentity
 import StarlingTransport
 
 /// Decides how a simulated agent reacts to messages other than `hello`.
@@ -63,6 +64,10 @@ public actor SimulatedAgent {
     public nonisolated let name: String
     public nonisolated let card: AgentCard
     public nonisolated var id: PeerID { transport.localPeer }
+    /// The secure channel under this agent's Outbox and Inbox, when the
+    /// simulation uses `LinkSecurity.secureChannel`. Scenarios read its
+    /// `status(of:)` to see frames it dropped before the Inbox.
+    public nonisolated let secureTransport: SecureTransport?
 
     nonisolated let transport: any Transport
     private let outbox: Outbox
@@ -73,9 +78,13 @@ public actor SimulatedAgent {
     public private(set) var peerCards: [PeerID: AgentCard] = [:]
     public private(set) var log: [LogEntry] = []
 
+    /// - Parameters:
+    ///   - transport: Bare Loopback, or `secureTransport` itself.
+    ///   - secureTransport: Set when `transport` is a secure channel.
     init(
         name: String,
         transport: any Transport,
+        secureTransport: SecureTransport? = nil,
         card: AgentCard,
         behavior: any AgentBehavior,
         policy: any PolicyEngine,
@@ -86,6 +95,7 @@ public actor SimulatedAgent {
         self.card = card
         self.behavior = behavior
         self.transport = transport
+        self.secureTransport = secureTransport
         outbox = Outbox(transport: transport, policy: policy, consent: consent, now: now)
         inbox = Inbox(localPeer: transport.localPeer, now: now)
     }
