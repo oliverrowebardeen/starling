@@ -41,6 +41,13 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, on one iPhone wit
 26. Start a Down? again, then tap "Simulate: Down? failed". Expect: the mark drifts apart and the other shape fades, with no sound or message about a friend, then rests apart within 3 seconds.
 27. Start a Down? again, then tap Withdraw. Expect: back to the start with no notification, and the mark goes straight to apart.
 
+## Wi-Fi Aware (two iPhones 12 or later, capability enabled for the App ID)
+
+Run lane E2's checklist (`docs/checklists/phase-1-E2.md`) from Developer > Wi-Fi Aware on both phones: its "make discoverable" and "find" buttons are "Let a friend find this phone" and "Find a friend's phone", the paired-devices list and per-peer dots are on the same screen, and "Round trip" is the round-trip button. Then:
+
+28. Friends tab > + on either phone. Expect: the same two Wi-Fi Aware buttons in place of the "Nearby phones" note. In the Simulator, expect the note saying this iPhone can't pair over Wi-Fi Aware.
+29. Developer > Audit log after a few round trips. Expect: one "hello" entry per round trip you started and per reply you sent, with no values.
+
 ## Release build
 
-28. In Xcode, Product > Scheme > Edit Scheme > Run > Build Configuration: Release. Run. Expect: Down? and Friends say "isn't in this build yet", Developer shows only Model Bench and "Release (no fakes)". Set it back to Debug.
+30. In Xcode, Product > Scheme > Edit Scheme > Run > Build Configuration: Release. Run. Expect: Down? and Friends say "isn't in this build yet"; Developer shows Model Bench, Wi-Fi Aware, Audit log, and "Release (no fakes)", with no Nearby and no Fakes section. Set it back to Debug.

@@ -34,7 +34,9 @@ test "$(nm build/Build/Products/Release-iphonesimulator/Starling.app/Starling | 
 
 **Also:** after `.paired`, the app saves the peer again with the owner's chosen nickname (`PairedPeerStore.save` is an upsert). If E1's session already pins the peer, that only updates the name.
 
-**Meanwhile:** Debug builds use `ScriptedPairingSession`; Release shows "Friends isn't in this build yet".
+**Status:** lane E2's views are wired: the pairing screen's slot shows `WiFiAwarePairingView` and `WiFiAwareDevicePicker` where Wi-Fi Aware runs, and Developer > Wi-Fi Aware runs `WiFiAwareTransport` for E2's checklist (ADR 0143). What remains is E1's side: how the app starts Starling's code-check ceremony with the friend the system just paired.
+
+**Meanwhile:** Debug builds use `ScriptedPairingSession` for the code check; Release shows "Friends isn't in this build yet".
 
 ## 4. Down service construction and PSI privacy flag (lane F, via the Orchestrator)
 
