@@ -102,7 +102,10 @@ extension DownForService {
             // The starter is still there: a member's wait starts over.
             if run.role == .member, run.phase == .proposed || run.phase == .accepted { refreshDeadline(key) }
             if let signature, let reply = run.replies[signature] {
-                if case .offer = signature { runs[key]?.proposalEnvelopes.append(envelope.id) }
+                if case .offer = signature, case .propose(let proposal) = envelope.body {
+                    runs[key]?.proposalEnvelopes.append(envelope.id)
+                    runs[key]?.offers[envelope.id] = proposal
+                }
                 await replay(reply, answering: envelope, for: run.request, mode: run.mode, chainedFrom: run.chainedFrom, psi: run.psiContext)
                 return
             }
@@ -305,7 +308,10 @@ extension DownForService {
         // An invitation is one offer: its resends are duplicates, and a
         // different offer in the same conversation is ignored.
         if run.mode == .invite {
-            if proposal.terms == run.terms { runs[key]?.proposalEnvelopes.append(envelope.id) }
+            if proposal.terms == run.terms {
+                runs[key]?.proposalEnvelopes.append(envelope.id)
+                runs[key]?.offers[envelope.id] = proposal
+            }
             return
         }
         let terms = proposal.terms
@@ -331,6 +337,7 @@ extension DownForService {
         if run.terms == terms {
             // A resend of the card the owner is looking at.
             runs[key]?.proposalEnvelopes.append(envelope.id)
+            runs[key]?.offers[envelope.id] = proposal
             return
         }
         let revision = (request.mirror.proposalRevision ?? 0) + 1
@@ -344,6 +351,7 @@ extension DownForService {
         runs[key]?.accepted = false
         runs[key]?.phase = .proposed
         runs[key]?.proposalEnvelopes = [envelope.id]
+        runs[key]?.offers = [envelope.id: proposal]
         beginStep(key, attemptLimit: silenceLimit, backsOff: true)
     }
 

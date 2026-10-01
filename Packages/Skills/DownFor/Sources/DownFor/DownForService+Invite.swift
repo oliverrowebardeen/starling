@@ -120,6 +120,7 @@ extension DownForService {
         var run = Run(invitation: key, request: id, role: .member, chainedFrom: envelope.chainedFrom, terms: proposal.terms)
         run.highestRound = proposal.round
         run.proposalEnvelopes = [envelope.id]
+        run.offers = [envelope.id: proposal]
         run.lastInbound = envelope.id
         runs[key] = run
         continuation.yield(.incoming(id, conversation: key.conversation, from: key.peer, chainedFrom: envelope.chainedFrom))

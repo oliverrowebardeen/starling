@@ -88,6 +88,9 @@ struct Run: Sendable {
     /// Hub: every envelope that carried the current proposal to the member.
     /// Member: every envelope the current proposal arrived in.
     var proposalEnvelopes: [MessageID] = []
+    /// Member: the starter's proposal as received, by envelope, so an
+    /// acceptance can tell the policy exactly what it accepts.
+    var offers: [MessageID: Proposal] = [:]
     var terms: Terms?
     /// Member: the highest proposal round received. A lower round, even in
     /// a fresh envelope, is an old proposal and never replaces the card.

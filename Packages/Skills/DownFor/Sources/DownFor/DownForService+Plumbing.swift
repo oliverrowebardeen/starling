@@ -128,6 +128,11 @@ extension DownForService {
         case .psi(let frame) where frame.session != run.psiSessionID: run.vetContext ?? OutboundContext(interaction: run.request)
         case .psi: run.psiContext
         case .answer(let answer): OutboundContext(answering: run.receivedQueries[answer.query], interaction: run.request)
+        // "I'm in" to exactly the starter's terms tells the policy which
+        // proposal it accepts (ADR 0019 amendment 10). A starter's
+        // confirmation accepts no proposal of the friend's.
+        case .accept(let acceptance) where run.role == .member:
+            OutboundContext(interaction: run.request, accepting: run.offers[acceptance.proposal])
         default: OutboundContext(interaction: run.request)
         }
     }
@@ -173,6 +178,7 @@ extension DownForService {
         let context: OutboundContext = switch (body, envelope.body) {
         case (.psi, _): psi ?? OutboundContext(interaction: request)
         case (.answer, .query(let query)): OutboundContext(answering: query, interaction: request)
+        case (.accept, .propose(let proposal)): OutboundContext(interaction: request, accepting: proposal)
         default: OutboundContext(interaction: request)
         }
         await deliver(body, to: RunKey(conversation: envelope.conversation, peer: envelope.sender), for: request, mode: mode, chainedFrom: chainedFrom, context: context)

@@ -198,6 +198,16 @@ import Testing
             let expected = message.envelope.sender == a.id ? mine : theirs
             #expect(message.context.interaction == expected)
         }
+        // Each "I'm in" names the proposal it accepts as offered (ADR 0019
+        // amendment 10); a starter's confirmation accepts no proposal.
+        for message in messages {
+            guard case .accept(let acceptance) = message.envelope.body else { continue }
+            if message.envelope.sender == b.id {
+                #expect(message.context.accepting?.isAcceptedAsOffered(by: acceptance) == true)
+            } else {
+                #expect(message.context.accepting == nil)
+            }
+        }
         let answers = messages.filter { $0.envelope.body.kind == .answer }
         #expect(!answers.isEmpty)
         for message in answers {
