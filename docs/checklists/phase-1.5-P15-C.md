@@ -2,7 +2,7 @@
 
 Run after lane A wires Find a time into the app (`docs/requests/P15-C.md`, items 1 and 2). Two paired iPhones on iOS 27: Phone A and Phone B. Before starting, on Phone A add a calendar event tomorrow 3:00 to 4:00 PM titled "Dentist Ruiz" at "12 Hidden Lane" with one invitee. Phone B starts with Starling's calendar permission never asked.
 
-1. Phone A: tap New, type "find a time with B tomorrow for stats", tap the Find a time start button. Expect: Starling's sheet with the three rows (reads, never leaves, what B sees) and exactly one button, "Continue". No Cancel, no second button.
+1. Phone A: tap New, type "find a time with B tomorrow for stats", tap the Find a time start button. Expect: Starling's sheet with the three rows (reads, never leaves, and "B sees: Only a few times you're free") and exactly one button, "Continue". No Cancel, no second button. No Ask quietly toggle: Find a time only invites.
 2. Phone A: tap Continue. Expect: the system calendar alert, showing "Starling checks when you're busy so friends' agents can find a time without asking you. Event details stay on your iPhone." Tap Allow.
 3. Phone B, within 5 seconds: Expect a Needs you card, "A's agent asked when you're free", listing times tomorrow between 9 AM and 9 PM with no 3:00 PM slot. Expect no system calendar alert on Phone B.
 4. Phone B: pick 4:00 PM and 6:00 PM and send. Expect, within 5 seconds on both phones: a proposal card for tomorrow at 4:00 PM for stats, with "That works" and "Not then".
@@ -13,4 +13,5 @@ Run after lane A wires Find a time into the app (`docs/requests/P15-C.md`, items
 9. Phone A: start Find a time with B. Phone B: on the question card, tap "Not then". Expect: Phone A's request ends the same quiet way as step 8. Phone B gets no further cards for it.
 10. Phone A: start Find a time with B. Phone B: with the question card showing, swipe Starling away in the app switcher, then reopen it. Expect: the same question is still under Needs you; answering it still leads to a proposal on both phones.
 11. Settings › Privacy & Security › Calendars on Phone A. Expect: Starling listed with Full Access. Switch it off, return to Starling, and start Find a time. Expect: no Starling sheet (the system alert cannot appear again); the agent asks the owner instead.
-12. Read every Find a time screen on both phones. Expect: plan words ("That works", "It's a plan", "free"), no em dashes, and nothing that reads like a dating app (ADR 0017).
+12. Phone A: in You, check calendar details. Expect: Never (the default). Phone B: start Find a time with A for tomorrow. Expect: Phone A's agent still answers from its calendar without a sheet, and no event detail appears on Phone B.
+13. Read every Find a time screen on both phones. Expect: plan words ("That works", "It's a plan", "free"), no em dashes, and nothing that reads like a dating app (ADR 0017).
