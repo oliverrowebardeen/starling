@@ -339,6 +339,32 @@ import Testing
         await mallory.stop()
         await world.stop()
     }
+
+    /// P2: once the owner declines a replay of a lost confirmation, later
+    /// retries must not raise the sheet again.
+    @Test func aDeclinedReplayIsNotOfferedAgain() async throws {
+        let gate = ConsentForOneSender()
+        let consent = GatedConsentProvider()
+        // Slower retries leave the acceptor several retries after the decline.
+        let slow = DownConfiguration(retryInterval: .milliseconds(50), maxAttempts: 8)
+        let world = DownWorld(["ana", "ben"], policy: gate.policy(.accept), consent: consent, configuration: slow)
+        let (offerer, acceptor) = Self.roles(world)
+        gate.choose(offerer.id)
+        // Every confirmation is lost, so the acceptor keeps retrying its accept.
+        await offerer.transport.lose { $0.body.kind == .accept }
+        try await world.start()
+        try await offerer.want(time: [T.slot(19, 22)])
+        try await acceptor.want(time: [T.slot(19, 22)])
+
+        try await eventually("the confirmation waits for consent") { await consent.pending == 1 }
+        await consent.answerAll(.approved)
+        try await eventually("a replay of it waits for consent") { await consent.requests == 2 }
+        await consent.answerAll(.declined)
+        try await world.settle(timeout: .seconds(10))
+        #expect(await consent.requests == 2)
+        await consent.answerAll(.declined)
+        await world.stop()
+    }
 }
 
 import Synchronization

@@ -74,7 +74,8 @@ public actor DownNegotiator: DownService {
         let peer: PeerID
         let replies: [DownSignature: DownReply]
         let psiContext: OutboundContext
-        let outcome: DownOutcome
+        /// Becomes `.policy` if a replay is refused, which stops replays.
+        var outcome: DownOutcome
         let generation: Int
     }
     private var finishedOrder: [ConversationID] = []
@@ -447,6 +448,9 @@ public actor DownNegotiator: DownService {
             // Policy or the owner said no; do not ask again during this intent.
             settled.insert(peer)
             end(id, .policy)
+            // A refused replay retires the finished record too, so later
+            // retries do not raise the declined sheet again (ADR 0120, item 20).
+            finished[id]?.outcome = .policy
             return .ended
         } catch is CancellationError {
             // Ended while waiting (withdrawn, replaced, expired, timed out),
