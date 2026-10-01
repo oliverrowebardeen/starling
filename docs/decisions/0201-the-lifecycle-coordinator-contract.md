@@ -28,6 +28,13 @@ ADR 0011 gives the app one lifecycle coordinator that consumes every `SkillServi
 9. **Launch order.** The coordinator loads the store, calls `restore(_:)` on every service with that skill's live interactions, and only then starts consuming events. The app's single Inbox loop reaches the services through the coordinator, which waits for restore first.
 10. **Saves are ordered.** Each change updates memory at once and marks the interaction for saving; one writer saves the latest version of each, so a slow write never lands after a newer one.
 
+### After the adversarial review of PR #54 and ADR 0011 amendment 15
+
+11. **Progress during a suspension is held, not dropped.** While an interaction awaits consent, `ownerNeeded`, `proposalReady`, and `everyoneConfirmed` are queued in order and applied once the step resumes; if one suspends it again, the rest wait for the next resume. An end applies at once and discards them. (Until the persistence of held events is needed, they live in memory; a restart cancels open sheets per amendment 15 and the service's `restore(_:)` resends what it still has.)
+12. **An approval that does not apply sends nothing.** `consentAnswered` reports whether it applied; the consent provider turns an approval the lifecycle refused (the interaction ended, the request was closed) into a decline. When an interaction ends, its queued sheets are withdrawn as declines and its remembered approvals forgotten, and any later send for it is declined without a sheet.
+13. **Restore and plan ends.** `restore(_:)` gets the skill's live interactions and those that ended in the last 24 hours. The coordinator applies `planEnded` at launch and every minute while running.
+14. **`consentCancelled`** (Core v2.1): a send cancelled while its sheet is up, and every request still pending at launch before `restore(_:)`, close with `consentCancelled`, not a pass. Added when lane A rebases onto Core v2.1.
+
 ## Consequences
 
 - Every revision and consent check runs in one place, on the main actor, against the stored record, so the shared screens and the store always agree.

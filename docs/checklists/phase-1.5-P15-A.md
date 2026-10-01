@@ -31,7 +31,7 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 16. Phone A: Add to Calendar › Add. Expect: the system event editor pre-filled with "Boba with Maya" and tonight's time; no calendar permission alert. Tap Add. Expect: the event in Calendar.
 17. Phone A: Message the group. Expect: "Who's who" offering "Link Maya to a contact", with the line that the link stays on this phone. Link a contact, tap Open Messages. Expect: Messages with that contact's number and "It's a plan: boba, tonight at ...". No Contacts permission alert.
 18. Phone A: Done, then Home › Coming up › the plan. Expect: plan detail with Message group, "How this came together" showing Down for… "Both down for boba" and Calendar "Added to your calendar", and "What left your phone" with Shared and Kept on your phone rows.
-19. Phone A: say "Hey Siri, what's my next plan in Starling". Expect: "Boba with Maya, tonight at ..."
+19. Phone A: say "Hey Siri, what's my next plan in Starling". Expect: "Boba with Maya, tonight at ..." Then lock Phone A and ask again. Expect: Siri asks you to unlock first and says nothing about the plan until you do.
 
 ## Chaining and permissions just in time
 
