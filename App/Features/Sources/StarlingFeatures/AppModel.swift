@@ -179,6 +179,10 @@ public final class AppModel {
     /// detail then claims nothing stayed on the phone there.
     public private(set) var unconfirmedConversations: Set<ConversationID> = []
     public private(set) var egressJournalUnreadable = false
+    /// Whether this launch's journal recovery has finished. Until it has,
+    /// every audit reads as incomplete: a send the journal alone holds is
+    /// not on its interaction yet.
+    public private(set) var egressRecovered = false
     /// Set when the conversation ledger cannot be read: Outbox then sends
     /// nothing at all, and Home says why.
     public private(set) var ledgerNotice: String?
@@ -190,7 +194,7 @@ public final class AppModel {
     /// Lane E's after-plan-ends scheduler, running while the app is open.
     private var scheduler: PlanEndScheduler?
     private var schedulerLoop: Task<Void, Never>?
-    private var started = false
+    private var startup: Task<Void, Never>?
     private var linksStarted = false
     private var friendNames: [PeerID: String] = [:]
 
@@ -290,6 +294,9 @@ public final class AppModel {
         }
         let notifier = services.notifier
         let words = words
+        // Interactions load, then the journal is recovered, and only then do
+        // the services restore (privacy review of PR #73).
+        lifecycle.beforeRestore = { [weak self] in await self?.recoverEgress() }
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
@@ -361,9 +368,13 @@ public final class AppModel {
     /// Inbox. The radios start only once Local Network has been asked for
     /// (at the first Pair or request); before that nobody could reach this
     /// phone anyway, because nobody is paired.
+    /// Every caller waits for the same startup.
     public func start() async {
-        guard !started else { return }
-        started = true
+        if startup == nil { startup = Task { await self.runStartup() } }
+        await startup?.value
+    }
+
+    private func runStartup() async {
         // Rules and settings first: the policy denies every send until both
         // are loaded.
         await rulesEditor.load()
@@ -374,12 +385,9 @@ public final class AppModel {
         cards.load()
         notes.load()
         refreshCard()
+        // Recovers the egress journal between loading and restoring.
         await lifecycle.start()
         lifecycle.tick()
-        // Before any plan detail shows: bring back sends the journal still
-        // holds, so their conversations read as unconfirmed (P15-E 4.1).
-        await egress.recover()
-        await refreshAudit()
         await retryRetirements()
         startScheduler()
         if let ledger = services.ledger {
@@ -395,13 +403,18 @@ public final class AppModel {
         if lifecycle.notice == nil { try? services.sequences?.retainOnly(lifecycle.resumableConversations) }
         // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
-        if settings.settings.localNetworkAsked { await startLinks() }
+        if settings.settings.localNetworkAsked { await bringUpLinks() }
     }
 
     /// Starts the radios and then whatever must follow them (lane E1's
     /// pairing services). Runs once.
     public func startLinks() async {
         await start()
+        await bringUpLinks()
+    }
+
+    /// Startup's own step, which must not wait for startup to finish.
+    private func bringUpLinks() async {
         guard !linksStarted else { return }
         linksStarted = true
         try? await services.transport?.start()
@@ -457,6 +470,15 @@ public final class AppModel {
 
     /// Reads the recorder's view of which egress logs may be incomplete, and
     /// retries any record still waiting. Plan detail calls it when it opens.
+    /// Brings back sends the journal still holds, so their conversations
+    /// read as unconfirmed, and records them (P15-E 4.1). Runs inside the
+    /// coordinator's startup, before any service restores.
+    private func recoverEgress() async {
+        await egress.recover()
+        await refreshAudit()
+        egressRecovered = true
+    }
+
     public func refreshAudit() async {
         await egress.retryPending()
         unconfirmedConversations = await egress.unconfirmedConversations
@@ -531,7 +553,7 @@ public final class AppModel {
     public func planDetail(_ root: Interaction) -> PlanDetail {
         syncNames()
         return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes,
-                          unconfirmed: unconfirmedConversations, journalUnreadable: egressJournalUnreadable)
+                          unconfirmed: unconfirmedConversations, auditUnknown: egressJournalUnreadable || !egressRecovered)
     }
 
     /// "Keep it going" after a plan: lane E's rows (P15-E request 4.4),

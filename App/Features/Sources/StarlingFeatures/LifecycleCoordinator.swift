@@ -81,6 +81,12 @@ public final class LifecycleCoordinator {
     /// Called when an interaction reaches a final state, so the consent
     /// sheets still queued for its conversation are withdrawn.
     public var onFinished: @MainActor (_ interaction: InteractionID, _ conversation: ConversationID) -> Void = { _, _ in }
+    /// Runs once at launch, after the interactions are loaded and before any
+    /// service is restored. The app recovers lane E's egress journal here, so
+    /// no service can schedule a send, and no audit can be read as complete,
+    /// before the sends the journal still holds are back (P15-E 4.1, privacy
+    /// review of PR #73).
+    public var beforeRestore: @MainActor () async -> Void = {}
 
     /// How long an ended interaction is still handed to `restore(_:)`, so a
     /// service can ignore a late retry instead of reopening it (ADR 0011
@@ -135,9 +141,9 @@ public final class LifecycleCoordinator {
 
     // MARK: Launch
 
-    /// Loads the store, restores each service's live interactions, then
-    /// starts consuming every service's events. Runs once; later calls wait
-    /// for the first.
+    /// Loads the store, runs `beforeRestore`, restores each service's live
+    /// interactions, then starts consuming every service's events. Runs
+    /// once; later calls wait for the first.
     public func start() async {
         if starting == nil {
             starting = Task { await self.load() }
@@ -163,6 +169,7 @@ public final class LifecycleCoordinator {
                 apply(.consentCancelled(request: request), to: item.id, reportedAs: nil, skill: item.skill.id)
             }
         }
+        await beforeRestore()
         let cutoff = Timestamp(now().addingTimeInterval(-Self.recentlyEnded))
         for (id, service) in services {
             let live = interactions.filter { $0.skill.id == id && (!$0.state.isFinal || $0.updatedAt >= cutoff) }

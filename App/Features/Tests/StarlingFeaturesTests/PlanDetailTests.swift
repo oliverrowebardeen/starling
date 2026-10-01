@@ -92,7 +92,7 @@ import Testing
         let unconfirmed = PlanDetail(root: root, all: [root], words: words, notes: notes, unconfirmed: [root.conversation])
         #expect(unconfirmed.kept.isEmpty)
         #expect(!unconfirmed.auditIsComplete)
-        let unreadable = PlanDetail(root: root, all: [root], words: words, notes: notes, journalUnreadable: true)
+        let unreadable = PlanDetail(root: root, all: [root], words: words, notes: notes, auditUnknown: true)
         #expect(unreadable.kept.isEmpty)
         #expect(!unreadable.auditIsComplete)
     }

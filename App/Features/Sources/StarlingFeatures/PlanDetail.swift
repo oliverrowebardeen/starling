@@ -146,11 +146,11 @@ public struct PlanDetail: Hashable, Sendable {
     /// - Parameters:
     ///   - unconfirmed: `EgressRecorder.unconfirmedConversations`: logs that
     ///     may be missing a send.
-    ///   - journalUnreadable: the recorder's journal could not be read at
-    ///     launch, so no log can be vouched for.
+    ///   - auditUnknown: the recorder's journal could not be read at launch,
+    ///     or has not been recovered yet, so no log can be vouched for.
     @MainActor
     public init(root: Interaction, all: [Interaction], words: InteractionWords, notes: PlanNotes,
-                unconfirmed: Set<ConversationID> = [], journalUnreadable: Bool = false) {
+                unconfirmed: Set<ConversationID> = [], auditUnknown: Bool = false) {
         // Lane E's timeline: the plan, the owner's links, and friends'
         // requests grouped under it by their checked hints (ADR 0240).
         let timeline = PlanTimeline(for: root.id, in: all, registry: words.registry, unconfirmed: unconfirmed)
@@ -179,7 +179,7 @@ public struct PlanDetail: Hashable, Sendable {
 
         self.timeline = Self.timeline(self.chain, entries: timeline?.entries ?? [], words: words, notes: notes)
         let whatLeft = timeline?.whatLeft ?? WhatLeftYourPhone(interactions: self.chain, registry: words.registry, unconfirmed: unconfirmed)
-        auditIsComplete = !journalUnreadable && whatLeft.unconfirmed.isEmpty
+        auditIsComplete = !auditUnknown && whatLeft.unconfirmed.isEmpty
         (shared, kept) = Self.audit(whatLeft, complete: auditIsComplete, words: words)
 
         if let plan, let time = plan.time {

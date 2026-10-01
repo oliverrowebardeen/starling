@@ -111,6 +111,21 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.interaction(planned.id)?.state == .done)
     }
 
+    /// Privacy review of PR #73: the app's journal recovery runs once the
+    /// interactions are loaded and before any service is restored.
+    @Test func beforeRestoreRunsBetweenLoadingAndRestoring() async throws {
+        let live = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([live]))
+        var seen: (loaded: Bool, restored: Int)?
+        lifecycle.beforeRestore = { [down] in
+            seen = (lifecycle.interaction(live.id) != nil, await down.restored.count)
+        }
+        await lifecycle.start()
+        #expect(seen?.loaded == true)
+        #expect(seen?.restored == 0)
+        #expect(await down.restored.map(\.id) == [live.id])
+    }
+
     @Test func inboxEventsReachEveryServiceOnlyAfterRestore() async throws {
         let lifecycle = coordinator()
         await lifecycle.route(.peerAvailable(maya))
