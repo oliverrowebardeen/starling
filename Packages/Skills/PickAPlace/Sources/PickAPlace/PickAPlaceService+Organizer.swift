@@ -30,6 +30,7 @@ struct Organizer {
     var passed: Set<PeerID> = []
     var ownerAccepted = false
     var finalTerms: Terms?
+    var confirmationsRepeated: [PeerID: Int] = [:]
 
     var isFinished: Bool { phase == .settled || phase == .ended }
     var invited: [PeerID] { proposal?.participants.filter { friends.contains($0) } ?? [] }
@@ -85,6 +86,7 @@ extension PickAPlaceService {
         )
         guard !friends.isEmpty else {
             organized[conversation]?.phase = .ended
+            rememberOrganizer(conversation)
             // Negotiating, so the state machine ends it as unsupported.
             emit(request.interaction, .unsupported)
             return
@@ -158,8 +160,11 @@ extension PickAPlaceService {
             organizer.accepted.remove(sender)
             organizer.passed.insert(sender)
         case (.settled, .accept(let acceptance)):
-            // A friend who said yes did not hear the confirmation: repeat it.
-            if organizer.accepted.contains(sender), acceptance.terms == organizer.proposal?.terms {
+            // A friend who said yes did not hear the confirmation: repeat
+            // it, a bounded number of times.
+            let repeats = organizer.confirmationsRepeated[sender, default: 0]
+            if organizer.accepted.contains(sender), acceptance.terms == organizer.proposal?.terms, repeats < configuration.maxConfirmationRepeats {
+                organizer.confirmationsRepeated[sender] = repeats + 1
                 spawnConfirmation(conversation, to: sender, organizer: organizer)
             }
         default:
@@ -292,6 +297,7 @@ extension PickAPlaceService {
         organizer.phase = .settled
         organized[conversation] = organizer
         cancelTasks(conversation)
+        rememberOrganizer(conversation)
 
         for friend in yes { spawnConfirmation(conversation, to: friend, organizer: organizer) }
         let chainedFrom = organizer.chainedFrom
@@ -324,6 +330,7 @@ extension PickAPlaceService {
         organizer.phase = .ended
         organized[conversation] = organizer
         cancelTasks(conversation)
+        rememberOrganizer(conversation)
         if let event { emit(organizer.id, event) }
         let chainedFrom = organizer.chainedFrom
         for friend in tell {
@@ -332,6 +339,17 @@ extension PickAPlaceService {
                 await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: reason)), to: friend,
                                       conversation: conversation, chainedFrom: chainedFrom)
             }
+        }
+    }
+
+    /// Keeps a bounded number of finished requests, so late messages are
+    /// still recognized for a while.
+    func rememberOrganizer(_ conversation: ConversationID) {
+        endedOrganizers.append(conversation)
+        while endedOrganizers.count > configuration.maxRememberedRequests {
+            let oldest = endedOrganizers.removeFirst()
+            if let organizer = organized.removeValue(forKey: oldest) { conversationOf[organizer.id] = nil }
+            cancelTasks(oldest)
         }
     }
 

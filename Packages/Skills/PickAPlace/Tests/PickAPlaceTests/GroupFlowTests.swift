@@ -191,23 +191,37 @@ struct GroupFlowTests {
         #expect(await group.wire.sent(to: sam.id).isEmpty)
     }
 
-    @Test func aFriendOnAnotherVersionAnswersUnsupportedAndIsLeftOut() async throws {
+    @Test func aQueryFromAnotherVersionCreatesNothingAndGetsNoReply() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
         let oliver = Phone("Oliver", hub: hub, maps: maps)
         let maya = Phone("Maya", hub: hub, maps: maps)
         let group = try await Group([oliver, maya], hub: hub)
         defer { Task { await group.stop() } }
-        // A Pick a place 2.0 query reaches Maya: her phone says unsupported
-        // and creates nothing.
-        let conversation = ConversationID()
+        // A Pick a place 2.0 query on fresh conversations: Maya's phone
+        // creates nothing and sends nothing, so it cannot be made to send
+        // without limit. Oliver's phone leaves her out from her card.
         let query = try Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))
-        try await oliver.outbox.send(.query(query), to: maya.id, conversation: conversation, recipientCard: maya.card,
-                                     skill: SkillRef(.pickAPlace, SkillVersion(2, 0)))
-        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .reject } })
-        let reply = try #require(await group.wire.sent(by: maya.id).first)
-        #expect(reply.body == .reject(Rejection(proposal: reply.body.rejection!.proposal, reason: .unsupported)))
+        for _ in 0..<5 {
+            try await oliver.outbox.send(.query(query), to: maya.id, conversation: ConversationID(), recipientCard: maya.card,
+                                         skill: SkillRef(.pickAPlace, SkillVersion(2, 0)))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await group.wire.sent(by: maya.id).isEmpty)
         #expect(await maya.coordinator.incoming.isEmpty)
+        #expect(await maya.service.tasks.isEmpty)
+    }
+
+    @Test func noWorkIsLeftOnceThereIsAPlan() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        for phone in [oliver, maya, jake] { try await phone.accept(in: conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation)) }
+        for phone in [oliver, maya, jake] {
+            #expect(await eventually { await phone.service.tasks.isEmpty }, "\(phone.name) still has work")
+        }
     }
 
     @Test func withNoFriendWhoCanRunItTheRequestEndsUnsupported() async throws {

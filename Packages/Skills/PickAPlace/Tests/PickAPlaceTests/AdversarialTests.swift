@@ -82,6 +82,36 @@ struct AdversarialTests {
         #expect(await maya.coordinator.incoming.count == fastConfiguration.maxLiveRequestsPerFriend)
     }
 
+    @Test func aFriendCannotProbeWithAnEndlessStreamOfRequests() async throws {
+        let (group, maya, mallory) = try await mayaAndMallory()
+        defer { Task { await group.stop() } }
+        // One place at a time, each request closed straight after, so the
+        // live limit never bites.
+        for _ in 0..<12 {
+            let conversation = ConversationID()
+            try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill)
+            try await Task.sleep(for: .milliseconds(40))
+            try await mallory.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: maya.id,
+                                          conversation: conversation, skill: skill)
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        let lists = await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }
+        #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
+        #expect(await maya.coordinator.incoming.count == fastConfiguration.maxNewRequestsPerFriendPerHour)
+    }
+
+    @Test func aStrangersCardIsNotKept() async throws {
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
+        let stranger = Phone("Stranger", hub: hub, maps: FakeMaps(Venues.all))
+        let group = try await Group([maya], hub: hub)
+        defer { Task { await group.stop(); await stranger.stop() } }
+        try await stranger.start()
+        try await stranger.hello([maya])
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await maya.service.cards[stranger.id] == nil)
+    }
+
     @Test func aProposalForAPlaceMayaDidNotAcceptIsIgnored() async throws {
         let (group, maya, mallory) = try await mayaAndMallory(limits: limits(budget: 20))
         defer { Task { await group.stop() } }

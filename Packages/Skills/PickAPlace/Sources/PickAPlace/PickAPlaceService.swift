@@ -47,6 +47,13 @@ public struct PickAPlaceConfiguration: Hashable, Sendable {
     public var maxLiveRequests: Int
     /// Ended requests remembered so a late retry still gets the same reply.
     public var maxRememberedRequests: Int
+    /// New requests one friend may start on this phone per hour, ended ones
+    /// included, so a friend cannot probe the owner's limits with an
+    /// endless stream of one-place requests (ADR 0230).
+    public var maxNewRequestsPerFriendPerHour: Int
+    /// Times the organizer repeats its confirmation to one friend who keeps
+    /// saying yes, in case the confirmation was lost.
+    public var maxConfirmationRepeats: Int
 
     public init(
         retryInterval: Duration = .seconds(5),
@@ -55,7 +62,9 @@ public struct PickAPlaceConfiguration: Hashable, Sendable {
         confirmWindow: Duration = .seconds(30 * 60),
         maxLiveRequestsPerFriend: Int = 4,
         maxLiveRequests: Int = 32,
-        maxRememberedRequests: Int = 64
+        maxRememberedRequests: Int = 64,
+        maxNewRequestsPerFriendPerHour: Int = 8,
+        maxConfirmationRepeats: Int = 8
     ) {
         precondition(retryInterval > .zero && maxRetryInterval >= retryInterval && maxLiveRequestsPerFriend > 0)
         self.retryInterval = retryInterval
@@ -65,6 +74,8 @@ public struct PickAPlaceConfiguration: Hashable, Sendable {
         self.maxLiveRequestsPerFriend = maxLiveRequestsPerFriend
         self.maxLiveRequests = maxLiveRequests
         self.maxRememberedRequests = maxRememberedRequests
+        self.maxNewRequestsPerFriendPerHour = maxNewRequestsPerFriendPerHour
+        self.maxConfirmationRepeats = maxConfirmationRepeats
     }
 }
 
@@ -117,12 +128,16 @@ public actor PickAPlaceService: SkillService {
     var organized: [ConversationID: Organizer] = [:]
     var invites: [ConversationID: Invite] = [:]
     var conversationOf: [InteractionID: ConversationID] = [:]
-    /// Ended invites, oldest first, for pruning.
+    /// Ended invites and organizers, oldest first, for pruning.
     var endedInvites: [ConversationID] = []
+    var endedOrganizers: [ConversationID] = []
+    /// When each friend started requests on this phone, within the last hour.
+    var requestTimes: [PeerID: [Date]] = [:]
     /// Cancels the work, sends included, still running for a conversation.
     /// Withdrawing or ending it cancels them, so a send suspended on a
-    /// consent sheet or the policy recheck never leaves afterwards.
-    var tasks: [ConversationID: [@Sendable () -> Void]] = [:]
+    /// consent sheet or the policy recheck never leaves afterwards. Each
+    /// entry removes itself when its work finishes.
+    var tasks: [ConversationID: [UUID: @Sendable () -> Void]] = [:]
 
     /// - Parameters:
     ///   - localPeer: This phone's ID, the Outbox's transport's `localPeer`.
@@ -181,14 +196,15 @@ public actor PickAPlaceService: SkillService {
     /// the loop.
     public func handle(_ event: InboxEvent) async {
         guard case .message(let envelope) = event else { return }
+        guard envelope.skill?.id == descriptor.id || envelope.body.kind == .hello else { return }
+        // Only paired friends. With the secure channel, the sender is
+        // authenticated; the pairing store says whether it is a friend.
+        guard (try? await pairedPeers.peer(for: envelope.sender)) != nil else { return }
         if case .hello(let card) = envelope.body {
             cards[envelope.sender] = card
             return
         }
-        guard let skill = envelope.skill, skill.id == descriptor.id else { return }
-        // Only paired friends. With the secure channel, the sender is
-        // authenticated; the pairing store says whether it is a friend.
-        guard (try? await pairedPeers.peer(for: envelope.sender)) != nil else { return }
+        guard let skill = envelope.skill else { return }
 
         let conversation = envelope.conversation
         if organized[conversation] != nil {
@@ -197,19 +213,15 @@ public actor PickAPlaceService: SkillService {
             inviteReceived(envelope)
         } else if skill.version.isCompatible(with: descriptor.ref.version) {
             newInvite(envelope)
-        } else if case .query = envelope.body {
-            // Tell an organizer on another major version, once per query,
-            // so it leaves this phone out. Nothing is created here.
-            spawn(conversation) { service in
-                await service.trySend(.reject(Rejection(proposal: envelope.id, reason: .unsupported)), to: envelope.sender,
-                                      conversation: conversation, chainedFrom: envelope.chainedFrom)
-            }
         }
+        // Another major version gets no reply: the organizer's phone leaves
+        // this one out from its card, and a reply per fresh conversation
+        // would let a friend make this phone send without limit.
     }
 
     /// Ends every request silently and finishes `events`.
     public func shutdown() async {
-        for list in tasks.values { list.forEach { $0() } }
+        for list in tasks.values { list.values.forEach { $0() } }
         tasks = [:]
         organized = [:]
         invites = [:]
@@ -238,8 +250,17 @@ public actor PickAPlaceService: SkillService {
     /// Runs work for one conversation on its own task, cancelled when the
     /// conversation ends.
     func spawn(_ conversation: ConversationID, _ work: @escaping @Sendable (isolated PickAPlaceService) async -> Void) {
-        let task = Task { await work(self) }
-        tasks[conversation, default: []].append { task.cancel() }
+        let token = UUID()
+        let task = Task {
+            await work(self)
+            self.taskEnded(token, in: conversation)
+        }
+        tasks[conversation, default: [:]][token] = { task.cancel() }
+    }
+
+    func taskEnded(_ token: UUID, in conversation: ConversationID) {
+        tasks[conversation]?[token] = nil
+        if tasks[conversation]?.isEmpty == true { tasks[conversation] = nil }
     }
 
     /// Runs a send on a tracked task and waits for it, so ending the
@@ -253,12 +274,15 @@ public actor PickAPlaceService: SkillService {
                 return error
             }
         }
-        tasks[conversation, default: []].append { task.cancel() }
-        return await task.value
+        let token = UUID()
+        tasks[conversation, default: [:]][token] = { task.cancel() }
+        let result = await task.value
+        taskEnded(token, in: conversation)
+        return result
     }
 
     func cancelTasks(_ conversation: ConversationID) {
-        tasks.removeValue(forKey: conversation)?.forEach { $0() }
+        tasks.removeValue(forKey: conversation)?.values.forEach { $0() }
     }
 
     /// Waits `interval`, then returns the next, doubled up to the maximum;

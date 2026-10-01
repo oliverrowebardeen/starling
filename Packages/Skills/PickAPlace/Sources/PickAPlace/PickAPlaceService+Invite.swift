@@ -35,6 +35,13 @@ extension PickAPlaceService {
         guard live.count < configuration.maxLiveRequests,
               live.filter({ $0.organizer == envelope.sender }).count < configuration.maxLiveRequestsPerFriend
         else { return }
+        let hourAgo = clock.now().addingTimeInterval(-3_600)
+        let recent = (requestTimes[envelope.sender] ?? []).filter { $0 > hourAgo }
+        guard recent.count < configuration.maxNewRequestsPerFriendPerHour else {
+            requestTimes[envelope.sender] = recent
+            return
+        }
+        requestTimes[envelope.sender] = recent + [clock.now()]
         let conversation = envelope.conversation
         invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender, chainedFrom: envelope.chainedFrom)
         spawn(conversation) { await $0.judgeAndAnswer(conversation, query: envelope.id, candidates: candidates) }
