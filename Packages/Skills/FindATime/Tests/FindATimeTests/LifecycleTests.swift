@@ -4,6 +4,7 @@ import StarlingAvailability
 import StarlingAvailabilityFakes
 import StarlingCore
 import StarlingFakes
+import Synchronization
 import Testing
 
 /// Revisions, deadlines, retries, and endings.
@@ -202,6 +203,94 @@ struct LifecycleTests {
         try await b.waitForState(asked, .ended(.withdrawn))
         try await Task.sleep(for: .milliseconds(100))
         #expect(!world.envelopes.contains { $0.sender == b.id && $0.body.kind == .answer })
+        await world.stop()
+    }
+
+    /// A send the policy denies ends the interaction as blocked by privacy,
+    /// and nothing of it leaves.
+    @Test func aDeniedSendIsBlockedByPrivacy() async throws {
+        let world = World()
+        let a = world.phone("Ana", policy: FixedPolicyEngine(decide: { message in
+            message.envelope.skill == nil ? .allow : .deny(PolicyViolation(rule: "recipient.on_device_only"))
+        }))
+        let b = world.phone("Ben")
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        try await a.waitForState(started, .ended(.blockedByPrivacy))
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(world.envelopes.allSatisfy { $0.skill == nil })
+        #expect(await a.coordinator.rejected.isEmpty)
+        await world.stop()
+    }
+
+    /// ADR 0011 amendment 14, the Orchestrator's example: Ben's acceptance
+    /// of proposal 1 is denied only after proposal 2 replaced it and Ben
+    /// accepted that. The late denial belongs to a step that is over and
+    /// is dropped; the plan goes ahead.
+    @Test func aDenialForASupersededAcceptanceIsDropped() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        // Ben's acceptance of the three-person proposal (it carries the roster).
+        let policy = HeldDenial { message in
+            guard case .accept(let acceptance) = message.envelope.body else { return false }
+            return acceptance.terms[.people] != nil
+        }
+        let b = world.phone("Ben", policy: policy)
+        let c = world.phone("Cy")
+        try await world.start()
+
+        let started = try await a.findATime(with: [b, c])
+        let (bCard, _) = try await b.waitForProposal(revision: 1)
+        let (cCard, _) = try await c.waitForProposal(revision: 1)
+        try await b.accept(bCard, revision: 1)
+        try await eventually("Ben's acceptance is held") { await policy.held == 1 }
+        try await c.service.answer(cCard, with: .pass)
+        _ = try await b.waitForProposal(revision: 2)
+        try await b.accept(bCard, revision: 2)
+        try await eventually("Ana has Ben's acceptance") {
+            world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept }
+        }
+        await policy.release()
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await b.coordinator.interaction(bCard)?.state == .confirmed)
+
+        try await a.waitForState(started, .proposed)
+        try await a.accept(started, revision: 2)
+        try await a.waitForState(started, .planned)
+        try await b.waitForState(bCard, .planned)
+        #expect(await b.coordinator.rejected.isEmpty)
+        await world.stop()
+    }
+
+    /// The starter's side: the denial of proposal 1 to Cy arrives after Ben
+    /// passed and proposal 2 went out. It is dropped.
+    @Test func aDenialForASupersededProposalIsDropped() async throws {
+        let world = World()
+        let cy = Mutex<PeerID?>(nil)
+        let policy = HeldDenial { message in
+            guard case .propose(let proposal) = message.envelope.body else { return false }
+            return proposal.round == 0 && message.envelope.recipient == cy.withLock { $0 }
+        }
+        let a = world.phone("Ana", policy: policy)
+        let b = world.phone("Ben")
+        let c = world.phone("Cy")
+        cy.withLock { $0 = c.id }
+        try await world.start()
+
+        let started = try await a.findATime(with: [b, c])
+        let (bCard, _) = try await b.waitForProposal(revision: 1)
+        try await eventually("the proposal to Cy is held") { await policy.held == 1 }
+        try await b.service.answer(bCard, with: .pass)
+        let (cCard, _) = try await c.waitForProposal(revision: 1)
+        try await a.waitForState(started, .proposed)
+        await policy.release()
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await a.coordinator.interaction(started)?.state == .proposed)
+
+        try await a.accept(started, revision: (await a.coordinator.interaction(started)?.proposalRevision)!)
+        try await c.accept(cCard)
+        try await a.waitForState(started, .planned)
+        try await c.waitForState(cCard, .planned)
         await world.stop()
     }
 

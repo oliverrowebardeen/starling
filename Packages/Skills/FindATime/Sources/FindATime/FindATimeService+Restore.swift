@@ -56,7 +56,7 @@ extension FindATimeService {
         switch value.phase {
         case .planned where interaction.state == .confirmed:
             // Confirmed on the wire, but the plan never reached the store.
-            if let revision = value.draft?.revision { confirmationsDone(id, revision: revision, declined: false) }
+            if let revision = value.draft?.revision { confirmationsDone(id, revision: revision, refusal: nil) }
         case .collecting:
             initiatorResend(id, to: value.waitingOn)
         case .proposing:

@@ -224,13 +224,6 @@ public actor FindATimeService: SkillService {
         return true
     }
 
-    /// For the owner declining a consent sheet: the coordinator holds the
-    /// interaction in awaiting consent, where passing is valid, but this
-    /// service's copy never sees consent, so it cannot check the event.
-    func emitOwnerDeclinedConsent(_ interaction: InteractionID) {
-        continuation.yield(.lifecycle(interaction, .ownerPassed))
-    }
-
     func produce(_ artifact: Artifact, for interaction: InteractionID) {
         continuation.yield(.produced(interaction, artifact))
     }

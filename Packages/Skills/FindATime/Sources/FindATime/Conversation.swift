@@ -36,9 +36,6 @@ struct Initiating: Hashable, Sendable, Codable {
     /// Each friend's answer: the offered times that work for them (empty
     /// for none, a pass, or a declined consent).
     var answers: [PeerID: [TimeSlot]] = [:]
-    /// Friends never asked: the owner declined their consent sheet or the
-    /// policy refused. They are told nothing.
-    var excluded: Set<PeerID> = []
     /// Friends a query reached the link for. Only they are ever told
     /// "no plan": a friend never asked learns nothing, not even that a
     /// request existed.

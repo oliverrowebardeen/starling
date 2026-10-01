@@ -154,21 +154,13 @@ extension FindATimeService {
     }
 
     private func answerSent(_ id: ConversationID, _ outcome: SendOutcome) {
-        guard var value = invited[id], value.phase == .answered else { return }
+        guard invited[id]?.phase == .answered else { return }
         switch outcome {
         case .sent, .failed:
             // A lost answer is recovered when the starter retries its query.
             return
-        case .declined:
-            // The owner chose not to share even the shared times: a pass.
-            emitOwnerDeclinedConsent(value.interaction.id)
-            sendNoPlan(about: value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
-            finish(id)
-        case .denied:
-            if !emit(.blockedByPrivacy, to: &value.interaction) { emit(.failed, to: &value.interaction) }
-            invited[id] = value
-            sendNoPlan(about: value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
-            finish(id)
+        case .declined, .denied:
+            inviteeRefused(id, outcome)
         }
     }
 
@@ -216,27 +208,38 @@ extension FindATimeService {
         let acceptance = Acceptance(proposal: offer.latest, terms: offer.terms)
         let asker = value.asker
         let chainedFrom = value.chainedFrom
+        let revision = offer.revision
         spawn(for: id) {
             let outcome = await self.send(.accept(acceptance), to: asker, conversation: id, chainedFrom: chainedFrom)
-            await self.acceptanceSent(id, outcome)
+            await self.acceptanceSent(id, revision: revision, outcome)
         }
     }
 
-    private func acceptanceSent(_ id: ConversationID, _ outcome: SendOutcome) {
-        guard var value = invited[id], value.phase == .accepted else { return }
+    /// Bound to the proposal it accepted: once a newer proposal replaced
+    /// it, the result belongs to a step that is over and is dropped, even
+    /// if the owner has since accepted the newer one (ADR 0011, amendment 14).
+    private func acceptanceSent(_ id: ConversationID, revision: UInt32, _ outcome: SendOutcome) {
+        guard let value = invited[id], value.phase == .accepted, value.offer?.revision == revision else { return }
         switch outcome {
         case .sent, .failed:
             return
-        case .declined:
-            emitOwnerDeclinedConsent(value.interaction.id)
-            sendNoPlan(.declinedByOwner, about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
-            finish(id)
-        case .denied:
-            if !emit(.blockedByPrivacy, to: &value.interaction) { emit(.failed, to: &value.interaction) }
-            invited[id] = value
-            sendNoPlan(about: value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
-            finish(id)
+        case .declined, .denied:
+            inviteeRefused(id, outcome)
         }
+    }
+
+    /// A send for the current step was refused. The starter hears "no
+    /// plan", like a pass. A declined sheet adds no event (the coordinator
+    /// applies the pass); a denial is blocked by privacy, or failed where
+    /// Core does not yet accept that (see `initiatorRefused`).
+    private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome) {
+        guard var value = invited[id] else { return }
+        if case .denied = outcome, !emit(.blockedByPrivacy, to: &value.interaction) {
+            emit(.failed, to: &value.interaction)
+        }
+        invited[id] = value
+        sendNoPlan(about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
+        finish(id)
     }
 
     /// The starter's confirmation: everyone said "That works".

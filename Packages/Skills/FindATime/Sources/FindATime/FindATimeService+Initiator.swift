@@ -161,24 +161,26 @@ extension FindATimeService {
         case .failed:
             return
         case .declined, .denied:
-            // The owner chose not to ask this friend, or the policy refused:
-            // the friend is left out, as if they had no time.
-            value.answers[peer] = []
-            value.excluded.insert(peer)
-            initiating[id] = value
-            checkpoint(id)
-            if value.excluded.count == value.invitees.count {
-                // Nobody was asked. A declined sheet is the owner passing;
-                // a refusal is privacy.
-                if case .declined = outcome {
-                    emitOwnerDeclinedConsent(value.interaction.id)
-                } else if !emit(.blockedByPrivacy, to: &value.interaction) {
-                    emit(.failed, to: &value.interaction)
-                }
-                return finish(id)
-            }
-            decideIfEveryoneAnswered(id)
+            initiatorRefused(id, outcome)
         }
+    }
+
+    /// A send for the current step was refused; the caller has checked the
+    /// step is still current (ADR 0011, amendment 14). The conversation
+    /// ends and friends already asked hear "no plan".
+    /// - A declined consent sheet adds no event: the coordinator applies
+    ///   the owner's pass.
+    /// - A policy denial is blocked by privacy. Core accepts that from
+    ///   every live step except planned once its pending change lands;
+    ///   until then a step it refuses reports failed instead.
+    private func initiatorRefused(_ id: ConversationID, _ outcome: SendOutcome) {
+        guard var value = initiating[id] else { return }
+        if case .denied = outcome, !emit(.blockedByPrivacy, to: &value.interaction) {
+            emit(.failed, to: &value.interaction)
+        }
+        initiating[id] = value
+        tellEveryoneNoPlan(id)
+        finish(id)
     }
 
     func receiveAnswer(_ envelope: Envelope, _ answer: Answer) {
@@ -310,20 +312,7 @@ extension FindATimeService {
 
     private func proposalsDone(_ id: ConversationID, revision: UInt32, announce: Bool, refusal: SendOutcome?) {
         guard var value = initiating[id], value.phase == .proposing, let draft = value.draft, draft.revision == revision else { return }
-        switch refusal {
-        case .declined?:
-            emitOwnerDeclinedConsent(value.interaction.id)
-            tellEveryoneNoPlan(id)
-            return finish(id)
-        case .denied?:
-            // The roster's topic is set to Never.
-            if !emit(.blockedByPrivacy, to: &value.interaction) { emit(.failed, to: &value.interaction) }
-            initiating[id] = value
-            tellEveryoneNoPlan(id)
-            return finish(id)
-        default:
-            break
-        }
+        if let refusal { return initiatorRefused(id, refusal) }
         guard announce else { return }
         let card = SkillProposal(revision: revision, participants: draft.plan.attendees.peers, terms: draft.terms, plan: draft.plan)
         emit(.proposalReady(card), to: &value.interaction)
@@ -376,23 +365,23 @@ extension FindATimeService {
         let ids = value.accepted
         let chainedFrom = value.chainedFrom
         spawn(for: id) {
-            var declined = false
+            var refusal: SendOutcome?
             for peer in draft.members {
                 guard let message = ids[peer] else { continue }
                 let outcome = await self.send(.accept(Acceptance(proposal: message, terms: draft.terms)), to: peer, conversation: id, chainedFrom: chainedFrom)
-                if case .declined = outcome { declined = true; break }
+                switch outcome {
+                case .declined, .denied: refusal = outcome
+                case .sent, .failed: break
+                }
+                if refusal != nil { break }
             }
-            await self.confirmationsDone(id, revision: draft.revision, declined: declined)
+            await self.confirmationsDone(id, revision: draft.revision, refusal: refusal)
         }
     }
 
-    func confirmationsDone(_ id: ConversationID, revision: UInt32, declined: Bool) {
+    func confirmationsDone(_ id: ConversationID, revision: UInt32, refusal: SendOutcome?) {
         guard var value = initiating[id], value.phase == .planned, let draft = value.draft, draft.revision == revision else { return }
-        if declined {
-            emitOwnerDeclinedConsent(value.interaction.id)
-            tellEveryoneNoPlan(id)
-            return finish(id)
-        }
+        if let refusal { return initiatorRefused(id, refusal) }
         // A friend who missed the confirmation resends its acceptance, and
         // `receiveAcceptance` answers it, so the plan stands on this phone.
         emit(.everyoneConfirmed(revision: revision), to: &value.interaction)

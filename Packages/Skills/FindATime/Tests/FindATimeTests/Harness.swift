@@ -71,10 +71,9 @@ actor Coordinator {
 
     func begin(_ interaction: Interaction) async throws { try await store.save(interaction) }
 
-    /// What the app's consent provider does around a sheet (the contract in
-    /// docs/requests/P15-C.md): it applies `consentNeeded` before asking and
-    /// `consentGiven` after an approval. On a decline it applies nothing;
-    /// the skill reports what declining means.
+    /// What the app's consent provider does around a sheet: it applies
+    /// `consentNeeded` before asking, then `consentGiven` after an approval
+    /// or `ownerPassed` after a decline. The skill adds nothing for a decline.
     func applyConsent(_ event: (UInt32) -> InteractionEvent, conversation: ConversationID?, opening: Bool) async -> UInt32? {
         guard let conversation else { return nil }
         for _ in 0..<200 {
@@ -154,6 +153,29 @@ let alwaysAsk = FixedPolicyEngine(decide: { message in
     ))
 })
 
+/// A policy that holds chosen sends until the test opens the gate, then
+/// denies them, so a denial can arrive after its step was superseded. Every
+/// other send is allowed.
+actor HeldDenial: PolicyEngine {
+    private let holds: @Sendable (OutboundMessage) -> Bool
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var held = 0
+
+    init(_ holds: @escaping @Sendable (OutboundMessage) -> Bool) { self.holds = holds }
+
+    func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
+        guard holds(message) else { return .allow }
+        held += 1
+        await withCheckedContinuation { waiting.append($0) }
+        return .deny(PolicyViolation(rule: "test.held"))
+    }
+
+    func release() {
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+}
+
 /// The app's consent provider around a scripted owner.
 struct LifecycleConsent: ConsentProvider {
     let owner: any ConsentProvider
@@ -164,6 +186,9 @@ struct LifecycleConsent: ConsentProvider {
         let outcome = await owner.requestConsent(for: disclosure)
         if outcome == .approved {
             _ = await coordinator.applyConsent({ .consentGiven(request: $0) }, conversation: disclosure.conversation, opening: false)
+        } else {
+            // A declined sheet is the owner passing; the coordinator applies it.
+            _ = await coordinator.applyConsent({ _ in .ownerPassed }, conversation: disclosure.conversation, opening: false)
         }
         return outcome
     }
