@@ -93,6 +93,21 @@ struct LiveModelTests {
         #expect(result.latency > .zero)
     }
 
+    /// Scores the labeled set with the real model and prints the report.
+    @Test(.timeLimit(.minutes(5)))
+    func interpretationSetScores() async throws {
+        let report = await InterpretationEval(model: FoundationModelsAgent(timeZone: InterpretationSet.timeZone)).run()
+        print(report.markdown(title: "Interpretation accuracy (live)"))
+        #expect(report.errors == 0)
+    }
+
+    /// Red-team issue #9: food matched movie in 24 of 24 greedy trials.
+    @Test(.timeLimit(.minutes(2)))
+    func matchRejectsAnUnrelatedOffer() async throws {
+        let result = try await FoundationModelsAgent().match(wanted: [try Keyword("food")], offered: [try Keyword("movie")])
+        #expect(result.value.isEmpty)
+    }
+
     @Test(.timeLimit(.minutes(2)))
     func matchFindsTheObviousPair() async throws {
         let agent = FoundationModelsAgent()

@@ -55,20 +55,30 @@ public struct FoundationModelsAgent: AgentModel {
     public func interpret(_ utterance: OwnerUtterance, context: InterpretationContext) async throws -> ModelResult<OwnerRules> {
         let prompt = PromptRenderer.interpret(utterance, context: context)
         let (output, usage, latency) = try await generate(RulesOutput.self, instructions: PromptRenderer.interpretInstructions, prompt: prompt)
-        return ModelResult(value: try OutputMapping.rules(output.raw, context: context), usage: usage, latency: latency)
+        let checked = Grounding.check(output.raw, against: utterance.text)
+        return ModelResult(value: try OutputMapping.rules(checked, context: context), usage: usage, latency: latency)
     }
 
     public func match(wanted: [Keyword], offered: [Keyword]) async throws -> ModelResult<[KeywordMatch]> {
         guard !wanted.isEmpty, !offered.isEmpty else { return ModelResult(value: [], usage: nil, latency: .zero) }
-        let prompt = PromptRenderer.match(wanted: wanted, offered: offered)
-        let (output, usage, latency) = try await generate(MatchOutput.self, instructions: PromptRenderer.matchInstructions, prompt: prompt)
-        return ModelResult(value: try OutputMapping.matches(output.raw, wanted: wanted, offered: offered), usage: usage, latency: latency)
+        let schema = try MatchSchema(wanted: wanted, offered: offered)
+        let prompt = PromptRenderer.match(wanted: schema.wanted, offered: schema.offered)
+        let (content, usage, latency) = try await generate(schema.schema, instructions: PromptRenderer.matchInstructions, prompt: prompt)
+        return ModelResult(value: try schema.matches(from: content), usage: usage, latency: latency)
     }
 
     public func decide(_ context: NegotiationContext) async throws -> ModelResult<NegotiationMove> {
         let prompt = PromptRenderer.decide(context, timeZone: timeZone)
-        let (output, usage, latency) = try await generate(MoveOutput.self, instructions: PromptRenderer.decideInstructions, prompt: prompt.text)
-        return ModelResult(value: try OutputMapping.move(output.raw, prompt: prompt, proposal: context.proposal), usage: usage, latency: latency)
+        let schema = try DecisionSchema(prompt: prompt, proposal: context.proposal)
+        // Only one move is possible within the owner's limits, so the answer
+        // is known without a model call.
+        switch schema.moves {
+        case ["reject"]: return ModelResult(value: .reject(.noOverlap), usage: TokenUsage(inputTokens: 0, outputTokens: 0), latency: .zero)
+        case ["accept"]: return ModelResult(value: .accept, usage: TokenUsage(inputTokens: 0, outputTokens: 0), latency: .zero)
+        default: break
+        }
+        let (content, usage, latency) = try await generate(schema.schema, instructions: PromptRenderer.decideInstructions, prompt: prompt.text)
+        return ModelResult(value: try OutputMapping.move(try schema.move(from: content), prompt: prompt, proposal: context.proposal), usage: usage, latency: latency)
     }
 
     // MARK: - Generation
@@ -92,6 +102,29 @@ public struct FoundationModelsAgent: AgentModel {
         }
         let latency = start.duration(to: clock.now)
         let usage = await measure(session: session, schema: Output.generationSchema, instructions: instructions, prompt: prompt, response: response.rawContent.jsonString)
+        return (response.content, usage, latency)
+    }
+
+    /// Generation against a schema built at runtime (DynamicSchemas.swift).
+    private func generate(
+        _ schema: GenerationSchema,
+        instructions: String,
+        prompt: String
+    ) async throws -> (GeneratedContent, TokenUsage?, Duration) {
+        if case .unavailable(let reason) = model.availability {
+            throw AgentModelError.unavailable(reason: String(describing: reason))
+        }
+        let session = LanguageModelSession(model: model, instructions: instructions)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let response: LanguageModelSession.Response<GeneratedContent>
+        do {
+            response = try await session.respond(to: prompt, schema: schema, includeSchemaInPrompt: true, options: Self.greedy)
+        } catch {
+            throw Self.map(error)
+        }
+        let latency = start.duration(to: clock.now)
+        let usage = await measure(session: session, schema: schema, instructions: instructions, prompt: prompt, response: response.rawContent.jsonString)
         return (response.content, usage, latency)
     }
 

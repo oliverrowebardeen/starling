@@ -47,10 +47,13 @@ enum AgentFixtures {
             - budget: $15 BREAKS LIMIT
             - time: Tue 19:00-21:00
             Time options: 1) Tue 18:00-23:00 2) Tue 19:00-21:00
-            Activity options: 1) boba 2) sushi
+            Activity options: 1) boba
             """)
         #expect(prompt.timeOptions.count == 2)
-        #expect(prompt.activityOptions.map(\.value) == ["boba", "sushi"])
+        // sushi is avoided, so it is not an option to counter with.
+        #expect(prompt.activityOptions.map(\.value) == ["boba"])
+        #expect(prompt.brokenIssues == [.activity, .budget])
+        #expect(prompt.budgetRange == 0...12)
     }
 
     @Test func capsOptionLists() throws {
@@ -114,13 +117,6 @@ enum AgentFixtures {
         #expect(rules.constraints[.time] == [try Constraint(.dailyWindow(from: 0, to: 1440))])
     }
 
-    @Test func extremeIntegersInMatchesThrow() throws {
-        let wanted = [try Keyword("food")]
-        let offered = [try Keyword("boba")]
-        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: Int.min, offer: 1, same: true)], wanted: wanted, offered: offered) }
-        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: 1, offer: Int.min, same: true)], wanted: wanted, offered: offered) }
-    }
-
     /// 2026-11-01 is the US fall-back day: midnight is PDT, the evening is PST.
     /// "18:00 to 20:00" must mean the wall clock, not 18 hours after midnight.
     @Test func interpretedHoursFollowTheWallClockAcrossDaylightSaving() throws {
@@ -145,18 +141,34 @@ enum AgentFixtures {
         #expect(rules.disclosure == [DisclosureRule(issue: .place, action: .never)])
     }
 
+    @Test func partOfDayFillsHoursOnlyWhenNoneWereStated() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        let tonight = try OutputMapping.rules(RawRules(day: .relative(0), partOfDay: .evening), context: context)
+        #expect(tonight.constraints[.time] == [try Constraint(.within([try AgentFixtures.slot(18, 24)]))])
+        // "free after 3 this afternoon": the stated start wins, and the end is open.
+        let afterThree = try OutputMapping.rules(RawRules(day: .relative(0), partOfDay: .afternoon, earliestHour: 15), context: context)
+        #expect(afterThree.constraints[.time] == [try Constraint(.within([try AgentFixtures.slot(15, 24)]))])
+        let morning = try OutputMapping.rules(RawRules(partOfDay: .morning), context: context)
+        #expect(morning.constraints[.time] == [try Constraint(.dailyWindow(from: 480, to: 720))])
+    }
+
+    /// An end before the start used to drop the whole time constraint,
+    /// losing the day the owner named.
+    @Test func backwardsWindowKeepsTheDay() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        let rules = try OutputMapping.rules(RawRules(day: .relative(0), earliestHour: 15, latestHour: 15), context: context)
+        #expect(rules.constraints[.time] == [try Constraint(.within([try AgentFixtures.slot(15, 24)]))])
+    }
+
+    @Test func zeroBudgetMeansNoLimit() throws {
+        let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
+        #expect(try OutputMapping.rules(RawRules(maxDollars: 0), context: context).constraints[.budget].isEmpty)
+    }
+
     @Test func hoursWithoutADayBecomeADailyWindow() throws {
         let context = InterpretationContext(now: AgentFixtures.now, timeZone: AgentFixtures.utc, issues: [])
         let rules = try OutputMapping.rules(RawRules(earliestHour: 10), context: context)
         #expect(rules.constraints[.time] == [try Constraint(.dailyWindow(from: 600, to: 1440))])
-    }
-
-    @Test func matchesValidateIndicesAndDeduplicate() throws {
-        let wanted = [try Keyword("food")]
-        let offered = [try Keyword("boba run"), try Keyword("movie")]
-        let matches = try OutputMapping.matches([RawMatch(want: 1, offer: 1, same: false), RawMatch(want: 1, offer: 1, same: false)], wanted: wanted, offered: offered)
-        #expect(matches == [KeywordMatch(wanted: wanted[0], offered: offered[0], strength: .satisfies)])
-        #expect(throws: AgentModelError.self) { _ = try OutputMapping.matches([RawMatch(want: 2, offer: 1, same: true)], wanted: wanted, offered: offered) }
     }
 }
 

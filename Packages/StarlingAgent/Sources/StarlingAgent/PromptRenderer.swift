@@ -6,6 +6,13 @@ package struct DecisionPrompt: Hashable, Sendable {
     package let text: String
     package let timeOptions: [TimeSlot]
     package let activityOptions: [Keyword]
+    /// Issues where the proposal breaks one of the owner's limits.
+    package var brokenIssues: Set<IssueKey> = []
+    /// Whole-dollar budgets within the owner's limits, or nil if none is.
+    package var budgetRange: ClosedRange<Int>? = nil
+    /// True when the owner has a soft preference on an issue in the proposal,
+    /// so a counter could improve compliant terms.
+    package var hasPreferences = true
 }
 
 /// Turns Core values into short prompts (TN3193: fewer tokens, clearer
@@ -17,21 +24,20 @@ package enum PromptRenderer {
 
     package static let decideInstructions = """
         You negotiate a plan for your owner with a friend's agent. Choose one move. \
-        accept: only if no proposal item is marked BREAKS LIMIT. \
-        counter: pick option numbers that fit the owner's limits and stay close to the proposal. \
-        reject: no option can fit the owner's limits. \
-        Use only listed options. Never exceed the owner's budget.
+        accept: no proposal item is marked BREAKS LIMIT. Agreeing is the goal. \
+        counter: an item BREAKS LIMIT; pick option numbers close to the proposal. \
+        reject: no option can fix it. Use only listed options.
         """
 
     package static let interpretInstructions = """
-        Turn the owner's message into plan rules. Use 24-hour clock hours. \
-        Include only what the owner said. Activities are short lowercase phrases.
+        Turn the owner's message into plan rules. Fill a field only from the owner's own words. \
+        Activities are short lowercase things to do or eat, never times, prices, or rules about sharing.
         """
 
     package static let matchInstructions = """
-        Match what the owner wants to what a friend offers. \
-        A match means the offer satisfies the want, like "food" and "boba run". \
-        Mark same when both mean the same thing.
+        For each thing the owner wants, choose the offer that gives it to them, or none. \
+        An offer counts only if doing it satisfies the want, like "boba run" for "food". \
+        If no offer does, choose none.
         """
 
     package static func decide(_ context: NegotiationContext, timeZone: TimeZone) -> DecisionPrompt {
@@ -55,8 +61,17 @@ package enum PromptRenderer {
             lines.append("Earlier: \(history)")
         }
 
-        let timeOptions = unique(ownerSlots(context.constraints) + slots(in: proposal)).prefix(maxTimeOptions)
-        let activityOptions = unique(likedKeywords(context.constraints) + keywords(in: proposal)).prefix(maxActivityOptions)
+        // Only options that meet the owner's limits are listed: the model
+        // chooses among compliant options, code decides which those are
+        // (ARCHITECTURE rule 6).
+        func complies(_ key: IssueKey, _ value: IssueValue) -> Bool {
+            guard let terms = try? Terms([key: value]) else { return false }
+            return context.constraints.violations(of: terms, timeZone: timeZone).isEmpty
+        }
+        let timeOptions = unique(ownerSlots(context.constraints) + slots(in: proposal))
+            .filter { complies(.time, .slots([$0])) }.prefix(maxTimeOptions)
+        let activityOptions = unique(likedKeywords(context.constraints) + keywords(in: proposal))
+            .filter { complies(.activity, .keywords([$0])) }.prefix(maxActivityOptions)
         if !timeOptions.isEmpty {
             lines.append("Time options: " + timeOptions.enumerated().map { "\($0.offset + 1)) \(format($0.element, timeZone: timeZone))" }.joined(separator: " "))
         }
@@ -64,12 +79,18 @@ package enum PromptRenderer {
             lines.append("Activity options: " + activityOptions.enumerated().map { "\($0.offset + 1)) \($0.element)" }.joined(separator: " "))
         }
 
-        return DecisionPrompt(text: lines.joined(separator: "\n"), timeOptions: Array(timeOptions), activityOptions: Array(activityOptions))
+        return DecisionPrompt(
+            text: lines.joined(separator: "\n"),
+            timeOptions: Array(timeOptions),
+            activityOptions: Array(activityOptions),
+            brokenIssues: conflicts,
+            budgetRange: budgetRange(context.constraints),
+            hasPreferences: proposal.values.keys.contains { key in context.constraints[key].contains { $0.strength == .soft } }
+        )
     }
 
     package static func interpret(_ utterance: OwnerUtterance, context: InterpretationContext) -> String {
-        let weekday = weekdayName(context.now, timeZone: context.timeZone)
-        return "Now: \(weekday) \(clock(context.now, timeZone: context.timeZone)).\nOwner: \(utterance.text)"
+        "Owner: \(utterance.text)"
     }
 
     package static func match(wanted: [Keyword], offered: [Keyword]) -> String {
@@ -138,6 +159,21 @@ package enum PromptRenderer {
     }
 
     // MARK: - Options
+
+    /// Whole dollars between the owner's hard budget limits, rounding
+    /// inward so a counter can never cross one.
+    static func budgetRange(_ constraints: ConstraintSet) -> ClosedRange<Int>? {
+        var low = 0
+        var high = DecisionSchema.maxDollars
+        for constraint in constraints[.budget] where constraint.strength == .hard {
+            switch constraint.rule {
+            case .atMost(let amount): high = min(high, Int(amount.minorUnits / 100))
+            case .atLeast(let amount): low = max(low, Int((amount.minorUnits + 99) / 100))
+            default: break
+            }
+        }
+        return low <= high ? low...high : nil
+    }
 
     private static func ownerSlots(_ constraints: ConstraintSet) -> [TimeSlot] {
         constraints[.time].flatMap { constraint -> [TimeSlot] in
