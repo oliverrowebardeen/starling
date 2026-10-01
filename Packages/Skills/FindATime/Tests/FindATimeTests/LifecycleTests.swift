@@ -223,6 +223,26 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// A denial at a later step, Ben's "That works", also ends blocked by
+    /// privacy, and Ana hears "no plan".
+    @Test func aDeniedAcceptanceIsBlockedByPrivacy() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben", policy: FixedPolicyEngine(decide: { message in
+            if case .accept = message.envelope.body { return .deny(PolicyViolation(rule: "recipient.on_device_only")) }
+            return .allow
+        }))
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        let (bCard, _) = try await b.waitForProposal()
+        try await b.accept(bCard)
+        try await b.waitForState(bCard, .ended(.blockedByPrivacy))
+        try await a.waitForState(started, .ended(.nobodyUp))
+        #expect(!world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept })
+        #expect(await b.coordinator.rejected.isEmpty)
+        await world.stop()
+    }
+
     /// ADR 0011 amendment 14, the Orchestrator's example: Ben's acceptance
     /// of proposal 1 is denied only after proposal 2 replaced it and Ben
     /// accepted that. The late denial belongs to a step that is over and

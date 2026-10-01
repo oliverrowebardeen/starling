@@ -230,13 +230,10 @@ extension FindATimeService {
 
     /// A send for the current step was refused. The starter hears "no
     /// plan", like a pass. A declined sheet adds no event (the coordinator
-    /// applies the pass); a denial is blocked by privacy, or failed where
-    /// Core does not yet accept that (see `initiatorRefused`).
+    /// applies the pass); a denial is blocked by privacy.
     private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome) {
         guard var value = invited[id] else { return }
-        if case .denied = outcome, !emit(.blockedByPrivacy, to: &value.interaction) {
-            emit(.failed, to: &value.interaction)
-        }
+        if case .denied = outcome { emit(.blockedByPrivacy, to: &value.interaction) }
         invited[id] = value
         sendNoPlan(about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
         finish(id)

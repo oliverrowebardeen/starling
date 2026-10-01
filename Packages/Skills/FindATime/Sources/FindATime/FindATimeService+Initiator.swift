@@ -170,14 +170,11 @@ extension FindATimeService {
     /// ends and friends already asked hear "no plan".
     /// - A declined consent sheet adds no event: the coordinator applies
     ///   the owner's pass.
-    /// - A policy denial is blocked by privacy. Core accepts that from
-    ///   every live step except planned once its pending change lands;
-    ///   until then a step it refuses reports failed instead.
+    /// - A policy denial is blocked by privacy, which Core accepts from
+    ///   every live step except planned: a plan already agreed stands.
     private func initiatorRefused(_ id: ConversationID, _ outcome: SendOutcome) {
         guard var value = initiating[id] else { return }
-        if case .denied = outcome, !emit(.blockedByPrivacy, to: &value.interaction) {
-            emit(.failed, to: &value.interaction)
-        }
+        if case .denied = outcome { emit(.blockedByPrivacy, to: &value.interaction) }
         initiating[id] = value
         tellEveryoneNoPlan(id)
         finish(id)
