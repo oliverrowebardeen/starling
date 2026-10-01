@@ -23,9 +23,10 @@ Core has no place for per-skill state, and changing `Interaction` waits on the O
    - **Acceptances.** An acceptance, the owner's or this phone's, resumes only when the stored proposal has the checkpoint's revision and terms, and the store has the owner's "That works". A newer proposal in the checkpoint is shown again for a fresh "That works"; an acceptance never moves to terms the owner did not see (review of PR #53).
    - **Plans.** The starter's checkpoint says planned only after every confirmation has left; one restored while confirming finishes the remaining confirmations through Outbox, with a fresh sheet if the policy asks, and becomes a plan only when they leave. A friend's plan needs the starter's confirmation, which it asks for again by resending its acceptance.
    - A question that never reached the store is asked again.
-4. **Endings survive restarts.** `restore(_:)` also receives interactions that ended in the last 24 hours (ADR 0011, amendment 15) and turns them into tombstones before anything else, so a late retry for a conversation the owner passed on gets "no plan", never a new card.
-5. **What cannot resume.** A starter that restarted while reading the calendar (the range was not saved), and any live interaction without a checkpoint, are reported failed. A plan already made stands.
-6. **Consent sheets do not survive.** The coordinator closes any request still open at launch with `consentCancelled` before `restore(_:)` (ADR 0011, amendment 15). The service resends the step it interrupted, which opens a fresh sheet if the policy still asks.
+4. **The answer budget survives everything.** Apart from the checkpoints, the store keeps a record of the candidates this phone answered about in each conversation (`ledger`, `saveLedger`), for the 24-hour restore window. It is loaded before the first request after a launch, so a restart or a forgotten ending never lets a conversation ask about more than 16 times (ADR 0221, decision 11).
+5. **Endings survive restarts.** `restore(_:)` also receives interactions that ended in the last 24 hours (ADR 0011, amendment 15) and turns them into tombstones before anything else, so a late retry for a conversation the owner passed on gets nothing: no card and no reply.
+6. **What cannot resume.** A starter that restarted while reading the calendar (the range was not saved), and any live interaction without a checkpoint, are reported failed. A plan already made stands.
+7. **Consent sheets do not survive.** The coordinator closes any request still open at launch with `consentCancelled` before `restore(_:)` (ADR 0011, amendment 15). The service resends the step it interrupted, which opens a fresh sheet if the policy still asks.
 
 ## Consequences
 
