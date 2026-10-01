@@ -6,9 +6,11 @@ import StarlingTransport
 import Synchronization
 import Testing
 
-/// Retries every 20 ms and gives up on a step after 100 ms, so failure paths
-/// finish quickly over a zero-latency hub.
-let fastConfiguration = DownConfiguration(retryInterval: .milliseconds(20), maxAttempts: 5)
+/// Retries every 20 ms, so lost frames recover quickly over a zero-latency
+/// hub, and gives up on a step after 500 ms (1 s for the details phase).
+/// A tighter budget (5 attempts, 100 ms) made healthy flows time out on a
+/// loaded machine.
+let fastConfiguration = DownConfiguration(retryInterval: .milliseconds(20), maxAttempts: 25)
 /// Real timers, but wall time pinned to `T.now` so slots are deterministic.
 let pinnedClock = DownClock(now: { T.now }, sleep: { try await Task.sleep(for: $0) })
 
@@ -336,20 +338,32 @@ final class RawPeer: Sendable {
 }
 
 /// A consent sheet the test answers when it chooses, like an owner who
-/// looks at the phone later. Counts requests.
+/// looks at the phone later. Counts the sheets it shows.
+///
+/// With `remembersApprovals`, an approved disclosure is approved again
+/// without a sheet, as the app's ConsentCoordinator does (ADR 0142), so a
+/// retry of an approved step does not wait on a second sheet.
 actor GatedConsentProvider: ConsentProvider {
-    private var waiting: [CheckedContinuation<ConsentOutcome, Never>] = []
+    private var waiting: [(disclosure: Disclosure, continuation: CheckedContinuation<ConsentOutcome, Never>)] = []
+    private var approved: Set<Disclosure> = []
+    private let remembersApprovals: Bool
     private(set) var requests = 0
 
+    init(remembersApprovals: Bool = false) { self.remembersApprovals = remembersApprovals }
+
     func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        if remembersApprovals, approved.contains(disclosure) { return .approved }
         requests += 1
-        return await withCheckedContinuation { waiting.append($0) }
+        return await withCheckedContinuation { waiting.append((disclosure, $0)) }
     }
 
     var pending: Int { waiting.count }
 
     func answerAll(_ outcome: ConsentOutcome) {
-        for continuation in waiting { continuation.resume(returning: outcome) }
+        for (disclosure, continuation) in waiting {
+            if outcome == .approved { approved.insert(disclosure) }
+            continuation.resume(returning: outcome)
+        }
         waiting = []
     }
 }
