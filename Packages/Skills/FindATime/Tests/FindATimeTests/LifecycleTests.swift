@@ -363,6 +363,46 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// Two hard windows are both limits: only time inside both is offered.
+    @Test func hardWindowsIntersect() async throws {
+        let world = World()
+        let a = world.phone("Ana", use: .justAskMe)
+        let b = world.phone("Ben")
+        try await world.start()
+        let started = try await a.findATime(with: [b], range: [T.slot(8, 18)], also: [try Constraint(.within([T.slot(14, 24)]))])
+        let (_, question) = try await a.waitForQuestion(started)
+        #expect(question.slots == hours(14, 18))
+        await world.stop()
+    }
+
+    /// A friend's standing limits apply to requests they receive: times
+    /// before 5 PM are never offered to them or answered yes.
+    @Test func aFriendsStandingLimitsBoundTheirAnswer() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied),
+                            standing: try ConstraintSet([.time: [Constraint(.dailyWindow(from: 17 * 60, to: 24 * 60))]]))
+        try await world.start()
+        try await a.findATime(with: [b])
+        let (_, question) = try await b.waitForQuestion()
+        #expect(question.slots == hours(17, 21))
+        await world.stop()
+    }
+
+    /// A proposal for an activity the friend avoids is passed on by their
+    /// agent: the starter hears "no plan" and no card goes up.
+    @Test func aProposalBreakingAStandingLimitIsPassed() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben", standing: try ConstraintSet([.activity: [Constraint(.prefers(liked: [], avoided: [Keyword("karaoke")]), strength: .soft)]]))
+        try await world.start()
+        let started = try await a.findATime(with: [b], activity: "karaoke")
+        try await a.waitForState(started, .ended(.nobodyUp))
+        try await b.waitForState(nil, .ended(.nobodyUp))
+        #expect(await b.coordinator.all().allSatisfy { $0.proposal == nil })
+        await world.stop()
+    }
+
     // MARK: Deadlines
 
     @Test func theRequestExpiresAndTheFriendsQuestionGoesWithIt() async throws {

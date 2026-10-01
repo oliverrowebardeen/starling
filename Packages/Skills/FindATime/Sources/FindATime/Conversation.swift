@@ -28,6 +28,8 @@ struct Initiating: Hashable, Sendable, Codable {
     let chainedFrom: ConversationID?
     let expiresAt: Timestamp
     let activity: Keyword?
+    /// The owner's limits for this request, checked again before proposing.
+    var limits: ConstraintSet = .empty
     /// Friends asked, in the owner's order.
     var invitees: [PeerID]
     var phase: Phase
@@ -92,6 +94,9 @@ struct Invited: Hashable, Sendable, Codable {
     let candidates: [TimeSlot]
     var lastQuery: MessageID
     var phase: Phase
+    /// The owner's standing limits when the request arrived ("no plans
+    /// before 10"), checked against every proposal.
+    var limits: ConstraintSet = .empty
     /// What this phone told the starter works.
     var answered: [TimeSlot]?
     var offer: Offer?

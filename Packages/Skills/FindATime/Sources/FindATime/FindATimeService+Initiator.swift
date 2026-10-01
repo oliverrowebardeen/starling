@@ -32,6 +32,7 @@ extension FindATimeService {
             invitees: friends,
             phase: .resolving
         )
+        value.limits = request.intent.rules.constraints
         // The coordinator applied `.started` when the owner sent, before
         // calling `start` (ADR 0011, amendment 13). Mirror it here without
         // emitting it.
@@ -251,6 +252,7 @@ extension FindATimeService {
         let roster = ([localPeer] + members).sorted()
         guard revision <= configuration.maxRevisions,
               let terms = try? OfferTerms.terms(slot: slot, activity: value.activity, roster: roster),
+              HardLimits.allows(terms, by: value.limits, timeZone: timeZone),
               let plan = try? Plan(origin: id, attendees: Attendees(roster), activity: value.activity, time: slot)
         else { return endWithoutPlan(id, .noAgreement) }
         value.draft = Draft(revision: revision, slot: slot, members: members, terms: terms, plan: plan)

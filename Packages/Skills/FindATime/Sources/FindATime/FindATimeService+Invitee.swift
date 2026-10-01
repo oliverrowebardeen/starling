@@ -52,17 +52,25 @@ extension FindATimeService {
 
     /// Reads availability for the offered times: the calendar or stated
     /// intent if they know, otherwise the owner gets one question.
+    /// Times that break the owner's standing limits are never offered to
+    /// the owner or answered yes (ARCHITECTURE rule 6).
     func resolveInvitation(_ id: ConversationID) {
         guard let candidates = invited[id]?.candidates else { return }
         let availability = availability
+        let standingRules = standingRules
+        let timeZone = timeZone
         spawn(for: id) {
-            let resolution = await availability.resolve(candidates)
-            await self.invitationResolved(id, resolution)
+            let limits = await standingRules()
+            let allowed = HardLimits.allowed(candidates, by: limits, timeZone: timeZone)
+            let resolution: CandidateResolution = allowed.isEmpty ? .known(acceptable: [], source: nil) : await availability.resolve(allowed)
+            await self.invitationResolved(id, resolution, allowed: allowed, limits: limits)
         }
     }
 
-    private func invitationResolved(_ id: ConversationID, _ resolution: CandidateResolution) {
+    private func invitationResolved(_ id: ConversationID, _ resolution: CandidateResolution, allowed: [TimeSlot], limits: ConstraintSet) {
         guard var value = invited[id], value.phase == .resolving else { return }
+        value.limits = limits
+        invited[id] = value
         switch resolution {
         case .known(let acceptable, _):
             // The owner's calendar or stated intent answered without asking.
@@ -71,7 +79,7 @@ extension FindATimeService {
         case .askOwner:
             let question = SkillQuestion(
                 revision: value.interaction.questionWatermark + 1, issue: .time,
-                candidates: .slots(value.candidates), asker: value.asker
+                candidates: .slots(allowed), asker: value.asker
             )
             value.phase = .askingOwner
             emit(.ownerNeeded(question), to: &value.interaction)
@@ -179,6 +187,11 @@ extension FindATimeService {
         // Only a time this phone said works: a starter cannot propose a time
         // the owner never agreed to share.
         guard answered.contains(terms.slot) else { return ignore("proposal outside our answer") }
+        // A proposal that breaks the owner's standing limits (an activity
+        // they avoid) is passed on by the agent, like any "no".
+        guard HardLimits.allows(proposal.terms, by: value.limits, timeZone: timeZone) else {
+            return inviteeEndWithoutPlan(id, .noAgreement, tellAsker: true)
+        }
 
         if var offer = value.offer, offer.terms == proposal.terms, offer.round == proposal.round {
             // A retry of the proposal we have.

@@ -32,6 +32,7 @@ public actor FindATimeService: SkillService {
     let timeZone: TimeZone
     let configuration: FindATimeConfiguration
     let isTurnedOn: @Sendable () async -> Bool
+    let standingRules: @Sendable () async -> ConstraintSet
 
     var initiating: [ConversationID: Initiating] = [:]
     var invited: [ConversationID: Invited] = [:]
@@ -89,6 +90,10 @@ public actor FindATimeService: SkillService {
     ///     resume them after a restart. Pass a persistent store in the app.
     ///   - isTurnedOn: Whether the owner has Find a time switched on. When
     ///     off, friends' requests are ignored.
+    ///   - standingRules: The owner's standing hard limits ("no plans
+    ///     before 10"). A friend's request is answered and its proposals
+    ///     accepted only within them. The owner's own requests arrive with
+    ///     them already merged into the intent.
     public init(
         localPeer: PeerID,
         outbox: Outbox,
@@ -98,7 +103,8 @@ public actor FindATimeService: SkillService {
         clock: FindATimeClock = .system,
         timeZone: TimeZone = .current,
         configuration: FindATimeConfiguration = FindATimeConfiguration(),
-        isTurnedOn: @escaping @Sendable () async -> Bool = { true }
+        isTurnedOn: @escaping @Sendable () async -> Bool = { true },
+        standingRules: @escaping @Sendable () async -> ConstraintSet = { .empty }
     ) {
         self.localPeer = localPeer
         self.outbox = outbox
@@ -108,6 +114,7 @@ public actor FindATimeService: SkillService {
         self.timeZone = timeZone
         self.configuration = configuration
         self.isTurnedOn = isTurnedOn
+        self.standingRules = standingRules
         (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
         let (stream, queue) = AsyncStream.makeStream(of: CheckpointOp.self)
         checkpointQueue = queue

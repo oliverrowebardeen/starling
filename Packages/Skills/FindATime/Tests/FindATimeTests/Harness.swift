@@ -206,6 +206,7 @@ final class Phone: Sendable {
     let consent: any ConsentProvider
     let checkpoints = InMemoryFindATimeCheckpoints()
     let clock: TestClock
+    let standing: ConstraintSet
     private let state: Mutex<(service: FindATimeService?, outbox: Outbox?, coordinator: Coordinator, tasks: [Task<Void, Never>])>
     private let inboxLoop: Mutex<Task<Void, Never>?> = Mutex(nil)
 
@@ -214,7 +215,8 @@ final class Phone: Sendable {
     var coordinator: Coordinator { state.withLock { $0.coordinator } }
 
     init(name: String, hub: LoopbackHub, calendar: FakeCalendarStore, use: CalendarUse = .useMyCalendar,
-         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved), clock: TestClock) {
+         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
+         standing: ConstraintSet = .empty, clock: TestClock) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
@@ -223,6 +225,7 @@ final class Phone: Sendable {
         self.policy = policy
         self.consent = consent
         self.clock = clock
+        self.standing = standing
         state = Mutex((nil, nil, Coordinator(), []))
     }
 
@@ -233,7 +236,8 @@ final class Phone: Sendable {
         let availability = OwnerAvailability.standard(calendar: calendar, use: { self.use.withLock { $0 } })
         let service = FindATimeService(
             localPeer: id, outbox: outbox, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
-            clock: clock.clock, timeZone: T.utc, configuration: configuration
+            clock: clock.clock, timeZone: T.utc, configuration: configuration,
+            standingRules: { [standing] in standing }
         )
         state.withLock { state in
             let coordinator = state.coordinator
@@ -302,10 +306,10 @@ final class Phone: Sendable {
     /// Starts Find a time as the app would: record the draft, then start.
     @discardableResult
     func findATime(
-        with friends: [Phone], range: [TimeSlot] = [T.slot(8, 24)], daily: (Int, Int)? = nil,
+        with friends: [Phone], range: [TimeSlot] = [T.slot(8, 24)], also: [Constraint] = [], daily: (Int, Int)? = nil,
         activity: String? = "stats", expiresIn hours: Double = 48, chainedFrom: ConversationID? = nil
     ) async throws -> InteractionID {
-        var constraints: [IssueKey: [Constraint]] = [.time: [try Constraint(.within(range))]]
+        var constraints: [IssueKey: [Constraint]] = [.time: [try Constraint(.within(range))] + also]
         if let daily { constraints[.time]!.append(try Constraint(.dailyWindow(from: daily.0, to: daily.1))) }
         if let activity { constraints[.activity] = [try Constraint(.prefers(liked: [Keyword(activity)], avoided: []), strength: .soft)] }
         let intent = SkillIntent(
@@ -380,9 +384,10 @@ final class World: Sendable {
 
     func phone(
         _ name: String, calendar: FakeCalendarStore = FakeCalendarStore(), use: CalendarUse = .useMyCalendar,
-        policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved)
+        policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
+        standing: ConstraintSet = .empty
     ) -> Phone {
-        let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent, clock: clock)
+        let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent, standing: standing, clock: clock)
         phones.withLock { $0.append(phone) }
         return phone
     }

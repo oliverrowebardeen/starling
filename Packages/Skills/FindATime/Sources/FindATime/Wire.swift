@@ -9,28 +9,42 @@ import StarlingCore
 /// The times an owner's request covers: the range and daily window from the
 /// chips, as candidate slots in the owner's time zone.
 enum SearchRange {
+    /// Every candidate the owner's request allows: inside every hard
+    /// `within` window (several are intersected, not joined: each is a
+    /// limit the owner set), inside the daily window, within the horizon,
+    /// and breaking none of the owner's hard limits (ARCHITECTURE rule 6).
     static func candidates(rules: OwnerRules, now: Date, timeZone: TimeZone, configuration: FindATimeConfiguration) throws -> [TimeSlot] {
-        var ranges: [TimeSlot] = []
+        let timeRules = rules.constraints[.time]
         var dailyFrom = configuration.dailyFrom
         var dailyTo = configuration.dailyTo
         var ownerDaily = false
-        for constraint in rules.constraints[.time] {
-            switch constraint.rule {
-            case .within(let slots): ranges += slots
-            case .dailyWindow(let from, let to):
+        for constraint in timeRules {
+            if case .dailyWindow(let from, let to) = constraint.rule {
                 // Several daily windows narrow each other, starting from the
                 // owner's first rather than the default.
                 if !ownerDaily { (dailyFrom, dailyTo, ownerDaily) = (from, to, true) }
                 dailyFrom = max(dailyFrom, from)
                 dailyTo = min(dailyTo, to)
-            default: break
             }
         }
-        let horizon = now.addingTimeInterval(TimeInterval(configuration.maxRangeDays) * 86_400)
-        if ranges.isEmpty, let range = try? TimeSlot(start: now, end: now.addingTimeInterval(TimeInterval(configuration.defaultRangeDays) * 86_400)) {
-            ranges = [range]
+        let windows: (Constraint.Strength) -> [[TimeSlot]] = { strength in
+            timeRules.compactMap { constraint in
+                if case .within(let slots) = constraint.rule, constraint.strength == strength { slots } else { nil }
+            }
         }
-        let clipped = ranges.compactMap { range -> TimeSlot? in
+        // Hard windows bound the search; soft ones are used only when the
+        // owner gave no hard one.
+        let limits = windows(.hard).isEmpty ? windows(.soft) : windows(.hard)
+        let horizon = now.addingTimeInterval(TimeInterval(configuration.maxRangeDays) * 86_400)
+        var ranges: [TimeSlot]
+        if let first = limits.first {
+            ranges = limits.dropFirst().reduce(first) { intersect($0, $1) }
+        } else if let range = try? TimeSlot(start: now, end: now.addingTimeInterval(TimeInterval(configuration.defaultRangeDays) * 86_400)) {
+            ranges = [range]
+        } else {
+            ranges = []
+        }
+        ranges = ranges.compactMap { range -> TimeSlot? in
             let start = max(range.start, now)
             let end = min(range.end, horizon)
             return end > start ? try? TimeSlot(start: start, end: end) : nil
@@ -38,9 +52,14 @@ enum SearchRange {
         guard let grid = try? CandidateGrid(durationMinutes: configuration.slotMinutes, dailyFrom: dailyFrom, dailyTo: dailyTo) else {
             throw FindATimeError.noTimesInRange
         }
-        let slots = grid.slots(in: clipped, notBefore: now, timeZone: timeZone)
+        let slots = HardLimits.allowed(grid.slots(in: ranges, notBefore: now, timeZone: timeZone), by: rules.constraints, timeZone: timeZone)
         guard !slots.isEmpty else { throw FindATimeError.noTimesInRange }
         return slots
+    }
+
+    /// The parts of time both lists cover.
+    static func intersect(_ a: [TimeSlot], _ b: [TimeSlot]) -> [TimeSlot] {
+        Array(Set(a.flatMap { x in b.compactMap { x.overlap(with: $0) } })).sorted()
     }
 
     /// The first activity the owner named, for the plan ("stats").
@@ -49,6 +68,21 @@ enum SearchRange {
             if case .prefers(let liked, _) = constraint.rule, let first = liked.first { return first }
         }
         return nil
+    }
+}
+
+/// The owner's hard limits, checked in code before anything is offered or
+/// accepted (ARCHITECTURE rule 6), with the one Core implementation.
+enum HardLimits {
+    static func allows(_ terms: Terms, by constraints: ConstraintSet, timeZone: TimeZone) -> Bool {
+        constraints.violations(of: terms, timeZone: timeZone).isEmpty
+    }
+
+    static func allowed(_ slots: [TimeSlot], by constraints: ConstraintSet, timeZone: TimeZone) -> [TimeSlot] {
+        slots.filter { slot in
+            guard let terms = try? Terms([.time: .slots([slot])]) else { return false }
+            return allows(terms, by: constraints, timeZone: timeZone)
+        }
     }
 }
 
