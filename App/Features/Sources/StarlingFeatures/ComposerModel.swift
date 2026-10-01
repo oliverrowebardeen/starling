@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PickAPlace
 import StarlingCore
 
 /// How long a request stays out.
@@ -116,6 +117,8 @@ public final class ComposerModel {
     public let cards: PeerCards
     public let permissions: PermissionGate
     public let chipFormatter: ChipFormatter
+    /// Pick a place's candidates, when Pick a place is in the build.
+    public let places: PlacePicker?
     private let skillModel: (any SkillModel)?
     private let friends: @MainActor () -> [PairedPeer]
     private let savedRules: @MainActor () -> OwnerRules?
@@ -136,9 +139,11 @@ public final class ComposerModel {
         savedRules: @escaping @MainActor () -> OwnerRules?,
         localPeer: PeerID?,
         formatter: ValueFormatter = ValueFormatter(),
+        places: PlacePicker? = nil,
         beforeFirstRequest: @escaping @MainActor () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.places = places
         self.skillModel = skillModel
         self.lifecycle = lifecycle
         self.settings = settings
@@ -455,6 +460,10 @@ public final class ComposerModel {
         }
         let missing = descriptor.intent.requiredIssues.subtracting(constraints.constraints.keys)
         if let issue = missing.sorted().first { return Self.missingSlotNote(issue, descriptor) }
+        if descriptor.id == .pickAPlace, let places {
+            if places.chosen.isEmpty { return "Find a few places, or type one." }
+            if places.askable(limits: requestLimits).isEmpty { return "None of these fit your limits." }
+        }
         if friends().isEmpty { return "Pair with a friend first, in Friends." }
         if chosenFriends.isEmpty { return "Pick at least one friend to ask." }
         if participants.isEmpty { return leftOutNote }
@@ -472,6 +481,11 @@ public final class ComposerModel {
 
     /// Off while the model is reading the draft, so the owner never sends
     /// before the chips settle.
+    /// The limits a request would carry: the chips with the standing rules.
+    private var requestLimits: ConstraintSet {
+        (try? StandingRules.forRequest(intent: constraints, saved: savedRules(), privacy: settings.settings.privacy).constraints) ?? constraints
+    }
+
     public var canSend: Bool { blocker == nil && !isSending && !isUnderstanding }
 
     /// The skill's own button label: "See who's up for it" for Down for….
@@ -525,6 +539,8 @@ public final class ComposerModel {
         let audienceValue = audienceValue
         let sendMode = sendMode
         let chain = chain
+        // Pick a place's candidates are part of what the owner reviewed.
+        let places = descriptor.id == .pickAPlace ? places?.chosen : nil
         let request = SkillRequest(
             interaction: InteractionID(),
             conversation: ConversationID(),
@@ -548,6 +564,8 @@ public final class ComposerModel {
             return nil
         }
 
+        // Candidates exist before anything is sent (P15-D request 2).
+        if let places { await self.places?.stage(places, for: request.interaction) }
         do {
             let id = try await lifecycle.start(request, chain: chain?.link, settings: settings.skillSettings)
             clear()
@@ -557,27 +575,6 @@ public final class ComposerModel {
         } catch {
             notice = Self.refusalNote(error, descriptor)
             return nil
-        }
-    }
-
-    /// "Suggest places near me" in Pick a place: location is asked here,
-    /// the first time the owner wants nearby places, not when the skill
-    /// starts (ADR 0013 decision 2). Granted adds "nearby" to the chips;
-    /// otherwise the owner types an area.
-    public func suggestNearby() async {
-        guard let descriptor else { return }
-        let names = audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
-        switch await permissions.prepare(.locationWhenInUse, for: descriptor, friends: names, settings: settings) {
-        case .granted, .limited:
-            var all = constraints.constraints
-            guard let nearby = try? Keyword("nearby"), let rule = try? Constraint(.prefers(liked: [nearby], avoided: [])) else { return }
-            if !(all[.place] ?? []).contains(rule) { all[.place, default: []].append(rule) }
-            if let updated = try? ConstraintSet(all) { constraints = updated }
-            notice = nil
-        case .askInstead(let fallback):
-            notice = fallback ?? "Type an area instead, like near Franklin."
-        case .unavailable:
-            notice = "Type an area instead, like near Franklin."
         }
     }
 
@@ -603,6 +600,7 @@ public final class ComposerModel {
         picked = []
         excepted = []
         mode = nil
+        places?.clear()
         expiry = .hours(3)
         chain = nil
         notice = nil

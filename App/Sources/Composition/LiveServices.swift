@@ -1,11 +1,14 @@
 import Foundation
 import Network
+import PickAPlace
+import PickAPlaceMapKit
 import StarlingAgent
 import StarlingChaining
 import StarlingCore
 import StarlingFeatures
 import StarlingIdentity
 import StarlingPolicy
+import StarlingSwapPhotos
 import StarlingWiFiAware
 import UserNotifications
 
@@ -16,15 +19,22 @@ extension AppServices {
     /// service is in the build until the skill lanes merge (B, C, D, E), so
     /// New shows each tile as "Not in this build yet" instead of running a
     /// fake. Permission access APIs arrive with lanes C and D.
+    @MainActor
     static func release() async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
         let links = SecureLinks.make(identity: identity, friends: KeychainPairedPeerStore())
+        let ledger = LiveServices.ledger()
+        let rules = LiveServices.rulesStore()
+        let places = LiveServices.places()
         return AppServices(
             agent: FoundationModelsAgent(),
             registry: LiveServices.registry,
+            makeSkills: { outbox in
+                [LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger)]
+            },
             interactions: LiveServices.interactionStore(),
             settings: LiveServices.settingsStore(),
-            rules: LiveServices.rulesStore(),
+            rules: rules,
             peers: links.friends,
             pairing: links.pairingDirectory,
             unpair: links.unpair,
@@ -33,14 +43,17 @@ extension AppServices {
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
-            ledger: LiveServices.ledger(),
+            ledger: ledger,
             egressJournal: LiveServices.egressJournal(),
+            placeFinder: places.finder,
+            stagedPlaces: places.staged,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter(),
+            permissions: [LocationPermissionAccess(location: places.location)],
             cardsFile: try? .standard("peer-cards.json"),
             notesFile: try? .standard("plan-notes.json")
         )
@@ -48,9 +61,11 @@ extension AppServices {
 }
 
 enum LiveServices {
-    /// Every Phase 1.5 skill's descriptor, until each skill package ships
-    /// its own. Data only: a descriptor runs nothing without its service.
-    /// The values match StarlingFakes.SampleSkills, which Release cannot link.
+    /// Every Phase 1.5 skill's descriptor: lane D's Pick a place and lane
+    /// E's Swap photos from their packages; Down for… and Find a time match
+    /// StarlingFakes.SampleSkills, which Release cannot link, until their
+    /// packages merge. Data only: a descriptor runs nothing without its
+    /// service.
     static let registry: SkillRegistry = try! SkillRegistry([
         try! SkillDescriptor(
             ref: SkillRef(.downFor, SkillVersion(1)),
@@ -78,19 +93,8 @@ enum LiveServices {
                 IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
             ])
         ),
-        try! SkillDescriptor(
-            ref: SkillRef(.pickAPlace, SkillVersion(1)),
-            wording: SkillWording(name: "Pick a place", summary: "Agree on where", startAction: "Find a place",
-                                  acceptAction: "Sounds good", declineAction: "Somewhere else", declineNote: "If you pass, they just won't see it."),
-            // Budget, diet, and location judge venues on the phone (ADR 0019).
-            buildingBlock: .privateAggregation, topicsUsed: [.place, .location, .budget, .diet], topicsRequired: [.place],
-            permissions: [.locationWhenInUse], accepts: [.plan, .timeSlot], produces: [.placeChoice],
-            intent: IntentSchema(slots: [
-                IntentSlot(.place, required: false, hint: "the kind of place or area, such as near Franklin"),
-                IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-                IntentSlot(.diet, required: false, hint: "what they can't eat"),
-            ])
-        ),
+        PickAPlaceSkill.descriptor,
+        SwapPhotos.descriptor,
     ])
 
     static func rulesStore() -> any RulesStore {
@@ -114,6 +118,28 @@ enum LiveServices {
     /// stands in, so no send leaves unrecorded.
     static func egressJournal() -> any EgressJournal {
         (try? FileEgressJournal.standard()) ?? UnavailableEgressJournal()
+    }
+
+    /// Pick a place's search pieces: one Core Location access shared by the
+    /// finder and the permission gate, MapKit search, and the staging New
+    /// fills before a request starts (P15-D requests 1 and 2).
+    @MainActor
+    static func places() -> (finder: PlaceFinder, staged: StagedCandidates, location: CoreLocationAccess) {
+        let location = CoreLocationAccess()
+        return (PlaceFinder(search: MapKitPlaceSearch(), location: location), StagedCandidates(), location)
+    }
+
+    /// Lane D's service over the app's one Outbox and the same conversation
+    /// ledger the Outbox enforces (P15-D request 3).
+    static func pickAPlace(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, staged: StagedCandidates,
+                           rules: any RulesStore, ledger: any ConversationLedger) -> any SkillService {
+        PickAPlaceService(
+            localPeer: me, outbox: outbox, pairedPeers: friends, candidates: staged, maps: MapKitPlaceSearch(),
+            // The owner's standing budget, diet, and place limits, read when
+            // a friend asks; the organizer's own come with its request.
+            ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty },
+            ledger: UserDefaultsPickAPlaceLedger(), conversations: ledger
+        )
     }
 
     static func settingsStore() -> any OwnerSettingsStore {

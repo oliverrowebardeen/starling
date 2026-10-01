@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PickAPlace
 import StarlingCore
 
 public enum PermissionStatus: Hashable, Sendable {
@@ -62,17 +63,19 @@ public struct PermissionExplanation: Hashable, Sendable, Identifiable {
                 fallback: "No problem, your agent will ask you instead."
             )
         case .locationWhenInUse:
+            // Lane D's words (PickAPlaceSkill.locationSheet, P15-D request 1).
+            let sheet = PickAPlaceSkill.locationSheet
             return PermissionExplanation(
                 permission: permission,
-                title: "\(skill.wording.name) can suggest places near you",
-                body: "Your agent looks for places around where you are, right here on your iPhone, only while you're using Starling.",
+                title: sheet.title,
+                body: "Your agent looks for places around you, right here on your iPhone, only while it searches.",
                 rows: [
-                    DisplayLine(title: "Your agent reads", detail: "Where you are while you use it"),
-                    DisplayLine(title: "Never leaves your phone", detail: "Your exact location"),
-                    DisplayLine(title: sees, detail: "Only the places you might agree on"),
+                    DisplayLine(title: "Your agent reads", detail: sheet.reads),
+                    DisplayLine(title: "Never leaves your phone", detail: sheet.staysOnPhone),
+                    DisplayLine(title: sees, detail: sheet.friendsSee),
                 ],
                 footnote: "Change this anytime in You › Skills.",
-                fallback: "No problem, type an area or pick a place instead."
+                fallback: sheet.deniedNote
             )
         case .photoLibrary:
             return PermissionExplanation(

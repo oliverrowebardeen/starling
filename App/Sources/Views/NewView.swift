@@ -1,3 +1,4 @@
+import PickAPlace
 import StarlingCore
 import StarlingDesign
 import StarlingFeatures
@@ -20,6 +21,9 @@ struct NewView: View {
                 if let chain = composer.chain { chainHeader(chain) }
                 composerField
                 if composer.skill != nil || composer.isUnderstanding { understood }
+                if composer.skill == .pickAPlace, let places = composer.places {
+                    PlacePickerSection(app: app, picker: places, composer: composer)
+                }
                 ask
                 tiles
             }
@@ -115,13 +119,7 @@ struct NewView: View {
                         Label("Change how long it stays out", systemImage: "clock").font(.subheadline)
                     }
                 }
-                if composer.descriptor?.permissions.contains(.locationWhenInUse) == true {
-                    Button {
-                        Task { await composer.suggestNearby() }
-                    } label: {
-                        Label("Suggest places near me", systemImage: "location").font(.subheadline)
-                    }
-                }
+
             }
         }
     }
@@ -314,5 +312,63 @@ struct FlowLayout: Layout {
             rows[rows.count - 1] = row
         }
         return rows
+    }
+}
+
+/// Pick a place's part of New (P15-D request 2): look near an area or
+/// nearby, choose the places to ask about, or type them.
+private struct PlacePickerSection: View {
+    let app: AppModel
+    @Bindable var picker: PlacePicker
+    let composer: ComposerModel
+    @State private var typing = ""
+    @State private var searching = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Places to ask about").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+            TextField("What kind of place, like dinner or boba", text: $picker.what)
+                .textFieldStyle(.roundedBorder)
+            Toggle("Near me", isOn: $picker.nearby)
+            if !picker.nearby {
+                TextField("Area, like near Franklin", text: $picker.area)
+                    .textFieldStyle(.roundedBorder)
+            }
+            Button {
+                searching = true
+                Task {
+                    let friends = composer.audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
+                    await picker.search(permissions: app.permissions, skill: PickAPlaceSkill.descriptor, friends: friends, settings: app.settings)
+                    searching = false
+                }
+            } label: {
+                if searching { ProgressView() } else { Label("Find places", systemImage: "magnifyingglass") }
+            }
+            .buttonStyle(.bordered)
+            .disabled(searching)
+            if let notice = picker.notice {
+                Text(notice).font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(picker.results + picker.typed, id: \.choice) { candidate in
+                Toggle(isOn: Binding(get: { picker.selected.contains(candidate.choice) }, set: { _ in picker.toggle(candidate.choice) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(candidate.choice.name.rawValue)
+                        if let tier = candidate.facts.priceTier {
+                            Text(tier.symbol).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            HStack {
+                TextField("Or type a place", text: $typing)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(addTyped)
+                Button("Add", action: addTyped).disabled(typing.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private func addTyped() {
+        if picker.add(typing) { typing = "" }
     }
 }

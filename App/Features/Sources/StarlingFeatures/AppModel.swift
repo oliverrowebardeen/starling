@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PickAPlace
 import StarlingChaining
 import StarlingCore
 
@@ -39,6 +40,11 @@ public struct AppServices: Sendable {
     /// Remembers each conversation's highest sent sequence number across
     /// launches (Core v2.1). Nil keeps it in memory only.
     public var sequences: (any RetainingSentSequenceStore)?
+    /// Pick a place's search (MapKit and Core Location in the app) and the
+    /// candidates New stages for its service (P15-D request 2). Nil when
+    /// Pick a place is not in the build.
+    public var placeFinder: PlaceFinder?
+    public var stagedPlaces: StagedCandidates?
     /// Lane E's journal of sends whose egress record is not yet confirmed,
     /// on disk in the app (ADR 0021 decision 4).
     public var egressJournal: any EgressJournal
@@ -84,6 +90,8 @@ public struct AppServices: Sendable {
         sequences: (any RetainingSentSequenceStore)? = nil,
         ledger: (any ConversationLedger)? = nil,
         egressJournal: any EgressJournal = InMemoryEgressJournal(),
+        placeFinder: PlaceFinder? = nil,
+        stagedPlaces: StagedCandidates? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -114,6 +122,8 @@ public struct AppServices: Sendable {
         self.sequences = sequences
         self.ledger = ledger
         self.egressJournal = egressJournal
+        self.placeFinder = placeFinder
+        self.stagedPlaces = stagedPlaces
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -248,7 +258,8 @@ public final class AppModel {
         composer = ComposerModel(
             skillModel: services.skillModel, lifecycle: lifecycle, settings: settings, cards: cards, permissions: permissions,
             friends: { friends?.friends ?? [] }, savedRules: { rulesEditor.saved?.rules }, localPeer: localPeer,
-            formatter: services.formatter
+            formatter: services.formatter,
+            places: services.placeFinder.flatMap { finder in services.stagedPlaces.map { PlacePicker(finder: finder, staging: $0) } }
         )
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
 

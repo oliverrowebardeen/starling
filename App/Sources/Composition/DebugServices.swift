@@ -3,12 +3,14 @@
 // scripted doubles, so nothing outside `#if DEBUG` may import it (ADR 0140).
 import Foundation
 import Observation
+import PickAPlace
 import StarlingAgent
 import StarlingChaining
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
 import StarlingIdentity
+import StarlingSwapPhotos
 import StarlingTransport
 
 /// The Debug composition: the same lane E1 stack as Release (Keychain
@@ -27,7 +29,11 @@ final class DebugHarness {
     /// Friends that exist only in this Debug session. Never written to the
     /// Keychain.
     let overlay = InMemoryPairedPeerStore()
-    let skills = SampleSkills.registry.descriptors.filter { SkillFlags.phase1_5.enabled.contains($0.id) }.map(ScriptedSkillService.init(descriptor:))
+    /// The skills whose lanes have not merged, played by scripted services.
+    let skills = [SampleSkills.downFor, SampleSkills.findATime].map(ScriptedSkillService.init(descriptor:))
+    /// Debug's registry: lane D's and lane E's real descriptors, and the
+    /// sample ones for skills still scripted.
+    static let registry = try! SkillRegistry([SampleSkills.downFor, SampleSkills.findATime, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
     private(set) var driver: DemoDriver?
     private(set) var friends: (any PairedPeerStore)?
     private(set) var localPeer: PeerID?
@@ -49,12 +55,16 @@ final class DebugHarness {
         localPeer = identity.peerID
         let skills = skills
         driver = DemoDriver(me: identity.peerID, services: skills)
+        let ledger = LiveServices.ledger()
+        let places = LiveServices.places()
 
         return AppServices(
             agent: agent,
             skillModel: Self.scriptedSkillModel(),
-            registry: SampleSkills.registry,
-            makeSkills: { _ in skills },
+            registry: Self.registry,
+            makeSkills: { outbox in
+                skills + [LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger)]
+            },
             interactions: LiveServices.interactionStore(),
             settings: LiveServices.settingsStore(),
             rules: rules,
@@ -66,15 +76,20 @@ final class DebugHarness {
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
-            ledger: LiveServices.ledger(),
+            ledger: ledger,
             egressJournal: LiveServices.egressJournal(),
+            placeFinder: places.finder,
+            stagedPlaces: places.staged,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter(),
-            permissions: SystemPermission.allCases.map(DebugPermissionAccess.init),
+            // Location is real (lane D); calendar and photos stay simulated
+            // until their wiring lands.
+            permissions: [LocationPermissionAccess(location: places.location)]
+                + [SystemPermission.calendarFullAccess, .photoLibrary].map(DebugPermissionAccess.init),
             cardsFile: try? .standard("peer-cards.json"),
             notesFile: try? .standard("plan-notes.json")
         )
@@ -181,7 +196,7 @@ final class DebugHarness {
         try? await overlay.save(friend)
         await app.friends?.load()
         guard let me = localPeer else { return }
-        let card = AgentCard.forBuild(skills: SampleSkills.registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
+        let card = AgentCard.forBuild(skills: Self.registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
         if let hello = try? Envelope(conversation: ConversationID(), sender: friend.id, recipient: me, sequence: 0, sentAt: Timestamp(Date()), body: .hello(card)) {
             app.cards.handle(.message(hello))
         }
