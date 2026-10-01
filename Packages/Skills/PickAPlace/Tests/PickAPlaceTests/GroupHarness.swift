@@ -85,6 +85,8 @@ actor Coordinator {
     private(set) var rejected: [(SkillEvent, String)] = []
     private(set) var produced: [InteractionID: [Artifact]] = [:]
     private(set) var incoming: [(InteractionID, PeerID, ConversationID?)] = []
+    /// Progress held while a consent sheet is up (ADR 0011, amendment 15).
+    private var queued: [InteractionID: [InteractionEvent]] = [:]
     private var nextConsent: UInt32 = 0
 
     func add(_ interaction: Interaction) { interactions[interaction.id] = interaction }
@@ -97,17 +99,50 @@ actor Coordinator {
             interactions[id] = Interaction(id: id, conversation: conversation, skill: PickAPlaceSkill.ref, role: .invitee,
                                            participants: [from], createdAt: Timestamp(Date()))
         case .lifecycle(let id, let lifecycle):
-            guard var interaction = interactions[id] else { rejected.append((event, "unknown interaction")); return }
-            do {
-                try interaction.apply(lifecycle, at: Timestamp(Date()))
-                interactions[id] = interaction
-            } catch {
-                rejected.append((event, "\(error)"))
+            guard let interaction = interactions[id] else { rejected.append((event, "unknown interaction")); return }
+            // While the sheet is up, progress waits its turn; anything else,
+            // an end included, applies at once.
+            if case .awaitingConsent = interaction.state, Self.waitsForConsent(lifecycle) {
+                queued[id, default: []].append(lifecycle)
+                return
             }
+            applyNow(lifecycle, to: id, reporting: event)
         case .produced(let id, let artifact):
             produced[id, default: []].append(artifact)
             interactions[id]?.record(artifact)
         }
+    }
+
+    static func waitsForConsent(_ event: InteractionEvent) -> Bool {
+        switch event {
+        case .ownerNeeded, .proposalReady, .everyoneConfirmed: true
+        default: false
+        }
+    }
+
+    private func applyNow(_ lifecycle: InteractionEvent, to id: InteractionID, reporting event: SkillEvent? = nil) {
+        guard var interaction = interactions[id] else { return }
+        do {
+            try interaction.apply(lifecycle, at: Timestamp(Date()))
+            interactions[id] = interaction
+        } catch {
+            rejected.append((event ?? .lifecycle(id, lifecycle), "\(error)"))
+        }
+        if interaction.state.isFinal { queued[id] = nil }
+        drain(id)
+    }
+
+    /// Applies held progress, in order, once the step has resumed.
+    private func drain(_ id: InteractionID) {
+        while let interaction = interactions[id], !interaction.state.isFinal, !Self.isSuspended(interaction.state),
+              let next = queued[id]?.first {
+            queued[id]?.removeFirst()
+            applyNow(next, to: id)
+        }
+    }
+
+    private static func isSuspended(_ state: InteractionState) -> Bool {
+        if case .awaitingConsent = state { true } else { false }
     }
 
     func interaction(conversation: ConversationID) -> Interaction? {
@@ -139,6 +174,7 @@ actor Coordinator {
         guard let conversation, var interaction = interaction(conversation: conversation) else { return }
         try? interaction.apply(.consentGiven(request: request), at: Timestamp(Date()))
         interactions[interaction.id] = interaction
+        drain(interaction.id)
     }
 }
 
