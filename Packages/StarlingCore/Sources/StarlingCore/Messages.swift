@@ -8,7 +8,9 @@ import Foundation
 /// Build envelopes with `Outbox`, which assigns `id`, `sender`, `sequence`, and
 /// `sentAt`, so callers cannot forge them.
 public struct Envelope: Hashable, Sendable, Codable {
-    public static let currentVersion: UInt16 = 0
+    /// 1 adds `skill` and `chainedFrom` (Phase 1.5, ADR 0010). Version 0
+    /// frames from Phase 1 builds still decode, with neither field.
+    public static let currentVersion: UInt16 = 1
 
     public let version: UInt16
     public let id: MessageID
@@ -21,6 +23,14 @@ public struct Envelope: Hashable, Sendable, Codable {
     public let sequence: UInt64
     public let sentAt: Timestamp
     public let body: MessageBody
+    /// The skill this conversation belongs to. Nil for link-level messages
+    /// such as `hello`, and on every version 0 envelope.
+    public let skill: SkillRef?
+    /// The conversation whose plan this one continues, for a chained skill
+    /// ("Somewhere else?" after Down for…). A hint for grouping on the
+    /// receiver's timeline only: it never starts a skill or asks for a
+    /// permission by itself (ADR 0012).
+    public let chainedFrom: ConversationID?
 
     public init(
         version: UInt16 = Envelope.currentVersion,
@@ -30,9 +40,15 @@ public struct Envelope: Hashable, Sendable, Codable {
         recipient: PeerID,
         sequence: UInt64,
         sentAt: Timestamp,
-        body: MessageBody
+        body: MessageBody,
+        skill: SkillRef? = nil,
+        chainedFrom: ConversationID? = nil
     ) throws {
         guard sender != recipient else { throw ValidationError("Envelope", "sender equals recipient") }
+        guard version > 0 || (skill == nil && chainedFrom == nil) else {
+            throw ValidationError("Envelope", "version 0 carries no skill or chain")
+        }
+        guard chainedFrom != conversation else { throw ValidationError("Envelope.chainedFrom", "cannot be its own conversation") }
         self.version = version
         self.id = id
         self.conversation = conversation
@@ -41,9 +57,11 @@ public struct Envelope: Hashable, Sendable, Codable {
         self.sequence = sequence
         self.sentAt = sentAt
         self.body = body
+        self.skill = skill
+        self.chainedFrom = chainedFrom
     }
 
-    private enum CodingKeys: String, CodingKey { case version, id, conversation, sender, recipient, sequence, sentAt, body }
+    private enum CodingKeys: String, CodingKey { case version, id, conversation, sender, recipient, sequence, sentAt, body, skill, chainedFrom }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -55,7 +73,9 @@ public struct Envelope: Hashable, Sendable, Codable {
             recipient: c.decode(PeerID.self, forKey: .recipient),
             sequence: c.decode(UInt64.self, forKey: .sequence),
             sentAt: c.decode(Timestamp.self, forKey: .sentAt),
-            body: c.decode(MessageBody.self, forKey: .body)
+            body: c.decode(MessageBody.self, forKey: .body),
+            skill: c.decodeIfPresent(SkillRef.self, forKey: .skill),
+            chainedFrom: c.decodeIfPresent(ConversationID.self, forKey: .chainedFrom)
         )
     }
 }
