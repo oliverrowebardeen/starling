@@ -1,0 +1,501 @@
+import Foundation
+import StarlingAvailability
+import StarlingCore
+
+// The starter's side: offer times, collect answers, propose, confirm.
+
+extension FindATimeService {
+    func startInitiating(_ request: SkillRequest) throws {
+        let skill = request.intent.skill
+        guard skill.id == FindATimeSkill.ref.id, skill.version.isCompatible(with: FindATimeSkill.ref.version) else {
+            throw FindATimeError.wrongSkill
+        }
+        guard descriptor.sendModes.contains(request.intent.mode) else { throw FindATimeError.unsupportedMode }
+        let id = request.conversation
+        guard conversationOf[request.interaction] == nil, initiating[id] == nil, invited[id] == nil, finished[id] == nil else {
+            throw FindATimeError.alreadyStarted
+        }
+        let now = now()
+        let grid = try SearchRange.candidates(rules: request.intent.rules, now: now, timeZone: timeZone, configuration: configuration)
+
+        var friends: [PeerID] = []
+        for peer in request.participants where peer != localPeer && !friends.contains(peer) && friends.count < ProtocolLimits.maxAttendees - 1 {
+            friends.append(peer)
+        }
+        var value = Initiating(
+            interaction: Interaction(
+                id: request.interaction, conversation: id, skill: FindATimeSkill.ref, role: .initiator,
+                participants: friends, createdAt: Timestamp(now)
+            ),
+            chainedFrom: request.chainedFrom,
+            expiresAt: request.intent.expiresAt,
+            activity: SearchRange.activity(in: request.intent.rules),
+            invitees: friends,
+            phase: .resolving
+        )
+        value.limits = request.intent.rules.constraints
+        // The coordinator applied `.started` when the owner sent, before
+        // calling `start` (ADR 0011, amendment 13). Mirror it here without
+        // emitting it.
+        try? value.interaction.apply(.started, at: Timestamp(now))
+        guard !friends.isEmpty else {
+            // Nobody to ask: the app resolved no friend who runs the skill.
+            initiating[id] = value
+            return close(id, reporting: .unsupported)
+        }
+        initiating[id] = value
+        register(id, interaction: request.interaction)
+        checkpoint(id)
+
+        let availability = availability
+        spawn(for: id) {
+            let resolution = await availability.resolve(grid)
+            await self.ownTimesResolved(id, resolution, grid: grid)
+        }
+    }
+
+    private func ownTimesResolved(_ id: ConversationID, _ resolution: CandidateResolution, grid: [TimeSlot]) {
+        guard var value = initiating[id], value.phase == .resolving else { return }
+        switch resolution {
+        case .known(let acceptable, _):
+            guard !acceptable.isEmpty else {
+                // Busy for the whole range: nothing to offer.
+                return endWithoutPlan(id, .noAgreement)
+            }
+            value.candidates = CandidateGrid.thinned(acceptable, to: configuration.maxCandidates)
+            initiating[id] = value
+            beginCollecting(id)
+        case .askOwner:
+            value.candidates = CandidateGrid.thinned(grid, to: configuration.maxCandidates)
+            let question = SkillQuestion(
+                revision: value.interaction.questionWatermark + 1, issue: .time,
+                candidates: .slots(value.candidates), asker: nil
+            )
+            value.phase = .askingOwner
+            emit(.ownerNeeded(question), to: &value.interaction)
+            initiating[id] = value
+            checkpoint(id)
+        }
+    }
+
+    func initiatorAnswer(_ id: ConversationID, _ answer: OwnerAnswer) throws {
+        guard var value = initiating[id] else { throw FindATimeError.unknownInteraction }
+        switch (value.phase, answer) {
+        case (.askingOwner, .reply(let revision, let reply)):
+            let picked = try checkedReply(reply, revision: revision, interaction: value.interaction)
+            emit(.ownerAnswered(question: revision), to: &value.interaction)
+            initiating[id] = value
+            guard !picked.isEmpty else { return endWithoutPlan(id, .noAgreement) }
+            initiating[id]?.candidates = picked
+            beginCollecting(id)
+
+        case (.askingOwner, .pass):
+            close(id, reporting: .ownerPassed)
+
+        case (.proposing, .accept(let revision)):
+            guard let draft = value.draft, revision == draft.revision, value.interaction.proposalRevision == revision else {
+                throw FindATimeError.staleProposal(current: value.interaction.proposalRevision)
+            }
+            guard !value.ownerAccepted else { return }
+            emit(.ownerAccepted(revision: revision), to: &value.interaction)
+            value.ownerAccepted = true
+            initiating[id] = value
+            checkpoint(id)
+            confirmIfEveryoneAccepted(id)
+
+        case (.proposing, .pass):
+            tellEveryoneNoPlan(id)
+            close(id, reporting: .ownerPassed)
+
+        default:
+            throw mismatch(answer, value.interaction)
+        }
+    }
+
+    func initiatorWithdraw(_ id: ConversationID) {
+        guard let value = initiating[id] else { return }
+        // After a plan is made, withdrawing only ends it on this phone.
+        if value.phase != .planned { tellEveryoneNoPlan(id) }
+        close(id, reporting: .withdrawn)
+    }
+
+    // MARK: Collecting answers
+
+    private func beginCollecting(_ id: ConversationID) {
+        guard var value = initiating[id] else { return }
+        value.phase = .collecting
+        value.answerDeadline = deadline(after: configuration.answerWait, capped: value.expiresAt)
+        initiating[id] = value
+        resetAttempts(id)
+        checkpoint(id)
+        sendQueries(id, to: value.invitees)
+    }
+
+    private func sendQueries(_ id: ConversationID, to peers: [PeerID]) {
+        guard let value = initiating[id], value.phase == .collecting,
+              let query = try? Query(issue: .time, candidates: .slots(value.candidates))
+        else { return }
+        let targets = peers.filter { value.answers[$0] == nil && countAttempt(id, $0) }
+        guard !targets.isEmpty else { return }
+        let chainedFrom = value.chainedFrom
+        spawn(for: id) {
+            for peer in targets {
+                let outcome = await self.send(.query(query), to: peer, conversation: id, chainedFrom: chainedFrom)
+                await self.querySent(id, to: peer, outcome)
+            }
+        }
+    }
+
+    private func querySent(_ id: ConversationID, to peer: PeerID, _ outcome: SendOutcome) {
+        guard var value = initiating[id], value.phase == .collecting, value.answers[peer] == nil else { return }
+        switch outcome {
+        case .sent:
+            if value.contacted.insert(peer).inserted {
+                initiating[id] = value
+                checkpoint(id)
+            }
+        case .failed:
+            return
+        case .declined, .denied, .refused:
+            initiatorRefused(id, outcome)
+        }
+    }
+
+    /// A send for the current step was refused; the caller has checked the
+    /// step is still current (ADR 0011, amendment 14). The conversation
+    /// ends and friends already asked hear "no plan".
+    /// - A declined consent sheet adds no event: the coordinator applies
+    ///   the owner's pass.
+    /// - A policy denial is blocked by privacy, which Core accepts from
+    ///   every live step except planned: a plan already agreed stands.
+    private func initiatorRefused(_ id: ConversationID, _ outcome: SendOutcome) {
+        guard initiating[id] != nil else { return }
+        let event: InteractionEvent? = switch outcome {
+        case .denied: .blockedByPrivacy
+        // The ledger refused for good (ADR 0021).
+        case .refused: .failed
+        default: nil
+        }
+        tellEveryoneNoPlan(id)
+        close(id, reporting: event)
+    }
+
+    func receiveAnswer(_ envelope: Envelope, _ answer: Answer) {
+        let id = envelope.conversation
+        guard var value = initiating[id], value.phase == .collecting, value.invitees.contains(envelope.sender) else {
+            return ignore("answer out of turn")
+        }
+        guard value.answers[envelope.sender] == nil else { return ignore("duplicate answer") }
+        guard answer.issue == .time else { return ignore("answer for another issue") }
+        switch answer.status {
+        case .answered:
+            guard case .slots(let slots)? = answer.acceptable else { return ignore("answer is not times") }
+            let offered = Set(value.candidates)
+            // Only times we offered count; an answer that adds any is refused
+            // whole, so a friend cannot steer the plan to a time we never offered.
+            guard slots.allSatisfy(offered.contains) else { return ignore("answer outside the offer") }
+            value.answers[envelope.sender] = Array(Set(slots)).sorted()
+        case .declined:
+            value.answers[envelope.sender] = []
+        case .pendingOwner:
+            return
+        }
+        initiating[id] = value
+        checkpoint(id)
+        decideIfEveryoneAnswered(id)
+    }
+
+    func receiveInitiatorRejection(_ envelope: Envelope) {
+        let id = envelope.conversation
+        guard var value = initiating[id], value.invitees.contains(envelope.sender) else { return ignore("rejection from a stranger") }
+        switch value.phase {
+        case .collecting where value.answers[envelope.sender] == nil:
+            value.answers[envelope.sender] = []
+            initiating[id] = value
+            checkpoint(id)
+            decideIfEveryoneAnswered(id)
+        case .proposing:
+            guard value.draft?.members.contains(envelope.sender) == true else { return ignore("rejection from a non-member") }
+            memberPassed(id, envelope.sender)
+        default:
+            ignore("rejection out of turn")
+        }
+    }
+
+    private func decideIfEveryoneAnswered(_ id: ConversationID) {
+        guard let value = initiating[id], value.phase == .collecting, value.waitingOn.isEmpty else { return }
+        decide(id)
+    }
+
+    /// The time the most friends can make, earliest first; friends who
+    /// cannot make it are told "no plan".
+    private func decide(_ id: ConversationID) {
+        guard let value = initiating[id], value.phase == .collecting else { return }
+        let free = { (peer: PeerID, slot: TimeSlot) in value.answers[peer]?.contains(slot) == true }
+        let counts = value.candidates.map { slot in value.invitees.filter { free($0, slot) }.count }
+        guard let best = counts.max(), best > 0, let index = counts.firstIndex(of: best) else {
+            return endWithoutPlan(id, .noAgreement)
+        }
+        let slot = value.candidates[index]
+        let members = value.invitees.filter { free($0, slot) }
+        let others = value.invitees.filter { !members.contains($0) && value.contacted.contains($0) }
+        sendNoPlan(about: MessageID(), to: others, in: id, chainedFrom: value.chainedFrom)
+        propose(id, slot: slot, members: members)
+    }
+
+    // MARK: Proposing
+
+    private func propose(_ id: ConversationID, slot: TimeSlot, members: [PeerID]) {
+        guard var value = initiating[id] else { return }
+        let revision = max(value.draft?.revision ?? 0, value.interaction.proposalRevision ?? 0) + 1
+        let roster = ([localPeer] + members).sorted()
+        guard revision <= configuration.maxRevisions,
+              let terms = try? OfferTerms.terms(slot: slot, activity: value.activity, roster: roster),
+              HardLimits.allows(terms, by: value.limits, timeZone: timeZone),
+              let plan = try? Plan(origin: id, attendees: Attendees(roster), activity: value.activity, time: slot)
+        else { return endWithoutPlan(id, .noAgreement) }
+        value.draft = Draft(revision: revision, slot: slot, members: members, terms: terms, plan: plan)
+        value.phase = .proposing
+        value.proposalIDs = [:]
+        value.accepted = [:]
+        value.ownerAccepted = false
+        value.confirmed = []
+        value.confirmDeadline = deadline(after: configuration.confirmWait, capped: value.expiresAt)
+        initiating[id] = value
+        resetAttempts(id)
+        checkpoint(id)
+        sendProposals(id, revision: revision, to: members, announce: true)
+    }
+
+    /// Sends a saved proposal again after a restart, showing its card.
+    func proposeAgain(_ id: ConversationID, _ draft: Draft) {
+        guard var value = initiating[id] else { return }
+        value.draft = draft
+        value.phase = .proposing
+        initiating[id] = value
+        resetAttempts(id)
+        sendProposals(id, revision: draft.revision, to: draft.members.filter { value.accepted[$0] == nil }, announce: true)
+    }
+
+    /// Sends the current proposal. With `announce`, the proposal card goes
+    /// up only after every send has passed policy and consent, so the card
+    /// never appears while a consent sheet for it is still open.
+    private func sendProposals(_ id: ConversationID, revision: UInt32, to peers: [PeerID], announce: Bool) {
+        guard let value = initiating[id], value.phase == .proposing, let draft = value.draft, draft.revision == revision else { return }
+        let targets = announce ? peers : peers.filter { countAttempt(id, $0) }
+        guard !targets.isEmpty || announce else { return }
+        guard let proposal = try? Proposal(round: UInt16(revision - 1), terms: draft.terms, expiresAt: value.confirmDeadline) else { return }
+        if announce { for peer in targets { _ = countAttempt(id, peer) } }
+        let chainedFrom = value.chainedFrom
+        spawn(for: id) {
+            var refusal: SendOutcome?
+            for peer in targets {
+                let outcome = await self.send(.propose(proposal), to: peer, conversation: id, chainedFrom: chainedFrom)
+                switch outcome {
+                case .sent(let envelope): await self.proposalSent(id, revision: revision, to: peer, envelope.id)
+                case .declined, .denied, .refused: refusal = outcome
+                case .failed: continue
+                }
+                if refusal != nil { break }
+            }
+            await self.proposalsDone(id, revision: revision, announce: announce, refusal: refusal)
+        }
+    }
+
+    private func proposalSent(_ id: ConversationID, revision: UInt32, to peer: PeerID, _ message: MessageID) {
+        guard var value = initiating[id], value.draft?.revision == revision else { return }
+        value.proposalIDs[peer, default: []].insert(message)
+        initiating[id] = value
+        checkpoint(id)
+    }
+
+    private func proposalsDone(_ id: ConversationID, revision: UInt32, announce: Bool, refusal: SendOutcome?) {
+        guard var value = initiating[id], value.phase == .proposing, let draft = value.draft, draft.revision == revision else { return }
+        if let refusal { return initiatorRefused(id, refusal) }
+        guard announce else { return }
+        let card = SkillProposal(revision: revision, participants: draft.plan.attendees.peers, terms: draft.terms, plan: draft.plan)
+        emit(.proposalReady(card), to: &value.interaction)
+        initiating[id] = value
+        checkpoint(id)
+    }
+
+    func receiveAcceptance(_ envelope: Envelope, _ acceptance: Acceptance) {
+        let id = envelope.conversation
+        let peer = envelope.sender
+        guard var value = initiating[id], let draft = value.draft, draft.members.contains(peer) else {
+            return ignore("acceptance from a non-member")
+        }
+        guard acceptance.terms == draft.terms, value.proposalIDs[peer]?.contains(acceptance.proposal) == true else {
+            return ignore("acceptance of other terms")
+        }
+        switch value.phase {
+        case .proposing:
+            value.accepted[peer] = acceptance.proposal
+            initiating[id] = value
+            checkpoint(id)
+            confirmIfEveryoneAccepted(id)
+        case .confirming where !value.confirmed.contains(peer):
+            sendConfirmations(id, to: [peer])
+        case .confirming, .planned:
+            // Our confirmation was lost: send it again.
+            let chainedFrom = value.chainedFrom
+            spawn(for: id) {
+                _ = await self.send(.accept(Acceptance(proposal: acceptance.proposal, terms: draft.terms)), to: peer, conversation: id, chainedFrom: chainedFrom)
+            }
+        default:
+            ignore("acceptance out of turn")
+        }
+    }
+
+    private func memberPassed(_ id: ConversationID, _ peer: PeerID) {
+        guard let value = initiating[id], let draft = value.draft else { return }
+        let remaining = draft.members.filter { $0 != peer }
+        guard !remaining.isEmpty else { return endWithoutPlan(id, .noAgreement, notify: false) }
+        // The same time still works for everyone else; they confirm again
+        // because the roster changed.
+        propose(id, slot: draft.slot, members: remaining)
+    }
+
+    private func confirmIfEveryoneAccepted(_ id: ConversationID) {
+        guard var value = initiating[id], value.phase == .proposing, value.ownerAccepted, let draft = value.draft,
+              draft.members.allSatisfy({ value.accepted[$0] != nil })
+        else { return }
+        value.phase = .confirming
+        value.confirmed = []
+        initiating[id] = value
+        resetAttempts(id)
+        checkpoint(id)
+        sendConfirmations(id, to: draft.members)
+    }
+
+    /// Sends confirmations through Outbox (policy and consent apply, also
+    /// after a restart) and records each one that leaves.
+    func sendConfirmations(_ id: ConversationID, to peers: [PeerID]) {
+        guard let value = initiating[id], value.phase == .confirming, let draft = value.draft else { return }
+        let targets = peers.filter { !value.confirmed.contains($0) && value.accepted[$0] != nil && countAttempt(id, $0) }
+        guard !targets.isEmpty else { return }
+        let ids = value.accepted
+        let chainedFrom = value.chainedFrom
+        spawn(for: id) {
+            for peer in targets {
+                guard let message = ids[peer] else { continue }
+                let outcome = await self.send(.accept(Acceptance(proposal: message, terms: draft.terms)), to: peer, conversation: id, chainedFrom: chainedFrom)
+                await self.confirmationSent(id, revision: draft.revision, to: peer, outcome)
+                if case .declined = outcome { break }
+                if case .denied = outcome { break }
+                if case .refused = outcome { break }
+            }
+        }
+    }
+
+    private func confirmationSent(_ id: ConversationID, revision: UInt32, to peer: PeerID, _ outcome: SendOutcome) {
+        guard var value = initiating[id], value.phase == .confirming, value.draft?.revision == revision else { return }
+        switch outcome {
+        case .sent:
+            value.confirmed.insert(peer)
+            initiating[id] = value
+            checkpoint(id)
+            finishPlanIfConfirmed(id)
+        case .failed:
+            // Retried on the timer, or when the friend resends its acceptance.
+            return
+        case .declined, .denied, .refused:
+            initiatorRefused(id, outcome)
+        }
+    }
+
+    /// The plan exists once every confirmation has left the phone: the
+    /// only evidence this phone has that everyone was told.
+    func finishPlanIfConfirmed(_ id: ConversationID) {
+        guard var value = initiating[id], value.phase == .confirming, let draft = value.draft,
+              draft.members.allSatisfy(value.confirmed.contains)
+        else { return }
+        value.phase = .planned
+        emit(.everyoneConfirmed(revision: draft.revision), to: &value.interaction)
+        initiating[id] = value
+        produce(.timeSlot(draft.slot), for: value.interaction.id)
+        produce(.plan(draft.plan), for: value.interaction.id)
+        checkpoint(id)
+    }
+
+    // MARK: Endings and timers
+
+    /// Ends with no plan and tells every friend still waiting.
+    func endWithoutPlan(_ id: ConversationID, _ event: InteractionEvent, notify: Bool = true) {
+        guard initiating[id] != nil else { return }
+        if notify { tellEveryoneNoPlan(id) }
+        close(id, reporting: event)
+    }
+
+    private func tellEveryoneNoPlan(_ id: ConversationID) {
+        guard let value = initiating[id] else { return }
+        let peers = value.invitees.filter { value.contacted.contains($0) }
+        sendNoPlan(about: MessageID(), to: peers, in: id, chainedFrom: value.chainedFrom)
+    }
+
+    func initiatorTick(_ id: ConversationID) {
+        guard let value = initiating[id] else { return }
+        switch value.phase {
+        case .planned:
+            // The coordinator applies planEnded (ADR 0011, amendment 15);
+            // the service only stops answering for the plan.
+            if let end = value.draft?.slot.end, now() >= end { close(id, reporting: nil) }
+        case _ where expired(value.expiresAt):
+            endWithoutPlan(id, .expired)
+        case .collecting where expired(value.answerDeadline):
+            // Friends who have not answered are treated as having no time.
+            decide(id)
+        case .proposing where expired(value.confirmDeadline):
+            confirmDeadlinePassed(id)
+        case .confirming where expired(value.confirmDeadline):
+            endWithoutPlan(id, .expired)
+        case .collecting, .proposing, .confirming:
+            initiatorResend(id, to: value.waitingOn)
+        case .resolving, .askingOwner:
+            break
+        }
+    }
+
+    /// Friends who have not said "That works" by the deadline count as no
+    /// (a friend's no is silent, ADR 0221). If some did, the same time goes
+    /// to them again as a new revision without the others; if none did, the
+    /// request expires.
+    private func confirmDeadlinePassed(_ id: ConversationID) {
+        guard let value = initiating[id], let draft = value.draft else { return }
+        let agreed = draft.members.filter { value.accepted[$0] != nil }
+        guard !agreed.isEmpty, agreed.count < draft.members.count else { return endWithoutPlan(id, .expired) }
+        propose(id, slot: draft.slot, members: agreed)
+    }
+
+    func initiatorResend(_ id: ConversationID, to peers: [PeerID]) {
+        guard let value = initiating[id], !peers.isEmpty else { return }
+        switch value.phase {
+        case .collecting: sendQueries(id, to: peers)
+        case .proposing: if let revision = value.draft?.revision { sendProposals(id, revision: revision, to: peers, announce: false) }
+        case .confirming: sendConfirmations(id, to: peers)
+        default: break
+        }
+    }
+
+    /// Why an answer does not fit: an acceptance names a proposal that is
+    /// not current, a reply a question that is not pending.
+    func mismatch(_ answer: OwnerAnswer, _ interaction: Interaction) -> FindATimeError {
+        switch answer {
+        case .accept: .staleProposal(current: interaction.proposalRevision)
+        case .reply: .staleQuestion(current: interaction.pendingQuestion?.revision)
+        case .pass: .notWaitingForThis
+        }
+    }
+
+    /// Checks an owner's reply to the pending question: the right revision,
+    /// and only times the question offered.
+    func checkedReply(_ reply: IssueValue, revision: UInt32, interaction: Interaction) throws -> [TimeSlot] {
+        guard let question = interaction.pendingQuestion, question.revision == revision else {
+            throw FindATimeError.staleQuestion(current: interaction.pendingQuestion?.revision)
+        }
+        guard case .slots(let picked) = reply, case .slots(let offered) = question.candidates,
+              picked.allSatisfy(Set(offered).contains)
+        else { throw FindATimeError.invalidReply }
+        return Array(Set(picked)).sorted()
+    }
+}
