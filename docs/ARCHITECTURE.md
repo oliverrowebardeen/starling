@@ -2,7 +2,7 @@
 
 Owned by the Orchestrator. Lanes read this and `docs/BRIEF.md` before doing anything. Decisions and their sources live in `docs/decisions/`; this file describes the system as it stands.
 
-Status: **v2 interfaces (Phase 1.5).** Last updated 2026-09-30. v1 added identity, pairing, the shared hard-limit check, and the Down facade (section 7). v1.1 (from lane G's requests) added `Answer.issue`, local `OutboundContext` passed to the policy, `OutboxObserver`, and a policy re-check after consent. v2 turns features into skills (section 8, ADRs 0010 to 0018): skill descriptors, registry and flags, one interaction lifecycle, artifacts and chaining, global privacy topics, skill-aware agent cards, and envelope version 1.
+Status: **v2 interfaces (Phase 1.5).** Last updated 2026-09-30. v1 added identity, pairing, the shared hard-limit check, and the Down facade (section 7). v1.1 (from lane G's requests) added `Answer.issue`, local `OutboundContext` passed to the policy, `OutboxObserver`, and a policy re-check after consent. v2 turns features into skills (section 8, ADRs 0010 to 0018): skill descriptors, registry and flags, one interaction lifecycle, artifacts and chaining, global privacy topics, skill-aware agent cards, and envelope version 1. v2.1 (2026-10-01, ADRs 0019 and 0020, ADR 0011 amendments 13 to 15) adds Oliver's privacy and audience changes: location and calendar details topics, protective defaults, Never as "stays on the phone", yes/no answers, send modes (Ask quietly, Invite) in envelope version 2, Everyone except, saved groups, friend rules, and the lanes' requests for consent cancellation, sequence numbers that survive relaunches and refusals, and a complete audit.
 
 ## 1. Layers and packages
 
@@ -67,33 +67,36 @@ Rules that hold everywhere:
 | Policy | `PolicyEngine`, `ConsentProvider`, `OutboundMessage`, `PolicyDecision`, `Disclosure`, `DisclosedItem`, `PolicyViolation` | v2: `Disclosure` carries the conversation and skill, so consent memory stays inside one interaction. |
 | Availability | `AvailabilitySource`, `AvailabilityQuery`, `AvailabilityAnswer`, `OwnerQuestion` | Calendar and non-calendar sources both yield `[TimeSlot]`. |
 | PSI | `PSIProvider`, `PSISession`, `PSIConfiguration`, `PSIElement`, `PSIResult`, `PSIStep` | `maxPeerSetSize` is mandatory (brief 3.9). |
-| Choke points | `Outbox`, `Inbox`, `InboxEvent`, `InboxDrop`, `OutboxObserver` (v1.1), `OutboundContext` (v1.1) | `Outbox.send(_:to:conversation:recipientCard:context:)`. Context is local only: the policy sees it, the wire never does. PSI senders must pass `context.psi`. After consent, Outbox re-evaluates the policy and honors cancellation. |
+| Choke points | `Outbox`, `Inbox`, `InboxEvent`, `InboxDrop`, `OutboxObserver` (v1.1), `OutboundContext` (v1.1) | `Outbox.send(_:to:conversation:recipientCard:context:skill:mode:chainedFrom:)`. Context is local only: the policy sees it, the wire never does. PSI senders must pass `context.psi`; an answer passes the query it answers in `context.answering`. After consent, Outbox re-evaluates the policy and honors cancellation. Observers hear what each send disclosed (v2.1). |
 | Identity (v1) | `IdentityPublicKey`, `PeerID(publicKey:)`, `PairedPeer`, `PairedPeerStore` | `PeerID` is SHA-256 of the X25519 static key (ADR 0003). Nicknames never leave the device. |
 | Pairing (v1) | `PairingSession`, `PairingEvent`, `PairingFailure` | UI-facing ceremony: show a code, both people confirm. Starting a session is lane E1's API. |
 | Hard limits (v1) | `ConstraintSet.violations(of:timeZone:)`, `LimitViolation` | The one implementation of rule 6; negotiation enforces with it, the agent marks prompts with it. |
 | Down (v1) | `DownService`, `DownIntent`, `DownLevel`, `DownMatch`, `DownEvent` | Section 7. Replaced by the Down for… skill when lane B lands, then removed. |
 | Skills (v2) | `SkillID`, `SkillVersion`, `SkillRef`, `SkillDescriptor`, `SkillWording`, `IntentSchema`, `IntentSlot`, `BuildingBlock`, `SystemPermission`, `ArtifactKind`, `ChainTrigger`, `SkillExposure` | Data only. ADR 0010. |
 | Registry (v2) | `SkillRegistry`, `SkillFlags`, `SkillSettings`, `SkillAvailability` | `SkillFlags.phase1_5`: Down for…, Find a time, Pick a place. |
-| Runtime (v2) | `SkillService`, `SkillRequest`, `SkillIntent`, `Audience`, `SkillQuestion`, `OwnerAnswer`, `SkillProposal`, `SkillEvent` | Generalizes `DownService`. One coordinator consumes the events. Proposals and questions carry a revision; answers name it. |
+| Runtime (v2) | `SkillService`, `SkillRequest`, `SkillIntent` (with `mode`, v2.1), `SkillQuestion`, `OwnerAnswer`, `SkillProposal`, `SkillEvent` | Generalizes `DownService`. One coordinator consumes the events. Proposals and questions carry a revision; answers name it. |
+| Send modes and audience (v2.1) | `SendMode`, `SkillDescriptor.sendModes`, `Audience` (`everyoneExcept`, `group`), `GroupID`, `FriendGroup`, `FriendRule`, `AudienceBook`, `Audience.resolve` | ADR 0020. Ask quietly only on mutual reveal skills. One resolver for every surface; the owner's lists never leave the phone. |
 | Skill model (v2) | `SkillModel` (`route`, `intent`, `proposalText`), `ParsedIntent`, `ProposalFacts` | ADR 0016. |
-| Lifecycle (v2) | `Interaction`, `InteractionID`, `InteractionState`, `ConsentResume`, `InteractionEvent`, `InvalidTransition`, `StaleProposal`, `StaleQuestion`, `UnknownConsentRequest`, `LifecycleStep`, `HomeSection`, `EndReason`, `StateChange`, `ChainLink`, `EgressRecord`, `InteractionStore` | ADR 0011. Transitions are a pure function; final states accept nothing; consent suspends and resumes the interrupted step; proposals and questions travel inside their events; revisions and consent IDs only rise. |
+| Lifecycle (v2) | `Interaction`, `InteractionID`, `InteractionState`, `ConsentResume`, `InteractionEvent`, `InvalidTransition`, `StaleProposal`, `StaleQuestion`, `UnknownConsentRequest`, `LifecycleStep`, `HomeSection`, `EndReason`, `StateChange`, `ChainLink`, `EgressRecord`, `InteractionStore` | ADR 0011. Transitions are a pure function; final states accept nothing; consent suspends and resumes the interrupted step; proposals and questions travel inside their events; revisions and consent IDs only rise. v2.1: `consentCancelled`, `blockedByPrivacy` from any live step, `friendChainHint`, idempotent `EgressRecord`s with `itemsUnknown`. |
 | Artifacts (v2) | `Plan`, `PlanID`, `PlaceChoice`, `PlaceName`, `Coordinate`, `Attendees`, `Artifact`, `IssueValue.places`, `IssueValue.peers` | ADR 0012. The roster travels under the people topic. |
-| Privacy (v2) | `PrivacyTopic`, `SharingChoice`, `PrivacySettings`, `IssueKey.people`, `.photos`, `.interests` | ADR 0014. Expands into `DisclosureRule`s. |
+| Privacy (v2) | `PrivacyTopic`, `SharingChoice`, `PrivacySettings`, `IssueKey.people`, `.photos`, `.interests`; v2.1: `.location`, `.calendarDetails`, `OutboundContext.answering`, `Query.isAnsweredYesOrNo`, `ProtocolLimits.maxCandidatesAnsweredPerIssue` | ADRs 0014 and 0019. Expands into `DisclosureRule`s. Never keeps a value on the phone; yes/no answers to a friend's own candidates go under any choice. |
 | Rosters (v2) | `RosterLabels`, `PeerID.fingerprint` | One way to show whose identifiers leave the phone, on the consent sheet and in the app. |
-| Cards and envelopes (v2) | `AgentCard.skills`, `AgentCard.support(for:)`, `SkillSupport`, `Envelope.skill`, `Envelope.chainedFrom` | Envelope version 1; version 0 still decodes. |
+| Cards and envelopes (v2) | `AgentCard.skills`, `AgentCard.support(for:)`, `SkillSupport`, `Envelope.skill`, `Envelope.chainedFrom`, `Envelope.mode` (v2.1) | Envelope version 2; version 0 still decodes; version 1 is retired. |
 | Fakes | `ScriptedAgentModel`, `FixedPolicyEngine`, `ScriptedConsentProvider`, `StaticAvailabilitySource`, `RecordingTransport`, `InsecurePSIStub`, `InMemoryPairedPeerStore`, `ScriptedPairingSession`, `ScriptedDownService`; v2: `SampleSkills`, `ScriptedSkillModel`, `ScriptedSkillService`, `InMemoryInteractionStore` | `StarlingFakes` product. The PSI stub reveals the initiator's set and says so. |
 
-### Wire format v1
+### Wire format v2
 
-One envelope per frame, sorted-key JSON. Version 1 (v2 interfaces) adds the optional `skill` and `chainedFrom`:
+One envelope per frame, sorted-key JSON. Version 2 (Core v2.1) carries the optional `skill` and `chainedFrom` from version 1, and `mode`, present exactly when `skill` is:
 
 ```json
 {"body":{"type":"propose","value":{"round":0,"terms":{"budget":{"amount":{"currency":"USD","minor":1500},"type":"amount"}}}},
- "chainedFrom":"<uuid>","conversation":"<uuid>","id":"<uuid>","recipient":"<64 hex>","sender":"<64 hex>","sentAt":<ms since 1970>,
- "sequence":0,"skill":{"id":"pick_a_place","version":"1.0"},"version":1}
+ "chainedFrom":"<uuid>","conversation":"<uuid>","id":"<uuid>","mode":"invite","recipient":"<64 hex>","sender":"<64 hex>",
+ "sentAt":<ms since 1970>,"sequence":<number>,"skill":{"id":"pick_a_place","version":"1.0"},"version":2}
 ```
 
-Version 0 frames (Phase 1 builds) still decode, with neither field; a version 0 envelope that claims a skill or chain is rejected. Phase 1 builds reject version 1.
+`mode` is `ask_quietly` or `invite` (ADR 0020). Version 1 is retired both ways: a version 1 build reads unknown keys as absent and could show a quiet ask openly, so it must never accept one. Version 0 frames (Phase 1 builds) still decode, with none of the three fields; a version 0 envelope that claims any of them is rejected.
+
+`sequence` is unique and increasing per sender and conversation. Outbox starts a conversation at the sender's clock in milliseconds on each launch and numbers an envelope only once the policy and consent have cleared it, so relaunches never reuse a number and refusals leave no gap.
 
 Time slots are whole minutes since 1970 UTC. Changing anything here breaks `EnvelopeCodecTests.wireFormatIsFrozen` on purpose; `phaseOneFramesStillDecode` keeps version 0 working.
 

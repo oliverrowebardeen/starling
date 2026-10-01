@@ -66,7 +66,7 @@ Mockups are in `docs/design/phase-1.5/` (exported from Claude Design on 2026-09-
 | Just-in-time permission: Find a time | `find-a-time-permission.png` | Keep the three-row explanation. One "Continue" button before the system alert (ADR 0013, pending Oliver). |
 | It's a plan: chained skills | `its-a-plan.png` | Lit logo, plan card, "Keep it going": Add to Calendar, Swap photos after (only when its flag is on), Somewhere else?, Message the group. |
 | Plan detail | `plan-detail.png` | Message group, Directions, "How this came together", "What left your phone": shared versus kept on your phone. |
-| You: privacy topics and skills | `you.png` | Agent card, topics with Share / Ask me / Never, skills with permission lines and switches. The time and activity note per ADR 0017. Swap photos appears only when its flag is on. |
+| You: privacy topics and skills | `you.png` | Agent card, topics with Share / Ask me / Never, skills with permission lines and switches. The time and activity note per ADR 0017. Swap photos appears only when its flag is on. v2.1 (ADR 0019): location and calendar details join the topics, each choice shows its one-line explanation on the control, and the defaults are the protective ones. |
 
 Shared lifecycle components, built once and used by every skill (ADR 0011):
 

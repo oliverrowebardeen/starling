@@ -1,6 +1,6 @@
 # ADR 0014: Global privacy topics: Share, Ask me, Never
 
-- Status: Accepted
+- Status: Accepted; decisions 1, 4, and 5 amended by ADR 0019 (2026-10-01)
 - Date: 2026-09-30
 - Owner: Orchestrator
 
