@@ -236,12 +236,25 @@ import Testing
     /// shared slot; the opening offer must start no earlier than now.
     @Test func theOpeningOfferSkipsASlotThatStartedDuringTheExchange() async throws {
         let time = MovableClock()
-        let consent = GatedConsentProvider()
+        // The owner's approval covers retries of the same step, as in the app.
+        let consent = GatedConsentProvider(remembersApprovals: true)
         // A consent wait is bounded by its step's deadline (ADR 0120, item
         // 19). 200 ms retries give the owner a 1 s step, well past the pause
         // below; the default 20 ms test retries would give only 100 ms.
         let slow = DownConfiguration(retryInterval: .milliseconds(200), maxAttempts: 5)
-        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent, clock: time.clock, configuration: slow)
+        // The answer takes longer than one retry tick, so the starter resends
+        // its approved query before the answer arrives, and that resend goes
+        // through consent again. Without remembered approval it waited on a
+        // sheet nobody answered and held up the answer behind it (CI run
+        // 36807021410 hit this by timing alone).
+        let slowAnswer = ScriptedAgentModel(onMatch: { wanted, offered in
+            try await Task.sleep(for: .milliseconds(250))
+            return ScriptedAgentModel.exactMatches(wanted: wanted, offered: offered)
+        })
+        let world = DownWorld(
+            ["ana", "ben"], model: slowAnswer, policy: consentForEverything([.query]),
+            consent: consent, clock: time.clock, configuration: slow
+        )
         let (starter, answerer) = Self.roles(world)
         try await world.start()
         try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
