@@ -85,16 +85,25 @@ public actor RecordingOutboxObserver: OutboxObserver {
 /// A `SentSequenceStore` in memory, shared between Outbox instances to
 /// stand for one phone across relaunches.
 public final class InMemorySentSequenceStore: SentSequenceStore, @unchecked Sendable {
+    public struct WriteFailed: Error {}
+
     private let lock = NSLock()
     private var highest: [ConversationID: UInt64] = [:]
+    private var failing = false
 
-    public init() {}
+    public init(_ seeded: [ConversationID: UInt64] = [:]) { highest = seeded }
+
+    /// Makes every later write throw, as a full or broken disk would.
+    public func failWrites() { lock.withLock { failing = true } }
 
     public func highestSent(in conversation: ConversationID) -> UInt64? {
         lock.withLock { highest[conversation] }
     }
 
-    public func recordSent(_ sequence: UInt64, in conversation: ConversationID) {
-        lock.withLock { highest[conversation] = max(highest[conversation] ?? 0, sequence) }
+    public func recordSent(_ sequence: UInt64, in conversation: ConversationID) throws {
+        try lock.withLock {
+            if failing { throw WriteFailed() }
+            highest[conversation] = max(highest[conversation] ?? 0, sequence)
+        }
     }
 }

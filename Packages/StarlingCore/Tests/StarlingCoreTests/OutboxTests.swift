@@ -90,6 +90,29 @@ import Testing
         #expect(store.highestSent(in: Fixtures.conversation) == UInt64(Fixtures.now.timeIntervalSince1970 * 1000) + 9)
     }
 
+    /// Re-review of PR #57: never wrap or repeat at the top of the range,
+    /// and never send a number the store failed to record.
+    @Test func numbersThatCannotBeRecordedOrWouldRepeatAreNeverSent() async throws {
+        for seeded in [UInt64.max - 1, .max] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                                sequences: InMemorySentSequenceStore([Fixtures.conversation: seeded]), now: { Fixtures.now })
+            await #expect(throws: OutboxError.sequenceExhausted) {
+                try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            }
+            #expect(await transport.sent.isEmpty)
+        }
+        let store = InMemorySentSequenceStore()
+        store.failWrites()
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            sequences: store, now: { Fixtures.now })
+        await #expect(throws: InMemorySentSequenceStore.WriteFailed.self) {
+            try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        }
+        #expect(await transport.sent.isEmpty)
+    }
+
     /// Lane C: a relaunched app restarted at 0, and the friend's Inbox
     /// dropped every number it had already seen as a replay.
     @Test func aRelaunchedOutboxNeverReusesANumberTheFriendSaw() async throws {

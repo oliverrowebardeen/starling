@@ -6,6 +6,9 @@ public enum OutboxError: Error, Hashable, Sendable {
     /// The policy's answer changed while the owner was deciding (rules
     /// edited, peer trust removed); nothing was sent (v1.1).
     case policyChangedDuringConsent
+    /// The conversation has used every sequence number; nothing was sent,
+    /// because the next number would repeat one the friend has seen.
+    case sequenceExhausted
 }
 
 /// Told about every envelope the transport accepted, for example to keep an
@@ -34,7 +37,10 @@ extension OutboxObserver {
 /// restarts at the clock in milliseconds.
 public protocol SentSequenceStore: Sendable {
     func highestSent(in conversation: ConversationID) -> UInt64?
-    func recordSent(_ sequence: UInt64, in conversation: ConversationID)
+    /// Durably records `sequence` before the envelope leaves. Throwing stops
+    /// the send, so a number is never sent without being recorded, and a
+    /// later `highestSent` must reflect every recorded number.
+    func recordSent(_ sequence: UInt64, in conversation: ConversationID) throws
 }
 
 /// The only sanctioned way to send a message.
@@ -68,11 +74,6 @@ public actor Outbox {
         self.observer = observer
         self.sequences = sequences
         self.now = now
-    }
-
-    private static func above(_ highest: UInt64?) -> UInt64 {
-        guard let highest else { return 0 }
-        return highest == .max ? .max : highest + 1
     }
 
     /// Milliseconds since 1970, or 0 for a clock set before 1970.
@@ -146,9 +147,17 @@ public actor Outbox {
         // now too: a consent sheet can take longer than a receiver's age
         // limit.
         let sentAt = now()
-        let sequence = nextSequence[conversation] ?? max(Self.firstSequence(at: sentAt), Self.above(sequences?.highestSent(in: conversation)))
-        nextSequence[conversation] = sequence &+ 1
-        sequences?.recordSent(sequence, in: conversation)
+        let sequence: UInt64
+        if let next = nextSequence[conversation] {
+            sequence = next
+        } else {
+            let recorded = sequences?.highestSent(in: conversation)
+            guard recorded != .max else { throw OutboxError.sequenceExhausted }
+            sequence = max(Self.firstSequence(at: sentAt), recorded.map { $0 + 1 } ?? 0)
+        }
+        guard sequence != .max else { throw OutboxError.sequenceExhausted }
+        nextSequence[conversation] = sequence + 1
+        try sequences?.recordSent(sequence, in: conversation)
         let envelope = try Envelope(
             version: draft.version, id: draft.id, conversation: conversation, sender: draft.sender, recipient: recipient,
             sequence: sequence, sentAt: Timestamp(sentAt), body: body, skill: skill, mode: mode, chainedFrom: chainedFrom
