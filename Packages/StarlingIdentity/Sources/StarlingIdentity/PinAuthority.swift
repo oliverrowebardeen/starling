@@ -42,13 +42,22 @@ public final class PinAuthority: Sendable {
         var isClear: Bool { removing == 0 && committing == 0 && !quarantined }
     }
 
+    /// One revocation observer and its delivery queue. Each observer has at
+    /// most one delivery task at a time, draining `pending`, which keeps only
+    /// the latest epoch per peer (issue #40).
+    private struct Observer {
+        let handler: @Sendable (PeerID, UInt64) async -> Void
+        var pending: [PeerID: UInt64] = [:]
+        var delivering = false
+    }
+
     private struct State {
         var epochs: GenerationTable
         /// Only peers with something in progress or quarantined have an entry.
         var flags: [PeerID: Flags] = [:]
         var locked = false
         var waiters: [CheckedContinuation<Void, Never>] = []
-        var observers: [@Sendable (PeerID, UInt64) async -> Void] = []
+        var observers: [Observer] = []
 
         func blocked(_ peer: PeerID) -> Bool { !(flags[peer]?.isClear ?? true) }
 
@@ -128,7 +137,7 @@ public final class PinAuthority: Sendable {
     /// (ending sessions promptly, cancelling ceremonies): correctness rests
     /// on the per-frame epoch check.
     public func observeRevocations(_ handler: @escaping @Sendable (PeerID, UInt64) async -> Void) {
-        state.withLock { $0.observers.append(handler) }
+        state.withLock { $0.observers.append(Observer(handler: handler)) }
     }
 
     // MARK: Revoking
@@ -201,10 +210,47 @@ public final class PinAuthority: Sendable {
     /// Each observer gets the epoch the revocation produced, so it can clean
     /// up only what was authenticated or started under an older epoch and
     /// leave anything newer alone, however late the notice arrives.
+    ///
+    /// Notices coalesce (issue #40): each observer has at most one delivery
+    /// task, and while it is busy, newer notices for a peer replace older
+    /// ones. Epochs only move forward, so the latest one carries everything an
+    /// older one would, and an observer that stalls holds one suspended task
+    /// and at most one pending notice per peer, however many revocations
+    /// happen meanwhile.
     func notifyObservers(_ peer: PeerID, epoch: UInt64) {
-        let observers = state.withLock { $0.observers }
-        for observer in observers { Task { await observer(peer, epoch) } }
+        let starting = state.withLock { state -> [Int] in
+            var starting: [Int] = []
+            for index in state.observers.indices {
+                state.observers[index].pending[peer] = max(state.observers[index].pending[peer] ?? 0, epoch)
+                if !state.observers[index].delivering {
+                    state.observers[index].delivering = true
+                    starting.append(index)
+                }
+            }
+            return starting
+        }
+        for index in starting { Task { await self.deliver(to: index) } }
     }
+
+    /// The single delivery task for one observer: takes one pending notice
+    /// at a time until none is left.
+    private func deliver(to index: Int) async {
+        while true {
+            let next = state.withLock { state -> (@Sendable (PeerID, UInt64) async -> Void, PeerID, UInt64)? in
+                guard let (peer, epoch) = state.observers[index].pending.first else {
+                    state.observers[index].delivering = false
+                    return nil
+                }
+                state.observers[index].pending[peer] = nil
+                return (state.observers[index].handler, peer, epoch)
+            }
+            guard let (handler, peer, epoch) = next else { return }
+            await handler(peer, epoch)
+        }
+    }
+
+    /// Notices waiting for delivery across all observers, for tests.
+    var pendingNoticeCount: Int { state.withLock { $0.observers.reduce(0) { $0 + $1.pending.count } } }
 
     // MARK: Pairing
 
