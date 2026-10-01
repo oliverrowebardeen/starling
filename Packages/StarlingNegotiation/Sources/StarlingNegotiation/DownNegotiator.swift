@@ -364,7 +364,8 @@ public actor DownNegotiator: DownService {
     ) async {
         guard let conversation = conversations[id] else { return }
         for body in bodies {
-            if await send(body, to: conversation.peer, in: id, profile: conversation.profile) == .ended { return }
+            // Stop the batch as soon as the conversation or its intent ends.
+            guard await send(body, to: conversation.peer, in: id, profile: conversation.profile) != .ended, isLive(id) else { return }
         }
         guard var conversation = conversations[id] else { return }
         conversation.outstanding = awaitingReply ? bodies : []
@@ -385,6 +386,9 @@ public actor DownNegotiator: DownService {
     /// ends the conversation. A transport error is `.lost`: the retry timer
     /// covers lost frames.
     func send(_ body: MessageBody, to peer: PeerID, in id: ConversationID, profile: DownProfile?) async -> SendResult {
+        // A conversation's own sends need it alive under the current intent.
+        // Replays (profile nil) belong to finished conversations.
+        if profile != nil, !isLive(id) { return .ended }
         if let profile, !Self.passesGate(body, profile: profile) {
             diagnostics.gateRefusals += 1
             end(id, .failed)
@@ -406,9 +410,19 @@ public actor DownNegotiator: DownService {
             settled.insert(peer)
             end(id, .policy)
             return .ended
+        } catch is CancellationError {
+            // Ended while waiting (withdrawn, replaced, expired, timed out).
+            return .ended
         } catch {
-            return conversations[id] == nil && finished[id] == nil ? .ended : .lost
+            if profile != nil { return isLive(id) ? .lost : .ended }
+            return finished[id] == nil ? .ended : .lost
         }
+    }
+
+    /// The conversation is still running under the intent that is current.
+    func isLive(_ id: ConversationID) -> Bool {
+        guard let conversation = conversations[id] else { return false }
+        return conversation.generation == intent?.generation
     }
 
     /// Runs one `Outbox.send` in its own task, so `end(_:_:)` can cancel it
@@ -505,7 +519,7 @@ public actor DownNegotiator: DownService {
             return
         }
         for body in conversation.outstanding {
-            if await send(body, to: conversation.peer, in: id, profile: conversation.profile) == .ended { return }
+            guard await send(body, to: conversation.peer, in: id, profile: conversation.profile) != .ended, isLive(id) else { return }
         }
         guard var current = conversations[id], current.timerToken == token else { return }
         current.attempts += 1

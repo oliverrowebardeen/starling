@@ -153,4 +153,29 @@ import Testing
         try await eventually("both matched") { await matchCounts(ana, ben) == [1, 1] }
         await world.stop()
     }
+
+    // MARK: - Second review (28c4b87)
+
+    /// P1: withdrawing while the first of two queries waits for consent
+    /// must stop the whole batch, not just that send.
+    @Test func withdrawingMidBatchSendsNothingElse() async throws {
+        let consent = GatedConsentProvider()
+        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent)
+        let (starter, answerer) = Self.roles(world)
+        try await world.start()
+        // Liked activities and a budget cap: the starter asks two queries.
+        try await starter.want(time: [T.slot(19, 22)], liked: ["food"], maxBudget: 15)
+        try await answerer.want(time: [T.slot(19, 22)])
+        try await eventually("the activity query waits for consent") { await consent.pending == 1 }
+
+        await starter.negotiator.clearIntent()
+        // Approve whatever asks next, as an owner tapping through would.
+        for _ in 0..<10 {
+            await consent.answerAll(.approved)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await consent.requests == 1)
+        #expect(await !world.wire.sent(by: starter.id).contains { $0.body.kind == .query })
+        await world.stop()
+    }
 }
