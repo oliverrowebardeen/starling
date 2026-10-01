@@ -90,9 +90,15 @@ extension PickAPlaceService {
         let conversation = envelope.conversation
         guard let invite = invites[conversation], envelope.sender == invite.organizer else { return }
         if invite.isFinished {
+            guard invite.finalRoster != nil else { return }
+            switch envelope.body {
             // After the plan is confirmed, only a shorter roster can follow:
             // someone took their yes back after the confirmation.
-            if case .accept(let acceptance) = envelope.body { rosterShrank(acceptance, in: conversation) }
+            case .accept(let acceptance): rosterShrank(acceptance, in: conversation)
+            // The organizer called the plan off.
+            case .reject: planCalledOff(conversation)
+            default: break
+            }
             return
         }
         switch envelope.body {
@@ -407,7 +413,16 @@ extension PickAPlaceService {
     ///   like silence and resolves at the organizer's confirm deadline
     ///   (ADR 0020, decision 9).
     func leave(_ conversation: ConversationID, event: InteractionEvent) {
-        guard let invite = invites[conversation], !invite.isFinished else { return }
+        guard let invite = invites[conversation] else { return }
+        if invite.isFinished {
+            // Withdrawing from a confirmed plan takes the yes back like any
+            // other: the organizer shortens the roster for everyone left.
+            guard invite.finalRoster != nil else { return }
+            invites[conversation]?.finalRoster = nil
+            emit(invite.id, .withdrawn)
+            startWithdrawal(invite)
+            return
+        }
         guard invite.accepted || invite.accepting else {
             endInvite(conversation, event: event, reply: invite.proposal == nil ? .noOverlap : nil)
             return
@@ -416,10 +431,21 @@ extension PickAPlaceService {
         // roster with someone who left: the no is kept in the ledger and
         // retried until the organizer acknowledges it, across relaunches.
         endInvite(conversation, event: event, reply: nil)
-        let withdrawal = PendingWithdrawal(conversation: conversation, organizer: invite.organizer, proposal: invite.proposeID,
+        startWithdrawal(invite)
+    }
+
+    func startWithdrawal(_ invite: Invite) {
+        let withdrawal = PendingWithdrawal(conversation: invite.conversation, organizer: invite.organizer, proposal: invite.proposeID,
                                            chainedFrom: invite.chainedFrom, since: clock.now())
-        spawn(conversation) { try? await $0.ledger.recordWithdrawal(withdrawal) }
+        spawn(invite.conversation) { try? await $0.ledger.recordWithdrawal(withdrawal) }
         retryWithdrawal(withdrawal)
+    }
+
+    /// The organizer withdrew a confirmed plan: it is over on this phone too.
+    func planCalledOff(_ conversation: ConversationID) {
+        guard let invite = invites[conversation], invite.finalRoster != nil else { return }
+        invites[conversation]?.finalRoster = nil
+        emit(invite.id, .withdrawn)
     }
 
     /// Sends the no again, with backoff, until the organizer acknowledges it

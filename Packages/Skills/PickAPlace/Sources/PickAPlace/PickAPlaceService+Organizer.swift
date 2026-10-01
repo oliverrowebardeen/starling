@@ -442,6 +442,27 @@ extension PickAPlaceService {
         }
     }
 
+    /// The owner withdraws a confirmed plan. Confirmations still on their
+    /// way, held by the policy or a consent sheet, are cancelled and no
+    /// more are sent; everyone in the final roster hears the ordinary no
+    /// (final review of PR #55, finding 2).
+    func callOff(_ conversation: ConversationID) {
+        guard var organizer = organized[conversation], organizer.phase == .settled else { return }
+        let roster: [PeerID] = if case .peers(let people)? = organizer.finalTerms?[.people] { people } else { organizer.invited }
+        organizer.phase = .ended
+        organized[conversation] = organizer
+        cancelTasks(conversation)
+        emit(organizer.id, .withdrawn)
+        let chainedFrom = organizer.chainedFrom
+        for friend in roster where friend != localPeer {
+            let lastHeard = organizer.lastHeard[friend]
+            spawn(conversation) { service in
+                await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: .noOverlap)), to: friend,
+                                      conversation: conversation, chainedFrom: chainedFrom)
+            }
+        }
+    }
+
     /// Takes a friend out of a confirmed plan: everyone left gets the
     /// shortened roster, as a confirmation, and the plan's attendees update.
     func withdrawAfterConfirmation(_ friend: PeerID, in conversation: ConversationID) {

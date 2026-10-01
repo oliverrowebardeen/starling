@@ -76,6 +76,72 @@ struct WithdrawalTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// Final review of PR #55, finding 2: the organizer withdraws while its
+    /// confirmation to Maya is held on a consent sheet. The confirmation
+    /// never leaves, and Maya's request ends.
+    @Test func theOrganizerWithdrawsWhileItsConfirmationIsHeld() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let gate = ConsentGate()
+        let askingForConfirmation = FixedPolicyEngine(decide: { message in
+            let envelope = message.envelope
+            guard envelope.body.kind == .accept else { return .allow }
+            return .needsConsent(Disclosure(recipient: envelope.recipient, recipientModel: nil, items: [],
+                                            conversation: envelope.conversation, skill: envelope.skill))
+        })
+        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: askingForConfirmation, gate: gate, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        let group = try await Group([oliver, maya], hub: hub)
+        defer { Task { await group.stop() } }
+        let request = try await oliver.organize(Venues.all, with: [maya])
+        for phone in [oliver, maya] { #expect(await phone.reaches(.proposed, in: request.conversation)) }
+        try await maya.accept(in: request.conversation)
+        try await oliver.accept(in: request.conversation)
+        #expect(await oliver.reaches(.planned, in: request.conversation))
+        #expect(await eventually { await gate.waiting >= 1 })
+
+        await oliver.service.withdraw(request.id)
+        #expect(await oliver.reaches(.ended(.withdrawn), in: request.conversation))
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await !group.wire.sent(by: oliver.id).contains { $0.body.kind == .accept })
+        #expect(await maya.reaches(.ended(.nobodyUp), in: request.conversation))
+        #expect(await maya.agreedPlace(in: request.conversation) == nil)
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func theOrganizerCanWithdrawAPlannedPlan() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let request = try await oliver.organize(Venues.all, with: [maya, jake])
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: request.conversation)) }
+        for phone in [maya, jake, oliver] { try await phone.accept(in: request.conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: request.conversation)) }
+
+        await oliver.service.withdraw(request.id)
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.ended(.withdrawn), in: request.conversation), "\(phone.name)") }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func aFriendCanWithdrawFromAPlannedPlan() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        for phone in [maya, jake, oliver] { try await phone.accept(in: conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation)) }
+
+        let jakes = try #require(await jake.interaction(conversation)?.id)
+        await jake.service.withdraw(jakes)
+        #expect(await jake.reaches(.ended(.withdrawn), in: conversation))
+        for phone in [oliver, maya] {
+            #expect(await eventually { await phone.attendees(in: conversation) == [oliver.id, maya.id] }, "\(phone.name)")
+            #expect(await phone.state(in: conversation) == .planned)
+        }
+        #expect(await eventually { await jake.service.pendingWithdrawals.isEmpty })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func noRejectionEverNamesAPass() async throws {
         let (group, oliver, maya, jake) = try await threeFriends()
         defer { Task { await group.stop() } }
