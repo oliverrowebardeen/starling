@@ -1,6 +1,6 @@
 # Phase 1.5 lane plan
 
-Status: **Proposed, waiting for Oliver's approval.** No lane starts before approval (prompt section 11).
+Status: **Approved by Oliver on 2026-09-30**, with all six lanes starting together. Kickoff prompts: `docs/plans/phase-1.5-kickoff-prompts.md`.
 
 Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 to 0018. Interfaces: Core v2, frozen on main at c07c036 (PR #45, after five adversarial review rounds).
 
@@ -9,7 +9,7 @@ Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 
 | # | Item | Who | Why |
 |---|---|---|---|
 | 1 | ~~Merge Core v2 (PR #45)~~ Done, c07c036 | Orchestrator | Lanes build on the frozen interfaces |
-| 2 | Agree or redirect: ADR 0010 decision 2 (intent schema as data), ADR 0013 (one-button pre-permission sheet), ADR 0018 (link friends to contacts for Messages) | Oliver | Lanes A, B, C, and E build on these |
+| 2 | ~~Agree or redirect ADRs 0010 decision 2, 0013, and 0018~~ All three approved | Oliver | Lanes A, B, C, and E build on these |
 | 3 | Say what Muse and Dots are, or drop them from hand-offs | Oliver | Hand-off scope |
 | 4 | Re-enable hosted CI | Oliver | CI is the merge gate; until then the Orchestrator gates locally |
 | 5 | Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling` and sign in again in Xcode | Oliver | Signed device builds with Wi-Fi Aware, needed for the exit test |
