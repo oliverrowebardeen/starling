@@ -104,6 +104,9 @@ public final class ConsentCoordinator: ConsentProvider {
 
     public private(set) var current: Request?
 
+    /// How many requests are waiting, the one on screen included.
+    public var waitingCount: Int { queue.count }
+
     private struct Pending {
         let request: Request
         let continuation: CheckedContinuation<ConsentOutcome, Never>
