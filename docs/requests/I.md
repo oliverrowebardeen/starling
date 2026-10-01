@@ -32,13 +32,20 @@ raw-link case as a labeled negative control, and make the Phase 1 impersonation
 acceptance test exercise the actual secure channel. Lane I cannot edit
 `Tools/Simulator/Sources/` under its ownership rules.
 
-## F and G integration follow-up
+## Completed: F and G integration
 
-The v1.1 tests exercise Inbox and Outbox with Loopback and policy/consent
-fakes. After F and G merge, the Orchestrator should request the final lane I
-pass against their concrete implementations: one-sided and reordered exchanges,
-no false notifications, hard-limit enforcement, and consent denial. The current
-tests do not claim that the future Down state machine or policy engine passed.
+Rebased onto `777de46`, which includes F, G, and E2. The new
+`Tools/Simulator/Tests/DownIntegrationTests/` target exercises the public
+`DownNegotiator` and `DeterministicPolicyEngine` through Inbox and Outbox over
+Loopback, with the real audit observer. Its 15 tests include 22 parameterized
+cases covering mutual and one-sided interest, three-peer overlap, disclosure
+rules, consent decline and withdrawal, partitions, malicious PSI, replay,
+timestamp rejection, forged acceptances, and hostile model output.
+
+These scenarios found no new F or G defect. They use scripted models and
+fixture paired records; they do not replace the secure-channel acceptance
+scenario tracked by #8. Method and limits are in
+[ADR 0151](../decisions/0151-down-policy-integration-tests.md).
 
 ## C2: matching negative controls
 
@@ -54,3 +61,7 @@ The full rates and 48 trial triples are in
 `Tools/Simulator/Tests/PromptInjectionTests/Results/`. Rerun the opt-in experiment
 after C2 lands. Its baseline assertion links to #9 with `withKnownIssue`; new
 attack-only unsafe transitions and unsafe decisions remain ordinary failures.
+Per the C2 relay, once the Orchestrator confirms its merge, assert the corrected
+baseline normally and retain #9 markers only on the benign-label and
+attack-label variants that still fail. The F/G integration update leaves the
+experiment and its markers unchanged.

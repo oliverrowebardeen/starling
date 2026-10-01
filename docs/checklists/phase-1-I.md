@@ -4,7 +4,8 @@ No iPhone was connected during this lane's run. Steps 2 through 5 require the
 merged E1, F, G, and H app. Use synthetic availability and budgets.
 
 1. Mac: run `Tools/test-all.sh Tools/Simulator`. Expect: all packages passed,
-   10,000 seeded mutations completed, and only the issue-linked known failures.
+   10,000 seeded mutations completed, all 15 real Down/policy integration tests
+   passed, and only the issue-linked known failures.
 2. Phones A and B: pair and compare the displayed code before confirming.
    Expect: both appear as paired friends. Phone C, unpaired: start Down nearby.
    Expect: neither paired phone negotiates or notifies for C.
