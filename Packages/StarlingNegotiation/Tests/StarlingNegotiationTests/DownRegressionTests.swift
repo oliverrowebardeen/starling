@@ -427,6 +427,34 @@ import Testing
         await mallory.stop()
         await world.stop()
     }
+
+    // MARK: - Harness
+
+    /// The wire observer records deliveries on its own task, so it can lag
+    /// behind a match on a loaded machine (lane H saw this check fail once).
+    /// The check must wait for the backing accept to be recorded rather than
+    /// read the wire at one instant.
+    @Test func theNoFalseMatchCheckWaitsForASlowWire() async throws {
+        let world = DownWorld(["ana", "ben"], wireDelay: .milliseconds(30))
+        try await world.start()
+        try await world["ana"].want(time: [T.slot(19, 22)])
+        try await world["ben"].want(time: [T.slot(19, 22)])
+        try await eventually("both matched") { await matchCounts(world["ana"], world["ben"]) == [1, 1] }
+        await world.expectNoFalseMatches()
+        await world.stop()
+    }
+
+    /// The waiting check still catches a match nobody accepted.
+    @Test func theNoFalseMatchCheckStillCatchesAnUnbackedMatch() async throws {
+        let world = DownWorld(["ana", "ben"])
+        try await world.start()
+        let fake = DownMatch(peer: world["ben"].id, terms: try T.plan(time: T.slot(19, 20)), bothDown: true)
+        await world["ana"].log.append(.matched(fake))
+        await withKnownIssue {
+            await world.expectNoFalseMatches(timeout: .milliseconds(100))
+        }
+        await world.stop()
+    }
 }
 
 import Synchronization
