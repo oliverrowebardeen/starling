@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import StarlingChaining
 import StarlingCore
 
 /// Everything the app's features are built from. The app target assembles
@@ -38,6 +39,9 @@ public struct AppServices: Sendable {
     /// Remembers each conversation's highest sent sequence number across
     /// launches (Core v2.1). Nil keeps it in memory only.
     public var sequences: (any RetainingSentSequenceStore)?
+    /// Lane E's journal of sends whose egress record is not yet confirmed,
+    /// on disk in the app (ADR 0021 decision 4).
+    public var egressJournal: any EgressJournal
     /// The phone's record of retired conversations and answered candidates,
     /// which Outbox enforces (ADR 0021). Nil only in tests and previews.
     public var ledger: (any ConversationLedger)?
@@ -79,6 +83,7 @@ public struct AppServices: Sendable {
         auditLog: (any OutboxObserver)? = nil,
         sequences: (any RetainingSentSequenceStore)? = nil,
         ledger: (any ConversationLedger)? = nil,
+        egressJournal: any EgressJournal = InMemoryEgressJournal(),
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -108,6 +113,7 @@ public struct AppServices: Sendable {
         self.auditLog = auditLog
         self.sequences = sequences
         self.ledger = ledger
+        self.egressJournal = egressJournal
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -151,6 +157,13 @@ public final class AppModel {
     public let localPeer: PeerID?
     /// Whether the owner allowed notifications, once asked.
     public private(set) var notificationsAllowed: Bool?
+    /// Lane E's recorder of what each send disclosed (the Outbox's observer).
+    public let egress: EgressRecorder
+    /// Conversations whose egress log may be missing a send, from the
+    /// recorder, and whether its journal could not be read at launch. Plan
+    /// detail then claims nothing stayed on the phone there.
+    public private(set) var unconfirmedConversations: Set<ConversationID> = []
+    public private(set) var egressJournalUnreadable = false
     /// Set when the conversation ledger cannot be read: Outbox then sends
     /// nothing at all, and Home says why.
     public private(set) var ledgerNotice: String?
@@ -182,15 +195,20 @@ public final class AppModel {
         self.friends = friends
         cards = PeerCards(file: services.cardsFile) { peer in friends?.friends.contains { $0.id == peer } ?? false }
 
-        // The Outbox's observer records egress on the lifecycle, which does
-        // not exist yet; it is set right after.
-        let recorder = EgressRelay()
+        // Lane E's recorder writes "What left your phone" through the
+        // lifecycle coordinator, which does not exist yet; the relay is
+        // pointed at it right after (P15-E request 4.1).
+        let relay = EgressRelay()
+        let egress = EgressRecorder(sink: relay, journal: services.egressJournal)
+        self.egress = egress
         let outbox: Outbox? = if let policy, let transport = services.transport {
             Outbox(
-                transport: transport, policy: policy, consent: consent,
-                observer: EgressObserver(forward: services.auditLog) { record, interaction, conversation in
-                    recorder.lifecycle?.recordEgress(record, interaction: interaction, conversation: conversation)
-                },
+                transport: transport,
+                // Every envelope of an owner's chain link must name its parent
+                // (ADR 0240); the owner's topics still decide everything else.
+                policy: ChainedFromPolicy(wrapping: policy, store: services.interactions),
+                consent: consent,
+                observer: FanOutObserver([egress] + (services.auditLog.map { [$0] } ?? [])),
                 sequences: services.sequences,
                 ledger: services.ledger
             )
@@ -203,7 +221,7 @@ public final class AppModel {
             services: outbox.map(services.makeSkills) ?? [],
             store: services.interactions
         )
-        recorder.lifecycle = lifecycle
+        relay.lifecycle = lifecycle
         consent.tracker = lifecycle
         let consent = consent
         lifecycle.onFinished = { interaction, conversation in
@@ -335,6 +353,10 @@ public final class AppModel {
         refreshCard()
         await lifecycle.start()
         lifecycle.tick()
+        // Before any plan detail shows: bring back sends the journal still
+        // holds, so their conversations read as unconfirmed (P15-E 4.1).
+        await egress.recover()
+        await refreshAudit()
         if let ledger = services.ledger {
             do {
                 _ = try await ledger.isRetired(ConversationID())
@@ -399,6 +421,14 @@ public final class AppModel {
         }
     }
 
+    /// Reads the recorder's view of which egress logs may be incomplete, and
+    /// retries any record still waiting. Plan detail calls it when it opens.
+    public func refreshAudit() async {
+        await egress.retryPending()
+        unconfirmedConversations = await egress.unconfirmedConversations
+        egressJournalUnreadable = await egress.journalUnreadable
+    }
+
     /// Ends plans whose time has passed; the app calls it when it comes to
     /// the foreground.
     public func foreground() {
@@ -432,7 +462,8 @@ public final class AppModel {
     /// Plan detail for a planned or finished interaction.
     public func planDetail(_ root: Interaction) -> PlanDetail {
         syncNames()
-        return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes)
+        return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes,
+                          unconfirmed: unconfirmedConversations, journalUnreadable: egressJournalUnreadable)
     }
 
     /// "Keep it going" after a plan: skills that accept what it produced,
@@ -449,11 +480,17 @@ public final class AppModel {
     }
 }
 
-/// Lets the Outbox's observer reach the lifecycle coordinator, which is
-/// built after the Outbox.
+/// Lets the egress recorder reach the lifecycle coordinator, which is built
+/// after the Outbox. Before it is set (never, after init), nothing is
+/// attributed.
 @MainActor
-private final class EgressRelay: Sendable {
+private final class EgressRelay: EgressSink {
     weak var lifecycle: LifecycleCoordinator?
+
+    func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
+        guard let lifecycle else { return false }
+        return try await lifecycle.appendEgress(record, conversation: conversation)
+    }
 }
 
 /// Friends' names, readable from the `@Sendable` closures words use.

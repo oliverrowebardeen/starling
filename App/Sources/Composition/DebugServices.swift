@@ -4,6 +4,7 @@
 import Foundation
 import Observation
 import StarlingAgent
+import StarlingChaining
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
@@ -66,6 +67,7 @@ final class DebugHarness {
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
             ledger: LiveServices.ledger(),
+            egressJournal: LiveServices.egressJournal(),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,

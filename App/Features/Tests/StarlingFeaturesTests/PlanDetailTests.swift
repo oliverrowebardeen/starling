@@ -67,7 +67,7 @@ import Testing
 
         // What left the phone equals the egress log; location, budget, and
         // diet never did.
-        #expect(detail.shared.map(plain) == ["Boba", "Tonight 8:13 PM to 10:14 PM", "Boba Guys"])
+        #expect(detail.shared.map(plain) == ["Tonight 8:13 PM to 10:14 PM", "Boba", "Boba Guys"], "in topic order")
         #expect(detail.kept == ["Exact location", "Budget", "Diet"])
         #expect(detail.auditIsComplete)
     }
@@ -80,6 +80,21 @@ import Testing
         let detail = PlanDetail(root: root, all: [root], words: words, notes: PlanNotes(file: nil))
         #expect(detail.kept.isEmpty)
         #expect(!detail.auditIsComplete)
+    }
+
+    /// P15-E request 4.1: a conversation the egress recorder cannot yet
+    /// confirm, or an unreadable journal, means nothing is claimed kept.
+    @Test func anUnconfirmedLogOrUnreadableJournalClaimsNothingKept() throws {
+        var root = try planned(SampleSkills.downFor, artifacts: [])
+        root.record(.plan(try bobaPlan(origin: root.conversation)))
+        let notes = PlanNotes(file: nil)
+        #expect(!PlanDetail(root: root, all: [root], words: words, notes: notes).kept.isEmpty)
+        let unconfirmed = PlanDetail(root: root, all: [root], words: words, notes: notes, unconfirmed: [root.conversation])
+        #expect(unconfirmed.kept.isEmpty)
+        #expect(!unconfirmed.auditIsComplete)
+        let unreadable = PlanDetail(root: root, all: [root], words: words, notes: notes, journalUnreadable: true)
+        #expect(unreadable.kept.isEmpty)
+        #expect(!unreadable.auditIsComplete)
     }
 
     @Test func handOffsArePrefilledFromThePlan() throws {

@@ -334,6 +334,9 @@ struct PlanDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // Which logs may be missing a send, before "What left your phone"
+        // claims anything stayed (P15-E request 4.1).
+        .task { await app.refreshAudit() }
     }
 }
 

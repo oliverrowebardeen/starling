@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import StarlingAgent
+import StarlingChaining
 import StarlingCore
 import StarlingFeatures
 import StarlingIdentity
@@ -33,6 +34,7 @@ extension AppServices {
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
             ledger: LiveServices.ledger(),
+            egressJournal: LiveServices.egressJournal(),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
@@ -105,6 +107,13 @@ enum LiveServices {
     /// sends nothing rather than sending without one.
     static func ledger() -> any ConversationLedger {
         (try? FileConversationLedger.standard()) ?? UnavailableConversationLedger()
+    }
+
+    /// Lane E's journal of unconfirmed sends, on disk (P15-E request 4.1).
+    /// If its file cannot be located, a journal that refuses everything
+    /// stands in, so no send leaves unrecorded.
+    static func egressJournal() -> any EgressJournal {
+        (try? FileEgressJournal.standard()) ?? UnavailableEgressJournal()
     }
 
     static func settingsStore() -> any OwnerSettingsStore {

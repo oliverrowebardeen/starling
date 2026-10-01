@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import StarlingChaining
 import StarlingCore
 
 /// An event the coordinator did not apply, kept for the Developer section
@@ -95,6 +96,9 @@ public final class LifecycleCoordinator {
     private var starting: Task<Void, Never>?
     private var dirty: [InteractionID] = []
     private var writer: Task<Void, Never>?
+    /// Interactions whose latest save failed, so a caller that must know its
+    /// change is on disk (the egress sink) can tell.
+    private var unsaved: Set<InteractionID> = []
     /// Progress a service reported while its interaction was suspended on a
     /// consent sheet, in order, applied once the step resumes (amendment 15).
     private var deferred: [InteractionID: [InteractionEvent]] = [:]
@@ -359,19 +363,6 @@ public final class LifecycleCoordinator {
         }
     }
 
-    /// Records what one send disclosed, for "What left your phone". Sends
-    /// outside any interaction (hello) are not recorded here.
-    public func recordEgress(_ record: EgressRecord, interaction id: InteractionID? = nil, conversation: ConversationID) {
-        // The interaction the service named wins: a group member sends in
-        // the starter's conversation, so the conversation alone can be
-        // ambiguous (Core v2.1, OutboundContext.interaction).
-        let owner = id.flatMap(interaction) ?? interaction(conversation: conversation)
-        guard var current = owner, current.conversation == conversation else { return }
-        let before = current
-        current.record(record)
-        replace(current, before: before)
-    }
-
     /// Ends plans whose time has passed (`planEnded`). The app calls this at
     /// launch and when it comes to the foreground.
     public func tick() {
@@ -464,7 +455,9 @@ public final class LifecycleCoordinator {
             while let self, let next = self.nextDirty() {
                 do {
                     try await self.store.save(next)
+                    self.unsaved.remove(next.id)
                 } catch {
+                    self.unsaved.insert(next.id)
                     self.notice = "Starling couldn't save your latest plans. They'll be lost if the app closes."
                     self.logger.error("save failed: \(String(describing: error), privacy: .public)")
                 }
@@ -487,3 +480,24 @@ public final class LifecycleCoordinator {
         while let writer { await writer.value }
     }
 }
+
+/// Lane E's `EgressRecorder` writes "What left your phone" through the
+/// coordinator, the one place every interaction write goes (P15-E request
+/// 4.1, ADR 0011 decision 7).
+extension LifecycleCoordinator: EgressSink {
+    /// Appends `record` to the conversation's interaction (a repeat for the
+    /// same envelope is ignored) and returns once it is saved. Throws when
+    /// the save failed, so the recorder keeps the send and retries it.
+    public func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
+        guard var current = interaction(conversation: conversation) else { return false }
+        let before = current
+        current.record(record)
+        if current != before { replace(current, before: before) }
+        await flush()
+        if unsaved.contains(current.id) { throw EgressNotSaved() }
+        return true
+    }
+}
+
+/// The interaction holding an egress record could not be saved.
+public struct EgressNotSaved: Error, Hashable, Sendable {}

@@ -411,14 +411,31 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.isEmpty)
     }
 
+    /// The coordinator is lane E's EgressSink: a record lands on the
+    /// conversation's interaction once, is saved before it returns, and a
+    /// conversation nobody owns reports false.
     @Test func egressIsRecordedOnTheInteractionThatSentIt() async throws {
-        let lifecycle = coordinator()
+        let store = InMemoryInteractionStore()
+        let lifecycle = coordinator(store: store)
         let sent = request(to: [maya])
         let id = try await lifecycle.start(sent, settings: Self.settings)
-        let record = EgressRecord(at: Timestamp(clock.now), recipient: maya, items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))])
-        lifecycle.recordEgress(record, conversation: sent.conversation)
-        lifecycle.recordEgress(record, conversation: ConversationID())
+        let record = EgressRecord(at: Timestamp(clock.now), recipient: maya, items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))],
+                                  message: MessageID())
+        #expect(try await lifecycle.appendEgress(record, conversation: sent.conversation))
+        #expect(try await lifecycle.appendEgress(record, conversation: sent.conversation), "a repeat is ignored")
+        #expect(try await !lifecycle.appendEgress(record, conversation: ConversationID()))
         #expect(lifecycle.interaction(id)?.egress == [record])
+        #expect(try await store.interaction(id)?.egress == [record], "saved before it returned")
+    }
+
+    @Test func anEgressRecordThatCannotBeSavedThrowsSoTheRecorderRetries() async throws {
+        let store = BlockingStore()
+        let lifecycle = coordinator(store: store)
+        let sent = request(to: [maya])
+        _ = try await lifecycle.start(sent, settings: Self.settings)
+        await store.failSaves()
+        let record = EgressRecord(at: Timestamp(clock.now), recipient: maya, items: [], message: MessageID())
+        await #expect(throws: EgressNotSaved.self) { try await lifecycle.appendEgress(record, conversation: sent.conversation) }
     }
 
     // MARK: Starting
