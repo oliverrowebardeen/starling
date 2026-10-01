@@ -32,4 +32,13 @@ import Testing
         #expect(first.fingerprint == second.fingerprint)
         #expect(RosterLabels.labels(for: [first], friends: [:]) != RosterLabels.labels(for: [second], friends: [:]))
     }
+
+    /// Review 5 of PR #45: a nickname built to look like another friend's
+    /// generated label.
+    @Test func aNicknameCannotImitateAGeneratedLabel() throws {
+        let a = PeerID.random(), b = PeerID.random(), c = PeerID.random()
+        let friends: [PeerID: String] = [a: "Alex", b: "Alex", c: "Alex (\(a.fingerprint))"]
+        #expect(RosterLabels.labels(for: [a], friends: friends) != RosterLabels.labels(for: [c], friends: friends))
+        #expect(RosterLabels.labels(for: [c], friends: friends) == ["Alex (\(a.fingerprint)) (\(c.fingerprint))"])
+    }
 }
