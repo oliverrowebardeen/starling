@@ -174,6 +174,68 @@ import Testing
         #expect(await b.service.requests[card]?.engagement != .hub)
         await world.expectCleanLifecycles()
     }
+
+    // MARK: Final privacy review, finding 1: a starter's pass looks like silence
+
+    @Test func aStartersPassAndSilenceLookAlikeToAFriend() async throws {
+        let passed = try await Self.proposalsSeenByAFriend(starterPasses: true)
+        let silent = try await Self.proposalsSeenByAFriend(starterPasses: false)
+        #expect(passed.kinds == [.propose] && silent.kinds == [.propose], "passed \(passed.kinds), silent \(silent.kinds)")
+        // The same fixed schedule: as many resends, ending at the same time.
+        #expect(abs(passed.count - silent.count) <= 1, "passed \(passed.count), silent \(silent.count)")
+        #expect(passed.count > 3)
+        let gap = abs((passed.lastAfterFirst - silent.lastAfterFirst) / .milliseconds(1))
+        #expect(gap < 250, "the last proposal differs by \(gap) ms")
+    }
+
+    struct Delivered: Sendable {
+        /// Kinds the starter sent after its proposal, repeats collapsed.
+        let kinds: [MessageBody.Kind]
+        let count: Int
+        let lastAfterFirst: Duration
+    }
+
+    /// A and B ask each other; A carries the pair. Neither card is
+    /// answered by B; A passes soon after its card shows, or never answers.
+    /// Returns what A sent B from its first proposal until well after the
+    /// owner window, timed as B received it.
+    static func proposalsSeenByAFriend(starterPasses: Bool) async throws -> Delivered {
+        let world = World(2)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let (a, b) = (world["A"], world["B"])
+        let mine = try await a.down(for: ["boba"], with: [b])
+        let theirs = try await b.down(for: ["boba"], with: [a])
+        try await a.waitForProposal(mine)
+        try await b.waitForProposal(theirs)
+        let clock = ContinuousClock()
+        var seen: [(MessageBody.Kind, ContinuousClock.Instant)] = []
+        var counted = 0
+        func observe() async {
+            let toB = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id }
+            let proposalsSoFar = toB.drop { $0.body.kind != .propose }
+            for envelope in proposalsSoFar.dropFirst(counted) { seen.append((envelope.body.kind, clock.now)) }
+            counted = proposalsSoFar.count
+        }
+        await observe()
+        if starterPasses {
+            try await Task.sleep(for: .milliseconds(150))
+            try await a.service.answer(mine, with: .pass)
+        }
+        // The window is 2 s; watch for a second more.
+        let until = clock.now.advanced(by: .seconds(3))
+        while clock.now < until {
+            await observe()
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await a.waitFor(starterPasses ? .ended(.declined) : .ended(.expired), mine)
+        #expect(await !b.lifecycle.reached(.planned, theirs))
+        var kinds: [MessageBody.Kind] = []
+        for (kind, _) in seen where kinds.last != kind { kinds.append(kind) }
+        let first = try #require(seen.first?.1)
+        let last = try #require(seen.last?.1)
+        return Delivered(kinds: kinds, count: seen.count, lastAfterFirst: first.duration(to: last))
+    }
 }
 
 extension Mallory {

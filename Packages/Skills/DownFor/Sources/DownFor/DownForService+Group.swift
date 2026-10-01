@@ -161,6 +161,7 @@ extension DownForService {
     /// part of what they agree to.
     private func drop(_ peers: Set<PeerID>, from id: InteractionID) {
         guard let request = requests[id], let group = request.group else { return }
+        for peer in peers { stopDelivery(RunKey(conversation: request.conversation, peer: peer)) }
         group.window?.cancel()
         requests[id]?.group = nil
         let remaining = group.members.filter { !peers.contains($0) && runs[RunKey(conversation: request.conversation, peer: $0)] != nil }
@@ -189,23 +190,29 @@ extension DownForService {
     /// are left out, and a starter who has not either lets the group go.
     func armWindow(_ id: InteractionID, revision: UInt32) {
         let window = configuration.ownerWindow
+        requests[id]?.group?.window?.cancel()
         requests[id]?.group?.window = Task { [weak self, clock] in
             do { try await clock.sleep(window) } catch { return }
             await self?.windowPassed(id, revision: revision)
         }
     }
 
+    /// The window is also when proposals stop going out (their schedule
+    /// ends by then), so only now does a starter who passed end its
+    /// request, the same moment silence would (final privacy review,
+    /// finding 1). Friends who have not said I'm in hear nothing: whether
+    /// the starter said it is not theirs to learn.
     private func windowPassed(_ id: InteractionID, revision: UInt32) {
         guard let request = requests[id], let group = request.group, group.revision == revision, group.confirming == nil else { return }
-        guard group.ownerAccepted else {
-            endRequest(id, with: .expired)
+        guard !request.passed, group.ownerAccepted else {
+            endRequest(id, with: request.passed ? .ownerPassed : .expired)
             return
         }
         let late = group.members.filter { runs[RunKey(conversation: request.conversation, peer: $0)]?.accepted != true }
         guard !late.isEmpty else { return }
         for peer in late {
             let key = RunKey(conversation: request.conversation, peer: peer)
-            if let run = runs[key] { enqueue(.notify(run.notice, .expired), for: peer) }
+            stopDelivery(key)
             end(key, .timedOut, react: false)
         }
         drop(Set(late), from: id)
@@ -224,18 +231,17 @@ extension DownForService {
         }
     }
 
+    /// A friend said I'm in to the plan it was offered: that stops the
+    /// proposal's schedule.
     func handleAccept(_ acceptance: Acceptance, in key: RunKey) {
-        guard let run = runs[key], run.role == .hub, run.phase == .proposed, let terms = run.terms,
-              acceptance.terms == terms, run.proposalEnvelopes.contains(acceptance.proposal), let request = requests[run.request],
+        guard let run = runs[key], run.role == .hub, run.phase == .proposed, let terms = run.terms, acceptance.terms == terms,
+              run.proposalEnvelopes.contains(acceptance.proposal) || acceptsDelivery(acceptance, at: key), let request = requests[run.request],
               request.invitation != nil ? request.group == nil : request.group?.terms == terms
         else { return }
+        stopDelivery(key)
         runs[key]?.accepted = true
         runs[key]?.acceptedProposal = acceptance.proposal
         runs[key]?.phase = .accepted
-        // Stop resending the proposal. The window bounds the wait from here.
-        runs[key]?.outstanding = []
-        runs[key]?.timerToken += 1
-        timers.removeValue(forKey: key)?.cancel()
         if request.invitation != nil { return invitationAccepted(in: run.request) }
         checkComplete(run.request)
     }

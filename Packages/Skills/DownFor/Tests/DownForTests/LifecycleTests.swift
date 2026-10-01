@@ -221,14 +221,20 @@ import Testing
         try await a.imIn(ids[0])
         try await b.imIn(ids[1])
         // C looks away. After the 2 s window, A and B get a plan for two.
+        // C hears nothing about it: whether A said I'm in is not C's to
+        // learn (final privacy review), so C's card ends when its own wait
+        // does.
         try await a.waitForProposal(ids[0], revision: 2)
-        try await c.waitFor(.ended(.nobodyUp), ids[2])
         try await a.imIn(ids[0])
         try await b.waitForProposal(ids[1], revision: 2)
         try await b.imIn(ids[1])
         try await a.waitFor(.planned, ids[0])
         try await b.waitFor(.planned, ids[1])
         #expect(await a.lifecycle.interaction(ids[0])?.plan?.attendees.peers == [a.id, b.id])
+        try await c.waitFor(.ended(.nobodyUp), ids[2])
+        // (B's own group with C stood down for A's, and says so; A says
+        // nothing.)
+        #expect(await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == c.id && $0.body.kind == .reject }.isEmpty)
         await world.expectCleanLifecycles()
     }
 

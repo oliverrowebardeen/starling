@@ -129,6 +129,10 @@ extension DownForService {
                 return
             }
             await dispatch(envelope, in: key)
+        } else if deliveries[key] != nil, case .accept(let acceptance) = envelope.body {
+            // A proposal still on its schedule after its run ended: I'm in
+            // stops it, and is answered by nothing.
+            if acceptsDelivery(acceptance, at: key) { stopDelivery(key) }
         } else if let record = finished[key] {
             // Only a plan is worth repeating, and only while it stands: the
             // peer lost our last message. A request withdrawn since sends
@@ -447,10 +451,13 @@ extension DownForService {
         guard let run = runs[key], let request = requests[run.request] else { return }
         switch action {
         case .propose:
-            guard run.role == .hub, run.phase == .proposed, let terms = run.terms, let group = request.group,
-                  let proposal = try? Proposal(round: UInt16(group.revision - 1), terms: terms)
+            // Each friend's own rounds, rising with each new plan it is
+            // offered, on a schedule fixed now (final privacy review).
+            guard run.role == .hub, run.phase == .proposed, let terms = run.terms,
+                  let proposal = try? Proposal(round: run.rounds, terms: terms)
             else { return }
-            await transmit([.propose(proposal)], in: key, awaitingReply: true, attemptLimit: .max, backsOff: true)
+            runs[key]?.rounds += 1
+            startDelivery(proposal, to: key, for: run.request, chainedFrom: run.chainedFrom, mode: run.mode)
         case .accept:
             guard run.role == .member, run.phase == .accepted, let terms = run.terms, let proposal = run.proposalEnvelopes.last else { return }
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)

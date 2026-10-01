@@ -100,6 +100,9 @@ struct Run: Sendable {
     var acceptedProposal: MessageID?
     /// Hub: the member accepted `terms`. Member: we did.
     var accepted = false
+    /// Hub: proposal rounds sent to this friend; each new plan for it is
+    /// the next round.
+    var rounds: UInt16 = 0
     var lastInbound: MessageID?
 
     // Retries and deadlines.
@@ -246,6 +249,8 @@ enum Work: Sendable {
     case act(RunKey, Action)
     /// Tell a friend "no plan" after its run ended.
     case notify(Notice, Rejection.Reason)
+    /// One scheduled send of a proposal (`DownForService+Delivery`).
+    case deliver(RunKey)
 }
 
 enum Action: Sendable {

@@ -77,6 +77,10 @@ public actor DownForService: SkillService {
         /// The audience check is running; the proposal follows at the end
         /// of its window.
         var vetting: Task<Void, Never>?
+        /// The owner passed on the card. The request runs on unchanged,
+        /// minus any I'm in from the owner, until the card's window ends
+        /// (final privacy review, finding 1).
+        var passed = false
 
         var id: InteractionID { record.interaction }
         var conversation: ConversationID { record.conversation }
@@ -92,6 +96,8 @@ public actor DownForService: SkillService {
 
     var requests: [InteractionID: Request] = [:]
     var runs: [RunKey: Run] = [:]
+    /// Proposals on their fixed delivery schedules, by friend.
+    var deliveries: [RunKey: Delivery] = [:]
     var finished: [RunKey: Finished] = [:]
     var finishedOrder: [RunKey] = []
     var reachable: Set<PeerID> = []
@@ -240,11 +246,19 @@ public actor DownForService: SkillService {
             case .proposed, .awaitingConsent: break
             default: throw DownForError.notWaitingForOwner
             }
-            // "If you pass, they just won't see it": the group carries on
-            // without the owner, or ends for everyone the same way silence
-            // would.
+            // "If you pass, they just won't see it". A starter's request
+            // runs on exactly as if the owner had not answered: proposals
+            // keep their schedule and nobody is confirmed, and it ends when
+            // the card's window does (final privacy review, finding 1).
+            // The coordinator shows the pass at once (request 7).
+            if request.engagement == .hub, request.invitation == nil, request.group != nil {
+                guard !request.passed else { throw DownForError.notWaitingForOwner }
+                requests[interaction]?.passed = true
+                return
+            }
             guard endRequest(interaction, with: .ownerPassed) else { throw DownForError.notWaitingForOwner }
         case .accept(let revision):
+            guard !request.passed else { throw DownForError.notWaitingForOwner }
             guard revision == request.mirror.proposalRevision else { throw DownForError.staleProposal(current: request.mirror.proposalRevision) }
             guard request.mirror.state == .proposed else { throw DownForError.notWaitingForOwner }
             guard report(interaction, .ownerAccepted(revision: revision)) else { throw DownForError.notWaitingForOwner }
@@ -359,7 +373,8 @@ public actor DownForService: SkillService {
         if mirror.state.isFinal { return endRequest(id, with: event) }
         request.mirror = mirror
         requests[id] = request
-        continuation.yield(.lifecycle(id, event))
+        // After a pass the owner sees nothing more until the ending.
+        if !request.passed { continuation.yield(.lifecycle(id, event)) }
         return true
     }
 
@@ -490,6 +505,7 @@ public actor DownForService: SkillService {
         request.timer?.cancel()
         request.quiet?.cancel()
         request.vetting?.cancel()
+        for key in deliveries.keys where deliveries[key]?.request == id { stopDelivery(key) }
         request.group?.window?.cancel()
         for key in runs.keys where runs[key]?.request == id { end(key, .withdrawn) }
         cancelWork { $0.request == id }
