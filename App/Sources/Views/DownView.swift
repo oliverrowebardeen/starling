@@ -67,6 +67,16 @@ struct DownView: View {
             sharingRows: model.sharingRows,
             setSharing: model.setSharing
         )
+        if !model.sharingWarnings.isEmpty || model.matchingNote != nil {
+            Section {
+                ForEach(model.sharingWarnings, id: \.self) { warning in
+                    Label(warning, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                if let note = model.matchingNote {
+                    Label(note, systemImage: "eye").font(.footnote)
+                }
+            }
+        }
         Section {
             Picker("How keen", selection: $model.level) {
                 Text("Down").tag(DownLevel.down)
