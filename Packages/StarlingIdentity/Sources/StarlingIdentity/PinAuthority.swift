@@ -2,6 +2,16 @@ import Foundation
 import StarlingCore
 import Synchronization
 
+/// Why `PinAuthority.rename` refused.
+public enum PinAuthorityError: Error, Hashable, Sendable {
+    /// No pin is stored for the peer.
+    case notPinned
+    /// An unpair of the peer is in progress.
+    case unpairInProgress
+    /// A failed delete left the peer quarantined; unpair it again.
+    case quarantined
+}
+
 /// The one authority over a device's pinned keys (ADR 0100 decision 11).
 ///
 /// It is identity-scoped: the app creates one per identity and store and
@@ -261,6 +271,36 @@ public final class PinAuthority: Sendable {
             }
             return $0.epochs.value(of: peer)
         }
+    }
+
+    // MARK: Renaming
+
+    /// Changes a pinned friend's nickname, and nothing else: the key, the
+    /// ID, and the pairing date stay. This is the only safe way to rename.
+    /// It runs under the pin lock like commits and unpairs, and refuses a
+    /// peer that is being unpaired, is quarantined, or is no longer pinned,
+    /// so it can never write back a pin an unpair removed. An unpair that
+    /// begins during the save deletes the pin after it (ADR 0100 decision 11).
+    /// The nickname is validated as `PairedPeer` does and never leaves the device.
+    public func rename(_ peer: PeerID, to nickname: String) async throws {
+        try checkRenamable(peer)
+        try await serialized {
+            try self.checkRenamable(peer)
+            guard let current = try await self.store.peer(for: peer), current.id == peer else {
+                throw PinAuthorityError.notPinned
+            }
+            let renamed = try PairedPeer(publicKey: current.publicKey, nickname: nickname, pairedAt: current.pairedAt)
+            // An unpair may have begun while the pin was read. Its delete waits
+            // for this lock, but do not write a pin it is about to remove.
+            try self.checkRenamable(peer)
+            try await self.store.save(renamed)
+        }
+    }
+
+    private func checkRenamable(_ peer: PeerID) throws {
+        let flags = state.withLock { $0.flags[peer] }
+        if flags?.quarantined == true { throw PinAuthorityError.quarantined }
+        if (flags?.removing ?? 0) > 0 { throw PinAuthorityError.unpairInProgress }
     }
 
     // MARK: Lookups

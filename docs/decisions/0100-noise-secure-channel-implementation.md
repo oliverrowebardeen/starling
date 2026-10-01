@@ -109,6 +109,8 @@ Noise revision 34 facts this design relies on:
     - (c) No session can be authenticated from a pin that an unpair or a commit might still remove, because lookups are refused while either is in progress. The end-of-unpair and rollback epoch moves kill anything that slipped through regardless.
     - (d) A commit leaves a pin only if no revocation began between its ceremony's start and its end.
 
+    **Renames go through the authority.** `PinAuthority.rename(_:to:)` is the only way to change a pinned friend's nickname (row 15 below). The app must never save to the pinned-peer store directly: a direct save after an unpair would write the pin back.
+
     **Audit: every read of revocation state and what covers its action** (fifth review). The next review can check this list instead of searching for sites.
 
     | # | Where | Reads | Acts | Covered by |
@@ -127,6 +129,7 @@ Noise revision 34 facts this design relies on:
     | 12 | `SecureTransport.purgeStale` | epoch | removes stale sessions and handshakes | Not one section, fails safe: a stale read can only keep a session that rows 9 to 11 then reject. |
     | 13 | `SecureTransport.status` | (through row 12) | reports the proven key | Diagnostic only; may report a key revoked an instant later. |
     | 14 | `PairingService.pair` | epoch | records the ceremony's `e0` | No action: `e0` is compared only in rows 1 and 2. |
+    | 15 | `PinAuthority.rename` | removing, quarantined (before the lock, under it, and again after reading the pin) | saves the renamed pin | Under the pin lock, so it is ordered against every commit and removal. The check after the read refuses a peer whose unpair began meanwhile. An unpair that begins during the save deletes the pin after it, under the same lock. The epoch is not checked: a rename is not a revocation, and leaves sessions alone. |
 
     Session generations, admission, and retained sessions are actor-isolated to one `SecureTransport` and not shared, so actor isolation covers them; admission is decided after the pin lookup, immediately before the attempt is installed (decision 5).
 

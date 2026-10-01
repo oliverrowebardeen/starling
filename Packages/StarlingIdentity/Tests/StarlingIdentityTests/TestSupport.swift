@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import StarlingCore
 import StarlingFakes
 @testable import StarlingIdentity
@@ -159,9 +160,14 @@ actor GatedPairedPeerStore: PairedPeerStore {
     }
     func remove(_ id: PeerID) async throws {
         await pause(at: .removeBeforeDelete)
+        if failRemovals { throw KeychainError(status: errSecIO) }
         try await inner.remove(id)
         await pause(at: .removeAfterDelete)
     }
+
+    /// Makes every later `remove` throw, as a failing Keychain delete would.
+    private var failRemovals = false
+    func failRemovals(_ fail: Bool) { failRemovals = fail }
 
     func peer(for id: PeerID) async throws -> PairedPeer? {
         let snapshot = try await inner.peer(for: id)
