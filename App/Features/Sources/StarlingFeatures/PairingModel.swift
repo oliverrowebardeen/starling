@@ -85,11 +85,17 @@ public final class PairingModel {
 
     public func refreshCandidates() async {
         var fresh = await directory.candidates()
-        // A phone picked in the system picker stays listed even before the
-        // link watcher reports it.
-        if let selected, !fresh.contains(selected) { fresh.insert(selected, at: 0) }
+        // The selected phone keeps its entry (a picked phone stays on Wi-Fi
+        // Aware), with no second entry for the same PeerID.
+        if let selected {
+            fresh.removeAll { $0.peer == selected.peer }
+            fresh.insert(selected, at: 0)
+        }
         candidates = fresh
     }
+
+    /// The link a phone picked in the system's Wi-Fi Aware picker pairs on.
+    public static let pickedDeviceLink = "Wi-Fi Aware"
 
     /// The owner picked a device in the system's Wi-Fi Aware picker: select
     /// the PeerID behind it, and suggest the device's name if the owner has
@@ -101,8 +107,11 @@ public final class PairingModel {
             notice = "Starling couldn't reach the phone you picked. Keep both phones close and open Starling on both, then try again."
             return
         }
-        let candidate = candidates.first { $0.peer == peer } ?? PairingCandidate(peer: peer, link: "Wi-Fi Aware")
-        if !candidates.contains(candidate) { candidates.insert(candidate, at: 0) }
+        // The picker paired the phones over Wi-Fi Aware, so the ceremony
+        // runs there, even if another link listed the same phone first.
+        let candidate = PairingCandidate(peer: peer, link: Self.pickedDeviceLink)
+        candidates.removeAll { $0.peer == peer }
+        candidates.insert(candidate, at: 0)
         selected = candidate
         if nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { nickname = name }
     }

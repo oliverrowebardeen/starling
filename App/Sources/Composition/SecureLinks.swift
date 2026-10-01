@@ -100,7 +100,13 @@ struct SecureLinks: Sendable {
                 return candidates
             },
             pair: { candidate, nickname in
-                guard let link = links.first(where: { $0.label == candidate.link }) ?? links.first else {
+                // Both phones must use the same link's PairingService, so the
+                // link comes from one rule (Wi-Fi Aware once it reports the
+                // friend), not from which list entry the owner tapped.
+                let label = await PairingRoute.link(for: candidate.peer, in: links.map(\.label)) { label in
+                    await links.first { $0.label == label }?.watcher.reachablePeers() ?? []
+                }
+                guard let link = links.first(where: { $0.label == label }) ?? links.first else {
                     throw TransportError.peerUnreachable(candidate.peer)
                 }
                 return try await link.pairing.pair(with: candidate.peer, nickname: nickname)
