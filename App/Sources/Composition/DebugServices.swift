@@ -61,6 +61,12 @@ final class DebugHarness {
                 DownNegotiator(localPeer: ownerID, outbox: outbox, pairedPeers: peers, model: agent, psi: InsecurePSIStub())
             },
             pairing: scriptedPairing(),
+            // In-memory friends until the next commit wires lane E1 here.
+            unpair: { id in try await peers.remove(id) },
+            rename: { id, name in
+                guard let peer = try await peers.peer(for: id) else { return }
+                try await peers.save(try PairedPeer(publicKey: peer.publicKey, nickname: name, pairedAt: peer.pairedAt))
+            },
             inboxEvents: inboxEvents,
             makePolicy: LiveServices.policy(peers: peers),
             auditLog: LiveServices.auditLog,

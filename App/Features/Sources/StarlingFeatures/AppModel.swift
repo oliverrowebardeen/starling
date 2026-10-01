@@ -23,6 +23,10 @@ public struct AppServices: Sendable {
     /// Lane E1's pairing over the app's links, or nil if pairing is not in
     /// this build.
     public var pairing: PairingDirectory?
+    /// Unpairs a friend everywhere (lane E1's `PinAuthority.unpair`).
+    public var unpair: @Sendable (PeerID) async throws -> Void
+    /// Renames a friend, or nil when the build has no safe way to.
+    public var rename: (@Sendable (PeerID, String) async throws -> Void)?
     /// The app's one `Inbox` stream (v1.1: `Inbox.events(from:)` over the
     /// secure channel). `AppModel` is its single consumer and routes every
     /// event to the features; nil until a transport is in the build.
@@ -55,6 +59,8 @@ public struct AppServices: Sendable {
         peers: (any PairedPeerStore)?,
         makeDownService: (@Sendable (Outbox) -> any DownService)?,
         pairing: PairingDirectory?,
+        unpair: @escaping @Sendable (PeerID) async throws -> Void = { _ in },
+        rename: (@Sendable (PeerID, String) async throws -> Void)? = nil,
         inboxEvents: AsyncStream<InboxEvent>? = nil,
         makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
@@ -73,6 +79,8 @@ public struct AppServices: Sendable {
         self.peers = peers
         self.makeDownService = makeDownService
         self.pairing = pairing
+        self.unpair = unpair
+        self.rename = rename
         self.inboxEvents = inboxEvents
         self.makePolicy = makePolicy
         self.auditLog = auditLog
@@ -139,7 +147,7 @@ public final class AppModel {
             downService = nil
             down = nil
         }
-        friends = services.peers.map(FriendsModel.init(store:))
+        friends = services.peers.map { FriendsModel(store: $0, unpair: services.unpair, rename: services.rename) }
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
         down?.intentChanged = { [weak self] in
             guard let self else { return }
@@ -197,9 +205,13 @@ public final class AppModel {
     /// every conversation is Down's (F request 4); later features get their
     /// events here too.
     private func routeInbox() {
-        guard inboxLoop == nil, let events = services.inboxEvents, let downService else { return }
+        // Runs whenever there is an Inbox: Release has friends (and their
+        // reachability) even without Down.
+        guard inboxLoop == nil, let events = services.inboxEvents else { return }
+        let downService = downService
         let outbox = outbox
         let card = services.agentCard
+        let friends = friends
         inboxLoop = Task {
             for await event in events {
                 // The link layer greets each peer with this agent's card, so
@@ -209,7 +221,8 @@ public final class AppModel {
                 if case .peerAvailable(let peer) = event, let outbox, let card {
                     Task { _ = try? await outbox.send(.hello(card), to: peer, conversation: ConversationID()) }
                 }
-                await downService.handle(event)
+                friends?.handle(event)
+                await downService?.handle(event)
             }
         }
     }

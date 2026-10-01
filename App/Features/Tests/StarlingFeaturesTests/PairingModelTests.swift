@@ -208,44 +208,78 @@ func readyToPair(_ model: PairingModel) async {
     }
 }
 
-@MainActor
-@Suite struct FriendsModelTests {
-    @Test func listsRenamesAndRemovesFriends() async throws {
-        let maya = Fixtures.peer("Maya", pairedAt: 1)
-        let sam = Fixtures.peer("Sam", pairedAt: 2)
-        let store = InMemoryPairedPeerStore([maya, sam])
-        let model = FriendsModel(store: store)
+/// Records unpairs and renames the way the app's real functions would.
+final class FriendActions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var unpaired: [PeerID] = []
+    var unpairs: [PeerID] { lock.withLock { unpaired } }
+    let fails: Bool
+    let store: InMemoryPairedPeerStore
 
-        await model.load()
-        #expect(model.friends.map(\.nickname) == ["Maya", "Sam"])
-
-        #expect(await model.rename(maya.id, to: "Maya R"))
-        #expect(model.friends.first?.nickname == "Maya R")
-        #expect(try await store.peer(for: maya.id)?.publicKey == maya.publicKey)
-
-        await model.remove(sam.id)
-        #expect(model.friends.map(\.id) == [maya.id])
+    init(store: InMemoryPairedPeerStore, fails: Bool = false) {
+        self.store = store
+        self.fails = fails
     }
 
-    @Test func rejectsAnEmptyNickname() async {
-        let maya = Fixtures.peer("Maya")
-        let model = FriendsModel(store: InMemoryPairedPeerStore([maya]))
-        await model.load()
-        #expect(await model.rename(maya.id, to: "") == false)
-        #expect(model.notice != nil)
-        #expect(model.friends.first?.nickname == "Maya")
+    struct Failure: Error {}
+
+    /// Like lane E1's PinAuthority.unpair: removes the pin, or throws.
+    var unpair: @Sendable (PeerID) async throws -> Void {
+        { [self] id in
+            if fails { throw Failure() }
+            lock.withLock { unpaired.append(id) }
+            try await store.remove(id)
+        }
     }
 }
 
-/// A store whose remove fails while reads keep working.
-actor FailingRemoveStore: PairedPeerStore {
-    struct Failure: Error {}
-    private let inner: InMemoryPairedPeerStore
-    init(_ peers: [PairedPeer]) { inner = InMemoryPairedPeerStore(peers) }
-    func all() async throws -> [PairedPeer] { try await inner.all() }
-    func peer(for id: PeerID) async throws -> PairedPeer? { try await inner.peer(for: id) }
-    func save(_ peer: PairedPeer) async throws { try await inner.save(peer) }
-    func remove(_ id: PeerID) async throws { throw Failure() }
+@MainActor
+@Suite struct FriendsModelTests {
+    @Test func unpairsThroughTheAppsUnpairNotTheStore() async throws {
+        let maya = Fixtures.peer("Maya", pairedAt: 1)
+        let sam = Fixtures.peer("Sam", pairedAt: 2)
+        let store = InMemoryPairedPeerStore([maya, sam])
+        let actions = FriendActions(store: store)
+        let model = FriendsModel(store: store, unpair: actions.unpair)
+
+        await model.load()
+        #expect(model.friends.map(\.nickname) == ["Maya", "Sam"])
+        await model.remove(sam.id)
+        #expect(actions.unpairs == [sam.id])
+        #expect(model.friends.map(\.id) == [maya.id])
+    }
+
+    @Test func renamingIsOfferedOnlyWhenTheBuildCanDoItSafely() async {
+        let maya = Fixtures.peer("Maya")
+        let store = InMemoryPairedPeerStore([maya])
+        let withoutRename = FriendsModel(store: store, unpair: FriendActions(store: store).unpair)
+        #expect(!withoutRename.canRename)
+        await withoutRename.load()
+        #expect(await withoutRename.rename(maya.id, to: "M") == false)
+        #expect(withoutRename.friends.first?.nickname == "Maya")
+
+        let withRename = FriendsModel(store: store, unpair: FriendActions(store: store).unpair, rename: { id, name in
+            guard let peer = try await store.peer(for: id) else { return }
+            try await store.save(try PairedPeer(publicKey: peer.publicKey, nickname: name, pairedAt: peer.pairedAt))
+        })
+        #expect(withRename.canRename)
+        await withRename.load()
+        #expect(await withRename.rename(maya.id, to: "Maya R"))
+        #expect(withRename.friends.first?.nickname == "Maya R")
+        #expect(await withRename.rename(maya.id, to: "") == false)
+        #expect(withRename.notice != nil)
+    }
+
+    @Test func tracksWhichFriendsAreReachable() async {
+        let maya = Fixtures.peer("Maya")
+        let store = InMemoryPairedPeerStore([maya])
+        let model = FriendsModel(store: store, unpair: FriendActions(store: store).unpair)
+        await model.load()
+        model.handle(.peerAvailable(maya.id))
+        #expect(model.isReachable(maya.id))
+        model.handle(.peerUnavailable(maya.id))
+        #expect(!model.isReachable(maya.id))
+    }
 }
 
 /// Re-review finding 3 on PR #15: a failed unpair must stay visible, or the
@@ -254,7 +288,8 @@ actor FailingRemoveStore: PairedPeerStore {
 @Suite struct UnpairFailureTests {
     @Test func aFailedUnpairStaysOnScreenAfterTheListRefreshes() async {
         let maya = Fixtures.peer("Maya")
-        let model = FriendsModel(store: FailingRemoveStore([maya]))
+        let store = InMemoryPairedPeerStore([maya])
+        let model = FriendsModel(store: store, unpair: FriendActions(store: store, fails: true).unpair)
         await model.load()
 
         await model.remove(maya.id)

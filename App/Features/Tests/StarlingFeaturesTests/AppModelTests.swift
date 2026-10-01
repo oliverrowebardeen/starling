@@ -137,6 +137,17 @@ actor StoppableScriptedDown: StoppableDownService {
         #expect(await down.handled == events)
     }
 
+    @Test func friendsSeeReachabilityEvenWithoutDown() async {
+        let maya = Fixtures.peer("Maya")
+        let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
+        let app = AppModel(services: Self.services(down: nil, peers: InMemoryPairedPeerStore([maya]), inbox: inbox))
+        #expect(app.down == nil)
+        await app.start()
+        continuation.yield(.peerAvailable(maya.id))
+        await eventually { app.friends?.isReachable(maya.id) == true }
+        #expect(app.friends?.isReachable(maya.id) == true)
+    }
+
     @Test func featuresMissingFromTheBuildAreNil() {
         let app = AppModel(services: Self.services(down: nil, peers: nil))
         #expect(app.down == nil)

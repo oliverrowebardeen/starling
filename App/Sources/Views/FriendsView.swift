@@ -16,16 +16,23 @@ struct FriendsView: View {
         List {
             if let notice = model.notice { NoticeSection(text: notice) }
             ForEach(model.friends, id: \.id) { friend in
-                Button {
-                    newName = friend.nickname
-                    renaming = friend
-                } label: {
+                HStack {
+                    Image(systemName: "circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(model.isReachable(friend.id) ? .green : .secondary)
+                        .accessibilityLabel(model.isReachable(friend.id) ? "Reachable" : "Not reachable")
                     VStack(alignment: .leading) {
-                        Text(friend.nickname).foregroundStyle(.primary)
+                        Text(friend.nickname)
                         Text("Paired \(friend.pairedAt.date.formatted(date: .abbreviated, time: .omitted))")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+                .contentShape(.rect)
+                .onTapGesture {
+                    guard model.canRename else { return }
+                    newName = friend.nickname
+                    renaming = friend
                 }
                 .swipeActions {
                     Button("Unpair", role: .destructive) { removing = friend }
