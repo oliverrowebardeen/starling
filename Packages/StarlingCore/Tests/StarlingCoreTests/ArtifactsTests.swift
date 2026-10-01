@@ -58,3 +58,18 @@ import Testing
         #expect(throws: ValidationError.self) { try IssueValue.places(many).validated() }
     }
 }
+
+@Suite struct PeersValueTests {
+    /// Review of PR #45: in a plan A starts with B and C, B learns from the
+    /// agreed terms that C is in it, so every phone builds the same roster.
+    @Test func theRosterTravelsAsABoundedPeopleValue() throws {
+        let roster = [Fixtures.alice, Fixtures.bob, PeerID.random()]
+        let terms = try Terms([.people: .peers(roster), .activity: .keywords([try Keyword("boba")])])
+        #expect(try JSONDecoder().decode(Terms.self, from: JSONEncoder().encode(terms)) == terms)
+        #expect(PrivacyTopic(issue: .people) == .people)
+        #expect(throws: ValidationError.self) { try IssueValue.peers([]).validated() }
+        #expect(throws: ValidationError.self) { try IssueValue.peers([Fixtures.alice, Fixtures.alice]).validated() }
+        #expect(throws: ValidationError.self) { try IssueValue.peers((0...ProtocolLimits.maxAttendees).map { _ in PeerID.random() }).validated() }
+        if case .peers(let decoded)? = terms.values[.people] { #expect(try Attendees(decoded).peers == roster) }
+    }
+}

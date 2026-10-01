@@ -137,6 +137,7 @@ final class NearbySession {
             case .flag(let flag): "\(key) \(flag)"
             case .count(let count): "\(key) \(count)"
             case .places(let places): "\(key) \(places.map(\.name.rawValue).joined(separator: ","))"
+            case .peers(let peers): "\(key) \(peers.map(\.short).joined(separator: ","))"
             }
         }.joined(separator: "; ")
     }

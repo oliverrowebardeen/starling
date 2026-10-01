@@ -105,6 +105,8 @@ public struct ConsentSheetModel: Hashable, Sendable {
         case .flag(let flag): return flag ? "Yes" : "No"
         case .count(let count): return String(count)
         case .places(let places): return places.map(\.name.rawValue).joined(separator: "\n")
+        // The app shows friends' names; the policy layer has only IDs.
+        case .peers(let peers): return peers.count == 1 ? "1 person" : "\(peers.count) people"
         }
     }
 
