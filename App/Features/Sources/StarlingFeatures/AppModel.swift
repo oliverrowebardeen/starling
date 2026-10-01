@@ -128,17 +128,29 @@ public final class AppModel {
 
     /// The rules sends are judged by: the saved rules, merged with the
     /// active Down intent's rules when one is out (most restrictive sharing
-    /// wins, ADR 0141).
-    public var effectiveRules: OwnerRules {
+    /// wins, ADR 0141). Nil when they cannot be combined: the saved rules
+    /// changed after the intent went out and the constraints together break
+    /// a limit. Never falls back to the saved rules alone, which would drop
+    /// the intent's own "never share" rules.
+    public var effectiveRules: OwnerRules? {
         let standing = rulesEditor.saved?.rules ?? .empty
         guard let intent = down?.activeIntentRules else { return standing }
-        // A merge DownModel already accepted cannot fail; if it somehow did,
-        // the standing rules alone are the safer fallback.
-        return (try? RulesMerge.intent(intent, standing: standing)) ?? standing
+        let sharing = RulesMerge.sharing(intent: intent.disclosure, standing: standing.disclosure)
+        guard let constraints = try? RulesMerge.constraints(intent: intent.constraints, standing: standing.constraints) else { return nil }
+        return OwnerRules(constraints: constraints, disclosure: sharing)
     }
 
     func refreshPolicy() async {
-        await policy?.update(effectiveRules)
+        guard let policy else { return }
+        if let rules = effectiveRules {
+            await policy.update(rules)
+            return
+        }
+        // Fail closed: block every send first, then end the intent. Ending
+        // it reports an intent change, which updates the policy again with
+        // the saved rules once nothing can send for the intent any more.
+        await policy.block()
+        await down?.endBecauseRulesChanged()
     }
 
     /// Called once at launch.

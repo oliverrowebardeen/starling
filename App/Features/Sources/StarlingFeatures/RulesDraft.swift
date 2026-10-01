@@ -439,18 +439,29 @@ public enum RulesMerge {
     /// the most restrictive rule for each issue wins, so an intent can never
     /// loosen a standing "never share" (ADR 0141).
     public static func intent(_ intent: OwnerRules, standing: OwnerRules) throws -> OwnerRules {
-        var constraints = standing.constraints.constraints
-        for (issue, list) in intent.constraints.constraints {
+        OwnerRules(
+            constraints: try constraints(intent: intent.constraints, standing: standing.constraints),
+            disclosure: sharing(intent: intent.disclosure, standing: standing.disclosure)
+        )
+    }
+
+    /// Can throw: the accumulated constraints may break a ConstraintSet limit.
+    public static func constraints(intent: ConstraintSet, standing: ConstraintSet) throws -> ConstraintSet {
+        var constraints = standing.constraints
+        for (issue, list) in intent.constraints {
             constraints[issue, default: []].append(contentsOf: list)
         }
+        return try ConstraintSet(constraints)
+    }
+
+    /// Cannot fail, so a constraint problem can never cost the owner a
+    /// "never share" (review finding 1 on PR #27).
+    public static func sharing(intent: [DisclosureRule], standing: [DisclosureRule]) -> [DisclosureRule] {
         var sharing: [IssueKey: DisclosureRule.Action] = [:]
-        for rule in standing.disclosure + intent.disclosure {
+        for rule in standing + intent {
             sharing[rule.issue] = sharing[rule.issue].map { restrictive($0, rule.action) } ?? rule.action
         }
-        return OwnerRules(
-            constraints: try ConstraintSet(constraints),
-            disclosure: sharing.keys.sorted().map { DisclosureRule(issue: $0, action: sharing[$0]!) }
-        )
+        return sharing.keys.sorted().map { DisclosureRule(issue: $0, action: sharing[$0]!) }
     }
 
     static func restrictive(_ a: DisclosureRule.Action, _ b: DisclosureRule.Action) -> DisclosureRule.Action {

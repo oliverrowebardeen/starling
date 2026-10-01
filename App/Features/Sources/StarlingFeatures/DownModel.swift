@@ -268,6 +268,21 @@ public final class DownModel {
         }
     }
 
+    /// The saved rules changed while this intent was out and can no longer
+    /// be combined with it. Stops it the way withdrawing does, telling the
+    /// service before the policy lets anything through again.
+    public func endBecauseRulesChanged() async {
+        guard phase == .active || phase == .starting else { return }
+        await service.clearIntent()
+        setStatus(.idle)
+        active = nil
+        draft = .empty
+        phase = .composing
+        activeIntentRules = nil
+        notice = "Your saved rules changed and can't be combined with this Down?, so Starling stopped it. Start a new one."
+        await intentChanged()
+    }
+
     /// Friends learn nothing beyond "no match".
     public func withdraw() async {
         guard phase == .active else { return }
