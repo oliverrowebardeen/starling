@@ -9,6 +9,13 @@ public enum OutboxError: Error, Hashable, Sendable {
     /// The conversation has used every sequence number; nothing was sent,
     /// because the next number would repeat one the friend has seen.
     case sequenceExhausted
+    /// The conversation has ended on this phone; nothing is sent in it again
+    /// (ADR 0021).
+    case conversationRetired
+    /// The answer would tell this friend about more candidates of the issue
+    /// than `ProtocolLimits.maxCandidatesAnsweredPerIssue` allows in this
+    /// conversation; nothing was sent (ADR 0021).
+    case answerLimitReached
 }
 
 /// Told about every envelope the transport accepted, for example to keep an
@@ -16,6 +23,10 @@ public enum OutboxError: Error, Hashable, Sendable {
 /// `Outbox` calls the method with `disclosed`, which by default forwards to
 /// the three-argument one; implement it as well when you need the items.
 public protocol OutboxObserver: Sendable {
+    /// Called after the send is cleared and before anything leaves. Throwing
+    /// stops the send, so an audit can durably note a send it will hear about
+    /// in `didSend` (ADR 0021). Does nothing by default.
+    func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async
     /// - Parameter disclosed: What the send disclosed: the consent sheet's
     ///   items, or for a send allowed without a sheet the policy's own list.
@@ -24,6 +35,8 @@ public protocol OutboxObserver: Sendable {
 }
 
 extension OutboxObserver {
+    public func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {}
+
     public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
         await outbox(didSend: envelope, context: context, decision: decision)
     }
@@ -55,6 +68,7 @@ public actor Outbox {
     private let codec: EnvelopeCodec
     private let observer: (any OutboxObserver)?
     private let sequences: (any SentSequenceStore)?
+    private let ledger: (any ConversationLedger)?
     private let now: @Sendable () -> Date
     private var nextSequence: [ConversationID: UInt64] = [:]
 
@@ -65,6 +79,7 @@ public actor Outbox {
         codec: EnvelopeCodec = EnvelopeCodec(),
         observer: (any OutboxObserver)? = nil,
         sequences: (any SentSequenceStore)? = nil,
+        ledger: (any ConversationLedger)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -73,6 +88,7 @@ public actor Outbox {
         self.codec = codec
         self.observer = observer
         self.sequences = sequences
+        self.ledger = ledger
         self.now = now
     }
 
@@ -133,8 +149,32 @@ public actor Outbox {
             }
         }
 
+        try Task.checkCancellation()
+
+        // The ledger (ADR 0021): nothing goes out in a conversation that has
+        // ended, and an answer first reserves the candidates it covers, so
+        // no friend learns about more than the limit in one conversation,
+        // whatever the skill remembers. A ledger that cannot answer stops the
+        // send.
+        if let ledger {
+            guard try await !ledger.isRetired(conversation) else { throw OutboxError.conversationRetired }
+            if case .answer(let answer) = body, let query = context.answering, answer.issue == query.issue {
+                guard try await ledger.reserve(query.candidates.candidates, issue: query.issue, to: recipient, in: conversation) else {
+                    throw OutboxError.answerLimitReached
+                }
+            }
+        }
+
+        // What the send discloses, for the observer before and after.
+        let disclosed: [DisclosedItem]? = switch decision {
+        case .needsConsent(let disclosure): disclosure.items
+        case .allow: observer == nil ? nil : try? await policy.disclosedItems(for: message)
+        case .deny: nil
+        }
+        try await observer?.outbox(willSend: draft, context: context, decision: decision, disclosed: disclosed)
+
         // Last point before anything leaves: a cancelled send never goes out,
-        // including one cancelled while the re-check above was running.
+        // including one cancelled while the checks above were running.
         try Task.checkCancellation()
 
         // Number the envelope now, with no suspension before the transport
@@ -163,14 +203,7 @@ public actor Outbox {
             sequence: sequence, sentAt: Timestamp(sentAt), body: body, skill: skill, mode: mode, chainedFrom: chainedFrom
         )
         try await transport.send(Frame(codec.encode(envelope)), to: recipient)
-        if let observer {
-            let disclosed: [DisclosedItem]? = switch decision {
-            case .needsConsent(let disclosure): disclosure.items
-            case .allow: try? await policy.disclosedItems(for: message)
-            case .deny: nil
-            }
-            await observer.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
-        }
+        await observer?.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
         return envelope
     }
 }

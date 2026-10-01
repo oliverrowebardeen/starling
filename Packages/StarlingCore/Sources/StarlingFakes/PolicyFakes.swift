@@ -70,8 +70,21 @@ public actor RecordingOutboxObserver: OutboxObserver {
     }
 
     public private(set) var records: [Record] = []
+    /// Envelope IDs announced through `willSend`, in order.
+    public private(set) var announced: [MessageID] = []
+    private var refuseWillSend = false
 
     public init() {}
+
+    /// Makes `willSend` throw, as an audit that cannot note the send would.
+    public func refuseNextSends() { refuseWillSend = true }
+
+    public struct Refused: Error {}
+
+    public func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
+        if refuseWillSend { throw Refused() }
+        announced.append(envelope.id)
+    }
 
     public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
         records.append(Record(envelope: envelope, context: context, decision: decision, disclosed: disclosed))
@@ -105,5 +118,46 @@ public final class InMemorySentSequenceStore: SentSequenceStore, @unchecked Send
             if failing { throw WriteFailed() }
             highest[conversation] = max(highest[conversation] ?? 0, sequence)
         }
+    }
+}
+
+/// A `ConversationLedger` in memory, shared between Outbox instances to
+/// stand for one phone across relaunches. `failAll()` makes every call throw.
+public actor InMemoryConversationLedger: ConversationLedger {
+    public struct Unavailable: Error {}
+
+    private struct Key: Hashable { let peer: PeerID; let conversation: ConversationID; let issue: IssueKey }
+    private var retired: Set<ConversationID> = []
+    private var answered: [Key: Set<IssueValue>] = [:]
+    private var failing = false
+
+    public init() {}
+
+    public func failAll() { failing = true }
+
+    public func isRetired(_ conversation: ConversationID) throws -> Bool {
+        if failing { throw Unavailable() }
+        return retired.contains(conversation)
+    }
+
+    public func retire(_ conversation: ConversationID) throws {
+        if failing { throw Unavailable() }
+        retired.insert(conversation)
+        answered = answered.filter { $0.key.conversation != conversation }
+    }
+
+    public func reserve(_ candidates: [IssueValue], issue: IssueKey, to peer: PeerID, in conversation: ConversationID) throws -> Bool {
+        if failing { throw Unavailable() }
+        guard !retired.contains(conversation) else { return false }
+        let key = Key(peer: peer, conversation: conversation, issue: issue)
+        let total = answered[key, default: []].union(candidates)
+        guard total.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue else { return false }
+        answered[key] = total
+        return true
+    }
+
+    /// Distinct candidates answered so far, for tests.
+    public func answeredCount(issue: IssueKey, to peer: PeerID, in conversation: ConversationID) -> Int {
+        answered[Key(peer: peer, conversation: conversation, issue: issue)]?.count ?? 0
     }
 }
