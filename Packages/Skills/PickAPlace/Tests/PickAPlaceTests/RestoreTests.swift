@@ -85,6 +85,35 @@ struct RestoreTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    @Test func aRestoredRequestLooksFactsUpAgainBeforeANewCard() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let maya = Phone("Maya", hub: hub, maps: maps, limits: limits(budget: 20))
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        let skill = PickAPlaceSkill.ref
+        let conversation = ConversationID()
+        try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
+                                      conversation: conversation, skill: skill)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+        let first = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: first)), to: maya.id, conversation: conversation, skill: skill)
+        #expect(await maya.reaches(.proposed, in: conversation))
+
+        // Maya's app restarts, and Maps now prices Boba Guys over her budget.
+        await maya.restart()
+        await maps.update(candidate("Boba Guys", id: "I.bobaguys", tier: .four, diets: ["vegan"], kinds: ["boba"]))
+        let slot = try TimeSlot(start: Date(timeIntervalSince1970: 1_790_000_000), end: Date(timeIntervalSince1970: 1_790_003_600))
+        let second = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id]), .time: .slots([slot])])
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill)
+
+        // The new card never shows; the request ends without a word.
+        #expect(await maya.reaches(.ended(.nobodyUp), in: conversation))
+        #expect(await maya.interaction(conversation)?.proposal?.terms == first)
+        #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .reject })
+    }
+
     @Test func anOrganizerStillAskingIsReportedFailed() async throws {
         let (group, oliver, maya) = try await oliverAndMaya()
         defer { Task { await group.stop() } }

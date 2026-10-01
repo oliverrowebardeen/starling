@@ -159,12 +159,19 @@ extension PickAPlaceService {
             return
         }
         // The owner's limits are checked again before the card is shown:
-        // they may have changed since the list was sent (rule 6).
+        // they may have changed since the list was sent (rule 6). After a
+        // restart the facts are gone, so they are looked up again rather
+        // than judged as unknown, which never conflicts.
+        var facts = invite.facts[place]
+        if facts == nil {
+            facts = (try? await maps.facts(for: place)) ?? .unknown
+            invites[conversation]?.facts[place] = facts
+        }
         let limits = await ownerLimits()
         guard let invite = invites[conversation], !invite.isFinished, !invite.answering, !invite.accepting,
               invite.proposal?.terms != proposal.terms
         else { return }
-        guard PlaceJudge.fit(place, facts: invite.facts[place] ?? .unknown, limits: limits).fits else {
+        guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
             // A private limit: silent, like a list where nothing fits.
             endInvite(conversation, event: .noAgreement, reply: nil)
             return

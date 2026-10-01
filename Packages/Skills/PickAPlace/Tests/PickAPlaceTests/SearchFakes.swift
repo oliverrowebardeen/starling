@@ -13,6 +13,11 @@ actor FakeMaps: PlaceSearching {
     init(_ venues: [PlaceCandidate] = []) { self.venues = venues }
 
     func add(_ venue: PlaceCandidate) { venues.append(venue) }
+    /// What Maps now says about a venue, by its identifier.
+    func update(_ venue: PlaceCandidate) {
+        venues.removeAll { $0.choice.mapItemID == venue.choice.mapItemID }
+        venues.append(venue)
+    }
     func setFailSearches(_ fail: Bool) { failSearches = fail }
 
     func search(_ what: String, in region: SearchRegion, limit: Int) async throws -> [PlaceCandidate] {
