@@ -27,7 +27,8 @@ public enum SwapPhotosError: Error, Hashable, Sendable {
 ///
 /// As a friend: an offer creates an invitee interaction with a proposal card
 /// and nothing else. It never opens the picker or asks for a permission
-/// (ARCHITECTURE rule 8). "Share" sends an acceptance; a pass sends nothing.
+/// (ARCHITECTURE rule 8). A newer offer from the same friend replaces the
+/// card. "Share" sends an acceptance; a pass sends nothing.
 public actor SwapPhotosService: SkillService {
     public nonisolated let descriptor = SwapPhotos.descriptor
     public nonisolated let events: AsyncStream<SkillEvent>
@@ -45,8 +46,8 @@ public actor SwapPhotosService: SkillService {
         case offered(Terms, accepted: Set<PeerID>)
         /// A friend's offer, waiting for the owner's answer.
         case invited(from: PeerID, offer: MessageID, terms: Terms, revision: UInt32)
-        /// The owner said yes to a friend's offer.
-        case accepted
+        /// The owner said yes to this revision of a friend's offer.
+        case accepted(revision: UInt32)
     }
 
     private struct Session {
@@ -111,7 +112,7 @@ public actor SwapPhotosService: SkillService {
             forget(interaction)
 
         case (.invited(let from, let offer, let terms, let revision), .accept(let accepted)) where accepted == revision:
-            sessions[interaction]?.step = .accepted
+            sessions[interaction]?.step = .accepted(revision: revision)
             guard await send([(.accept(Acceptance(proposal: offer, terms: terms)), from)], in: interaction, session: session) else { return }
             emit(interaction, .ownerAccepted(revision: revision))
 
@@ -202,13 +203,27 @@ public actor SwapPhotosService: SkillService {
     }
 
     private func receive(_ envelope: Envelope, in id: InteractionID) {
-        guard var session = sessions[id], case .offered(let terms, var accepted) = session.step,
-              session.participants.contains(envelope.sender),
-              case .accept(let acceptance) = envelope.body, acceptance.terms == terms
-        else { return }
-        accepted.insert(envelope.sender)
-        session.step = .offered(terms, accepted: accepted)
-        sessions[id] = session
+        guard var session = sessions[id], session.participants.contains(envelope.sender) else { return }
+        switch (session.step, envelope.body) {
+        case (.offered(let terms, var accepted), .accept(let acceptance)) where acceptance.terms == terms:
+            accepted.insert(envelope.sender)
+            session.step = .offered(terms, accepted: accepted)
+            sessions[id] = session
+
+        // The friend sent a newer offer: it replaces the one on the card,
+        // answered or not, as a newer proposal does for any skill (ADR 0011).
+        case (.invited(_, _, _, let revision), .propose(let offer)), (.accepted(let revision), .propose(let offer)):
+            guard revision < UInt32(ProtocolLimits.maxNegotiationRounds), envelope.chainedFrom == session.chainedFrom,
+                  let count = Self.photoCount(offer.terms), (1...SwapPhotos.maxPhotos).contains(count)
+            else { return }
+            let next = revision + 1
+            session.step = .invited(from: envelope.sender, offer: envelope.id, terms: offer.terms, revision: next)
+            sessions[id] = session
+            emit(id, .proposalReady(SkillProposal(revision: next, participants: [envelope.sender, me], terms: offer.terms)))
+
+        default:
+            return
+        }
     }
 
     /// Who accepted the owner's offer so far, for tests and Developer.

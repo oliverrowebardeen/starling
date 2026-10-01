@@ -242,4 +242,32 @@ struct Phone {
         #expect(rest.contains(.lifecycle(ids[0], .ownerAccepted(revision: 1))))
         #expect(rest.contains(.lifecycle(ids[1], .ownerPassed)))
     }
+
+    @Test func aNewerOfferFromTheSameFriendReplacesTheCard() async throws {
+        let phone = Phone()
+        let conversation = ConversationID()
+        let first = try Fixtures.offer(count: 5, conversation: conversation)
+        await phone.service.handle(.message(first))
+        var iterator = phone.service.events.makeAsyncIterator()
+        guard case .incoming(let id, _, _, _) = await iterator.next() else {
+            Issue.record("expected an incoming interaction")
+            return
+        }
+        _ = await iterator.next()
+        // Ignored: someone else in the same conversation, another plan, and
+        // too many photos.
+        await phone.service.handle(.message(try Fixtures.offer(count: 2, from: Fixtures.jake, conversation: conversation)))
+        await phone.service.handle(.message(try Fixtures.offer(count: 2, conversation: conversation, chainedFrom: ConversationID())))
+        await phone.service.handle(.message(try Fixtures.offer(count: SwapPhotos.maxPhotos + 1, conversation: conversation)))
+        let second = try Fixtures.offer(count: 2, conversation: conversation)
+        await phone.service.handle(.message(second))
+        #expect(await iterator.next() == .lifecycle(id, .proposalReady(SkillProposal(revision: 2, participants: [Fixtures.maya, Fixtures.me],
+                                                                                         terms: try Terms([.photos: .count(2)])))))
+        // The older card can no longer be accepted; the newer one can.
+        await #expect(throws: SwapPhotosError.unexpectedAnswer(id)) { try await phone.service.answer(id, with: .accept(proposal: 1)) }
+        try await phone.service.answer(id, with: .accept(proposal: 2))
+        let sent = try await phone.sent()
+        #expect(sent.map(\.body) == [.accept(Acceptance(proposal: second.id, terms: try Terms([.photos: .count(2)])))])
+        #expect(await iterator.next() == .lifecycle(id, .ownerAccepted(revision: 2)))
+    }
 }
