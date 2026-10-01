@@ -20,9 +20,11 @@ enum GroupPlanner {
     /// grows from that half-hour while every chosen friend shares the next
     /// one, up to `maxMinutes`.
     ///
-    /// - Parameter together: Whether two friends may share a plan: each one's
-    ///   own request includes the other (review of PR #56, finding 1). A
-    ///   pair with the starter needs nothing more.
+    /// - Parameters:
+    ///   - including: A friend every considered plan must include.
+    ///   - together: Whether two friends may share a plan: each one's own
+    ///     request includes the other (review of PR #56, finding 1). A pair
+    ///     with the starter needs nothing more.
     /// - Returns: The terms and the friends in them, or nil when no friend
     ///   shares both a time and an activity. A group of three or more
     ///   carries its roster, `hub` first.
@@ -32,6 +34,7 @@ enum GroupPlanner {
         candidates: [PeerID: CandidateAnswers],
         maxMinutes: Int64,
         now: Date,
+        including required: PeerID? = nil,
         together: (PeerID, PeerID) -> Bool = { _, _ in true }
     ) -> (terms: Terms, members: [PeerID])? {
         let starts = Set(candidates.values.flatMap(\.overlap)).filter { DownForProfile.hasNotStarted($0, now: now) }.sorted()
@@ -42,7 +45,14 @@ enum GroupPlanner {
                     let answers = candidates[peer]!
                     return answers.overlap.contains(slot) && answers.activities.contains(activity)
                 }.sorted()
-                let members = largestGroup(of: fits, together: together)
+                let members: [PeerID]
+                if let required {
+                    guard fits.contains(required) else { continue }
+                    let others = fits.filter { $0 != required && together(required, $0) && together($0, required) }
+                    members = ([required] + largestGroup(of: others, together: together)).sorted()
+                } else {
+                    members = largestGroup(of: fits, together: together)
+                }
                 guard !members.isEmpty else { continue }
                 if let current = best, members.count <= current.members.count { continue }
                 best = (members, index, slot, activity)

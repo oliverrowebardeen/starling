@@ -124,6 +124,27 @@ import Testing
         #expect(members == [peers[0]] && terms[.people] == nil)
     }
 
+    @Test func aPlanThatMustIncludeAFriendDoes() throws {
+        // Two friends share boba at 19:00; a third shares only tacos. The
+        // largest plan leaves the third out; one that must include it is
+        // tacos with the starter alone.
+        let candidates = [
+            peers[0]: answers(halfHours(19, 21), ["boba"]),
+            peers[1]: answers(halfHours(19, 21), ["boba"]),
+            peers[2]: answers(halfHours(19, 21), ["tacos"]),
+        ]
+        let liked = ["boba", "tacos"].map(T.keyword)
+        #expect(GroupPlanner.plan(hub: hub, liked: liked, candidates: candidates, maxMinutes: 120, now: T.now)?.members == [peers[0], peers[1]])
+        let (terms, members) = try #require(GroupPlanner.plan(hub: hub, liked: liked, candidates: candidates, maxMinutes: 120, now: T.now, including: peers[2]))
+        #expect(members == [peers[2]])
+        #expect(terms[.activity] == .keywords([T.keyword("tacos")]))
+        // Friends who did not ask it are not added to it.
+        let alone = GroupPlanner.plan(
+            hub: hub, liked: liked, candidates: candidates, maxMinutes: 120, now: T.now, including: peers[0], together: { _, _ in false }
+        )
+        #expect(alone?.members == [peers[0]])
+    }
+
     @Test func noSharedActivityMeansNoPlan() {
         #expect(GroupPlanner.plan(
             hub: hub, liked: [T.keyword("boba")],
