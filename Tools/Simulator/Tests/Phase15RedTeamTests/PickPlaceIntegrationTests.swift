@@ -42,8 +42,12 @@ struct PickPlaceIntegrationTests {
         let proposed = try await b.wait(.proposed, in: request.conversation)
         #expect(proposed.proposal?.participants == [a.id, b.id])
         if excluded { #expect(await c.agent.received.filter { $0.conversation == request.conversation }.isEmpty) }
-        try await a.accept(request.conversation)
+        // Finish the invitee's local send before the organizer confirms.
+        // An early confirmation is retried on a later injected clock tick;
+        // this case holds that clock fixed to check the answer deadline.
         try await b.accept(request.conversation)
+        _ = try await b.wait(.confirmed, in: request.conversation)
+        try await a.accept(request.conversation)
         _ = try await b.wait(.planned, in: request.conversation)
         #expect(await a.sent(request.conversation).allSatisfy { envelope in
             guard case .propose(let p) = envelope.body else { return true }
