@@ -148,6 +148,17 @@ actor StoppableScriptedDown: StoppableDownService {
         #expect(app.friends?.isReachable(maya.id) == true)
     }
 
+    /// Lane E1: each PairingService starts after its transport.
+    @Test func afterStartRunsOnceTheTransportHasStarted() async {
+        let transport = RecordingTransport()
+        let sawStarted = Recorder<Bool>()
+        var services = Self.services(down: nil, peers: InMemoryPairedPeerStore(), transport: transport)
+        services.afterStart = { await sawStarted.record(await transport.isStarted) }
+        let app = AppModel(services: services)
+        await app.start()
+        #expect(await sawStarted.values == [true])
+    }
+
     @Test func featuresMissingFromTheBuildAreNil() {
         let app = AppModel(services: Self.services(down: nil, peers: nil))
         #expect(app.down == nil)

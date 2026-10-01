@@ -39,6 +39,9 @@ public struct AppServices: Sendable {
     /// The link the app's `Outbox` sends on. Nil until a transport the app
     /// may send owner data over is in the build (lane E1's secure channel).
     public var transport: (any Transport)?
+    /// Runs once the transport has started, for example lane E1's pairing
+    /// services, which must start after their secure transports.
+    public var afterStart: (@Sendable () async -> Void)?
     /// This agent's card, sent in a `hello` to each peer that becomes
     /// available. Down reads peers' cards; it does not send its own.
     public var agentCard: AgentCard?
@@ -65,6 +68,7 @@ public struct AppServices: Sendable {
         makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
         transport: (any Transport)? = nil,
+        afterStart: (@Sendable () async -> Void)? = nil,
         agentCard: AgentCard? = nil,
         downMatchingIsPrivate: Bool = false,
         describeDownError: @escaping @Sendable (any Error) -> String? = { _ in nil },
@@ -85,6 +89,7 @@ public struct AppServices: Sendable {
         self.makePolicy = makePolicy
         self.auditLog = auditLog
         self.transport = transport
+        self.afterStart = afterStart
         self.agentCard = agentCard
         self.downMatchingIsPrivate = downMatchingIsPrivate
         self.describeDownError = describeDownError
@@ -206,6 +211,7 @@ public final class AppModel {
         routeInbox()
         // After the loop is listening, so no peerAvailable is missed.
         try? await services.transport?.start()
+        await services.afterStart?()
         await friends?.load()
     }
 

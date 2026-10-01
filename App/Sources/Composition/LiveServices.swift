@@ -3,6 +3,7 @@ import Network
 import StarlingAgent
 import StarlingCore
 import StarlingFeatures
+import StarlingIdentity
 import StarlingNegotiation
 import StarlingPolicy
 import StarlingWiFiAware
@@ -10,20 +11,29 @@ import UserNotifications
 
 extension AppServices {
     /// Release builds: real implementations only, never StarlingFakes.
-    /// Lane G's policy and audit log are real. Down stays out: lane F's
-    /// DownNegotiator needs a PSI provider and the only one, InsecurePSIStub,
-    /// lives in StarlingFakes, so Release shows "Down? isn't in this build
-    /// yet" until a private provider (Nightjar) exists. Pairing and friends
-    /// wait for lane E1, and so does a transport for the app's Outbox.
+    /// Lane E1's identity, pinned friends, pairing, and secure links, lane
+    /// G's policy and audit log, lane E2's Wi-Fi Aware. Down stays out: lane
+    /// F's DownNegotiator needs a PSI provider and the only one,
+    /// InsecurePSIStub, lives in StarlingFakes, so Release shows "Down? isn't
+    /// in this build yet" until a private provider (Nightjar) exists.
     static func release() async throws -> AppServices {
-        AppServices(
+        let identity = try await KeychainIdentityKeyStore().loadOrCreate()
+        let links = SecureLinks.make(identity: identity, friends: KeychainPairedPeerStore())
+        return AppServices(
             agent: FoundationModelsAgent(),
             rules: LiveServices.rulesStore(),
-            peers: nil,
+            peers: links.friends,
             makeDownService: nil,
-            pairing: nil,
-            makePolicy: LiveServices.policy(peers: nil),
+            pairing: links.pairingDirectory,
+            unpair: links.unpair,
+            // No rename: lane E1 has no rename through the PinAuthority, and a
+            // direct store write could race an unpair (docs/requests/H.md 6).
+            rename: nil,
+            inboxEvents: links.inboxEvents,
+            makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
+            transport: links.transport,
+            afterStart: links.startPairing,
             agentCard: LiveServices.agentCard(locality: .onDevice),
             describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
