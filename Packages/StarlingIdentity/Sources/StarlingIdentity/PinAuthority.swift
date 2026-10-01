@@ -51,6 +51,29 @@ public final class PinAuthority: Sendable {
 
     private let state: Mutex<State>
 
+    /// Named points where a test can act synchronously, to reproduce an
+    /// interleaving deterministically (for example: another transport bumps
+    /// the epoch exactly here). Nil in production; reaching one never awaits
+    /// and never holds the state mutex.
+    enum Checkpoint: Sendable, Equatable {
+        /// `epoch(of:)` has read the peer's epoch and released the mutex.
+        case epochRead(PeerID)
+        /// A commit has decided, after its save, whether it stands.
+        case commitDecided(PeerID)
+    }
+
+    private let checkpointHandler = Mutex<(@Sendable (Checkpoint) -> Void)?>(nil)
+
+    /// Installs (or with nil, removes) the test checkpoint handler.
+    func onCheckpoint(_ handler: (@Sendable (Checkpoint) -> Void)?) {
+        checkpointHandler.withLock { $0 = handler }
+    }
+
+    private func reach(_ checkpoint: Checkpoint) {
+        let handler = checkpointHandler.withLock { $0 }
+        handler?(checkpoint)
+    }
+
     /// - Parameter capacity: Most peers whose epochs are kept; older ones are
     ///   evicted safely (see `GenerationTable`).
     public init(identity: IdentityKeyPair, store: any PairedPeerStore, capacity: Int = 1_024) {
@@ -64,7 +87,9 @@ public final class PinAuthority: Sendable {
     /// The peer's current epoch. A session is usable only while the epoch it
     /// was authenticated under equals this.
     public func epoch(of peer: PeerID) -> UInt64 {
-        state.withLock { $0.epochs.value(of: peer) }
+        let epoch = state.withLock { $0.epochs.value(of: peer) }
+        reach(.epochRead(peer))
+        return epoch
     }
 
     /// Whether lookups for `peer` are refused: an unpair or a commit is in
@@ -165,11 +190,17 @@ public final class PinAuthority: Sendable {
                 self.state.withLock { $0.update(id) { $0.committing -= 1 } }
                 throw error
             }
-            let moved = self.state.withLock { $0.epochs.value(of: id) != epoch }
-            guard moved else {
-                self.state.withLock { $0.update(id) { $0.committing -= 1 } }
-                return .committed
+            // One section decides and, if the save stands, ends the commit, so
+            // no revocation can start between the decision and the end. If the
+            // epoch moved, the commit stays in progress (lookups refused) until
+            // the rollback below ends it.
+            let stands = self.state.withLock { state -> Bool in
+                guard state.epochs.value(of: id) == epoch else { return false }
+                state.update(id) { $0.committing -= 1 }
+                return true
             }
+            self.reach(.commitDecided(id))
+            guard !stands else { return .committed }
             // Roll back. The commit stays in progress (lookups refused) until
             // the delete is done; if it fails, the peer is quarantined.
             var deleted = false

@@ -4,6 +4,7 @@ import StarlingCore
 import StarlingFakes
 @testable import StarlingIdentity
 import StarlingTransport
+import Synchronization
 import Testing
 
 /// One phone in a pairing test: identity, store, raw link, and the service.
@@ -597,6 +598,51 @@ extension Recorder where Element == PairingEvent {
         try await settle()
         #expect(await links.aliceLocal.events.received.count == heardLocal)
         #expect(await links.aliceAware.events.received.count == heardAware)
+        withExtendedLifetime([alicePairing, bobPairing]) {}
+    }
+
+    /// Review 5 finding 1: right after a commit decides its save stands,
+    /// another transport revokes Bob (the epoch moves). If the commit was
+    /// still in progress at that moment (lookups still blocked by it), the
+    /// revocation began before the commit ended, so the commit must roll
+    /// back. If the commit had already ended, it stands. Driven by a
+    /// synchronous checkpoint, not timing.
+    @Test func aRevocationBeforeACommitEndsRollsItBack() async throws {
+        let links = try await connectedOverTwoLinks()
+        let (alice, bob) = (aliceKey.peerID, bobKey.peerID)
+        let authority = links.aliceLocal.authority
+        let alicePairing = PairingService(secureTransport: links.aliceAware.secure, configuration: .fast)
+        let bobPairing = PairingService(secureTransport: links.bobAware.secure, configuration: .fast)
+        try await alicePairing.start()
+        try await bobPairing.start()
+        let sa = try await alicePairing.pair(with: bob, nickname: "Bob")
+        let sb = try await bobPairing.pair(with: alice, nickname: "Alice")
+        let ea = await Recorder.recording(sa.events)
+        _ = try await ea.waitForCode()
+
+        let commitWasInProgress = Mutex<Bool?>(nil)
+        authority.onCheckpoint { checkpoint in
+            guard checkpoint == .commitDecided(bob), commitWasInProgress.withLock({ $0 }) == nil else { return }
+            commitWasInProgress.withLock { $0 = authority.isBlocked(bob) }
+            authority.markRevoked(bob)
+        }
+        await sa.confirm(codesMatch: true)
+        await sb.confirm(codesMatch: true)
+        let outcome = try await ea.waitForOutcome()
+        authority.onCheckpoint(nil)
+
+        guard let inProgress = commitWasInProgress.withLock({ $0 }) else {
+            Issue.record("the checkpoint must be reached")
+            return
+        }
+        if inProgress {
+            #expect(outcome == .failed(.cancelled), "a revocation that began before the commit ended must roll it back")
+            #expect(try await links.aliceLocal.store.peer(for: bob) == nil)
+        } else if case .paired = outcome {
+            #expect(try await links.aliceLocal.store.peer(for: bob) != nil)
+        } else {
+            Issue.record("a commit that ended before the revocation must stand, got \(outcome)")
+        }
         withExtendedLifetime([alicePairing, bobPairing]) {}
     }
 
