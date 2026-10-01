@@ -74,19 +74,14 @@ public actor Outbox {
         mode: SendMode? = nil,
         chainedFrom: ConversationID? = nil
     ) async throws -> Envelope {
-        // Reserve the sequence number before any suspension point so two
-        // concurrent sends never share one. Gaps are fine; Inbox only
-        // requires uniqueness within its replay window. A conversation's
-        // first send on this launch starts at the clock in milliseconds, so
-        // a relaunched app never reuses a number the friend has seen.
-        let sequence = nextSequence[conversation] ?? Self.firstSequence(at: now())
-        nextSequence[conversation] = sequence + 1
-
-        let envelope = try Envelope(
+        // The policy judges a draft. The number and send time are set only
+        // once the send is cleared (below), so nothing about a refused send
+        // shows on the wire.
+        let draft = try Envelope(
             conversation: conversation,
             sender: transport.localPeer,
             recipient: recipient,
-            sequence: sequence,
+            sequence: 0,
             sentAt: Timestamp(now()),
             body: body,
             skill: skill,
@@ -94,7 +89,7 @@ public actor Outbox {
             chainedFrom: chainedFrom
         )
 
-        let message = OutboundMessage(envelope: envelope, recipientCard: recipientCard, transport: transport.kind, context: context)
+        let message = OutboundMessage(envelope: draft, recipientCard: recipientCard, transport: transport.kind, context: context)
         let decision = await policy.evaluate(message)
         switch decision {
         case .allow:
@@ -121,6 +116,21 @@ public actor Outbox {
         // Last point before anything leaves: a cancelled send never goes out,
         // including one cancelled while the re-check above was running.
         try Task.checkCancellation()
+
+        // Number the envelope now, with no suspension before the transport
+        // takes it. A denied, declined, or cancelled send consumes no number,
+        // so the friend sees no gap that says a send was refused (review of
+        // PR #53). A conversation's first send on this launch starts at the
+        // clock in milliseconds, so a relaunched app never reuses a number
+        // the friend has seen. The send time is now too: a consent sheet can
+        // take longer than a receiver's age limit.
+        let sentAt = now()
+        let sequence = nextSequence[conversation] ?? Self.firstSequence(at: sentAt)
+        nextSequence[conversation] = sequence + 1
+        let envelope = try Envelope(
+            version: draft.version, id: draft.id, conversation: conversation, sender: draft.sender, recipient: recipient,
+            sequence: sequence, sentAt: Timestamp(sentAt), body: body, skill: skill, mode: mode, chainedFrom: chainedFrom
+        )
         try await transport.send(Frame(codec.encode(envelope)), to: recipient)
         if let observer {
             let disclosed: [DisclosedItem]? = switch decision {

@@ -18,7 +18,10 @@ import Testing
         #expect(sent.first?.peer == Fixtures.bob)
         #expect(try EnvelopeCodec().decode(#require(sent.first).frame.bytes) == envelope)
         #expect(envelope.sender == Fixtures.alice)
-        #expect(await policy.evaluated.map(\.envelope) == [envelope])
+        // The policy judged the draft: the same message, before its number
+        // and send time were set.
+        #expect(await policy.evaluated.map(\.envelope.id) == [envelope.id])
+        #expect(await policy.evaluated.map(\.envelope.body) == [envelope.body])
     }
 
     @Test func deniedMessagesNeverReachTheTransport() async throws {
@@ -173,6 +176,33 @@ actor GatedSecondEvaluationPolicy: PolicyEngine {
         #expect(!wire.contains("boba"))
     }
 
+    /// Review of PR #53: a refused send must leave no gap in the numbers,
+    /// or the friend learns that something was refused (with Time set to
+    /// Never, that their slot was free).
+    @Test func aRefusedSendConsumesNoSequenceNumber() async throws {
+        let start = UInt64(Fixtures.now.timeIntervalSince1970 * 1000)
+        for refusal in [PolicyDecision.deny(PolicyViolation(rule: "never")), .needsConsent(try disclosure(100))] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let refused = Outbox(transport: transport, policy: SequencedPolicyEngine([refusal, .allow]),
+                                 consent: ScriptedConsentProvider(.declined), now: { Fixtures.now })
+            _ = try? await refused.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            let sent = try await refused.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            #expect(sent.sequence == start)
+            #expect(await transport.sent.count == 1)
+        }
+    }
+
+    /// The send time is when the envelope leaves, not when it was drafted:
+    /// a consent sheet answered after the receiver's age limit must not
+    /// make the friend drop the envelope.
+    @Test func theSendTimeIsTakenAfterConsent() async throws {
+        let clock = Clock(Fixtures.now)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: FixedPolicyEngine(.needsConsent(try disclosure(100))),
+                            consent: AdvancingConsent(clock: clock, by: 900), now: { clock.now })
+        let sent = try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        #expect(sent.sentAt == Timestamp(Fixtures.now.addingTimeInterval(900)))
+    }
+
     @Test func observerHearsOnlySuccessfulSends() async throws {
         let violation = PolicyViolation(rule: "deny")
         for (decision, consent, fails, expected) in [
@@ -263,5 +293,24 @@ actor GatedSecondEvaluationPolicy: PolicyEngine {
 
         await #expect(throws: CancellationError.self) { try await send.value }
         #expect(await transport.sent.isEmpty)
+    }
+}
+
+/// A clock a test can move from inside a consent sheet.
+final class Clock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ start: Date) { value = start }
+    var now: Date { lock.withLock { value } }
+    func advance(by seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
+}
+
+/// Approves after the owner "took" `seconds` to decide.
+struct AdvancingConsent: ConsentProvider {
+    let clock: Clock
+    let by: TimeInterval
+    func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        clock.advance(by: by)
+        return .approved
     }
 }

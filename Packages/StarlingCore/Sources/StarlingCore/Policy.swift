@@ -53,6 +53,8 @@ extension Query {
 
 /// A message about to leave the device, with what the policy needs to judge it.
 public struct OutboundMessage: Hashable, Sendable {
+    /// The envelope as drafted. `Outbox` sets its sequence number and send
+    /// time only once the send is cleared, so a policy must not rely on them.
     public let envelope: Envelope
     /// The recipient's card, if a `hello` has been received.
     public let recipientCard: AgentCard?
