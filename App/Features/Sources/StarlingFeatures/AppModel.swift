@@ -38,6 +38,9 @@ public struct AppServices: Sendable {
     /// Remembers each conversation's highest sent sequence number across
     /// launches (Core v2.1). Nil keeps it in memory only.
     public var sequences: (any RetainingSentSequenceStore)?
+    /// The phone's record of retired conversations and answered candidates,
+    /// which Outbox enforces (ADR 0021). Nil only in tests and previews.
+    public var ledger: (any ConversationLedger)?
     /// The link the app's `Outbox` sends on. Nil until a transport the app
     /// may send owner data over is in the build.
     public var transport: (any Transport)?
@@ -75,6 +78,7 @@ public struct AppServices: Sendable {
         makePolicy: (@Sendable (OwnerRules, Bool) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
         sequences: (any RetainingSentSequenceStore)? = nil,
+        ledger: (any ConversationLedger)? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -103,6 +107,7 @@ public struct AppServices: Sendable {
         self.makePolicy = makePolicy
         self.auditLog = auditLog
         self.sequences = sequences
+        self.ledger = ledger
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -146,6 +151,9 @@ public final class AppModel {
     public let localPeer: PeerID?
     /// Whether the owner allowed notifications, once asked.
     public private(set) var notificationsAllowed: Bool?
+    /// Set when the conversation ledger cannot be read: Outbox then sends
+    /// nothing at all, and Home says why.
+    public private(set) var ledgerNotice: String?
     /// An interaction that just became a plan, for the It's a plan screen.
     public var celebrating: InteractionID?
     public let proposals: ProposalTexts
@@ -183,7 +191,8 @@ public final class AppModel {
                 observer: EgressObserver(forward: services.auditLog) { record, interaction, conversation in
                     recorder.lifecycle?.recordEgress(record, interaction: interaction, conversation: conversation)
                 },
-                sequences: services.sequences
+                sequences: services.sequences,
+                ledger: services.ledger
             )
         } else {
             nil
@@ -197,7 +206,13 @@ public final class AppModel {
         recorder.lifecycle = lifecycle
         consent.tracker = lifecycle
         let consent = consent
-        lifecycle.onFinished = { interaction, conversation in consent.invalidate(interaction: interaction, conversation: conversation) }
+        lifecycle.onFinished = { interaction, conversation in
+            consent.invalidate(interaction: interaction, conversation: conversation)
+            // Skills retire their conversations themselves (ADR 0021
+            // decision 10); this also covers an ending the owner made, so
+            // nothing is ever sent in it again.
+            if let outbox { Task { try? await outbox.retire(conversation) } }
+        }
 
         let names = NameBox()
         words = InteractionWords(registry: services.registry, localPeer: localPeer, formatter: services.formatter, names: { names.value })
@@ -313,6 +328,13 @@ public final class AppModel {
         refreshCard()
         await lifecycle.start()
         lifecycle.tick()
+        if let ledger = services.ledger {
+            do {
+                _ = try await ledger.isRetired(ConversationID())
+            } catch {
+                ledgerNotice = "Starling's record of finished plans couldn't be read, so it won't send anything. Restart Starling to try again."
+            }
+        }
         // Before anything is sent this launch: keep sequence numbers for
         // every conversation that can still resume, and drop the rest. Not
         // when the interactions could not be read, which would drop them all.

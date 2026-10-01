@@ -65,6 +65,7 @@ final class DebugHarness {
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
+            ledger: LiveServices.ledger(),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,

@@ -22,6 +22,7 @@ struct HomeView: View {
                 .listRowBackground(Color.clear)
             }
             if let notice = app.lifecycle.notice { NoticeSection(text: notice) }
+            if let notice = app.ledgerNotice { NoticeSection(text: notice) }
 
             if !home.needsYou.isEmpty {
                 Section {

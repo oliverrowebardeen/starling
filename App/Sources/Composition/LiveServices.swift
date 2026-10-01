@@ -32,6 +32,7 @@ extension AppServices {
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
+            ledger: LiveServices.ledger(),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
@@ -97,6 +98,13 @@ enum LiveServices {
     static func interactionStore() -> any InteractionStore {
         (try? FileInteractionStore.standard())
             ?? FileInteractionStore(file: JSONFile(url: FileManager.default.temporaryDirectory.appending(path: "interactions.json")))
+    }
+
+    /// The phone's conversation ledger (ADR 0021). If its file cannot even
+    /// be located, a ledger that refuses everything stands in, so Outbox
+    /// sends nothing rather than sending without one.
+    static func ledger() -> any ConversationLedger {
+        (try? FileConversationLedger.standard()) ?? UnavailableConversationLedger()
     }
 
     static func settingsStore() -> any OwnerSettingsStore {

@@ -267,6 +267,34 @@ import Testing
         #expect(sequences.highestSent(in: hello, to: peer) == nil)
     }
 
+    /// ADR 0021: an interaction that ends retires its conversation, so
+    /// nothing is sent in it again.
+    @Test func anEndingRetiresItsConversation() async throws {
+        let ledger = InMemoryConversationLedger()
+        var services = Self.services()
+        services.ledger = ledger
+        let app = AppModel(services: services)
+        await app.start()
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, mode: .askQuietly, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [.random()]
+        )
+        try await app.lifecycle.start(request, settings: app.settings.skillSettings)
+        #expect(try await !ledger.isRetired(request.conversation))
+        await app.lifecycle.withdraw(request.interaction)
+        for _ in 0..<2000 where try await !ledger.isRetired(request.conversation) { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(try await ledger.isRetired(request.conversation))
+    }
+
+    @Test func anUnreadableLedgerIsReportedOnHome() async throws {
+        var services = Self.services()
+        services.ledger = UnavailableConversationLedger()
+        let app = AppModel(services: services)
+        await app.start()
+        #expect(app.ledgerNotice != nil)
+    }
+
     @Test func keepItGoingHidesChainsAFriendCannotRun() async throws {
         let maya = Fixtures.peer("Maya")
         let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
