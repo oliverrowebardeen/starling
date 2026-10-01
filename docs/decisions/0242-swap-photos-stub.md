@@ -22,7 +22,7 @@ Verified against Apple's documentation (2026-10-01):
    - The one who opted in: when the plan ends (ADR 0240), the service asks its owner to pick photos. The pick sends one offer, the photo count under the photos topic, to everyone else in the plan, with the skill and `chainedFrom`, through the Outbox. Acceptances are collected.
    - A friend: an offer from someone in a plan this phone was in creates an invitee card and nothing else: no picker, no permission, no start. "Share" sends an acceptance; a pass sends nothing ("If you pass, they just won't see it").
    - Moving the photos themselves is Phase 4's (brief 2.8 and 5). The initiator's interaction stays negotiating until it expires, and the friend's stays confirmed.
-4. **The service emits `.started`** for its own interaction when `start` is called, then the pick question. `docs/requests/P15-E.md` asks the Orchestrator to settle whether services or the coordinator apply `.started` for initiators.
+4. **The coordinator applies `.started`.** For an initiator, the lifecycle coordinator applies `.started` when the owner sends (here, when the schedule hands the link over), before calling `SkillService.start`; the service never emits it (Orchestrator's answer to `docs/requests/P15-E.md`, recorded in ADR 0011). `start` emits only the pick question.
 
 ## Consequences
 

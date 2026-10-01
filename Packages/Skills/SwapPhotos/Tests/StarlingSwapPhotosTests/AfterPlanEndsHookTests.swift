@@ -100,10 +100,14 @@ import Testing
             Issue.record("expected a start, got \(due)")
             return
         }
+        // The coordinator applies .started, then calls the service.
+        var link = try #require(try await store.interaction(waiting.id))
+        try link.apply(.started, at: Timestamp(clock.now))
+        try await store.save(link)
         try await service.start(start.request(rules: .empty, expiresAt: Timestamp(clock.now.addingTimeInterval(24 * 3600))))
-        let first = try await Self.coordinate(2, from: &events, into: store, at: Timestamp(clock.now))
+        let first = try await Self.coordinate(1, from: &events, into: store, at: Timestamp(clock.now))
         let question = SwapPhotos.pickQuestion(revision: 1)
-        #expect(first == [.lifecycle(waiting.id, .started), .lifecycle(waiting.id, .ownerNeeded(question))])
+        #expect(first == [.lifecycle(waiting.id, .ownerNeeded(question))])
         #expect(try await store.interaction(waiting.id)?.state == .awaitingOwner)
         #expect(await transport.sent.isEmpty)
 
@@ -118,7 +122,7 @@ import Testing
         #expect(sent.allSatisfy { $0.chainedFrom == plan.conversation && $0.conversation == waiting.conversation })
 
         // What left the phone equals what the sheets showed, on the link.
-        let link = try #require(try await store.interaction(waiting.id))
+        link = try #require(try await store.interaction(waiting.id))
         #expect(link.state == .negotiating)
         #expect(link.egress.map(\.items) == sheets.map(\.items))
         let timeline = try #require(PlanTimeline(for: plan.id, in: try await store.all(), registry: Self.registry))

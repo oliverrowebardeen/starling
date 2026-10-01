@@ -99,8 +99,8 @@ struct Phone {
         try await phone.service.start(request)
         await #expect(throws: SwapPhotosError.alreadyStarted(request.interaction)) { try await phone.service.start(request) }
         #expect(try await phone.sent().isEmpty)
-        #expect(await phone.events() == [.lifecycle(request.interaction, .started),
-                                         .lifecycle(request.interaction, .ownerNeeded(SwapPhotos.pickQuestion(revision: 1)))])
+        // The coordinator applies .started for an initiator; the service never does.
+        #expect(await phone.events() == [.lifecycle(request.interaction, .ownerNeeded(SwapPhotos.pickQuestion(revision: 1)))])
     }
 
     @Test func theOwnersPickSendsOneOfferToEveryoneInThePlanWithChainedFrom() async throws {

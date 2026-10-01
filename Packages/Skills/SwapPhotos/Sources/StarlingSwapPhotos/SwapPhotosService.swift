@@ -21,8 +21,8 @@ public enum SwapPhotosError: Error, Hashable, Sendable {
 /// The Swap photos runtime (ADR 0242). Every send goes through the app's
 /// Outbox with the skill's `SkillRef` and the link's `chainedFrom`.
 ///
-/// As the one who opted in: `start` (called when the plan has ended) asks
-/// the owner to pick photos; the owner's pick sends one offer, the number of
+/// As the one who opted in: `start` (called when the plan has ended, after
+/// the coordinator applied `.started`) asks the owner to pick photos; the owner's pick sends one offer, the number of
 /// photos, to everyone else in the plan; acceptances are collected.
 ///
 /// As a friend: an offer creates an invitee interaction with a proposal card
@@ -90,7 +90,7 @@ public actor SwapPhotosService: SkillService {
         sessions[request.interaction] = Session(conversation: request.conversation, chainedFrom: chainedFrom,
                                                 participants: request.participants, step: .picking(question: question.revision))
         byConversation[request.conversation] = request.interaction
-        emit(request.interaction, .started)
+        // The coordinator applied .started before calling start (ADR 0011).
         emit(request.interaction, .ownerNeeded(question))
     }
 
