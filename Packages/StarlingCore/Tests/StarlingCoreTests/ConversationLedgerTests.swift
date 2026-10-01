@@ -276,3 +276,61 @@ actor SerialStallingTransport: Transport {
         delivered.append(try EnvelopeCodec().decode(frame.bytes).conversation)
     }
 }
+
+/// Review of lane A's PR #54: a stricter setting or a failed retirement must
+/// stop sends cleared earlier and still waiting.
+@Suite struct RevocationTests {
+    static let body = MessageBody.reject(Rejection(proposal: MessageID(), reason: .noOverlap))
+
+    @Test func aStricterPolicyStopsASendThatWasClearedAndIsWaiting() async throws {
+        let policy = SwitchablePolicy(.allow)
+        let transport = StallingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: policy, consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
+        await transport.stallNext()
+        let first = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await OutboxAdmissionTests().waitUntil { await transport.stalled }
+        let waiting = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await Task.sleep(for: .milliseconds(50))
+        let violation = PolicyViolation(rule: "never", issue: .place)
+        await policy.set(.deny(violation))
+        await transport.release()
+        _ = try await first.value
+        await #expect(throws: OutboxError.denied(violation)) { try await waiting.value }
+        #expect(await transport.sentSequences.count == 1)
+    }
+
+    @Test func cancelInFlightStopsEverySendStillWaiting() async throws {
+        let transport = SerialStallingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
+        await transport.stall()
+        let sends = (0..<3).map { _ in Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: ConversationID()) } }
+        try await OutboxAdmissionTests().waitUntil { await transport.waiting == 3 }
+        await outbox.cancelInFlight()
+        await transport.release()
+        for send in sends { await #expect(throws: CancellationError.self) { try await send.value } }
+        #expect(await transport.delivered.isEmpty)
+    }
+
+    @Test func aRetirementTheLedgerCannotRecordStillStopsSendsInFlight() async throws {
+        let ledger = InMemoryConversationLedger()
+        let transport = SerialStallingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            ledger: ledger, now: { Fixtures.now })
+        await transport.stall()
+        let send = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await OutboxAdmissionTests().waitUntil { await transport.waiting == 1 }
+        await ledger.failAll()
+        await #expect(throws: InMemoryConversationLedger.Unavailable.self) { try await outbox.retire(Fixtures.conversation) }
+        await transport.release()
+        await #expect(throws: CancellationError.self) { try await send.value }
+        #expect(await transport.delivered.isEmpty)
+    }
+}
+
+/// A policy a test can tighten.
+actor SwitchablePolicy: PolicyEngine {
+    private var decision: PolicyDecision
+    init(_ decision: PolicyDecision) { self.decision = decision }
+    func set(_ decision: PolicyDecision) { self.decision = decision }
+    func evaluate(_ message: OutboundMessage) async -> PolicyDecision { decision }
+}

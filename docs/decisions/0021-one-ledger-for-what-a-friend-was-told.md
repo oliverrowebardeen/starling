@@ -49,6 +49,12 @@ The review of PR #51 found a related gap in the audit: an `OutboxObserver` heard
 10. **Skills retire through `Outbox.retire(_:)`** (second review of PR #60). It records the conversation in the ledger, then cancels every send of it still in flight, including one waiting inside the transport's queue behind another conversation's send. Queued encrypted sends honor cancellation (decision 5), so none of them leaves. A send the transport has already sealed may still complete.
 11. **Accepted limit.** A number given back after a cancelled send is not taken back in the `SentSequenceStore`. Recording before sending is what keeps relaunches from reusing a number. So if the app relaunches with its clock moved back, the friend can see a one-number gap, which says only that some send was cancelled before the relaunch.
 
+12. **A stricter setting stops waiting sends** (review of lane A's PR #54).
+    - Outbox asks the policy again at the last moment, and refuses with `policyChangedDuringConsent` if the answer is no longer the one that cleared the send.
+    - The app calls `Outbox.cancelInFlight()` right after installing a stricter policy. That stops sends already waiting in the transport's queue.
+    - `Outbox.retire(_:)` cancels before it writes the ledger, so a failed write still stops the conversation's sends.
+13. **Retire before announcing the end** (review of lane E's PR #51). A skill awaits `Outbox.retire(_:)` before it publishes any terminal lifecycle event. If retiring throws, it reports a failure, not a clean ending.
+
 ## Consequences
 
 - One place to test, which lane F does: limits, retirement, failure, and restart.
