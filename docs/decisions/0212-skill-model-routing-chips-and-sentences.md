@@ -1,7 +1,7 @@
 # ADR 0212: SkillModel: routing, chips, and proposal sentences
 
 - Status: Proposed
-- Date: 2026-10-01
+- Date: 2026-10-01; revised the same day for Core v2.1 (ADR 0020) and the review of PR #56
 - Owner: P15-B. Down for... skill and the model
 
 ## Context
@@ -14,17 +14,19 @@ Verified against the Xcode 27.0 macOS SDK interface (`FoundationModels.swiftmodu
 
 1. **`FoundationModelsAgent` conforms to `SkillModel`.** Each call runs in a fresh session with greedy sampling, like `AgentModel`'s jobs, and maps framework errors to `AgentModelError`.
 2. **Routing is a runtime enum.** `RouteSchema` offers the ids of the skills that can run now (`SkillRegistry.available`), then `none`, so the model cannot name a skill that is switched off, blocked, or not in the build. The prompt describes each skill from its descriptor only: name, summary, what its building block does, and every slot hint. Nothing is written per skill, so a new skill routes from its descriptor.
-3. **Chips come from a schema built from the skill's slots.** `IntentGenerationSchema` adds fields only for the skill's slots, in its order: wants and avoids for activity; day, hours, and part of day for time; whole dollars for budget; up to three words for any other slot (place, diet, photos); and audience and names when the skill asks for an audience. ADR 0161's lessons carry over: enums lead with `none`, and hours and budget use sentinels for "not stated".
+3. **Chips come from a schema built from the skill's slots.** `IntentGenerationSchema` adds fields only for the skill's slots, in its order: wants and avoids for activity; day, hours, and part of day for time; whole dollars for budget; up to three words for any other slot (place, diet, photos); audience and names when the skill asks for an audience; and a mode (`none`, `quietly`, `invite`) when the skill offers more than one send mode. ADR 0161's lessons carry over: enums lead with `none`, and hours and budget use sentinels for "not stated".
 4. **Code grounds every chip in the owner's words** (ADR 0161, extended):
    - time, activity, and budget go through `Grounding.check` and `OutputMapping.rules`, as in Phase 1;
    - a day or a group word ("friends") is never an activity;
    - another slot's word survives only if the message uses it, with one rule: "nearby" stands for "far" or "near";
    - a name survives only if it appears in the message, is not a word for a group, an activity, or a place, and keeps the owner's spelling;
    - the audience is everyone or close friends only if the message says so; a named friend makes the audience the app's to resolve;
+   - "everyone except Jake" or "everyone but Jake" becomes `everyoneExcept([])` with Jake among the names; the small model files Jake under avoids, so code moves an avoid in that pattern into the names, and "anything but sushi" stays an avoid;
+   - a mode only if the message says quietly or invite, and only one the skill offers;
    - sharing is never set by a request: privacy topics are global (ADR 0014);
    - the request expires when its time window ends, or in three hours.
-5. **Proposal sentences see typed facts only.** The prompt lists the owner's nicknames for friends, the activity keyword, and a time phrase code computed ("tonight at 8:30 PM"). A place is the placeholder `{place}`, and code puts the venue name in afterwards, so a peer-supplied name never reaches the model.
-6. **Code checks every sentence and falls back to the template.** A sentence is kept only if it is one line within 200 characters, names every friend, says the activity, says the time, has the placeholder exactly when there is a place, and contains no number the facts lack. With no activity, it must not say "down" (ADR 0017). Dashes become commas. Anything else throws, and the app shows the skill's template sentence (`ProposalTemplate` in Down for...).
+5. **Proposal sentences see typed facts only.** The prompt lists the owner's nicknames for friends and the activity keyword. The time and the place are placeholders, `{time}` and `{place}`: code puts in the time phrase it computed ("tonight at 8:30 PM") and the venue name afterwards, so the sentence cannot get the day or the hour wrong (review of PR #56, finding 7), and a peer-supplied name never reaches the model.
+6. **Code checks every sentence and falls back to the template.** A sentence is kept only if it is one line within 200 characters, names every friend, says the activity, has each placeholder exactly when its fact is given, and has no time of its own: no digit, day, part of day, AM, or PM. With no activity, it must not say "down" (ADR 0017). Dashes become commas. Anything else throws, and the app shows the skill's template sentence (`ProposalTemplate` in Down for...).
 7. **Measured the ADR 0160 way.** `StarlingAgentBench` holds a routing set (40 tuning, 20 held-out) and a Down for... chip set (20 tuning, 10 held-out), with scorers that run against `ScriptedSkillModel` in CI and the real model with `agent-bench --routing` or `--chips`, or `STARLING_MODEL_TESTS=1` on a device.
 
 ## Consequences
@@ -41,7 +43,8 @@ Measured on the macOS 26.7 model (`Packages/StarlingAgent/Reports/phase-1.5-skil
 | Worst call | 1,811 tokens (chips), within ADR 0002's 2,048 |
 
 - Routing failures go the safe way: no request was routed to none, and two to three non-requests were routed to a skill, which shows chips the owner dismisses. Nothing is sent before the owner taps the start button.
-- Audience is the weakest chip (80 to 90%). Core v2.1 (ADR 0020) adds send modes and new audience cases; audience and mode parsing are redone with it, so they were not tuned further here.
+- Core v2.1 round: the mode chip was right in 23 of 23 tuning and 12 of 12 held-out items; all chips right in 20 of 23 and 6 of 12. Audience stays the weakest chip ("who's up for" is not read as everyone; "close friends" sometimes is), and a group's name came back as an avoid on the held-out set.
+- `SkillModel` cannot see the friends list and `ParsedIntent` has no field for friends left out or a group, so names carry both by convention (requested in `docs/requests/P15-B.md`).
 - The sets are small and written by one author; two tuning labels were widened after the first run, which the report states. These are evidence, not population estimates.
 - The iOS 27 model is new and may score differently. The device checklist (part A) runs the same sets on an iPhone and asks for New to lead with tiles if routing is under 80% there.
 - The word lists are English only, like ADR 0161's.
