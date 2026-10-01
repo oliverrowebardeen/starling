@@ -18,12 +18,37 @@ public struct OutboundContext: Hashable, Sendable {
     }
 
     public let psi: PSIInputs?
+    /// The friend's query an `.answer` replies to, as the service received
+    /// it. With it, the policy can see that an answer only says which of
+    /// the friend's own candidates work (ADR 0019).
+    public let answering: Query?
 
-    public init(psi: PSIInputs? = nil) {
+    public init(psi: PSIInputs? = nil, answering: Query? = nil) {
         self.psi = psi
+        self.answering = answering
     }
 
     public static let empty = OutboundContext()
+}
+
+extension Query {
+    /// Whether `answer` only says yes or no to this query's own candidates:
+    /// the same issue, and an acceptable value made only of candidates
+    /// (exact members of a list, or the single candidate itself). Such an
+    /// answer carries no value of the owner's, so Never does not stop it
+    /// (ADR 0019 decision 4). A declined answer carries nothing at all.
+    public func isAnsweredYesOrNo(by answer: Answer) -> Bool {
+        guard answer.issue == issue else { return false }
+        guard let acceptable = answer.acceptable else { return answer.status != .answered }
+        switch (acceptable, candidates) {
+        case (.keywords(let yes), .keywords(let asked)): return Set(yes).isSubset(of: asked)
+        case (.slots(let yes), .slots(let asked)): return Set(yes).isSubset(of: asked)
+        case (.places(let yes), .places(let asked)): return Set(yes).isSubset(of: asked)
+        case (.peers(let yes), .peers(let asked)): return Set(yes).isSubset(of: asked)
+        case (.amount, .amount), (.flag, .flag), (.count, .count): return acceptable == candidates
+        default: return false
+        }
+    }
 }
 
 /// A message about to leave the device, with what the policy needs to judge it.
