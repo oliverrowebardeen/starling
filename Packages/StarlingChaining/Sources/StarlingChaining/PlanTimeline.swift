@@ -40,19 +40,17 @@ public struct PlanTimeline: Hashable, Sendable {
     public let whatLeft: WhatLeftYourPhone
 
     /// The timeline of the plan `interaction` belongs to, or nil if it is not
-    /// in `interactions`. `friendHints` maps invitee interactions to the
-    /// conversation their request named in `chainedFrom`, after
-    /// `IncomingChain.timelineParent` accepted it. `unconfirmed` is
-    /// `EgressRecorder.unconfirmedConversations`, for `whatLeft`.
-    public init?(for interaction: InteractionID, in interactions: [Interaction], registry: SkillRegistry,
-                 friendHints: [InteractionID: ConversationID] = [:], unconfirmed: Set<ConversationID> = []) {
+    /// in `interactions`. A friend's request joins through its
+    /// `Interaction.friendChainHint`, which the coordinator sets only after
+    /// `IncomingChain.timelineParent` accepted the request's `chainedFrom`.
+    /// `unconfirmed` is `EgressRecorder.unconfirmedConversations`, for
+    /// `whatLeft`.
+    public init?(for interaction: InteractionID, in interactions: [Interaction], registry: SkillRegistry, unconfirmed: Set<ConversationID> = []) {
         guard let start = interactions.first(where: { $0.id == interaction }) else { return nil }
-        // Only invitee interactions without an owner link can be grouped by a
-        // friend's hint.
-        let hints = friendHints.filter { id, _ in interactions.contains { $0.id == id && $0.role == .invitee && $0.chain == nil } }
         func parent(of item: Interaction) -> Interaction? {
             if let id = item.chain?.parent { return interactions.first { $0.id == id } }
-            if let conversation = hints[item.id] { return interactions.first { $0.conversation == conversation } }
+            // Only a friend's request without an owner link groups by a hint.
+            if item.role == .invitee, let hint = item.friendChainHint { return interactions.first { $0.conversation == hint } }
             return nil
         }
 

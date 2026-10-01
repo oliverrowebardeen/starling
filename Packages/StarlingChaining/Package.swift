@@ -18,7 +18,7 @@ let package = Package(
         .package(path: "../StarlingCore"),
         // Test only: the real policy engine, to check that "What left your
         // phone" lists exactly what its consent sheet showed. The library
-        // takes the policy's items as a function and does not import it.
+        // gets the policy's items from Outbox and does not import it.
         .package(path: "../StarlingPolicy"),
     ],
     targets: [

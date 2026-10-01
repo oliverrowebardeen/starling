@@ -101,22 +101,26 @@ import Testing
         // On Maya's phone: she was asked, and then Jake's agent asked to
         // pick a place for the same plan.
         let plan = try Fixtures.plannedDownFor(role: .invitee)
-        let fromJake = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [Fixtures.jake], createdAt: Fixtures.at(minutes: 9))
-        let hint = try #require(IncomingChain.timelineParent(chainedFrom: plan.conversation, sender: Fixtures.jake, interactions: [plan]))
-        let timeline = try #require(PlanTimeline(for: fromJake.id, in: [plan, fromJake], registry: registry, friendHints: [fromJake.id: hint]))
+        var fromJake = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [Fixtures.jake], createdAt: Fixtures.at(minutes: 9))
+        #expect(PlanTimeline(for: fromJake.id, in: [plan, fromJake], registry: registry)?.entries.map(\.id) == [fromJake.id])
+
+        // The coordinator keeps the hint once IncomingChain accepts it.
+        try fromJake.setFriendChainHint(IncomingChain.timelineParent(chainedFrom: plan.conversation, sender: Fixtures.jake, interactions: [plan]))
+        let timeline = try #require(PlanTimeline(for: fromJake.id, in: [plan, fromJake], registry: registry))
         #expect(timeline.root == plan.id)
         #expect(timeline.entries.map(\.origin) == [.plan, .friend])
         #expect(fromJake.chain == nil)
-        // Without the hint it stands alone.
-        #expect(PlanTimeline(for: fromJake.id, in: [plan, fromJake], registry: registry)?.entries.map(\.id) == [fromJake.id])
     }
 
-    @Test func aHintCannotRegroupTheOwnersOwnInteractions() throws {
-        let (plan, place, _) = try boba()
-        let other = try Fixtures.plannedDownFor()
-        // Hints naming the owner's link or an initiator plan are ignored.
-        let timeline = try #require(PlanTimeline(for: other.id, in: [plan, place, other], registry: registry,
-                                                 friendHints: [place.id: other.conversation, plan.id: other.conversation]))
-        #expect(timeline.entries.map(\.id) == [other.id])
+    @Test func aHintTheCoordinatorRejectedGroupsNothing() throws {
+        let plan = try Fixtures.plannedDownFor(role: .invitee)
+        var fromStranger = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [Fixtures.stranger], createdAt: Fixtures.at(minutes: 9))
+        // Not in the plan: no hint to keep, so it stands alone.
+        try fromStranger.setFriendChainHint(IncomingChain.timelineParent(chainedFrom: plan.conversation, sender: Fixtures.stranger, interactions: [plan]))
+        #expect(fromStranger.friendChainHint == nil)
+        #expect(PlanTimeline(for: fromStranger.id, in: [plan, fromStranger], registry: registry)?.entries.map(\.id) == [fromStranger.id])
+        // And the owner's own interactions can never carry one.
+        var mine = try Fixtures.plannedDownFor()
+        #expect(throws: ValidationError.self) { try mine.setFriendChainHint(plan.conversation) }
     }
 }
