@@ -15,7 +15,7 @@ extension AppServices {
     /// lives in StarlingFakes, so Release shows "Down? isn't in this build
     /// yet" until a private provider (Nightjar) exists. Pairing and friends
     /// wait for lane E1, and so does a transport for the app's Outbox.
-    static func release() -> AppServices {
+    static func release() async throws -> AppServices {
         AppServices(
             agent: FoundationModelsAgent(),
             rules: LiveServices.rulesStore(),

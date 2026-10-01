@@ -47,7 +47,15 @@ final class DebugHarness {
         Task { await simFriend.start() }
     }
 
-    func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) -> AppServices {
+    /// The Debug app's services. Async because lane E1's identity loads
+    /// from the Keychain (next commit).
+    func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) async throws -> AppServices {
+        previewServices(rules: rules, notifier: notifier)
+    }
+
+    /// Fakes and the in-process Loopback hub only, built synchronously for
+    /// SwiftUI previews.
+    func previewServices(rules: any RulesStore, notifier: any MatchNotifier) -> AppServices {
         let agent: any AgentModel = usesScriptedModel ? Self.scriptedModel() : FoundationModelsAgent()
         let peers = peers
         let ownerID = owner.id
@@ -343,7 +351,7 @@ actor DemoPolicy: PolicyEngine {
 enum PreviewSupport {
     static func app(friends: [String] = ["Maya", "Sam"], scriptedModel: Bool = true) -> AppModel {
         let harness = DebugHarness(peers: friends.map { DebugHarness.randomPeer(nickname: $0) })
-        var services = harness.services(rules: InMemoryRulesStore(), notifier: SilentNotifier())
+        var services = harness.previewServices(rules: InMemoryRulesStore(), notifier: SilentNotifier())
         services.agent = DebugHarness.scriptedModel()
         services.localNetwork = SilentPrompter()
         return AppModel(services: services)
