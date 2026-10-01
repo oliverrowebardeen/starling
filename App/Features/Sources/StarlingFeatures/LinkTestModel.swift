@@ -2,17 +2,17 @@ import Foundation
 import Observation
 import StarlingCore
 
-/// Tests a link to nearby paired phones: which peers are connected, and a
-/// round trip per peer. The Developer screen runs it over lane E2's
-/// `WiFiAwareTransport` for E2's device checklist.
+/// The app's link layer and its test view: which peers are connected, a
+/// round trip per peer, and the `hello` exchange lane F relies on ("Down
+/// does not send hello; the app's link layer does", docs/requests/F.md).
 ///
-/// A round trip is a `hello` (the agent card only, which lane G's policy
-/// always allows, so no owner data and no consent sheet) answered by a
-/// `hello` in the same conversation. A phone answers a conversation once
-/// and never answers its own pings, so replies cannot loop.
-///
-/// It owns its own `Inbox`, like the Phase 0 Nearby screen, until lane E1's
-/// secure channel puts every transport behind the app's single Inbox loop.
+/// It rides the app's `Outbox` and gets events from the app's single Inbox
+/// loop, so every link (lane E1's secure transports) is covered and only one
+/// Wi-Fi Aware transport ever publishes. When a peer becomes available it
+/// sends a `hello` with this agent's card, which is also the first round
+/// trip. It answers a `hello` it did not start, once per conversation, and
+/// never answers its own, so replies cannot loop. `hello` carries only the
+/// agent card, which lane G's policy always allows.
 @MainActor
 @Observable
 public final class LinkTestModel {
@@ -25,68 +25,68 @@ public final class LinkTestModel {
         public var lastError: String?
     }
 
-    public enum Status: Hashable, Sendable {
-        case idle, running
-        case failed(String)
-    }
-
-    public private(set) var status = Status.idle
     public private(set) var peers: [PeerRow] = []
-    public nonisolated var localPeer: PeerID { transport.localPeer }
 
-    private let transport: any Transport
     private let outbox: Outbox
     private let card: AgentCard
     private let name: @MainActor (PeerID) -> String?
     /// How long a round trip waits for its reply before it counts as lost.
     private let replyTimeout: Duration
     private let clock = ContinuousClock()
-    /// Our pings awaiting a reply: conversation to peer and start time.
+    /// Our hellos awaiting a reply: conversation to peer and start time.
     private var pending: [ConversationID: (peer: PeerID, start: ContinuousClock.Instant)] = [:]
-    /// Friends' pings already answered, oldest first, bounded.
+    /// Conversations we started, so a reply to one is never answered.
+    private var started: [ConversationID] = []
+    /// Friends' hellos already answered, oldest first, bounded.
     private var answered: [ConversationID] = []
-    private var loop: Task<Void, Never>?
 
     public init(
-        transport: any Transport,
-        policy: any PolicyEngine,
-        consent: any ConsentProvider,
-        observer: (any OutboxObserver)?,
+        outbox: Outbox,
         card: AgentCard,
         name: @escaping @MainActor (PeerID) -> String?,
         replyTimeout: Duration = .seconds(10)
     ) {
-        self.transport = transport
-        outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: observer)
+        self.outbox = outbox
         self.card = card
         self.name = name
         self.replyTimeout = replyTimeout
     }
 
-    public func start() async {
-        guard status != .running, loop == nil else { return }
-        let events = Inbox(localPeer: transport.localPeer).events(from: transport)
-        loop = Task { [weak self] in
-            for await event in events { await self?.handle(event) }
-        }
-        do {
-            try await transport.start()
-            status = .running
-        } catch {
-            status = .failed(String(describing: error))
+    /// Every event from the app's Inbox loop. Returns quickly: sends run on
+    /// their own tasks.
+    public func handle(_ event: InboxEvent) async {
+        switch event {
+        case .peerAvailable(let peer):
+            update(peer) { $0.isConnected = true }
+            Task { await self.ping(peer) }
+        case .peerUnavailable(let peer):
+            update(peer) {
+                $0.isConnected = false
+                $0.isWaiting = false
+            }
+        case .message(let envelope):
+            guard case .hello = envelope.body else { return }
+            if let ping = pending.removeValue(forKey: envelope.conversation), ping.peer == envelope.sender {
+                let elapsed = ping.start.duration(to: clock.now)
+                update(envelope.sender) {
+                    $0.isWaiting = false
+                    $0.lastRoundTrip = elapsed
+                }
+            } else if !started.contains(envelope.conversation) && !answered.contains(envelope.conversation) {
+                Self.remember(envelope.conversation, in: &answered)
+                let outbox = outbox
+                let card = card
+                Task { _ = try? await outbox.send(.hello(card), to: envelope.sender, conversation: envelope.conversation) }
+            }
+        case .dropped:
+            break
         }
     }
 
-    public func stop() async {
-        await transport.stop()
-        loop?.cancel()
-        loop = nil
-        pending.removeAll()
-        status = .idle
-    }
-
+    /// Sends a hello and times the reply.
     public func ping(_ peer: PeerID) async {
         let conversation = ConversationID()
+        Self.remember(conversation, in: &started)
         pending[conversation] = (peer, clock.now)
         update(peer) {
             $0.isWaiting = true
@@ -111,33 +111,6 @@ public final class LinkTestModel {
         }
     }
 
-    func handle(_ event: InboxEvent) async {
-        switch event {
-        case .peerAvailable(let peer):
-            update(peer) { $0.isConnected = true }
-        case .peerUnavailable(let peer):
-            update(peer) {
-                $0.isConnected = false
-                $0.isWaiting = false
-            }
-        case .message(let envelope):
-            guard case .hello = envelope.body else { return }
-            if let ping = pending.removeValue(forKey: envelope.conversation), ping.peer == envelope.sender {
-                let elapsed = ping.start.duration(to: clock.now)
-                update(envelope.sender) {
-                    $0.isWaiting = false
-                    $0.lastRoundTrip = elapsed
-                }
-            } else if !answered.contains(envelope.conversation) {
-                answered.append(envelope.conversation)
-                if answered.count > 256 { answered.removeFirst() }
-                _ = try? await outbox.send(.hello(card), to: envelope.sender, conversation: envelope.conversation)
-            }
-        case .dropped:
-            break
-        }
-    }
-
     private func giveUp(on conversation: ConversationID, after timeout: Duration) {
         guard let ping = pending.removeValue(forKey: conversation) else { return }
         let seconds = timeout.components.seconds
@@ -145,6 +118,11 @@ public final class LinkTestModel {
             $0.isWaiting = false
             $0.lastError = seconds >= 1 ? "No reply within \(seconds) seconds." : "No reply in time."
         }
+    }
+
+    private static func remember(_ conversation: ConversationID, in list: inout [ConversationID]) {
+        list.append(conversation)
+        if list.count > 256 { list.removeFirst() }
     }
 
     private func update(_ peer: PeerID, _ change: (inout PeerRow) -> Void) {

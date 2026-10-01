@@ -63,17 +63,19 @@ struct DeveloperView: View {
     #if DEBUG
     @ViewBuilder private var fakes: some View {
         Section {
-            LabeledContent("Sim friend", value: harness.simFriend.state)
-            Button("Sim friend: I'm down") { Task { await harness.simFriend.goDown(.down) } }
-            Button("Sim friend: I'm a maybe") { Task { await harness.simFriend.goDown(.maybe) } }
-            Button("Sim friend: withdraw") { Task { await harness.simFriend.withdraw() } }
-            Button(harness.simFriend.inRange ? "Sim friend: walk out of range" : "Sim friend: come back in range") {
-                Task { await harness.simFriend.setInRange(!harness.simFriend.inRange) }
+            if let sim = harness.simFriend {
+                LabeledContent("Sim friend", value: sim.state)
+                Button("Sim friend: I'm down") { Task { await sim.goDown(.down) } }
+                Button("Sim friend: I'm a maybe") { Task { await sim.goDown(.maybe) } }
+                Button("Sim friend: withdraw") { Task { await sim.withdraw() } }
+                Button(sim.inRange ? "Sim friend: walk out of range" : "Sim friend: come back in range") {
+                    Task { await sim.setInRange(!sim.inRange) }
+                }
             }
         } header: {
             Text("Simulated friend (Debug builds only)")
         } footer: {
-            Text("A second phone inside this app, paired with this one, running lane F's real Down over an in-process link. When it is down (food or boba, up to $20, next 8 hours) and you go down with overlapping time, the real matching runs: consent sheets, then a match notification on this phone.")
+            Text("A second phone inside this app, paired with this one through its own lane E1 identity, running lane F's real Down over an in-process secure link. When it is down (food or boba, up to $20, next 8 hours) and you go down with overlapping time, the real matching runs: consent sheets, then a match notification on this phone.")
         }
 
         Section {
@@ -95,7 +97,7 @@ struct DeveloperView: View {
         } header: {
             Text("Fakes (Debug builds only)")
         } footer: {
-            Text("Stands in for lane E1 until it merges. Sends go through the app's Outbox (lane G's policy and audit log). An approved sample is not asked again for 10 minutes or until the Down? intent changes. The scripted model returns the same rules every time, including \"karaoke\", so the review flags show, and accepts every offer.")
+            Text("Sample friends live only in this session, never in the Keychain. Sends go through the app's Outbox (lane G's policy and audit log). An approved sample is not asked again for 10 minutes or until the Down? intent changes. The scripted model returns the same rules every time, including \"karaoke\", so the review flags show, and accepts every offer.")
         }
     }
     #endif

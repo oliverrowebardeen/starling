@@ -14,31 +14,52 @@ struct PairingView: View {
             switch model.phase {
             case .idle:
                 Section {
-                    DeviceDiscoverySlot()
+                    DeviceDiscoverySlot { device in
+                        Task { await model.pickedDevice(id: device.id, name: device.name) }
+                    }
                 } footer: {
-                    Text("Pairing only works with both of you together. Each phone will show a code; check they're the same.")
+                    Text("Pairing only works with both of you together. On Wi-Fi Aware phones, let the system pair the two phones first.")
                 }
                 Section {
-                    Button("Start pairing") { Task { await model.start() } }
+                    if model.candidates.isEmpty {
+                        Text("Looking for nearby phones that aren't paired with Starling yet...").foregroundStyle(.secondary)
+                    }
+                    ForEach(model.candidates) { candidate in
+                        Button {
+                            model.selected = candidate
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text("Phone \(candidate.peer.short)").monospaced().foregroundStyle(.primary)
+                                    Text(candidate.link).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if model.selected == candidate { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Phones nearby")
+                } footer: {
+                    Text("This phone is \(model.localPeer.short). The other phone should list that number.")
+                }
+                Section {
+                    TextField("Name", text: $model.nickname)
+                        .textContentType(.name)
+                        .submitLabel(.done)
+                    Button("Pair") { Task { await model.start() } }
+                        .disabled(!model.canStart)
+                } header: {
+                    Text("What do you call them?")
+                } footer: {
+                    Text(model.notice ?? "Only you see this name. It never leaves your phone.")
                 }
             case .starting:
                 Section { ProgressView("Waiting for the other phone...") }
             case .comparing(let code):
                 compare(code)
             case .confirming:
-                Section { ProgressView("Confirming...") }
-            case .naming:
-                Section {
-                    TextField("Name", text: $model.nickname)
-                        .textContentType(.name)
-                        .submitLabel(.done)
-                        .onSubmit { Task { await model.saveNickname() } }
-                    Button("Save") { Task { await model.saveNickname() } }
-                } header: {
-                    Text("What do you call them?")
-                } footer: {
-                    Text(model.notice ?? "Only you see this name. It never leaves your phone.")
-                }
+                Section { ProgressView("Waiting for the other phone...") }
             case .paired(let peer):
                 Section {
                     Label("Paired with \(peer.nickname)", systemImage: "checkmark.circle.fill")
@@ -57,6 +78,13 @@ struct PairingView: View {
             }
         }
         .navigationTitle("Pair a friend")
+        // Keeps the nearby list current while the owner is choosing.
+        .task {
+            while !Task.isCancelled {
+                if model.phase == .idle { await model.refreshCandidates() }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
         // Covers a swipe down on the sheet as well as Close.
         .onDisappear { Task { await model.end() } }
         .toolbar {
@@ -97,9 +125,13 @@ struct PairingView: View {
 /// E1's ceremony, started by "Start pairing") pins the friend's key, and
 /// until E1 is wired Debug builds run it with a test friend.
 struct DeviceDiscoverySlot: View {
+    /// The device the owner picked in the system picker; the pairing model
+    /// turns it into the PeerID to pair with (lane E2, PR #38).
+    var onPicked: (WiFiAwarePairedDevice) -> Void = { _ in }
+
     var body: some View {
         if WiFiAwareSupport.isSupported {
-            WiFiAwarePairingButtons()
+            WiFiAwarePairingButtons(onPicked: onPicked)
         } else {
             Label {
                 VStack(alignment: .leading, spacing: 4) {

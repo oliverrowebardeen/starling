@@ -24,10 +24,15 @@ public final class OnboardingModel {
 
     private let localNetwork: any LocalNetworkPrompter
     private let notifier: any MatchNotifier
+    private let startLinks: @MainActor () async -> Void
 
-    public init(localNetwork: any LocalNetworkPrompter, notifier: any MatchNotifier) {
+    /// - Parameter startLinks: Starts the app's radios. Their Bonjour work
+    ///   raises the Local Network alert, so it runs only after this step's
+    ///   explanation and the deliberate prompt (Codex review of PR #42).
+    public init(localNetwork: any LocalNetworkPrompter, notifier: any MatchNotifier, startLinks: @escaping @MainActor () async -> Void = {}) {
         self.localNetwork = localNetwork
         self.notifier = notifier
+        self.startLinks = startLinks
     }
 
     /// Does the current step's action, then moves on.
@@ -40,6 +45,7 @@ public final class OnboardingModel {
             step = .localNetwork
         case .localNetwork:
             await localNetwork.prompt()
+            await startLinks()
             step = .notifications
         case .notifications:
             notificationsAllowed = await notifier.requestAuthorization()

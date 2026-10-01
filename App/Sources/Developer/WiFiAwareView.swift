@@ -3,14 +3,14 @@ import StarlingFeatures
 import StarlingWiFiAware
 import SwiftUI
 
-/// Lane E2's device checklist screen: pair over Wi-Fi Aware, see paired
-/// devices, and test the link to each peer (docs/requests/E2.md section 3).
-/// Links are encrypted between OS-paired devices, but the peer IDs here are
-/// unverified until lane E1's secure channel lands.
+/// Lane E2's device checklist screen: pair phones over Wi-Fi Aware in the
+/// OS, see the system's paired devices, and test the app's links to each
+/// Starling friend (docs/requests/E2.md section 3). The links are the app's
+/// own (lane E1's secure transports), so only Starling-paired friends
+/// appear, and only once their key is proven.
 struct WiFiAwareView: View {
     let app: AppModel
     @State private var devices = WiFiAwarePairedDevices()
-    @State private var link: LinkTestModel?
 
     var body: some View {
         List {
@@ -32,48 +32,21 @@ struct WiFiAwareView: View {
                     ForEach(devices.devices) { Text($0.name) }
                 }
                 .task { await devices.track() }
-
-                if let link { linkSection(link) }
             } else {
                 Section {
                     Text("This iPhone can't use Wi-Fi Aware. It needs an iPhone 12 or later, and it doesn't run in the Simulator.")
                         .foregroundStyle(.secondary)
                 }
             }
+            if let link = app.link { linkSection(link) }
         }
         .navigationTitle("Wi-Fi Aware")
-        .task {
-            guard link == nil, let transport = LiveServices.wifiAwareTransport(), let policy = app.policy else { return }
-            let friends = app.friends?.friends ?? []
-            let model = LinkTestModel(
-                transport: transport,
-                policy: policy,
-                consent: app.consent,
-                observer: app.services.auditLog,
-                // Cannot throw: one protocol version and one capability are within limits.
-                card: try! AgentCard(model: app.services.agent?.descriptor.locality ?? .none, capabilities: [.down]),
-                name: { peer in friends.first { $0.id == peer }?.nickname }
-            )
-            link = model
-            await model.start()
-        }
-        .onDisappear {
-            let model = link
-            link = nil
-            Task { await model?.stop() }
-        }
     }
 
     @ViewBuilder private func linkSection(_ link: LinkTestModel) -> some View {
         Section {
-            LabeledContent("This phone", value: link.localPeer.short)
-            switch link.status {
-            case .idle: Text("Starting...").foregroundStyle(.secondary)
-            case .running: EmptyView()
-            case .failed(let message): Text(message).foregroundStyle(.red)
-            }
             if link.peers.isEmpty {
-                Text("No phones linked yet. Keep this screen open on both phones.").foregroundStyle(.secondary)
+                Text("No friends linked yet. Pair in the Friends tab, then keep Starling open on both phones.").foregroundStyle(.secondary)
             }
             ForEach(link.peers) { peer in
                 HStack {
@@ -99,13 +72,16 @@ struct WiFiAwareView: View {
         } header: {
             Text("Link")
         } footer: {
-            Text("A round trip sends only this phone's agent card. Peer IDs are not verified until secure pairing lands.")
+            Text("A round trip sends only this phone's agent card, over the app's secure links.")
         }
     }
 }
 
 /// Lane E2's DeviceDiscoveryUI views, shown only where Wi-Fi Aware runs.
+/// `onPicked` receives the device the owner picked once the system paired it.
 struct WiFiAwarePairingButtons: View {
+    var onPicked: (WiFiAwarePairedDevice) -> Void = { _ in }
+
     var body: some View {
         #if canImport(DeviceDiscoveryUI) && canImport(WiFiAware) && os(iOS) && !targetEnvironment(macCatalyst)
         if WiFiAwareSupport.isSupported {
@@ -114,7 +90,7 @@ struct WiFiAwarePairingButtons: View {
             } fallback: {
                 Text("Pairing isn't available on this iPhone.").foregroundStyle(.secondary)
             }
-            WiFiAwareDevicePicker {
+            WiFiAwareDevicePicker(onPaired: onPicked) {
                 Label("Find a friend's phone", systemImage: "magnifyingglass")
             } fallback: {
                 Text("Pairing isn't available on this iPhone.").foregroundStyle(.secondary)

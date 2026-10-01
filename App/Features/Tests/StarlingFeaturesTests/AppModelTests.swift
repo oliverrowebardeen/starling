@@ -22,7 +22,7 @@ actor StoppableScriptedDown: StoppableDownService {
         captured: OutboxCapture? = nil,
         inbox: AsyncStream<InboxEvent>? = nil,
         transport: RecordingTransport = RecordingTransport(),
-        card: AgentCard? = nil
+        locality: ModelLocality? = nil
     ) -> AppServices {
         var makeDown: (@Sendable (Outbox) -> any DownService)?
         if let down {
@@ -36,11 +36,11 @@ actor StoppableScriptedDown: StoppableDownService {
             rules: InMemoryRulesStore(),
             peers: peers,
             makeDownService: makeDown,
-            makePairingSession: { ScriptedPairingSession(code: "123 456", peer: Fixtures.peer("Test")) },
+            pairing: PairingModelTests.scripted().directory,
             inboxEvents: inbox,
             makePolicy: { _ in FixedPolicyEngine(.allow) },
             transport: transport,
-            agentCard: card,
+            agentLocality: locality,
             notifier: RecordingNotifier(),
             localNetwork: CountingPrompter()
         )
@@ -71,6 +71,8 @@ actor StoppableScriptedDown: StoppableDownService {
         let down = StoppableScriptedDown()
         let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), transport: transport))
         await app.start()
+        #expect(await transport.isStarted == false, "radios wait for onboarding's Local Network step")
+        await app.startLinks()
         #expect(await transport.isStarted)
         await app.shutdown()
         #expect(await down.shutdowns == 1)
@@ -80,19 +82,35 @@ actor StoppableScriptedDown: StoppableDownService {
     /// Lane F: "Down does not send hello; the app's link layer does."
     @Test func greetsEachPeerThatBecomesAvailableWithTheAgentCard() async throws {
         let transport = RecordingTransport()
-        let card = try AgentCard(model: .onDevice, capabilities: [.down])
         let down = ScriptedDownService()
         let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
-        let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), inbox: inbox, transport: transport, card: card))
+        let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), inbox: inbox, transport: transport, locality: .onDevice))
         await app.start()
         let friend = PeerID.random()
         continuation.yield(.peerAvailable(friend))
 
         for _ in 0..<2000 where await transport.sent.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
         let sent = try #require(await transport.sent.first)
+        let card = try #require(app.agentCard)
         #expect(sent.peer == friend)
         #expect(try EnvelopeCodec().decode(sent.frame.bytes).body == .hello(card))
         #expect(await down.handled == [.peerAvailable(friend)], "the event still reaches Down")
+    }
+
+    /// Codex review of PR #42 (finding 2): a build without Down must not
+    /// advertise it, or a friend's Down starts a negotiation it never answers.
+    @Test func theCardOffersDownOnlyWhenTheBuildRunsIt() {
+        let withDown = AppModel(services: Self.services(down: ScriptedDownService(), peers: InMemoryPairedPeerStore(), locality: .onDevice))
+        #expect(withDown.agentCard?.capabilities.contains(.down) == true)
+        #expect(withDown.agentCard?.capabilities.contains(.psi) == true)
+
+        let withoutDown = AppModel(services: Self.services(down: nil, peers: InMemoryPairedPeerStore(), locality: .onDevice))
+        #expect(withoutDown.down == nil)
+        let card = withoutDown.agentCard
+        #expect(card != nil, "it still greets friends, with the model's location")
+        #expect(card?.capabilities.contains(.down) == false)
+        #expect(card?.capabilities.contains(.psi) == false)
+        #expect(card?.model == .onDevice)
     }
 
     @Test func aNewIntentForgetsConsentApprovals() async throws {
@@ -135,6 +153,31 @@ actor StoppableScriptedDown: StoppableDownService {
             try await Task.sleep(for: .milliseconds(1))
         }
         #expect(await down.handled == events)
+    }
+
+    @Test func friendsSeeReachabilityEvenWithoutDown() async {
+        let maya = Fixtures.peer("Maya")
+        let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
+        let app = AppModel(services: Self.services(down: nil, peers: InMemoryPairedPeerStore([maya]), inbox: inbox))
+        #expect(app.down == nil)
+        await app.start()
+        continuation.yield(.peerAvailable(maya.id))
+        await eventually { app.friends?.isReachable(maya.id) == true }
+        #expect(app.friends?.isReachable(maya.id) == true)
+    }
+
+    /// Lane E1: each PairingService starts after its transport.
+    @Test func afterStartRunsOnceTheTransportHasStarted() async {
+        let transport = RecordingTransport()
+        let sawStarted = Recorder<Bool>()
+        var services = Self.services(down: nil, peers: InMemoryPairedPeerStore(), transport: transport)
+        services.afterStart = { await sawStarted.record(await transport.isStarted) }
+        let app = AppModel(services: services)
+        await app.start()
+        #expect(await sawStarted.values.isEmpty)
+        await app.startLinks()
+        await app.startLinks()
+        #expect(await sawStarted.values == [true], "once, after the transport started")
     }
 
     @Test func featuresMissingFromTheBuildAreNil() {

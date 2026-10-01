@@ -24,6 +24,9 @@ packages:
   # Lane G's deterministic policy, consent sheet model, and audit log.
   StarlingPolicy:
     path: ../Packages/StarlingPolicy
+  # Lane E1's identity, pinned friends, pairing, and secure channel.
+  StarlingIdentity:
+    path: ../Packages/StarlingIdentity
   # Lane F's Down negotiation (DownNegotiator).
   StarlingNegotiation:
     path: ../Packages/StarlingNegotiation
@@ -85,6 +88,8 @@ targets:
         product: StarlingPolicy
       - package: StarlingNegotiation
         product: StarlingNegotiation
+      - package: StarlingIdentity
+        product: StarlingIdentity
       - package: StarlingTransport
         product: StarlingTransport
       - package: StarlingTransport

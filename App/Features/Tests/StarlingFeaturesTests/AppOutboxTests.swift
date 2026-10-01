@@ -22,7 +22,7 @@ import Testing
                 rules: InMemoryRulesStore(saved.map { SavedRules(rules: $0, savedAt: Fixtures.noon) }),
                 peers: InMemoryPairedPeerStore([maya]),
                 makeDownService: { _ in down },
-                makePairingSession: nil,
+                pairing: nil,
                 makePolicy: factory.make,
                 auditLog: observer,
                 transport: transport,

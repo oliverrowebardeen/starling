@@ -2,43 +2,125 @@ import Foundation
 import Observation
 import StarlingCore
 
-/// Starts a `PairingSession`. Starting one is the implementing lane's API
-/// (E1 for the key exchange, E2 for the Wi-Fi Aware link), so the app takes
-/// a factory. Until they merge, Debug builds pass `ScriptedPairingSession`.
-public typealias PairingSessionFactory = @Sendable () async throws -> any PairingSession
+/// A nearby phone the owner can pair with: reachable on a link, not pinned.
+public struct PairingCandidate: Identifiable, Hashable, Sendable {
+    public var id: PeerID { peer }
+    public let peer: PeerID
+    /// Which link it was seen on, for the owner ("Wi-Fi Aware", "Nearby").
+    public let link: String
 
-/// Drives the in-person pairing ceremony: show the code, both people
-/// compare, confirm or cancel, then name the friend.
+    public init(peer: PeerID, link: String) {
+        self.peer = peer
+        self.link = link
+    }
+}
+
+/// What the pairing screen needs from the app's links (lane E1's
+/// PairingService and SecureTransports, docs/requests/E1.md item 2).
+public struct PairingDirectory: Sendable {
+    /// This phone's PeerID, so both owners can tell the phones apart.
+    public var localPeer: PeerID
+    /// Nearby phones that are not paired yet.
+    public var candidates: @Sendable () async -> [PairingCandidate]
+    /// Starts a ceremony with `candidate`, saving it as `nickname` if both
+    /// owners confirm. Lane E1 commits the pin; the app never writes it.
+    public var pair: @Sendable (PairingCandidate, String) async throws -> any PairingSession
+    /// Called once paired, to reconnect each link to the new friend.
+    public var paired: @Sendable (PairedPeer) async -> Void
+    /// The PeerID behind a device the owner picked in the system's Wi-Fi
+    /// Aware picker (lane E2's `peerID(for:waitingUpTo:)`), or nil if its
+    /// link hello did not arrive in time. Nil where Wi-Fi Aware is absent.
+    public var peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)?
+
+    public init(
+        localPeer: PeerID,
+        candidates: @escaping @Sendable () async -> [PairingCandidate],
+        pair: @escaping @Sendable (PairingCandidate, String) async throws -> any PairingSession,
+        paired: @escaping @Sendable (PairedPeer) async -> Void,
+        peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)? = nil
+    ) {
+        self.peerForPickedDevice = peerForPickedDevice
+        self.localPeer = localPeer
+        self.candidates = candidates
+        self.pair = pair
+        self.paired = paired
+    }
+}
+
+/// Drives the in-person pairing ceremony (ADR 0003, lane E1): pick the
+/// nearby phone, name the friend, then both people compare a code and
+/// confirm or cancel. The friend is saved by lane E1 only if both confirm.
 @MainActor
 @Observable
 public final class PairingModel {
     public enum Phase: Hashable, Sendable {
+        /// Choosing the phone and the name.
         case idle
         case starting
         /// Both phones show this code. Pairing continues only if both match.
         case comparing(code: String)
+        /// This owner confirmed; waiting for the other phone.
         case confirming
-        /// Keys are pinned. The owner names the friend before it is saved.
-        case naming(PairedPeer)
         case paired(PairedPeer)
         case failed(PairingFailure)
     }
 
     public private(set) var phase = Phase.idle
+    public private(set) var candidates: [PairingCandidate] = []
+    public var selected: PairingCandidate?
     public var nickname = ""
     public private(set) var notice: String?
+    public var localPeer: PeerID { directory.localPeer }
 
-    private let makeSession: PairingSessionFactory
-    private let store: any PairedPeerStore
+    private let directory: PairingDirectory
     private var session: (any PairingSession)?
     private var events: Task<Void, Never>?
     /// Set when the pairing screen went away, so a session that is still
     /// being created is cancelled as soon as it exists.
     private var isEnded = false
 
-    public init(makeSession: @escaping PairingSessionFactory, store: any PairedPeerStore) {
-        self.makeSession = makeSession
-        self.store = store
+    public init(directory: PairingDirectory) {
+        self.directory = directory
+    }
+
+    public func refreshCandidates() async {
+        var fresh = await directory.candidates()
+        // The selected phone keeps its entry (a picked phone stays on Wi-Fi
+        // Aware), with no second entry for the same PeerID.
+        if let selected {
+            fresh.removeAll { $0.peer == selected.peer }
+            fresh.insert(selected, at: 0)
+        }
+        candidates = fresh
+    }
+
+    /// The link a phone picked in the system's Wi-Fi Aware picker pairs on.
+    public static let pickedDeviceLink = "Wi-Fi Aware"
+
+    /// The owner picked a device in the system's Wi-Fi Aware picker: select
+    /// the PeerID behind it, and suggest the device's name if the owner has
+    /// not typed one. The code comparison still verifies the pick (ADR 0003).
+    public func pickedDevice(id: UInt64, name: String) async {
+        guard let resolve = directory.peerForPickedDevice else { return }
+        notice = nil
+        guard let peer = await resolve(id) else {
+            notice = "Starling couldn't reach the phone you picked. Keep both phones close and open Starling on both, then try again."
+            return
+        }
+        // The picker paired the phones over Wi-Fi Aware, so the ceremony
+        // runs there, even if another link listed the same phone first.
+        let candidate = PairingCandidate(peer: peer, link: Self.pickedDeviceLink)
+        candidates.removeAll { $0.peer == peer }
+        candidates.insert(candidate, at: 0)
+        selected = candidate
+        if nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { nickname = name }
+    }
+
+    /// A phone is chosen and the nickname is one lane E1 will accept.
+    public var canStart: Bool {
+        guard selected != nil else { return false }
+        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (1...PairedPeer.maxNicknameCharacters).contains(trimmed.count)
     }
 
     public func start() async {
@@ -46,10 +128,14 @@ public final class PairingModel {
         case .idle, .paired, .failed: break
         default: return
         }
+        guard canStart, let selected else {
+            notice = "Pick a phone and name your friend (1 to \(PairedPeer.maxNicknameCharacters) characters)."
+            return
+        }
         phase = .starting
         notice = nil
         do {
-            let session = try await makeSession()
+            let session = try await directory.pair(selected, nickname.trimmingCharacters(in: .whitespacesAndNewlines))
             if isEnded {
                 await session.cancel()
                 phase = .failed(.cancelled)
@@ -58,7 +144,7 @@ public final class PairingModel {
             self.session = session
             events = Task { [weak self] in
                 for await event in session.events {
-                    self?.handle(event)
+                    await self?.handle(event)
                 }
                 self?.streamEnded()
             }
@@ -90,25 +176,8 @@ public final class PairingModel {
         switch phase {
         case .starting, .comparing, .confirming:
             await session?.cancel()
-        case .idle, .naming, .paired, .failed:
+        case .idle, .paired, .failed:
             break
-        }
-    }
-
-    /// Saves the friend under the chosen nickname. The store replaces any
-    /// record with the same key, so saving after the session pinned the peer
-    /// only updates the name.
-    public func saveNickname() async {
-        guard case .naming(let peer) = phase else { return }
-        do {
-            let named = try PairedPeer(publicKey: peer.publicKey, nickname: nickname, pairedAt: peer.pairedAt)
-            try await store.save(named)
-            phase = .paired(named)
-            notice = nil
-        } catch is ValidationError {
-            notice = "Use 1 to \(PairedPeer.maxNicknameCharacters) characters."
-        } catch {
-            notice = "Couldn't save your friend. Try again."
         }
     }
 
@@ -117,18 +186,17 @@ public final class PairingModel {
         events?.cancel()
         events = nil
         session = nil
-        nickname = ""
         notice = nil
         phase = .idle
     }
 
-    func handle(_ event: PairingEvent) {
+    func handle(_ event: PairingEvent) async {
         switch event {
         case .confirmCode(let code):
             phase = .comparing(code: code)
         case .paired(let peer):
-            nickname = peer.nickname
-            phase = .naming(peer)
+            await directory.paired(peer)
+            phase = .paired(peer)
         case .failed(let failure):
             phase = .failed(failure)
         }

@@ -18,6 +18,12 @@ struct RootView<Developer: View>: View {
             }
         }
         .task { await app.start() }
+        // The radios raise the Local Network alert, so they start here only
+        // once onboarding is done; on first run, onboarding's Local Network
+        // step starts them after its explanation (ADR 0142).
+        .task(id: onboardingFinished) {
+            if onboardingFinished { await app.startLinks() }
+        }
         // The consent sheet can appear over any screen. Only the owner's
         // answer dismisses it (ConsentSheet), so the setter never declines.
         .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in

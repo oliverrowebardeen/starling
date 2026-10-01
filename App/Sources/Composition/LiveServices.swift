@@ -3,6 +3,7 @@ import Network
 import StarlingAgent
 import StarlingCore
 import StarlingFeatures
+import StarlingIdentity
 import StarlingNegotiation
 import StarlingPolicy
 import StarlingWiFiAware
@@ -10,21 +11,28 @@ import UserNotifications
 
 extension AppServices {
     /// Release builds: real implementations only, never StarlingFakes.
-    /// Lane G's policy and audit log are real. Down stays out: lane F's
-    /// DownNegotiator needs a PSI provider and the only one, InsecurePSIStub,
-    /// lives in StarlingFakes, so Release shows "Down? isn't in this build
-    /// yet" until a private provider (Nightjar) exists. Pairing and friends
-    /// wait for lane E1, and so does a transport for the app's Outbox.
-    static func release() -> AppServices {
-        AppServices(
+    /// Lane E1's identity, pinned friends, pairing, and secure links, lane
+    /// G's policy and audit log, lane E2's Wi-Fi Aware. Down stays out: lane
+    /// F's DownNegotiator needs a PSI provider and the only one,
+    /// InsecurePSIStub, lives in StarlingFakes, so Release shows "Down? isn't
+    /// in this build yet" until a private provider (Nightjar) exists.
+    static func release() async throws -> AppServices {
+        let identity = try await KeychainIdentityKeyStore().loadOrCreate()
+        let links = SecureLinks.make(identity: identity, friends: KeychainPairedPeerStore())
+        return AppServices(
             agent: FoundationModelsAgent(),
             rules: LiveServices.rulesStore(),
-            peers: nil,
+            peers: links.friends,
             makeDownService: nil,
-            makePairingSession: nil,
-            makePolicy: LiveServices.policy(peers: nil),
+            pairing: links.pairingDirectory,
+            unpair: links.unpair,
+            rename: links.rename,
+            inboxEvents: links.inboxEvents,
+            makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
-            agentCard: LiveServices.agentCard(locality: .onDevice),
+            transport: links.transport,
+            afterStart: links.startPairing,
+            agentLocality: .onDevice,
             describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
@@ -47,13 +55,6 @@ enum LiveServices {
         { rules in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: false, pairedPeers: peers) }
     }
 
-    /// This agent's card, sent in a hello to each peer that becomes
-    /// available. Down is the feature it offers; PSI is how Down matches.
-    static func agentCard(locality: ModelLocality) -> AgentCard {
-        // Cannot throw: one protocol version and two capabilities are within limits.
-        try! AgentCard(model: locality, capabilities: [.down, .psi])
-    }
-
     /// Plain words for lane F's own setIntent errors (docs/requests/F.md).
     static let describeDownError: @Sendable (any Error) -> String? = { error in
         switch error as? DownError {
@@ -61,24 +62,6 @@ enum LiveServices {
         case .noAvailableTime: "Your rules leave no free half-hour before this ends. Change the times or pick a later end."
         case nil: nil
         }
-    }
-
-    /// The Wi-Fi Aware link, or nil where it cannot run (the Simulator,
-    /// iPhones before 12). Only one may exist at a time: an app can publish a
-    /// service once per device (ADR 0111).
-    static func wifiAwareTransport() -> WiFiAwareTransport? {
-        WiFiAwareSupport.isSupported ? WiFiAwareTransport(localPeer: linkTestPeer) : nil
-    }
-
-    /// This phone's ID on test links until lane E1 derives it from the
-    /// identity key. Kept across launches so a relaunched phone shows up
-    /// once on the other phone, not twice (E2 checklist step 10).
-    static var linkTestPeer: PeerID {
-        let key = "dev.linkTestPeer"
-        if let hex = UserDefaults.standard.string(forKey: key), let peer = try? PeerID(hex: hex) { return peer }
-        let peer = PeerID.random()
-        UserDefaults.standard.set(peer.hex, forKey: key)
-        return peer
     }
 
     /// The local record of what left the phone. In memory only, latest 1,000

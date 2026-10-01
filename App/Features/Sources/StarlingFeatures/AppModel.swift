@@ -20,8 +20,13 @@ public struct AppServices: Sendable {
     /// consent sheet, the audit log) so every Down send is judged the same
     /// way. Its local peer must be the Outbox transport's.
     public var makeDownService: (@Sendable (Outbox) -> any DownService)?
-    /// Lanes E1 and E2's pairing ceremony.
-    public var makePairingSession: PairingSessionFactory?
+    /// Lane E1's pairing over the app's links, or nil if pairing is not in
+    /// this build.
+    public var pairing: PairingDirectory?
+    /// Unpairs a friend everywhere (lane E1's `PinAuthority.unpair`).
+    public var unpair: @Sendable (PeerID) async throws -> Void
+    /// Renames a friend, or nil when the build has no safe way to.
+    public var rename: (@Sendable (PeerID, String) async throws -> Void)?
     /// The app's one `Inbox` stream (v1.1: `Inbox.events(from:)` over the
     /// secure channel). `AppModel` is its single consumer and routes every
     /// event to the features; nil until a transport is in the build.
@@ -34,9 +39,13 @@ public struct AppServices: Sendable {
     /// The link the app's `Outbox` sends on. Nil until a transport the app
     /// may send owner data over is in the build (lane E1's secure channel).
     public var transport: (any Transport)?
-    /// This agent's card, sent in a `hello` to each peer that becomes
-    /// available. Down reads peers' cards; it does not send its own.
-    public var agentCard: AgentCard?
+    /// Runs once the transport has started, for example lane E1's pairing
+    /// services, which must start after their secure transports.
+    public var afterStart: (@Sendable () async -> Void)?
+    /// Where this agent's model runs, for its card. AppModel builds the card
+    /// itself from what the build actually runs. Nil means no card and no
+    /// link layer.
+    public var agentLocality: ModelLocality?
     /// Whether Down's PSI provider hides the owner's free times.
     public var downMatchingIsPrivate: Bool
     /// Plain words for the Down service's own errors.
@@ -53,12 +62,15 @@ public struct AppServices: Sendable {
         rules: any RulesStore,
         peers: (any PairedPeerStore)?,
         makeDownService: (@Sendable (Outbox) -> any DownService)?,
-        makePairingSession: PairingSessionFactory?,
+        pairing: PairingDirectory?,
+        unpair: @escaping @Sendable (PeerID) async throws -> Void = { _ in },
+        rename: (@Sendable (PeerID, String) async throws -> Void)? = nil,
         inboxEvents: AsyncStream<InboxEvent>? = nil,
         makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
         transport: (any Transport)? = nil,
-        agentCard: AgentCard? = nil,
+        afterStart: (@Sendable () async -> Void)? = nil,
+        agentLocality: ModelLocality? = nil,
         downMatchingIsPrivate: Bool = false,
         describeDownError: @escaping @Sendable (any Error) -> String? = { _ in nil },
         presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)? = nil,
@@ -71,12 +83,15 @@ public struct AppServices: Sendable {
         self.rules = rules
         self.peers = peers
         self.makeDownService = makeDownService
-        self.makePairingSession = makePairingSession
+        self.pairing = pairing
+        self.unpair = unpair
+        self.rename = rename
         self.inboxEvents = inboxEvents
         self.makePolicy = makePolicy
         self.auditLog = auditLog
         self.transport = transport
-        self.agentCard = agentCard
+        self.afterStart = afterStart
+        self.agentLocality = agentLocality
         self.downMatchingIsPrivate = downMatchingIsPrivate
         self.describeDownError = describeDownError
         self.presentConsent = presentConsent
@@ -97,6 +112,13 @@ public final class AppModel {
     /// Nil until a `DownService` and a paired-peer store are in the build.
     public let down: DownModel?
     public let friends: FriendsModel?
+    /// The card this agent sends in each `hello`, built from what the build
+    /// runs: `.down` and `.psi` only when a Down service exists, so a friend's
+    /// Down never starts a negotiation this phone cannot answer.
+    public let agentCard: AgentCard?
+    /// The app's link layer: greets peers, answers hellos, and shows each
+    /// peer's connection and round trips. Nil without an Outbox and a card.
+    public let link: LinkTestModel?
     /// The policy every app send is judged by, following the owner's rules.
     public let policy: RulesPolicy?
     /// The app's one `Outbox`: lane G's policy, the consent sheet, and the
@@ -105,6 +127,7 @@ public final class AppModel {
     private let downService: (any DownService)?
     private var inboxLoop: Task<Void, Never>?
     private var started = false
+    private var linksStarted = false
 
     public init(services: AppServices) {
         self.services = services
@@ -138,7 +161,15 @@ public final class AppModel {
             downService = nil
             down = nil
         }
-        friends = services.peers.map(FriendsModel.init(store:))
+        friends = services.peers.map { FriendsModel(store: $0, unpair: services.unpair, rename: services.rename) }
+        let offersDown = downService != nil
+        agentCard = services.agentLocality.map { AgentCard.offering(down: offersDown, locality: $0) }
+        if let outbox, let card = agentCard {
+            let friends = friends
+            link = LinkTestModel(outbox: outbox, card: card, name: { peer in friends?.friends.first { $0.id == peer }?.nickname })
+        } else {
+            link = nil
+        }
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
         down?.intentChanged = { [weak self] in
             guard let self else { return }
@@ -185,30 +216,40 @@ public final class AppModel {
         await rulesEditor.load()
         await refreshPolicy()
         down?.listen()
+        // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
-        // After the loop is listening, so no peerAvailable is missed.
-        try? await services.transport?.start()
         await friends?.load()
     }
 
-    /// The single Inbox loop: every event goes to the Down service, in
-    /// arrival order, which ignores what is not part of Down. In Phase 1
-    /// every conversation is Down's (F request 4); later features get their
-    /// events here too.
+    /// Starts the radios and then whatever must follow them (lane E1's
+    /// pairing services). Separate from `start()` because the radios'
+    /// Bonjour work raises the Local Network alert: the app calls this after
+    /// onboarding's Local Network step, or at launch once onboarding is done
+    /// (ADR 0142). Runs once.
+    public func startLinks() async {
+        await start()
+        guard !linksStarted else { return }
+        linksStarted = true
+        try? await services.transport?.start()
+        await services.afterStart?()
+    }
+
+    /// The single Inbox loop: every event, in arrival order, goes to the
+    /// friends list (reachability), the link layer (hello and round trips),
+    /// and the Down service, which ignores what is not part of Down. In
+    /// Phase 1 every conversation is Down's (F request 4).
     private func routeInbox() {
-        guard inboxLoop == nil, let events = services.inboxEvents, let downService else { return }
-        let outbox = outbox
-        let card = services.agentCard
+        // Runs whenever there is an Inbox: Release has friends (and their
+        // reachability) even without Down.
+        guard inboxLoop == nil, let events = services.inboxEvents else { return }
+        let downService = downService
+        let friends = friends
+        let link = link
         inboxLoop = Task {
             for await event in events {
-                // The link layer greets each peer with this agent's card, so
-                // the peer's policy knows where the model runs. Hello is
-                // always allowed and carries nothing else. Not awaited, so a
-                // slow link never holds up the loop.
-                if case .peerAvailable(let peer) = event, let outbox, let card {
-                    Task { _ = try? await outbox.send(.hello(card), to: peer, conversation: ConversationID()) }
-                }
-                await downService.handle(event)
+                friends?.handle(event)
+                await link?.handle(event)
+                await downService?.handle(event)
             }
         }
     }
@@ -223,12 +264,23 @@ public final class AppModel {
     }
 
     public func makeOnboarding() -> OnboardingModel {
-        OnboardingModel(localNetwork: services.localNetwork, notifier: services.notifier)
+        OnboardingModel(localNetwork: services.localNetwork, notifier: services.notifier) { [weak self] in
+            await self?.startLinks()
+        }
     }
 
     /// A fresh ceremony model, or nil if pairing is not in this build.
     public func makePairing() -> PairingModel? {
-        guard let factory = services.makePairingSession, let peers = services.peers else { return nil }
-        return PairingModel(makeSession: factory, store: peers)
+        guard let directory = services.pairing, services.peers != nil else { return nil }
+        return PairingModel(directory: directory)
+    }
+}
+
+extension AgentCard {
+    /// The card for a build: always the model's location; `.down` and `.psi`
+    /// only if this build runs Down (Codex review of PR #42, finding 2).
+    public static func offering(down: Bool, locality: ModelLocality) -> AgentCard {
+        // Cannot throw: one protocol version and at most two capabilities.
+        try! AgentCard(model: locality, capabilities: down ? [.down, .psi] : [])
     }
 }
