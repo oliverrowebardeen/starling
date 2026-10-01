@@ -49,11 +49,28 @@ public enum HomeSection: String, Hashable, Sendable, Codable {
     case needsYou, inProgress, comingUp, history
 }
 
+/// The live steps a consent sheet can interrupt. Any send can need consent:
+/// a PSI step while negotiating, or the acceptance the owner's "I'm in"
+/// sends from a proposal.
+public enum ConsentResume: String, Hashable, Sendable, Codable, CaseIterable {
+    case negotiating, awaitingOwner, proposed, confirmed
+
+    public var state: InteractionState {
+        switch self {
+        case .negotiating: .negotiating
+        case .awaitingOwner: .awaitingOwner
+        case .proposed: .proposed
+        case .confirmed: .confirmed
+        }
+    }
+}
+
 public enum InteractionState: Hashable, Sendable, Codable {
     /// Compose: the owner is still shaping the request.
     case drafting
-    /// Consent: a consent sheet is waiting for the owner.
-    case awaitingConsent
+    /// Consent: a consent sheet is waiting for the owner. Granting it
+    /// resumes the interrupted step.
+    case awaitingConsent(resume: ConsentResume)
     /// Negotiate: agents are working; the status mark moves.
     case negotiating
     /// The agent needs one answer from its owner (ask-me fallback, or an
@@ -163,9 +180,14 @@ extension InteractionState {
         case (.drafting, .unsupported): return .ended(.unsupported)
         case (.drafting, .blockedByPrivacy): return .ended(.blockedByPrivacy)
 
-        case (.negotiating, .consentNeeded): return .awaitingConsent
-        case (.awaitingConsent, .consentGiven): return .negotiating
+        case (.negotiating, .consentNeeded): return .awaitingConsent(resume: .negotiating)
+        case (.awaitingOwner, .consentNeeded): return .awaitingConsent(resume: .awaitingOwner)
+        case (.proposed, .consentNeeded): return .awaitingConsent(resume: .proposed)
+        case (.confirmed, .consentNeeded): return .awaitingConsent(resume: .confirmed)
+        case (.awaitingConsent(let resume), .consentGiven): return resume.state
         case (.awaitingConsent, .ownerPassed): return .ended(.declined)
+        // The others gave up while the sheet was open.
+        case (.awaitingConsent, .noAgreement): return .ended(.nobodyUp)
 
         case (.negotiating, .ownerNeeded): return .awaitingOwner
         case (.awaitingOwner, .ownerAnswered): return .negotiating
