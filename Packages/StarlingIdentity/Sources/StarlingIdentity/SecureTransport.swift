@@ -90,6 +90,10 @@ public actor SecureTransport: Transport {
         /// session is confirmed when it is promoted; an initiator's when any
         /// frame from the responder decrypts under it.
         var confirmed: Bool
+        /// The peer's epoch at the pin authority when the pin this session
+        /// was authenticated with was read. The session is usable only while
+        /// the peer's epoch still equals it (ADR 0100 decision 11).
+        let epoch: UInt64
         /// The lowest nonce still acceptable: nonces must strictly increase.
         var nextReceiveNonce: UInt64 = 0
     }
@@ -98,6 +102,8 @@ public actor SecureTransport: Transport {
         let id: UInt64
         var handshake: NoiseHandshakeState
         var attemptsLeft: Int
+        /// The epoch of the pin message 1 was built with.
+        let epoch: UInt64
     }
 
     private struct PeerState {
@@ -264,6 +270,7 @@ public actor SecureTransport: Transport {
     /// proven key always hashes to the claimed ID; a link that claims a
     /// friend's ID without their key never gets one (ADR 0100).
     public func status(of peer: PeerID) -> SecureLinkStatus {
+        purgeStale(peer)
         let entry = peers[peer]
         return SecureLinkStatus(
             claimedPeer: peer,
@@ -318,7 +325,7 @@ public actor SecureTransport: Transport {
 
     private func receiveHandshake1(_ message: Data, from peer: PeerID) async {
         guard message.count == SecureWire.handshakeLength, peer != localPeer,
-              let pinned = await pinnedKey(for: peer)
+              let (pinned, epoch) = await pinnedKey(for: peer)
         else { return drop(from: peer) }
         let ephemeral = Data(message.prefix(NoiseHandshakeState.dhLength))
         if peers[peer]?.answeredEphemerals.contains(ephemeral) == true { return drop(from: peer) }
@@ -347,7 +354,7 @@ public actor SecureTransport: Transport {
             guard Self.proves(session, peer) else { return drop(from: peer) }
             var entry = peers[peer] ?? PeerState()
             nextHandshakeID += 1
-            entry.pending.append(Channel(id: nextHandshakeID, session: session, initiator: false, confirmed: false))
+            entry.pending.append(Channel(id: nextHandshakeID, session: session, initiator: false, confirmed: false, epoch: epoch))
             if entry.pending.count > Self.maxPendingPerPeer { entry.pending.removeFirst() }
             entry.answeredEphemerals.append(ephemeral)
             if entry.answeredEphemerals.count > Self.maxRememberedEphemerals { entry.answeredEphemerals.removeFirst() }
@@ -362,6 +369,7 @@ public actor SecureTransport: Transport {
     }
 
     private func receiveHandshake2(_ message: Data, from peer: PeerID) async {
+        purgeStale(peer)
         guard message.count == SecureWire.handshakeLength, var initiation = peers[peer]?.initiation else {
             return drop(from: peer)
         }
@@ -372,8 +380,13 @@ public actor SecureTransport: Transport {
         } catch {
             return drop(from: peer)
         }
-        // KK authenticated the responder against the key pinned at initiation.
+        // KK authenticated the responder against the key pinned at initiation,
+        // which is usable only if the peer's epoch has not moved since.
         guard Self.proves(session, peer) else { return drop(from: peer) }
+        guard initiation.epoch == authority.epoch(of: peer) else {
+            purgeStale(peer)
+            return drop(from: peer)
+        }
         timers.removeValue(forKey: initiation.id)?.cancel()
         guard var entry = peers[peer] else { return }
         entry.initiation = nil
@@ -381,7 +394,7 @@ public actor SecureTransport: Transport {
         // The responder switches only when our confirm (or data) reaches it,
         // so keep accepting its frames under the old session until then.
         Self.retireCurrent(&entry)
-        entry.current = Channel(id: initiation.id, session: session, initiator: true, confirmed: false)
+        entry.current = Channel(id: initiation.id, session: session, initiator: true, confirmed: false, epoch: initiation.epoch)
         peers[peer] = entry
         armConfirmRetry(peer, channel: initiation.id, attemptsLeft: configuration.handshakeAttempts)
         await sendControl(.confirm, to: peer)
@@ -426,6 +439,7 @@ public actor SecureTransport: Transport {
     }
 
     private func receiveTransport(_ body: Data, from peer: PeerID) {
+        purgeStale(peer)
         guard let (nonce, ciphertext) = SecureWire.parseTransport(body),
               nonce < configuration.maxMessagesPerSession,
               var entry = peers[peer]
@@ -516,6 +530,7 @@ public actor SecureTransport: Transport {
     /// Encrypts one payload for `peer` under the current session. Rolls the
     /// session over instead of ever reaching the nonce cap.
     private func seal(_ kind: SecureWire.PayloadKind, _ payload: Data, to peer: PeerID) throws -> Frame {
+        purgeStale(peer)
         guard var channel = peers[peer]?.current else { throw TransportError.peerUnreachable(peer) }
         let nonce = channel.session.send.nonce
         guard nonce < configuration.maxMessagesPerSession else {
@@ -547,7 +562,7 @@ public actor SecureTransport: Transport {
     }
 
     private func initiate(with peer: PeerID, attempts: Int? = nil) async {
-        guard state == .started, peer != localPeer, let pinned = await pinnedKey(for: peer) else { return }
+        guard state == .started, peer != localPeer, let (pinned, epoch) = await pinnedKey(for: peer) else { return }
         var handshake: NoiseHandshakeState
         let message: Data
         do {
@@ -563,7 +578,7 @@ public actor SecureTransport: Transport {
         nextHandshakeID += 1
         let id = nextHandshakeID
         let attemptsLeft = (attempts ?? configuration.handshakeAttempts) - 1
-        peers[peer, default: PeerState()].initiation = Initiation(id: id, handshake: handshake, attemptsLeft: attemptsLeft)
+        peers[peer, default: PeerState()].initiation = Initiation(id: id, handshake: handshake, attemptsLeft: attemptsLeft, epoch: epoch)
         trimIdlePeers()
         let timeout = configuration.handshakeTimeout
         timers[id] = Task { [weak self] in
@@ -679,13 +694,41 @@ public actor SecureTransport: Transport {
     /// down, or disconnected while the lookup was suspended, so a pin read
     /// before an unpair can never start or answer a handshake after it.
     /// Callers create handshake state synchronously after this returns.
-    private func pinnedKey(for peer: PeerID) async -> X25519PublicKey? {
+    private func pinnedKey(for peer: PeerID) async -> (X25519PublicKey, epoch: UInt64)? {
         let generation = generations.value(of: peer)
-        guard let (paired, token) = await authority.pinned(peer),
+        guard let (paired, epoch) = await authority.pinned(peer),
               state == .started, generations.value(of: peer) == generation,
-              authority.revocationToken(of: peer) == token, !authority.isRemoving(peer)
+              authority.epoch(of: peer) == epoch, !authority.isBlocked(peer),
+              let key = try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
         else { return nil }
-        return try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)
+        return (key, epoch)
+    }
+
+    /// Enforces the epoch rule (ADR 0100 decision 11): every session or
+    /// handshake with `peer` stamped with an older epoch than the authority's
+    /// is dead, on this transport as on every other, and is removed on first
+    /// touch. Synchronous: called before any frame is sealed or accepted.
+    private func purgeStale(_ peer: PeerID) {
+        guard var entry = peers[peer] else { return }
+        let epoch = authority.epoch(of: peer)
+        var lostCurrent = false
+        if let current = entry.current, current.epoch != epoch {
+            entry.current = nil
+            lostCurrent = true
+            if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
+            entry.confirmTimer = nil
+        }
+        if let lastConfirmed = entry.lastConfirmed, lastConfirmed.epoch != epoch { entry.lastConfirmed = nil }
+        entry.superseded.removeAll { $0.epoch != epoch }
+        entry.pending.removeAll { $0.epoch != epoch }
+        if let initiation = entry.initiation, initiation.epoch != epoch {
+            timers.removeValue(forKey: initiation.id)?.cancel()
+            entry.initiation = nil
+        }
+        let wasAnnounced = entry.announced
+        if lostCurrent { entry.announced = false }
+        peers[peer] = entry
+        if lostCurrent, wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
     }
 
     private func drop(from peer: PeerID) {

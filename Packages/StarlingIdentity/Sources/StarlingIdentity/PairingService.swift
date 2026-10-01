@@ -96,7 +96,7 @@ public actor PairingService {
         let ceremony = PairingCeremony(
             peer: peer, nickname: nickname, identity: identity, pins: pins,
             link: link, configuration: configuration, now: now,
-            revocationToken: pins.revocationToken(of: peer)
+            revocationEpoch: pins.epoch(of: peer)
         )
         ceremonies[peer] = ceremony
         await ceremony.begin { [weak self] in await self?.finished(ceremony, peer: peer) }
@@ -160,8 +160,8 @@ actor PairingCeremony: PairingSession {
     private let configuration: PairingConfiguration
     private let now: @Sendable () -> Date
     private let initiator: Bool
-    /// The peer's revocation token when the ceremony started.
-    private let revocationToken: UInt64
+    /// The peer's epoch at the pin authority when the ceremony started.
+    private let revocationEpoch: UInt64
 
     private var phase = Phase.waiting
     private var handshake: NoiseHandshakeState
@@ -177,9 +177,9 @@ actor PairingCeremony: PairingSession {
     init(
         peer: PeerID, nickname: String, identity: IdentityKeyPair, pins: PinAuthority,
         link: any Transport, configuration: PairingConfiguration, now: @escaping @Sendable () -> Date,
-        revocationToken: UInt64
+        revocationEpoch: UInt64
     ) {
-        self.revocationToken = revocationToken
+        self.revocationEpoch = revocationEpoch
         self.peer = peer
         self.nickname = nickname
         self.identity = identity
@@ -217,7 +217,7 @@ actor PairingCeremony: PairingSession {
     }
 
     /// The owner unpaired this peer while the ceremony ran. A ceremony that
-    /// is already saving is caught by the token check in `PinAuthority.commit`.
+    /// is already saving is caught by the epoch check in `PinAuthority.commit`.
     func revoke() async {
         await end(.cancelled, notice: .cancel)
     }
@@ -351,10 +351,10 @@ actor PairingCeremony: PairingSession {
         do {
             let key = try IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation)
             let paired = try PairedPeer(publicKey: key, nickname: nickname, pairedAt: Timestamp(now()))
-            // Unpairing wins: the authority commits only if the peer was not
-            // revoked since the ceremony started, and leaves no pin if a
-            // revocation starts before the commit ends.
-            let committed = try await pins.commit(paired, ifNotRevokedSince: revocationToken)
+            // Unpairing wins: the authority commits only if the peer's epoch
+            // has not moved since the ceremony started, and rolls back (no
+            // pin, epoch moved again) if it moves before the commit ends.
+            let committed = try await pins.commit(paired, ifEpochIs: revocationEpoch)
             finish(committed ? .paired(paired) : .failed(.cancelled))
         } catch {
             finish(.failed(.protocolError))

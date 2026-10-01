@@ -2,111 +2,138 @@ import Foundation
 import StarlingCore
 import Synchronization
 
-/// The one authority over a device's pinned keys: every pin mutation (a
-/// pairing commit, an unpair) and every pin use (a handshake's lookup) goes
-/// through it, so unpairing is ordered against all of them (ADR 0100
-/// decision 11). It is identity-scoped: the app creates one per identity and
-/// store and injects it into every `SecureTransport` and `PairingService`.
+/// The one authority over a device's pinned keys (ADR 0100 decision 11).
 ///
-/// Invariant: once `beginRemoval(_:)` has run for a peer, no pin for that
-/// peer survives the removal, and no lookup that overlaps it returns a pin.
+/// It is identity-scoped: the app creates one per identity and store and
+/// injects it into every `SecureTransport` and `PairingService`. Every pin
+/// mutation (a pairing commit, an unpair) and every pin use (a handshake's
+/// lookup) goes through it.
 ///
-/// - A revocation takes its mark synchronously, before any await: it moves
-///   the peer's revocation token, and an unpair also marks a removal in
-///   progress until the pin is gone.
-/// - Pairing commits and removals run one at a time under one lock. A commit
-///   saves only if the token has not moved since its ceremony started, and
-///   checks again after the save; if it moved, the commit removes the pin
-///   before releasing the lock.
-/// - A lookup returns nothing while a removal is in progress, and discards
-///   what it read if the token moved. A pin a commit is about to undo exists
-///   only while the removal mark is set, so no lookup can return it.
+/// All revocation state sits behind one `Mutex`, so every check and update
+/// is atomic and has no suspension point; only Keychain I/O is async. Per
+/// peer it keeps an epoch that only moves forward, plus counts of unpairs
+/// and commits in progress and a quarantine flag. Sessions are stamped with
+/// the epoch they were authenticated under, and transports check that stamp
+/// against `epoch(of:)` on every frame, so moving the epoch kills every
+/// session with the peer on every transport at once.
+///
+/// The epoch moves at the start of every revocation (before any await), at
+/// the end of every unpair, and on every commit rollback. Lookups are
+/// refused while an unpair or a commit for the peer is in progress, or while
+/// it is quarantined after a failed delete.
 public final class PinAuthority: Sendable {
     public let identity: IdentityKeyPair
     public let store: any PairedPeerStore
 
+    private struct Flags {
+        var removing = 0
+        var committing = 0
+        var quarantined = false
+        var isClear: Bool { removing == 0 && committing == 0 && !quarantined }
+    }
+
     private struct State {
-        var tokens: GenerationTable
-        var removing: [PeerID: Int] = [:]
+        var epochs: GenerationTable
+        /// Only peers with something in progress or quarantined have an entry.
+        var flags: [PeerID: Flags] = [:]
         var locked = false
         var waiters: [CheckedContinuation<Void, Never>] = []
         var observers: [@Sendable (PeerID) async -> Void] = []
+
+        func blocked(_ peer: PeerID) -> Bool { !(flags[peer]?.isClear ?? true) }
+
+        mutating func update(_ peer: PeerID, _ change: (inout Flags) -> Void) {
+            var entry = flags[peer] ?? Flags()
+            change(&entry)
+            flags[peer] = entry.isClear ? nil : entry
+        }
     }
 
     private let state: Mutex<State>
 
-    /// - Parameter capacity: Most peers whose revocation tokens are kept;
-    ///   older ones are evicted safely (see `GenerationTable`).
+    /// - Parameter capacity: Most peers whose epochs are kept; older ones are
+    ///   evicted safely (see `GenerationTable`).
     public init(identity: IdentityKeyPair, store: any PairedPeerStore, capacity: Int = 1_024) {
         self.identity = identity
         self.store = store
-        state = Mutex(State(tokens: GenerationTable(capacity: capacity)))
+        state = Mutex(State(epochs: GenerationTable(capacity: capacity)))
     }
 
-    // MARK: Revocation tokens
+    // MARK: Reading the state
 
-    /// Moves every time `peer` is revoked. A ceremony records it when it
-    /// starts and commits only if it has not moved.
-    public func revocationToken(of peer: PeerID) -> UInt64 {
-        state.withLock { $0.tokens.value(of: peer) }
+    /// The peer's current epoch. A session is usable only while the epoch it
+    /// was authenticated under equals this.
+    public func epoch(of peer: PeerID) -> UInt64 {
+        state.withLock { $0.epochs.value(of: peer) }
     }
 
-    /// How many revocation tokens are kept, for tests.
-    var trackedTokenCount: Int { state.withLock { $0.tokens.count } }
-
-    /// Whether an unpair of `peer` is still removing its pin.
-    public func isRemoving(_ peer: PeerID) -> Bool {
-        state.withLock { $0.removing[peer, default: 0] > 0 }
+    /// Whether lookups for `peer` are refused: an unpair or a commit is in
+    /// progress, or a failed delete left it quarantined.
+    public func isBlocked(_ peer: PeerID) -> Bool {
+        state.withLock { $0.blocked(peer) }
     }
 
-    /// Registers a handler run on every revocation, before an unpair removes
-    /// the pin. `SecureTransport` ends sessions; `PairingService` ends ceremonies.
+    /// How many epochs are kept, for tests.
+    var trackedTokenCount: Int { state.withLock { $0.epochs.count } }
+
+    /// Registers a handler run after every revocation and rollback. For
+    /// liveness only (ending sessions promptly, cancelling ceremonies):
+    /// correctness rests on the per-frame epoch check.
     public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
         state.withLock { $0.observers.append(handler) }
     }
 
-    // MARK: Unpairing
+    // MARK: Revoking
 
-    /// Unpairs `peer`: marks it revoked, tells every observer, and removes
-    /// the pin. Prefer `SecureTransport.unpair(_:)`, which also ends the
-    /// session synchronously, before its first await.
+    /// Unpairs `peer`. Prefer `SecureTransport.unpair(_:)`, which also ends
+    /// that transport's sessions in the same synchronous step.
     public func unpair(_ peer: PeerID) async throws {
         beginRemoval(peer)
         try await completeRemoval(peer)
     }
 
-    /// Revokes `peer` without removing its pin: moves the token (so running
-    /// ceremonies cannot commit) and tells every observer.
+    /// Revokes `peer` without removing its pin.
     public func revoke(_ peer: PeerID) async {
         markRevoked(peer)
         await notifyObservers(peer)
     }
 
-    /// The synchronous half of a revocation. Never awaits.
+    /// `revoke`'s synchronous half: the epoch moves. Never awaits.
     func markRevoked(_ peer: PeerID) {
-        state.withLock { $0.tokens.bump(peer) }
+        state.withLock { $0.epochs.bump(peer) }
     }
 
-    /// The synchronous half of an unpair: the revocation mark plus a removal
-    /// in progress, so lookups refuse the pin from now on. Never awaits.
+    /// `unpair`'s synchronous half: the epoch moves and a removal is in
+    /// progress, so lookups are refused from now on. Never awaits.
     func beginRemoval(_ peer: PeerID) {
         state.withLock {
-            $0.tokens.bump(peer)
-            $0.removing[peer, default: 0] += 1
+            $0.epochs.bump(peer)
+            $0.update(peer) { $0.removing += 1 }
         }
     }
 
-    /// The asynchronous half of an unpair. Ends the removal mark even if
-    /// the store throws; the caller sees the error.
+    /// `unpair`'s asynchronous half. Deletes the pin under the pin lock, then
+    /// moves the epoch again and ends the removal. If the delete fails, the
+    /// peer stays quarantined (lookups refused) and the error is rethrown.
     func completeRemoval(_ peer: PeerID) async throws {
-        defer {
-            state.withLock {
-                $0.removing[peer, default: 1] -= 1
-                if $0.removing[peer] == 0 { $0.removing[peer] = nil }
+        await notifyObservers(peer)
+        do {
+            try await serialized { try await self.store.remove(peer) }
+        } catch {
+            endRemoval(peer, deleted: false)
+            throw error
+        }
+        endRemoval(peer, deleted: true)
+    }
+
+    private func endRemoval(_ peer: PeerID, deleted: Bool) {
+        state.withLock {
+            $0.epochs.bump(peer)
+            $0.update(peer) {
+                $0.removing -= 1
+                $0.quarantined = !deleted
             }
         }
-        await notifyObservers(peer)
-        try await serialized { try await self.store.remove(peer) }
     }
 
     func notifyObservers(_ peer: PeerID) async {
@@ -116,38 +143,69 @@ public final class PinAuthority: Sendable {
 
     // MARK: Pairing
 
-    /// Saves `peer` if it has not been revoked since `token` was read, and
-    /// leaves no pin if a revocation starts before the commit ends, even if
-    /// the save already landed. Returns whether the pin was committed.
-    func commit(_ peer: PairedPeer, ifNotRevokedSince token: UInt64) async throws -> Bool {
-        try await serialized {
-            guard self.revocationToken(of: peer.id) == token, !self.isRemoving(peer.id) else { return false }
-            try await self.store.save(peer)
-            guard self.revocationToken(of: peer.id) == token else {
-                try await self.store.remove(peer.id)
-                return false
+    private enum CommitResult: Sendable { case refused, committed, rolledBack }
+
+    /// Saves `peer` if its epoch is still `epoch` (read when the ceremony
+    /// started) and nothing is removing or quarantining it. If the epoch
+    /// moves before the commit ends, the save is rolled back: the pin is
+    /// deleted and the epoch moves again, killing anything authenticated
+    /// meanwhile. Returns whether the pin was committed.
+    func commit(_ peer: PairedPeer, ifEpochIs epoch: UInt64) async throws -> Bool {
+        let id = peer.id
+        let result: CommitResult = try await serialized {
+            let admitted = self.state.withLock { state -> Bool in
+                guard state.epochs.value(of: id) == epoch, !state.blocked(id) else { return false }
+                state.update(id) { $0.committing += 1 }
+                return true
             }
-            return true
+            guard admitted else { return .refused }
+            do {
+                try await self.store.save(peer)
+            } catch {
+                self.state.withLock { $0.update(id) { $0.committing -= 1 } }
+                throw error
+            }
+            let moved = self.state.withLock { $0.epochs.value(of: id) != epoch }
+            guard moved else {
+                self.state.withLock { $0.update(id) { $0.committing -= 1 } }
+                return .committed
+            }
+            // Roll back. The commit stays in progress (lookups refused) until
+            // the delete is done; if it fails, the peer is quarantined.
+            var deleted = false
+            defer {
+                self.state.withLock {
+                    $0.epochs.bump(id)
+                    $0.update(id) {
+                        $0.committing -= 1
+                        $0.quarantined = !deleted
+                    }
+                }
+            }
+            try await self.store.remove(id)
+            deleted = true
+            return .rolledBack
         }
+        if result == .rolledBack { await notifyObservers(id) }
+        return result == .committed
     }
 
     // MARK: Lookups
 
-    /// The pin for `peer` and the token it was read under, or nil while an
-    /// unpair is removing it or if a revocation moved the token meanwhile.
-    /// Callers that resume later must check the token again before use.
+    /// The pin for `peer` and the epoch it was read under, or nil while the
+    /// peer is blocked or if the epoch moved during the read. Sessions built
+    /// on the result must be stamped with that epoch.
     func pinned(_ peer: PeerID) async -> (PairedPeer, UInt64)? {
-        let token = revocationToken(of: peer)
-        guard !isRemoving(peer), let paired = try? await store.peer(for: peer), paired.id == peer,
-              !isRemoving(peer), revocationToken(of: peer) == token
-        else { return nil }
-        return (paired, token)
+        let epoch: UInt64? = state.withLock { $0.blocked(peer) ? nil : $0.epochs.value(of: peer) }
+        guard let epoch, let paired = try? await store.peer(for: peer), paired.id == peer else { return nil }
+        let unchanged = state.withLock { !$0.blocked(peer) && $0.epochs.value(of: peer) == epoch }
+        return unchanged ? (paired, epoch) : nil
     }
 
-    // MARK: Lock
+    // MARK: Pin lock
 
-    /// Runs `operation` while holding the pin lock. Commits and removals
-    /// therefore never interleave, whatever they await.
+    /// Runs `operation` while holding the pin lock, which serializes every
+    /// Keychain write (commits and removals).
     private func serialized<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
         await acquire()
         defer { release() }

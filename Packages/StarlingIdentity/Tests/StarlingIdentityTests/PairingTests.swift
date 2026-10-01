@@ -557,6 +557,49 @@ extension Recorder where Element == PairingEvent {
         #expect(await links.aliceLocal.events.received.isEmpty)
     }
 
+    /// Review 4 finding 1: Alice's re-pair commit is held after its write;
+    /// a disconnect of Bob completes meanwhile; the peers then try KK while
+    /// the save is still held (the lookup would read the just-saved pin).
+    /// When the commit resumes it rolls back, and nothing authenticated in
+    /// that window may survive, on either transport.
+    @Test func aDisconnectDuringAHeldCommitLeavesNoLiveSession() async throws {
+        let links = try await connectedOverTwoLinks()
+        let (alice, bob) = (aliceKey.peerID, bobKey.peerID)
+        let alicePairing = PairingService(secureTransport: links.aliceAware.secure, configuration: .fast)
+        let bobPairing = PairingService(secureTransport: links.bobAware.secure, configuration: .fast)
+        try await alicePairing.start()
+        try await bobPairing.start()
+        let sa = try await alicePairing.pair(with: bob, nickname: "Bob")
+        let sb = try await bobPairing.pair(with: alice, nickname: "Alice")
+        let ea = await Recorder.recording(sa.events)
+        _ = try await ea.waitForCode()
+        let heardLocal = await links.aliceLocal.events.received.count
+        let heardAware = await links.aliceAware.events.received.count
+
+        await links.aliceLocal.store.arm(.saveAfterWrite)
+        await sa.confirm(codesMatch: true)
+        await sb.confirm(codesMatch: true)
+        try await eventually("alice's commit is held after its write") { await links.aliceLocal.store.suspended(at: .saveAfterWrite) == 1 }
+        await links.aliceLocal.secure.disconnect(bob)
+        await links.aliceLocal.secure.reconnect(bob)
+        await links.bobLocal.secure.reconnect(alice)
+        await links.bobAware.secure.reconnect(alice)
+        try await settle()
+        await links.aliceLocal.store.release(.saveAfterWrite)
+        try await settle()
+
+        if case .paired = try await ea.waitForOutcome() { Issue.record("the rolled-back commit reported success") }
+        #expect(try await links.aliceLocal.store.peer(for: bob) == nil)
+        #expect(await links.aliceLocal.secure.status(of: bob).provenKey == nil)
+        #expect(await links.aliceAware.secure.status(of: bob).provenKey == nil)
+        try? await links.bobLocal.secure.send(Frame(Data("local".utf8)), to: alice)
+        try? await links.bobAware.secure.send(Frame(Data("aware".utf8)), to: alice)
+        try await settle()
+        #expect(await links.aliceLocal.events.received.count == heardLocal)
+        #expect(await links.aliceAware.events.received.count == heardAware)
+        withExtendedLifetime([alicePairing, bobPairing]) {}
+    }
+
     /// A re-pair running over the Wi-Fi Aware transport cannot restore a pin
     /// that an unpair through the LocalP2P transport removed.
     @Test func aCommitOnAnotherTransportCannotRestoreTheUnpairedPin() async throws {
