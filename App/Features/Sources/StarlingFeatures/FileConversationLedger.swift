@@ -7,7 +7,7 @@ import StarlingCore
 /// (ADR 0200's helper).
 ///
 /// - Fail-closed: a file that exists but cannot be read makes every call
-///   throw, and so does a failed write. It never reads as empty after a
+///   throw, and after a failed write every later call throws too. It never reads as empty after a
 ///   failure, so Outbox stops every send instead of forgetting a limit or
 ///   a withdrawal.
 /// - Every change is written before the call returns, and the cache
@@ -73,8 +73,17 @@ public actor FileConversationLedger: ConversationLedger {
         }
     }
 
+    /// A write that fails latches the ledger closed: every later call
+    /// throws, so a retirement that was not recorded can never read as
+    /// open, and nothing more is sent until the app restarts and reads the
+    /// file again (ADR 0021 amendment 13).
     private func commit(_ next: Document) throws {
-        try file.write(next)
+        do {
+            try file.write(next)
+        } catch {
+            failed = true
+            throw error
+        }
         cache = next
     }
 

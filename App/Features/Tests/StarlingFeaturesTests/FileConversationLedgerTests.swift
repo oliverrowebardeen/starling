@@ -52,14 +52,25 @@ import Testing
         #expect(try String(contentsOf: file.url, encoding: .utf8) == "not json", "never overwritten")
     }
 
-    @Test func aFailedWriteThrowsAndChangesNothing() async throws {
+    /// ADR 0021 amendment 13: a failed write latches the ledger closed, so
+    /// a retirement it could not record never reads as an open conversation.
+    @Test func aFailedWriteLatchesTheLedgerClosed() async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let blocker = directory.appending(path: "blocked")
         try Data().write(to: blocker)
         let ledger = FileConversationLedger(file: JSONFile(url: blocker.appending(path: "ledger.json")))
         let conversation = ConversationID()
         await #expect(throws: (any Error).self) { try await ledger.retire(conversation) }
-        #expect(try await !ledger.isRetired(conversation))
+        await #expect(throws: (any Error).self) { try await ledger.isRetired(conversation) }
+        await #expect(throws: (any Error).self) { try await ledger.reserve(try keywords(1), issue: .activity, to: maya, in: ConversationID()) }
+
+        // And Outbox therefore sends nothing more.
+        let transport = RecordingTransport()
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved), ledger: ledger)
+        await #expect(throws: (any Error).self) {
+            try await outbox.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya, conversation: conversation)
+        }
+        #expect(await transport.sent.isEmpty)
     }
 
     /// Outbox enforces the ledger: nothing is sent in a retired
