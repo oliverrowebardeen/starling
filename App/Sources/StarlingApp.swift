@@ -25,6 +25,7 @@ struct StarlingApp: App {
             Group {
                 #if DEBUG
                 RootView(app: app, developer: { DeveloperView(app: app, harness: harness) })
+                    .task { await DownSelfTest.runIfRequested(app: app, harness: harness) }
                 #else
                 RootView(app: app, developer: { DeveloperView(app: app) })
                 #endif

@@ -256,6 +256,54 @@ final class SimulatedFriend {
     }
 }
 
+/// Runs the whole Down journey headless when the app is launched with
+/// `-starlingSelfTestDown YES`, and prints the outcome: the simulated friend
+/// goes down, this phone goes down with overlapping time, every consent
+/// sheet is approved, and the test waits for a match. Evidence that lane F's
+/// DownNegotiator, lane G's policy, the consent sheet, and the app's Inbox
+/// loop work together, where the Simulator cannot be tapped through.
+@MainActor
+enum DownSelfTest {
+    static func runIfRequested(app: AppModel, harness: DebugHarness) async {
+        guard UserDefaults.standard.bool(forKey: "starlingSelfTestDown"), let down = app.down else { return }
+        await app.start()
+        let approver = Task {
+            while !Task.isCancelled {
+                if let request = app.consent.current {
+                    print("SELFTEST consent: \(request.items.map(\.title).joined(separator: ", ")) to \(request.recipientName)")
+                    app.consent.answer(.approved, to: request.id)
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        defer { approver.cancel() }
+
+        await harness.simFriend.goDown(.down)
+        print("SELFTEST sim friend: \(harness.simFriend.state)")
+        await down.editByHand()
+        down.draft.add(.within, issue: .time)
+        down.draft.add(.prefers, issue: .activity)
+        down.draft.items[down.draft.items.count - 1].likedText = "food"
+        down.draft.add(.atMost, issue: .budget)
+        down.draft.items[down.draft.items.count - 1].amountMinorUnits = 1500
+        down.level = .down
+        down.duration = .threeHours
+        await down.goDown()
+        print("SELFTEST owner: phase \(down.phase), notice \(down.notice ?? "none")")
+
+        for _ in 0..<600 where down.matches.isEmpty {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if let match = down.matches.first {
+            print("SELFTEST MATCH with \(match.friendName): \(match.lines.map { "\($0.title)=\($0.detail ?? "")" }.joined(separator: "; ")); bothDown \(match.bothDown); status \(down.status)")
+        } else {
+            print("SELFTEST NO MATCH after 60 s; status \(down.status); checking \(String(describing: down.active?.checkingFriends)); sim friend \(harness.simFriend.state)")
+        }
+        let audited = await LiveServices.auditLog.entries()
+        print("SELFTEST audit: \(audited.map { $0.kind.rawValue }.joined(separator: ","))")
+    }
+}
+
 /// Asks for consent on every send; the re-check after consent can return a
 /// different disclosure to exercise `OutboxError.policyChangedDuringConsent`.
 actor DemoPolicy: PolicyEngine {
