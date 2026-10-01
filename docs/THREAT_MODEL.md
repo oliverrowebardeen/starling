@@ -40,7 +40,7 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
 |----------|-----------|----------|
 | **Only paired friends are heard.** A frame reaches `Inbox` only if it decrypts under a live KK session with a key pinned at pairing. Unknown keys, forged link identities, tampered, truncated, replayed, and reordered frames are dropped without a reply. | Noise KK (ADR 0100). Strictly increasing explicit nonces. | `SecureTransportTests`, `ImpersonationTests` |
 | **The sender is who the link claims.** `peerAvailable` and `received` carry the key-derived `PeerID` of the key the peer proved. `Inbox` then rejects an envelope whose `sender` differs from it. | The `PeerID` is SHA-256 of the static key. Each session is checked to prove a key that hashes to the claimed ID before it is installed. | `forgedSenderAndForgedLinkIdentityAreRejected`, `aPairedPeerCannotSpeakForAnother` |
-| **Unpairing and disconnecting take effect immediately, on every transport.** Once an unpair or disconnect has begun, no session with the peer authenticated before it is usable on any of the device's transports. No pin survives an unpair, including one saved by a pairing ceremony that was already running. A commit that a revocation overtakes leaves no pin, and no session authenticated while it was in flight stays usable. | One identity-scoped `PinAuthority`, shared by every transport and pairing service, holds the revocation state behind a mutex with no suspension points. Every session is stamped with the epoch it was authenticated under, and every frame is checked synchronously against the peer's current epoch, which moves on every revocation, at the end of every unpair, and on every commit rollback (ADR 0100 decision 11). | `unpairWinsAtEveryAwait` (every await on both paths), `SharedAuthorityTests` (two transports sharing one authority, including a disconnect during a held commit), `unpairingDuringAnInitiatorPinLookupStopsTheHandshake`, `unpairingDuringAResponderPinLookupStopsTheHandshake`, `unpairingAfterConfirmingARepairWins`, `unpairingDuringAPendingSaveWins` |
+| **Unpairing and disconnecting take effect immediately, on every transport.** Once an unpair or disconnect has begun, no session with the peer authenticated before it is usable on any of the device's transports. No pin survives an unpair, including one saved by a pairing ceremony that was already running. A commit that a revocation overtakes leaves no pin, and no session authenticated while it was in flight stays usable. | One identity-scoped `PinAuthority`, shared by every transport and pairing service, holds the revocation state behind a mutex with no suspension points. Every session is stamped with the epoch it was authenticated under. Every frame is checked against the peer's current epoch in the same mutex section that seals it, or that commits and publishes it. The epoch moves on every revocation, at the end of every unpair, and on every commit rollback (ADR 0100 decision 11, with an audit of every read of revocation state). | `unpairWinsAtEveryAwait` (every await on both paths), `SharedAuthorityTests` (two transports sharing one authority, including a disconnect during a held commit), `unpairingDuringAnInitiatorPinLookupStopsTheHandshake`, `unpairingDuringAResponderPinLookupStopsTheHandshake`, `unpairingAfterConfirmingARepairWins`, `unpairingDuringAPendingSaveWins` |
 | **Link displacement does not become impersonation.** A link that claims a friend's ID but cannot prove the key never gets a session, and never displaces or shadows the friend's live one. | Sessions are installed only by a completed handshake or a successful decryption. `status(of:)` shows the claimed ID next to the proven key. | `aDisplacingLinkDoesNotShadowTheAuthenticatedSession`, `anImpostorLinkAfterLinkLossIsNeverAnnounced` |
 | **Confidentiality and integrity of content** against the network attacker. | ChaChaPoly under per-session keys. | `framesAreEncryptedOnTheWire`, the vector tests |
 | **Forward secrecy.** Stealing static keys later does not reveal past sessions. | Ephemeral keys per session. Noise section 7.7 rates KK transport payloads "2, 5". The responder's payloads get those properties because it sends nothing until the initiator's first frame arrives. | ADR 0100 decision 5 |
@@ -105,7 +105,15 @@ The fourth Codex review (2026-09-30, at 0e98306) found three more, and asked for
 | 2 (high) | Scope of authority: each transport had its own authority, so an unpair through one transport missed the other's session and lock | "Unpairing takes effect immediately" across transports | One identity-scoped authority created by the app and injected into every transport and pairing service |
 | 3 (medium) | Session retention: a reconnect with no current session skipped the restart budget and evicted a session the peer still used | Availability only | One admission gate for every new handshake (ADR 0100 decision 5) |
 
-A fifth review of these fixes is pending. The warning at the top of this document stands until a review passes.
+The fifth Codex review (2026-10-01, at b6f2fac) found that the redesign held, and three gaps between separate lock sections or after an await:
+
+| Finding | Class | Guarantee affected | Fix |
+|---------|-------|--------------------|-----|
+| 1 (high) | A commit's decision and its end were two mutex sections; a revocation in between left the pin | Property (d) of ADR 0100 decision 11 | One section decides and ends the commit |
+| 2 (high) | A frame checked against the epoch, then delivered (or sealed) after another transport's revocation | "Unpairing and disconnecting take effect immediately, on every transport" | The final check, state commit, and publishing (or nonce and sealing) are one section under the authority |
+| 3 (medium) | Reconnects admitted before an await installed sessions without rechecking, evicting one the peer used | Availability only | Admission after the lookup, immediately before install; concurrent attempts coalesce |
+
+ADR 0100 decision 11 now lists every read of revocation state and the section that covers its action. A sixth review is pending. The warning at the top of this document stands until a review passes.
 
 ## 7. Assumptions
 
@@ -119,7 +127,7 @@ A fifth review of these fixes is pending. The warning at the top of this documen
 
 | Item | Owner |
 |------|-------|
-| Codex review of the fourth round of section 6 fixes (ADR 0003 care requirement 7) | Orchestrator |
+| Codex review of the fifth round of section 6 fixes (ADR 0003 care requirement 7) | Orchestrator |
 | Wi-Fi Aware pairing binding with `deriveSharedSecret` and XXpsk3 (ADR 0102) | Owner decision, then E1 and E2 |
 | Padding to hide message sizes, before the relay | Phase 2 |
 | Rotating link-visible `PeerID`s, or hiding them in hellos | Phase 2 or later |
