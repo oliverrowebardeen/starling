@@ -348,12 +348,12 @@ public actor DownForService: SkillService {
         discard(id)
     }
 
-    /// The policy refused a send: the owner's privacy topics block the
-    /// request at whatever step it was. Core accepts this from every live
-    /// step but planned; until that lands, a step it refuses ends as failed.
+    /// The policy refused a send for the current step: the owner's privacy
+    /// topics block the request at whatever live step it was (ADR 0011,
+    /// amendment 14). A planned request keeps its plan.
     func blockedByPrivacy(_ id: InteractionID) {
         guard let state = requests[id]?.mirror.state, state != .planned else { return }
-        if !report(id, .blockedByPrivacy) { report(id, .failed) }
+        report(id, .blockedByPrivacy)
         discard(id)
     }
 

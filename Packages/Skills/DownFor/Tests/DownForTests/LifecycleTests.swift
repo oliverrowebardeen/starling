@@ -111,6 +111,26 @@ import Testing
         await world.expectCleanLifecycles()
     }
 
+    @Test func aDeniedImInBlocksTheRequestAtThatStep() async throws {
+        let denier = Denier()
+        let world = World(2, policy: FixedPolicyEngine { message in
+            guard case .accept = message.envelope.body, denier.denies(message.envelope.sender) else { return .allow }
+            return .deny(PolicyViolation(rule: "disclosure.never", issue: .budget))
+        })
+        let (a, b) = (world["A"], world["B"])
+        denier.set(b.id)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let mine = try await a.down(for: ["boba"], with: [b])
+        let theirs = try await b.down(for: ["boba"], with: [a])
+        try await b.waitForProposal(theirs)
+        try await b.imIn(theirs)
+        try await b.waitFor(.ended(.blockedByPrivacy), theirs)
+        #expect(await b.lifecycle.reached(.confirmed, theirs))
+        #expect(await !a.lifecycle.reached(.planned, mine))
+        await world.expectCleanLifecycles()
+    }
+
     @Test func aSendThePolicyRefusesBlocksTheRequest() async throws {
         let world = World(2, policy: FixedPolicyEngine(.deny(PolicyViolation(rule: "disclosure.never", issue: .time))))
         try await world.start()
@@ -337,4 +357,11 @@ actor HeldDenial: PolicyEngine {
         if !released { await withCheckedContinuation { waiting.append($0) } }
         return .deny(PolicyViolation(rule: "disclosure.never", issue: .people))
     }
+}
+
+/// Picks, after the world exists, whose sends a policy denies.
+final class Denier: Sendable {
+    private let peer = Synchronization.Mutex<PeerID?>(nil)
+    func set(_ id: PeerID) { peer.withLock { $0 = id } }
+    func denies(_ id: PeerID) -> Bool { peer.withLock { $0 == id } }
 }
