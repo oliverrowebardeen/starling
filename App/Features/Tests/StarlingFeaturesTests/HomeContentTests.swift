@@ -147,3 +147,24 @@ import Testing
         #expect(LifecycleNotice.make(before: confirmed, after: planned, words: words)?.title == "It's a plan")
     }
 }
+
+@MainActor
+@Suite struct ProposalTextsTests {
+    @Test func theModelsSentenceReplacesTheTemplateWhenItArrives() async throws {
+        let me = PeerID.random(), maya = PeerID.random()
+        let words = InteractionWords(registry: SampleSkills.registry, localPeer: me, formatter: ValueFormatter(), names: { [maya: "Maya"] })
+        var item = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Fixtures.noon))
+        try item.apply(.started, at: item.createdAt)
+        try item.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))), at: item.createdAt)
+
+        let texts = ProposalTexts(model: ScriptedSkillModel(onProposal: { facts in "Boba with \(facts.friendNames.joined())?" }))
+        #expect(texts.text(for: item, words: words)?.headline == "You and Maya are both down for boba")
+        await eventually { texts.text(for: item, words: words)?.headline == "Boba with Maya?" }
+        #expect(texts.text(for: item, words: words)?.headline == "Boba with Maya?")
+
+        let failing = ProposalTexts(model: ScriptedSkillModel())
+        _ = failing.text(for: item, words: words)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(failing.text(for: item, words: words)?.headline == "You and Maya are both down for boba")
+    }
+}

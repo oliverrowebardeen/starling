@@ -266,3 +266,42 @@ extension String {
         return first.lowercased() + dropFirst()
     }
 }
+
+/// Proposal sentences for cards: the model's when it is available (ADR
+/// 0016), the template otherwise, cached per proposal revision. The text is
+/// shown only on this phone and never sent.
+@MainActor
+@Observable
+public final class ProposalTexts {
+    private struct Key: Hashable {
+        let interaction: InteractionID
+        let revision: UInt32
+    }
+
+    private var written: [Key: String] = [:]
+    private var asked: Set<Key> = []
+    private let model: (any SkillModel)?
+
+    public init(model: (any SkillModel)?) {
+        self.model = model
+    }
+
+    /// The headline and detail for the interaction's current proposal.
+    public func text(for interaction: Interaction, words: InteractionWords) -> (headline: String, detail: String?)? {
+        guard let facts = words.facts(interaction), let revision = interaction.proposalRevision else { return nil }
+        let template = words.template(facts)
+        let key = Key(interaction: interaction.id, revision: revision)
+        if let sentence = written[key] { return (sentence, template.detail) }
+        if let model, !asked.contains(key) {
+            asked.insert(key)
+            Task {
+                // A model that fails or is unavailable leaves the template.
+                guard let sentence = try? await model.proposalText(facts).value else { return }
+                let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, trimmed.count <= 200 else { return }
+                written[key] = trimmed
+            }
+        }
+        return template
+    }
+}
