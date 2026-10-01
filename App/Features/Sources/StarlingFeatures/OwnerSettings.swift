@@ -89,8 +89,9 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
 public protocol OwnerSettingsStore: Sendable {
     func load() async throws -> OwnerSettings?
     func save(_ settings: OwnerSettings) async throws
-    /// Moves an unreadable file aside so a save never overwrites it.
-    func moveAside() async throws
+    /// Keeps a copy of an unreadable file aside, leaving it in place until
+    /// a save replaces it in one atomic write.
+    func keepCopyAside() async throws
 }
 
 /// `Application Support/Starling/settings.json` (ADR 0200's file helper).
@@ -107,7 +108,7 @@ public actor FileOwnerSettingsStore: OwnerSettingsStore {
 
     public func load() async throws -> OwnerSettings? { try file.read(OwnerSettings.self) }
     public func save(_ settings: OwnerSettings) async throws { try file.write(settings) }
-    public func moveAside() async throws { if file.exists { try file.quarantine() } }
+    public func keepCopyAside() async throws { try file.copyAside() }
 }
 
 public actor InMemoryOwnerSettingsStore: OwnerSettingsStore {
@@ -119,7 +120,7 @@ public actor InMemoryOwnerSettingsStore: OwnerSettingsStore {
 
     public func load() async throws -> OwnerSettings? { saved }
     public func save(_ settings: OwnerSettings) async throws { saved = settings }
-    public func moveAside() async throws {}
+    public func keepCopyAside() async throws {}
 }
 
 /// The owner's settings as the screens use them. Every change is saved at
@@ -238,12 +239,15 @@ public final class SettingsModel {
     public func markExplained(_ permission: SystemPermission) async { await update { $0.permissionsExplained.insert(permission) } }
 
     /// The owner checked the settings shown and chose to use them after the
-    /// saved file could not be read: the unreadable file is moved aside,
-    /// these settings are saved, and sends may go out again.
+    /// saved file could not be read: a copy of the unreadable file is kept
+    /// aside, these settings replace it in one atomic write, and sends may
+    /// go out again. The unreadable file stays in place until the write
+    /// commits, so a failure or an exit midway leaves the next launch as
+    /// blocked as this one, never on defaults (re-review of PR #54).
     public func recover() async {
         guard loadFailed else { return }
         do {
-            try await store.moveAside()
+            try await store.keepCopyAside()
             try await store.save(settings)
         } catch {
             notice = "Your settings still couldn't be saved. Try again."

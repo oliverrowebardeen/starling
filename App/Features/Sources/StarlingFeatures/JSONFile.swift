@@ -44,6 +44,19 @@ public struct JSONFile: Sendable {
         try target.setResourceValues(excluded)
     }
 
+    /// Copies the file aside and leaves it in place, so it can be replaced
+    /// in one atomic write: there is never a moment with no file at all.
+    @discardableResult
+    public func copyAside(now: Date = Date()) throws -> URL? {
+        guard exists else { return nil }
+        let stamp = Int(now.timeIntervalSince1970)
+        let name = url.deletingPathExtension().lastPathComponent
+        let aside = url.deletingLastPathComponent().appending(path: "\(name).unreadable-\(stamp).\(url.pathExtension)")
+        if FileManager.default.fileExists(atPath: aside.path(percentEncoded: false)) { try FileManager.default.removeItem(at: aside) }
+        try FileManager.default.copyItem(at: url, to: aside)
+        return aside
+    }
+
     /// Moves an unreadable file aside, so a later write never overwrites
     /// what could still be recovered by hand. Returns where it went.
     @discardableResult

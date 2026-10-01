@@ -129,6 +129,35 @@ import Testing
         #expect(aside.count == 1)
     }
 
+    /// Re-review of PR #54, finding 2: recovery that fails or is cut short
+    /// leaves the unreadable file in place, so the next launch stays
+    /// blocked instead of starting on defaults.
+    @Test func anInterruptedRecoveryStaysBlockedOnTheNextLaunch() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "starling-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = JSONFile(url: directory.appending(path: "settings.json"))
+        try Data("not json".utf8).write(to: file.url)
+
+        struct SaveFails: OwnerSettingsStore {
+            struct Failure: Error {}
+            let base: FileOwnerSettingsStore
+            func load() async throws -> OwnerSettings? { try await base.load() }
+            func save(_ settings: OwnerSettings) async throws { throw Failure() }
+            func keepCopyAside() async throws { try await base.keepCopyAside() }
+        }
+        let failing = SettingsModel(store: SaveFails(base: FileOwnerSettingsStore(file: file)), flags: .phase1_5)
+        await failing.load()
+        await failing.recover()
+        #expect(failing.loadFailed)
+        #expect(try String(contentsOf: file.url, encoding: .utf8) == "not json")
+
+        // The app exits after the copy and before the save.
+        try await FileOwnerSettingsStore(file: file).keepCopyAside()
+        let relaunched = SettingsModel(store: FileOwnerSettingsStore(file: file), flags: .phase1_5)
+        await relaunched.load()
+        #expect(relaunched.loadFailed, "still blocked, never first-use defaults")
+    }
+
     @Test func topicsAreTheOnlyStandingSharing() throws {
         var privacy = PrivacySettings.defaults
         try privacy.set(.never, for: .budget)
