@@ -71,17 +71,31 @@ import Testing
         #expect(decoded.privacy == .defaults)
     }
 
-    @Test func anUnreadableFileFailsClosedToAskMe() async throws {
-        struct Broken: OwnerSettingsStore {
-            struct Failure: Error {}
-            func load() async throws -> OwnerSettings? { throw Failure() }
-            func save(_ settings: OwnerSettings) async throws {}
-        }
-        let model = SettingsModel(store: Broken(), flags: .phase1_5)
+    /// Review of PR #54, finding 2: an unreadable file is never written
+    /// over, first-use bookkeeping included, until the owner resets.
+    @Test func anUnreadableFileIsKeptUntilTheOwnerResets() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "starling-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = JSONFile(url: directory.appending(path: "settings.json"))
+        try Data("not json".utf8).write(to: file.url)
+        let model = SettingsModel(store: FileOwnerSettingsStore(file: file), flags: .phase1_5)
         await model.load(phaseOneSharing: [DisclosureRule(issue: .budget, action: .allowOnDevicePeers)])
         #expect(model.loadFailed)
         #expect(model.choice(for: .budget) == .askMe)
         #expect(model.notice != nil)
+
+        await model.markLocalNetworkAsked()
+        await model.set(.share, for: .diet)
+        #expect(try String(contentsOf: file.url, encoding: .utf8) == "not json")
+        #expect(model.settings.localNetworkAsked, "kept in memory")
+        #expect(model.loadFailed)
+
+        await model.recover()
+        #expect(!model.loadFailed)
+        let reread = try await FileOwnerSettingsStore(file: file).load()
+        #expect(reread == model.settings)
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false)).filter { $0.contains("unreadable") }
+        #expect(aside.count == 1)
     }
 
     @Test func topicsAreTheOnlyStandingSharing() throws {

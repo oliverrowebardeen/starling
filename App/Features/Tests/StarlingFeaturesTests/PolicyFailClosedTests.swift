@@ -38,6 +38,32 @@ import Testing
         ))
     }
 
+    /// Review of PR #54, finding 2: unreadable privacy settings keep every
+    /// send blocked, first-use bookkeeping does not unlock it, and only the
+    /// owner's explicit reset does.
+    @Test func unreadableSettingsKeepEverySendBlockedUntilTheOwnerResets() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "starling-\(UUID().uuidString)/settings.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let app = Self.app(rules: InMemoryRulesStore(), settings: FileOwnerSettingsStore(file: JSONFile(url: url)))
+        await app.start()
+        let policy = try #require(app.policy)
+        #expect(await policy.evaluate(try Self.message(to: .random())) == .deny(PolicyViolation(rule: RulesPolicy.blockedRule)))
+
+        await app.ensureLocalNetwork()
+        await app.settings.set(.share, for: .place)
+        #expect(await policy.evaluate(try Self.message(to: .random())) == .deny(PolicyViolation(rule: RulesPolicy.blockedRule)))
+        #expect(try String(contentsOf: url, encoding: .utf8) == "not json")
+
+        await app.settings.recover()
+        guard case .needsConsent = await policy.evaluate(try Self.message(to: .random())) else {
+            Issue.record("expected the policy to judge sends again")
+            return
+        }
+    }
+
     @Test func aCorruptRulesFileKeepsEverySendDenied() async throws {
         let url = FileManager.default.temporaryDirectory.appending(path: "starling-\(UUID().uuidString)/rules.json")
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

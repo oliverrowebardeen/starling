@@ -15,7 +15,17 @@ struct YouView<Developer: View>: View {
 
     var body: some View {
         List {
-            if let notice = settings.notice { NoticeSection(text: notice) }
+            if settings.loadFailed {
+                Section {
+                    Label(settings.notice ?? "Your privacy settings couldn't be read.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Button("Use these settings") { Task { await settings.recover() } }
+                } footer: {
+                    Text("Check every topic and skill below first. Starling keeps the old file aside and sends nothing until you tap Use these settings.")
+                }
+            } else if let notice = settings.notice {
+                NoticeSection(text: notice)
+            }
             agent
             privacy
             skills

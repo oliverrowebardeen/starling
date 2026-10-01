@@ -73,6 +73,8 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
 public protocol OwnerSettingsStore: Sendable {
     func load() async throws -> OwnerSettings?
     func save(_ settings: OwnerSettings) async throws
+    /// Moves an unreadable file aside so a save never overwrites it.
+    func moveAside() async throws
 }
 
 /// `Application Support/Starling/settings.json` (ADR 0200's file helper).
@@ -89,6 +91,7 @@ public actor FileOwnerSettingsStore: OwnerSettingsStore {
 
     public func load() async throws -> OwnerSettings? { try file.read(OwnerSettings.self) }
     public func save(_ settings: OwnerSettings) async throws { try file.write(settings) }
+    public func moveAside() async throws { if file.exists { try file.quarantine() } }
 }
 
 public actor InMemoryOwnerSettingsStore: OwnerSettingsStore {
@@ -100,6 +103,7 @@ public actor InMemoryOwnerSettingsStore: OwnerSettingsStore {
 
     public func load() async throws -> OwnerSettings? { saved }
     public func save(_ settings: OwnerSettings) async throws { saved = settings }
+    public func moveAside() async throws {}
 }
 
 /// The owner's settings as the screens use them. Every change is saved at
@@ -111,9 +115,11 @@ public final class SettingsModel {
     public private(set) var settings = OwnerSettings.defaults
     public private(set) var isLoaded = false
     public private(set) var notice: String?
-    /// True when a saved file exists but could not be read. Topics then
-    /// stay at their defaults (Ask me, never looser), and nothing is
-    /// written over the file until the owner changes a setting.
+    /// True when a saved file exists but could not be read. The file may
+    /// hold a Never the app cannot see, so the app keeps every send blocked
+    /// and nothing is written over the file until the owner resets their
+    /// privacy settings explicitly with `recover()`. Changes meanwhile,
+    /// first-use bookkeeping included, stay in memory.
     public private(set) var loadFailed = false
 
     public let flags: SkillFlags
@@ -144,7 +150,7 @@ public final class SettingsModel {
         } catch {
             settings = .defaults
             loadFailed = true
-            notice = "Your privacy settings couldn't be read, so every topic asks you first until you change one."
+            notice = "Your privacy settings couldn't be read, so Starling won't send anything until you check them and tap Use these settings."
         }
         isLoaded = true
     }
@@ -181,19 +187,38 @@ public final class SettingsModel {
     public func markNotificationsOffered() async { await update { $0.notificationsOffered = true } }
     public func markExplained(_ permission: SystemPermission) async { await update { $0.permissionsExplained.insert(permission) } }
 
+    /// The owner checked the settings shown and chose to use them after the
+    /// saved file could not be read: the unreadable file is moved aside,
+    /// these settings are saved, and sends may go out again.
+    public func recover() async {
+        guard loadFailed else { return }
+        do {
+            try await store.moveAside()
+            try await store.save(settings)
+        } catch {
+            notice = "Your settings still couldn't be saved. Try again."
+            return
+        }
+        loadFailed = false
+        notice = nil
+        await onChange()
+    }
+
     /// Applies a change, saves it, then tells the app. A change that throws
-    /// (Never on time or activity) is ignored.
+    /// (Never on time or activity) is ignored. While the saved file is
+    /// unreadable, changes stay in memory and nothing is written.
     private func update(_ change: (inout OwnerSettings) throws -> Void) async {
         var next = settings
         do { try change(&next) } catch { return }
         guard next != settings else { return }
         settings = next
-        do {
-            try await store.save(next)
-            loadFailed = false
-            notice = nil
-        } catch {
-            notice = "Your settings couldn't be saved. They'll go back if Starling closes."
+        if !loadFailed {
+            do {
+                try await store.save(next)
+                notice = nil
+            } catch {
+                notice = "Your settings couldn't be saved. They'll go back if Starling closes."
+            }
         }
         await onChange()
     }

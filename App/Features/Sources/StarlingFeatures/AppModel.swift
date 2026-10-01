@@ -263,6 +263,12 @@ public final class AppModel {
         // unreadable settings may hold a Never. Leave the policy denying
         // everything until the owner saves again.
         if rulesEditor.loadFailed || !settings.isLoaded { return }
+        // Unreadable privacy settings may hold a Never: nothing goes out
+        // until the owner resets them (review of PR #54, finding 2).
+        if settings.loadFailed {
+            await policy.block()
+            return
+        }
         await policy.update(standingRules, onlyOnDeviceAgents: settings.settings.onlyOnDeviceAgents)
     }
 
