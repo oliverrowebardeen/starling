@@ -15,11 +15,16 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0009](0009-task-level-agent-model-interface.md) | Task-level `AgentModel` interface | Accepted |
 | [0110](0110-wifi-aware-transport-tcp-with-symmetric-roles.md) | Wi-Fi Aware transport over TCP, with symmetric roles | Proposed |
 | [0111](0111-wifi-aware-services-entitlement-and-pairing.md) | Wi-Fi Aware services, entitlement, and pairing views | Proposed |
+| [0120](0120-down-negotiation-protocol.md) | Down? negotiation protocol | Proposed |
+| [0121](0121-down-model-use-and-hard-limits.md) | Where Down? uses the model, and how code keeps it inside the limits | Proposed |
 | [0130](0130-deterministic-disclosure-and-consent.md) | Deterministic disclosure and explicit consent | Proposed |
 | [0131](0131-core-v11-policy-integration.md) | Use Core v1.1 egress context and audit callbacks | Proposed |
 | [0140](0140-app-composition-and-release-without-fakes.md) | App composition, and Release builds without StarlingFakes | Proposed |
 | [0141](0141-mandatory-rules-review-and-intent-merge.md) | Mandatory review of interpreted rules, and merging rules into Down intents | Proposed |
 | [0142](0142-consent-notification-and-permission-ux.md) | Consent sheet, match notifications, and permission prompts | Proposed |
+| [0160](0160-measure-model-quality-with-labeled-sets.md) | Measure model quality with labeled sets, a held-out set, and Evaluations | Proposed |
+| [0161](0161-ground-interpretation-in-the-owners-words.md) | Ground interpreted rules in the owner's words | Proposed |
+| [0162](0162-runtime-schemas-for-match-and-decide.md) | Build match and decide schemas at runtime, and enforce limits in them | Proposed |
 | [0170](0170-app-icon-from-an-icon-composer-bundle.md) | App icon from an Icon Composer bundle, wired through XcodeGen | Proposed |
 | [0171](0171-icon-group-shadow-at-20-percent.md) | App icon group shadow at 20 percent | Proposed |
 | [0172](0172-status-mark-drawn-live-with-even-odd.md) | Status mark drawn live with an even-odd knockout, in its own package | Proposed |
