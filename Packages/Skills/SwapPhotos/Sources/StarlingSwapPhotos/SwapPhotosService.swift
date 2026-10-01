@@ -55,6 +55,15 @@ public actor SwapPhotosService: SkillService {
         let chainedFrom: ConversationID
         let participants: [PeerID]
         var step: Step
+        /// Rises each time the interaction moves to a new step, so a send made
+        /// for an earlier step can tell it was superseded (ADR 0011
+        /// amendment 14). Collecting acceptances does not change the step.
+        var stepID: UInt64 = 0
+
+        mutating func advance(to next: Step) {
+            step = next
+            stepID += 1
+        }
     }
 
     private var sessions: [InteractionID: Session] = [:]
@@ -103,7 +112,7 @@ public actor SwapPhotosService: SkillService {
         case (.picking(let question), .reply(let revision, .count(let count))) where revision == question && (1...SwapPhotos.maxPhotos).contains(count):
             let terms = try Terms([.photos: .count(count)])
             let offer = MessageBody.propose(try Proposal(round: 0, terms: terms))
-            sessions[interaction]?.step = .offered(terms, accepted: [])
+            sessions[interaction]?.advance(to: .offered(terms, accepted: []))
             emit(interaction, .ownerAnswered(question: question))
             _ = await send(session.participants.map { (offer, $0) }, in: interaction, session: session)
 
@@ -112,7 +121,7 @@ public actor SwapPhotosService: SkillService {
             forget(interaction)
 
         case (.invited(let from, let offer, let terms, let revision), .accept(let accepted)) where accepted == revision:
-            sessions[interaction]?.step = .accepted(revision: revision)
+            sessions[interaction]?.advance(to: .accepted(revision: revision))
             guard await send([(.accept(Acceptance(proposal: offer, terms: terms)), from)], in: interaction, session: session) else { return }
             emit(interaction, .ownerAccepted(revision: revision))
 
@@ -129,12 +138,18 @@ public actor SwapPhotosService: SkillService {
     /// Sends `messages` in order, in a task tracked per interaction, so
     /// `withdraw` and `shutdown` cancel a send still waiting on a consent
     /// sheet or on the policy's re-check after it: Outbox checks cancellation
-    /// after both, before anything reaches the transport. Returns true when
-    /// every message went out and the interaction is still live. A
-    /// withdrawal reports nothing more; any other failure ends it.
+    /// after both, before anything reaches the transport.
+    ///
+    /// Returns true when every message went out and the interaction is still
+    /// at the step the send was made for. A withdrawal reports nothing more.
+    /// A failure ends the interaction only if its step is still current: if a
+    /// newer offer replaced the card while the send was in flight, the result
+    /// belongs to a step that no longer exists and is dropped (ADR 0011
+    /// amendment 14).
     private func send(_ messages: [(MessageBody, PeerID)], in interaction: InteractionID, session: Session) async -> Bool {
         let outbox = outbox
         let skill = descriptor.ref
+        let step = sessions[interaction]?.stepID
         let task = Task {
             for (body, peer) in messages {
                 try Task.checkCancellation()
@@ -145,9 +160,9 @@ public actor SwapPhotosService: SkillService {
         defer { if inFlight[interaction] == task { inFlight[interaction] = nil } }
         do {
             try await task.value
-            return sessions[interaction] != nil
+            return sessions[interaction]?.stepID == step
         } catch {
-            guard !task.isCancelled, sessions[interaction] != nil else { return false }
+            guard !task.isCancelled, let current = sessions[interaction], current.stepID == step else { return false }
             end(interaction, after: error)
             return false
         }
@@ -217,7 +232,7 @@ public actor SwapPhotosService: SkillService {
                   let count = Self.photoCount(offer.terms), (1...SwapPhotos.maxPhotos).contains(count)
             else { return }
             let next = revision + 1
-            session.step = .invited(from: envelope.sender, offer: envelope.id, terms: offer.terms, revision: next)
+            session.advance(to: .invited(from: envelope.sender, offer: envelope.id, terms: offer.terms, revision: next))
             sessions[id] = session
             emit(id, .proposalReady(SkillProposal(revision: next, participants: [envelope.sender, me], terms: offer.terms)))
 
