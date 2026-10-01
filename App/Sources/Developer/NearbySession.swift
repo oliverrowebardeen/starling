@@ -1,3 +1,6 @@
+#if DEBUG
+// Phase 0 spike: unauthenticated, unencrypted, allow-all policy from
+// StarlingFakes. Debug builds only (ADR 0140).
 import Foundation
 import Observation
 import StarlingCore
@@ -137,3 +140,4 @@ final class NearbySession {
         }.joined(separator: "; ")
     }
 }
+#endif

@@ -1,3 +1,6 @@
+#if DEBUG
+// Phase 0 spike: unauthenticated, unencrypted, allow-all policy from
+// StarlingFakes. Debug builds only (ADR 0140).
 import SwiftUI
 
 struct NearbyView: View {
@@ -47,3 +50,4 @@ struct NearbyView: View {
         .onDisappear { Task { await session.stop() } }
     }
 }
+#endif
