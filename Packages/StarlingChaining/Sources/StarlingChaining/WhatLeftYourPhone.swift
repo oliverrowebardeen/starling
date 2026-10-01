@@ -59,7 +59,7 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
         for record in interactions.flatMap(\.egress) {
             sends += 1
             var touched: Set<PrivacyTopic> = []
-            for item in record.items where item != EgressRecord.unknownItems {
+            for item in record.items {
                 guard let topic = item.issue.flatMap(PrivacyTopic.init(issue:)) else {
                     if !other.contains(item) { other.append(item) }
                     continue
@@ -71,7 +71,7 @@ public struct WhatLeftYourPhone: Hashable, Sendable {
             for topic in touched { counts[topic, default: 0] += 1 }
         }
 
-        let doubtful = interactions.filter { unconfirmed.contains($0.conversation) || $0.egress.contains(where: \.itemsUnknown) }
+        let doubtful = interactions.filter { unconfirmed.contains($0.conversation) || !$0.egressIsKnown }
         let doubtfulIDs = Set(doubtful.map(\.id))
         func exposure(_ items: [Interaction]) -> SkillExposure {
             items.compactMap { registry.descriptor(for: $0.skill.id)?.exposure }.reduce(SkillExposure.none) { $0.union($1) }

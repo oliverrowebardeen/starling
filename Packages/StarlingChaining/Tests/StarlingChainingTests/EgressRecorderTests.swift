@@ -5,9 +5,9 @@ import StarlingFakes
 import StarlingPolicy
 import Testing
 
-/// What the app wires: the real policy's items for a send it allowed.
-let policyItems: DisclosedItemsForSend = { envelope, context in
-    try DeterministicPolicyEngine().disclosure(for: OutboundMessage(envelope: envelope, recipientCard: nil, transport: .loopback, context: context)).items
+/// A policy that allows every send and explains it as the real policy would.
+func allowingWithItems() -> FixedPolicyEngine {
+    FixedPolicyEngine(.allow, explain: { try! DeterministicPolicyEngine().disclosure(for: $0) })
 }
 
 /// A sink over a store that fails on demand: before writing (the store is
@@ -26,9 +26,9 @@ actor FlakySink: EgressSink {
 
     func heal() { failBefore = 0; failAfter = 0 }
 
-    func appendEgress(_ record: EgressRecord, message: MessageID, conversation: ConversationID) async throws -> Bool {
+    func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
         if failBefore > 0 { failBefore -= 1; throw Failure() }
-        let found = try await store.appendEgress(record, message: message, conversation: conversation)
+        let found = try await store.appendEgress(record, conversation: conversation)
         if failAfter > 0 { failAfter -= 1; throw Failure() }
         return found
     }
@@ -46,21 +46,23 @@ actor FlakySink: EgressSink {
     /// Wired as the app wires it: the owner's privacy topics in the real
     /// policy, wrapped by ChainedFromPolicy, and the recorder as observer.
     static func phone(_ interactions: [Interaction], privacy: PrivacySettings = .defaults, consent: ConsentOutcome = .approved,
-                      base: (any PolicyEngine)? = nil, items: @escaping DisclosedItemsForSend = policyItems) -> Phone {
+                      base: (any PolicyEngine)? = nil) -> Phone {
         let store = InMemoryInteractionStore(interactions)
         let provider = ScriptedConsentProvider(consent)
         let policy = base ?? DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: privacy.disclosureRules))
-        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), itemsForSend: items, now: { Fixtures.date(minutes: 12) })
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), now: { Fixtures.date(minutes: 12) })
         let transport = RecordingTransport(localPeer: Fixtures.me)
         let outbox = Outbox(transport: transport, policy: ChainedFromPolicy(wrapping: policy, store: store), consent: provider,
                             observer: recorder, now: { Fixtures.date(minutes: 11) })
         return Phone(store: store, consent: provider, recorder: recorder, outbox: outbox, transport: transport)
     }
 
+    /// Venue options and a diet need: Pick a place's Ask me topics. Budget
+    /// is Never by default (ADR 0019) and stays on the phone.
     static func placeTerms() throws -> Terms {
         try Terms([
             .place: .places([Fixtures.place()]),
-            .budget: .amount(try MoneyAmount(minorUnits: 1200)),
+            .diet: .keywords([try Keyword("vegetarian")]),
         ])
     }
 
@@ -70,7 +72,7 @@ actor FlakySink: EgressSink {
         let phone = Self.phone([plan, link])
         for friend in [Fixtures.maya, Fixtures.jake] {
             try await phone.outbox.send(.propose(try Proposal(round: 0, terms: Self.placeTerms())), to: friend, conversation: link.conversation,
-                                        skill: link.skill, chainedFrom: plan.conversation)
+                                        skill: link.skill, mode: .invite, chainedFrom: plan.conversation)
         }
         let sheets = await phone.consent.requests
         #expect(sheets.count == 2)
@@ -79,18 +81,22 @@ actor FlakySink: EgressSink {
         #expect(saved.egress.map(\.recipient) == sheets.map(\.recipient))
         #expect(saved.egress.map(\.recipient) == [Fixtures.maya, Fixtures.jake])
         #expect(saved.egress.allSatisfy { $0.at == Fixtures.at(minutes: 12) })
-        #expect(saved.egress.first?.topics == [.place, .budget])
+        #expect(saved.egress.first?.topics == [.place, .diet])
         // The parent's own log is untouched.
         #expect(try await phone.store.interaction(plan.id)?.egress.isEmpty == true)
     }
 
     @Test func aSendAllowedWithoutASheetRecordsThePolicysItems() async throws {
         let plan = try Fixtures.plannedDownFor()
-        let phone = Self.phone([plan], base: FixedPolicyEngine(.allow))
+        let phone = Self.phone([plan], base: allowingWithItems())
         let terms = try Terms([.activity: .keywords([Fixtures.boba]), .time: .slots([Fixtures.tonight])])
-        let envelope = try await phone.outbox.send(.propose(try Proposal(round: 0, terms: terms)), to: Fixtures.maya, conversation: plan.conversation, skill: plan.skill)
+        let envelope = try await phone.outbox.send(.propose(try Proposal(round: 0, terms: terms)), to: Fixtures.maya, conversation: plan.conversation,
+                                                   skill: plan.skill, mode: .askQuietly)
         let saved = try #require(try await phone.store.interaction(plan.id))
-        #expect(saved.egress.map(\.items) == [try policyItems(envelope, .empty)])
+        let expected = try DeterministicPolicyEngine().disclosure(for: OutboundMessage(envelope: envelope, recipientCard: nil, transport: .loopback)).items
+        #expect(saved.egress.map(\.items) == [expected])
+        #expect(saved.egress.map(\.message) == [envelope.id])
+        #expect(saved.egressIsKnown)
         #expect(saved.egress.first?.topics == [.activity, .time])
         #expect(await phone.consent.requests.isEmpty)
     }
@@ -101,15 +107,15 @@ actor FlakySink: EgressSink {
         let declined = Self.phone([plan, link], consent: .declined)
         await #expect(throws: OutboxError.consentDeclined) {
             try await declined.outbox.send(.propose(try Proposal(round: 0, terms: Self.placeTerms())), to: Fixtures.maya,
-                                           conversation: link.conversation, skill: link.skill, chainedFrom: plan.conversation)
+                                           conversation: link.conversation, skill: link.skill, mode: .invite, chainedFrom: plan.conversation)
         }
         #expect(try await declined.store.interaction(link.id)?.egress.isEmpty == true)
 
-        // Budget set to Never: the policy denies, and the log stays empty.
-        let denied = Self.phone([plan, link], privacy: try PrivacySettings([.budget: .never]))
-        await #expect(throws: OutboxError.denied(PolicyViolation(rule: PolicyRuleID.never, issue: .budget))) {
+        // Diet set to Never: the policy denies, and the log stays empty.
+        let denied = Self.phone([plan, link], privacy: try PrivacySettings([.diet: .never]))
+        await #expect(throws: OutboxError.denied(PolicyViolation(rule: PolicyRuleID.never, issue: .diet))) {
             try await denied.outbox.send(.propose(try Proposal(round: 0, terms: Self.placeTerms())), to: Fixtures.maya,
-                                         conversation: link.conversation, skill: link.skill, chainedFrom: plan.conversation)
+                                         conversation: link.conversation, skill: link.skill, mode: .invite, chainedFrom: plan.conversation)
         }
         #expect(try await denied.store.interaction(link.id)?.egress.isEmpty == true)
         #expect(await denied.transport.sent.isEmpty)
@@ -121,15 +127,16 @@ actor FlakySink: EgressSink {
         #expect(await phone.recorder.unattributed == 1)
     }
 
-    @Test func itemsThatCannotBeComputedStillRecordTheSend() async throws {
-        struct Unknown: Error {}
+    @Test func itemsThePolicyCannotExplainStillRecordTheSend() async throws {
         let plan = try Fixtures.plannedDownFor()
-        let phone = Self.phone([plan], base: FixedPolicyEngine(.allow), items: { _, _ in throw Unknown() })
+        // A policy with no explanation: disclosedItems throws DisclosureUnavailable.
+        let phone = Self.phone([plan], base: FixedPolicyEngine(.allow))
         try await phone.outbox.send(.propose(try Proposal(round: 0, terms: Self.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
         #expect(await phone.recorder.unexplained == 1)
         let saved = try #require(try await phone.store.interaction(plan.id))
-        #expect(saved.egress.map(\.items) == [[EgressRecord.unknownItems]])
+        #expect(saved.egress.map(\.items) == [[]])
         #expect(saved.egress.first?.itemsUnknown == true)
+        #expect(!saved.egressIsKnown)
         // The audit cannot vouch for this interaction: nothing is claimed
         // as kept, and it says which interaction it could not confirm.
         let whatLeft = WhatLeftYourPhone(interactions: [saved], registry: SampleSkills.registry)
@@ -143,8 +150,8 @@ actor FlakySink: EgressSink {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
         let sink = FlakySink(store: store, failBefore: 2)
-        let recorder = EgressRecorder(sink: sink, itemsForSend: policyItems)
-        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+        let recorder = EgressRecorder(sink: sink)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let terms = try Terms([.budget: .amount(try MoneyAmount(minorUnits: 1200))])
         try await outbox.send(.propose(try Proposal(round: 0, terms: terms)), to: Fixtures.maya, conversation: plan.conversation)
@@ -174,8 +181,8 @@ actor FlakySink: EgressSink {
     @Test func aRetryAfterALostAnswerDoesNotRecordTwice() async throws {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
-        let recorder = EgressRecorder(sink: FlakySink(store: store, failAfter: 1), itemsForSend: policyItems)
-        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+        let recorder = EgressRecorder(sink: FlakySink(store: store, failAfter: 1))
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)
         #expect(await recorder.unconfirmedConversations == [plan.conversation])
@@ -187,8 +194,8 @@ actor FlakySink: EgressSink {
     @Test func aNewSendRetriesEarlierFailuresFirst() async throws {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
-        let recorder = EgressRecorder(sink: FlakySink(store: store, failBefore: 1), itemsForSend: policyItems)
-        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+        let recorder = EgressRecorder(sink: FlakySink(store: store, failBefore: 1))
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let first = try await outbox.send(.propose(try Proposal(round: 0, terms: Terms([.budget: .amount(try MoneyAmount(minorUnits: 1))]))),
                                           to: Fixtures.maya, conversation: plan.conversation)
@@ -202,8 +209,8 @@ actor FlakySink: EgressSink {
         let plan = try Fixtures.plannedDownFor()
         let store = InMemoryInteractionStore([plan])
         let sink = FlakySink(store: store, failBefore: Int.max)
-        let recorder = EgressRecorder(sink: sink, itemsForSend: policyItems)
-        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: FixedPolicyEngine(.allow),
+        let recorder = EgressRecorder(sink: sink)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
                             consent: ScriptedConsentProvider(.approved), observer: recorder)
         let other = ConversationID()
         try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya, conversation: plan.conversation)

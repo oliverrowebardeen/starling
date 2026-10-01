@@ -13,12 +13,14 @@ public struct DueChain: Hashable, Sendable {
     public let link: Interaction
     public let parent: Interaction
     public let plan: Plan
+    /// The skill's default send mode, which the link's request carries.
+    public let mode: SendMode
 
     /// The request to hand the skill's service once the coordinator has
     /// applied `.started` to `link`. Carries the plan and `chainedFrom`.
     public func request(rules: OwnerRules, expiresAt: Timestamp) -> SkillRequest {
         let inputs = ChainPlanner.inputs(link.chain?.consumed ?? [], from: parent)
-        return ChainPlanner.request(for: link, inputs: inputs, rules: rules, expiresAt: expiresAt)
+        return ChainPlanner.request(for: link, mode: mode, inputs: inputs, rules: rules, expiresAt: expiresAt)
     }
 }
 
@@ -93,11 +95,11 @@ public struct PlanEndSchedule: Sendable {
         case .notInThisBuild, .turnedOff: return .cancel(link, .withdrawn)
         }
         // What the owner approved was this skill at this version.
-        guard planner.registry.descriptor(for: link.skill.id)?.ref == link.skill else { return .cancel(link, .withdrawn) }
+        guard let descriptor = planner.registry.descriptor(for: link.skill.id), descriptor.ref == link.skill else { return .cancel(link, .withdrawn) }
         for peer in link.participants {
             guard let card = cards[peer], card.support(for: link.skill).isSupported else { return .cancel(link, .unsupported) }
         }
-        return .start(DueChain(link: link, parent: parent, plan: plan))
+        return .start(DueChain(link: link, parent: parent, plan: plan, mode: descriptor.defaultSendMode))
     }
 }
 

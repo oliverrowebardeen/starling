@@ -34,8 +34,9 @@ import Testing
         #expect(row.participants == [Fixtures.maya, Fixtures.jake])
         #expect(row.parentConversation == plan.conversation)
         #expect(row.trigger == .atConfirm)
-        // Down for… already covers time, activity, place, and budget.
-        #expect(row.adds == SkillExposure(topics: [.diet], permissions: [.locationWhenInUse]))
+        // Down for… already covers time, activity, place, and budget; Pick a
+        // place adds where you are and diet (ADR 0019), and location access.
+        #expect(row.adds == SkillExposure(topics: [.location, .diet], permissions: [.locationWhenInUse]))
         #expect(row.needsConsent)
     }
 
@@ -122,7 +123,7 @@ import Testing
         // permission now count as allowed for the plan.
         let first = try Self.link(after: plan, reaching: Self.agreed())
         #expect(planner.grantedExposure(for: plan, in: [plan, first]) ==
-            SkillExposure(topics: [.time, .activity, .place, .budget, .diet], permissions: [.locationWhenInUse]))
+            SkillExposure(topics: [.time, .activity, .place, .location, .budget, .diet], permissions: [.locationWhenInUse]))
         let again = try #require(planner.suggestions(after: plan.id, in: [plan, first], settings: settings, cards: Fixtures.cards()).first)
         #expect(again.id == .pickAPlace)
         #expect(!again.needsConsent)
@@ -133,7 +134,7 @@ import Testing
         let declined = try Self.link(after: plan, reaching: [.started, .consentNeeded(request: 1), .ownerPassed])
         #expect(declined.state == .ended(.declined))
         let row = try #require(planner.suggestions(after: plan.id, in: [plan, declined], settings: settings, cards: Fixtures.cards()).first)
-        #expect(row.adds == SkillExposure(topics: [.diet], permissions: [.locationWhenInUse]))
+        #expect(row.adds == SkillExposure(topics: [.location, .diet], permissions: [.locationWhenInUse]))
     }
 
     @Test func aLiveLinkHidesASecondOneOfTheSameSkill() throws {

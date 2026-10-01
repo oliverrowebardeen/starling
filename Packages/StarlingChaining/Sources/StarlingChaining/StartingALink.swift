@@ -50,7 +50,8 @@ extension ChainPlanner {
         try check(consent, for: row)
         let link = Self.link(for: row, at: tap.at)
         guard let parent = interactions.first(where: { $0.id == row.parent }) else { throw ChainError.notOffered(row.id) }
-        return ChainStart(interaction: link, request: Self.request(for: link, inputs: Self.inputs(row.consumes, from: parent), rules: rules, expiresAt: expiresAt))
+        return ChainStart(interaction: link, request: Self.request(for: link, mode: row.skill.defaultSendMode, inputs: Self.inputs(row.consumes, from: parent),
+                                                                   rules: rules, expiresAt: expiresAt))
     }
 
     /// Opts into an after-plan-ends skill ("Swap photos after") at Confirm.
@@ -127,11 +128,15 @@ extension ChainPlanner {
         kinds.compactMap { kind in parent.artifacts.first { $0.kind == kind } }
     }
 
-    static func request(for link: Interaction, inputs: [Artifact], rules: OwnerRules, expiresAt: Timestamp) -> SkillRequest {
+    /// A link goes only to the people `ChainSuggestion.participants` named:
+    /// the parent plan's attendees, so `chainedFrom` never names a
+    /// conversation a recipient was not in (ADR 0020 decision 9.3). Chains
+    /// use the skill's default mode; Compose's choice is not asked again.
+    static func request(for link: Interaction, mode: SendMode, inputs: [Artifact], rules: OwnerRules, expiresAt: Timestamp) -> SkillRequest {
         SkillRequest(
             interaction: link.id,
             conversation: link.conversation,
-            intent: SkillIntent(skill: link.skill, rules: rules, audience: .picked(link.participants), expiresAt: expiresAt),
+            intent: SkillIntent(skill: link.skill, rules: rules, audience: .picked(link.participants), mode: mode, expiresAt: expiresAt),
             participants: link.participants,
             inputs: inputs,
             chainedFrom: link.chain?.parentConversation

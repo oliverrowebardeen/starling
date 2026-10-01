@@ -53,9 +53,9 @@ import Testing
         #expect(whatLeft.shared.map(\.topic) == [.time, .activity, .place])
         #expect(whatLeft.shared.map(\.values) == [[.slots([Fixtures.tonight])], [.keywords([Fixtures.boba])], [.places([Fixtures.place()])]])
         #expect(whatLeft.shared.allSatisfy { $0.recipients == [Fixtures.maya, Fixtures.jake] && $0.sends == 2 })
-        // Budget, diet, and photos are used by the plan's skills but never
-        // left; exact location and the photo library stayed too.
-        #expect(whatLeft.kept == [.topic(.budget), .topic(.diet), .topic(.photos), .permission(.locationWhenInUse), .permission(.photoLibrary)])
+        // Where you are, budget, diet, and photos are used by the plan's skills
+        // but never left; location access and the photo library stayed too.
+        #expect(whatLeft.kept == [.topic(.location), .topic(.budget), .topic(.diet), .topic(.photos), .permission(.locationWhenInUse), .permission(.photoLibrary)])
         #expect(whatLeft.other.isEmpty)
         #expect(whatLeft.sends == 4)
     }
@@ -64,9 +64,10 @@ import Testing
         let (plan, place, photos) = try boba()
         let timeline = try #require(PlanTimeline(for: plan.id, in: [plan, place, photos], registry: registry, unconfirmed: [place.conversation]))
         #expect(timeline.whatLeft.unconfirmed == [place.id])
-        // Pick a place uses place, budget, diet, and location: none of them
-        // is claimed as kept while its log may be missing a send. Swap photos
-        // has not run and its log is complete, so photos still is.
+        // Pick a place uses place, where you are, budget, diet, and location
+        // access: none of them is claimed as kept while its log may be
+        // missing a send. Swap photos has not run and its log is complete,
+        // so photos still is.
         #expect(timeline.whatLeft.kept == [.topic(.photos), .permission(.photoLibrary)])
         // What its log does show is still listed as shared.
         #expect(timeline.whatLeft.shared.map(\.topic) == [.time, .activity, .place])

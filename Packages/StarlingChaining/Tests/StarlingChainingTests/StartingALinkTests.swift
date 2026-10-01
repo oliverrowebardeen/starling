@@ -91,9 +91,9 @@ import Testing
         // Drawn when the earlier link had granted everything: no consent.
         let stale = try row(.pickAPlace, after: plan, in: [plan, earlier])
         #expect(!stale.needsConsent)
-        // Without that link the row adds diet and location again, so the
+        // Without that link the row adds location, diet, and location access again, so the
         // tap alone is not enough.
-        #expect(throws: ChainError.consentRequired(SkillExposure(topics: [.diet], permissions: [.locationWhenInUse]))) {
+        #expect(throws: ChainError.consentRequired(SkillExposure(topics: [.location, .diet], permissions: [.locationWhenInUse]))) {
             try planner.begin(stale, in: [plan], settings: settings, cards: Fixtures.cards(), tap: tap, consent: nil, rules: .empty, expiresAt: expiry)
         }
     }
