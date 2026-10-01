@@ -70,7 +70,13 @@ final class DebugHarness {
             },
             pairing: links.pairingDirectory,
             unpair: links.unpair,
-            rename: nil,
+            // Debug only, until lane E1's PinAuthority.rename lands
+            // (docs/requests/E1.md, answers to lane H). This writes the store
+            // directly, which could race an unpair; Release never offers it.
+            rename: { id, name in
+                guard let peer = try await friends.peer(for: id) else { return }
+                try await friends.save(try PairedPeer(publicKey: peer.publicKey, nickname: name, pairedAt: peer.pairedAt))
+            },
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
