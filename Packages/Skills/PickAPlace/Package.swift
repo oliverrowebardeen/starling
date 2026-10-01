@@ -16,6 +16,10 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../StarlingCore"),
+        // Test only: LoopbackHub for group flows, and the real policy engine
+        // for privacy topics. The library itself sends through Outbox only.
+        .package(path: "../../StarlingTransport"),
+        .package(path: "../../StarlingPolicy"),
     ],
     targets: [
         .target(name: "PickAPlace", dependencies: [.product(name: "StarlingCore", package: "StarlingCore")]),
@@ -25,6 +29,8 @@ let package = Package(
                 "PickAPlace",
                 .product(name: "StarlingCore", package: "StarlingCore"),
                 .product(name: "StarlingFakes", package: "StarlingCore"),
+                .product(name: "StarlingTransport", package: "StarlingTransport"),
+                .product(name: "StarlingPolicy", package: "StarlingPolicy"),
             ]
         ),
     ],

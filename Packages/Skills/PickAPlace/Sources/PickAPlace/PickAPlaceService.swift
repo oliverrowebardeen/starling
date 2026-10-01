@@ -1,0 +1,271 @@
+import Foundation
+import StarlingCore
+
+public enum PickAPlaceError: Error, Hashable, Sendable {
+    /// The request is for another skill, or another major version.
+    case wrongSkill
+    case alreadyStarted
+    /// Compose produced no candidates; the owner should search or type one.
+    case noCandidates
+    /// None of the candidates fit the owner's own limits.
+    case nothingFitsYourLimits
+    case unknownInteraction
+    /// The interaction is not waiting for this answer.
+    case notWaitingForYou
+    /// The answer names a proposal revision that is not the current one.
+    case staleProposal
+}
+
+/// Wall time and timers, injectable so tests run retries in milliseconds.
+public struct PickAPlaceClock: Sendable {
+    public let now: @Sendable () -> Date
+    public let sleep: @Sendable (Duration) async throws -> Void
+
+    public init(now: @escaping @Sendable () -> Date, sleep: @escaping @Sendable (Duration) async throws -> Void) {
+        self.now = now
+        self.sleep = sleep
+    }
+
+    public static let system = PickAPlaceClock(now: { Date() }, sleep: { try await Task.sleep(for: $0) })
+}
+
+public struct PickAPlaceConfiguration: Hashable, Sendable {
+    /// First wait before sending an unanswered step again. Doubles each time,
+    /// up to `maxRetryInterval`. Delivery is best effort (ARCHITECTURE rule 5).
+    public var retryInterval: Duration
+    public var maxRetryInterval: Duration
+    /// How long the organizer waits for friends' lists before choosing with
+    /// the ones it has. A friend's phone may be waiting on its owner's
+    /// consent sheet, so this is long.
+    public var answerWindow: Duration
+    /// How long the organizer waits for friends to say yes to a proposal;
+    /// anyone who has not answered by then is left out.
+    public var confirmWindow: Duration
+    /// Live requests one friend may have open on this phone, and in total,
+    /// so a friend cannot fill Home or keep the phone busy.
+    public var maxLiveRequestsPerFriend: Int
+    public var maxLiveRequests: Int
+    /// Ended requests remembered so a late retry still gets the same reply.
+    public var maxRememberedRequests: Int
+
+    public init(
+        retryInterval: Duration = .seconds(5),
+        maxRetryInterval: Duration = .seconds(60),
+        answerWindow: Duration = .seconds(15 * 60),
+        confirmWindow: Duration = .seconds(30 * 60),
+        maxLiveRequestsPerFriend: Int = 4,
+        maxLiveRequests: Int = 32,
+        maxRememberedRequests: Int = 64
+    ) {
+        precondition(retryInterval > .zero && maxRetryInterval >= retryInterval && maxLiveRequestsPerFriend > 0)
+        self.retryInterval = retryInterval
+        self.maxRetryInterval = maxRetryInterval
+        self.answerWindow = answerWindow
+        self.confirmWindow = confirmWindow
+        self.maxLiveRequestsPerFriend = maxLiveRequestsPerFriend
+        self.maxLiveRequests = maxLiveRequests
+        self.maxRememberedRequests = maxRememberedRequests
+    }
+}
+
+/// The candidates the owner settled on in Compose, for `start(_:)`.
+public protocol PlaceCandidateSource: Sendable {
+    func candidates(for request: SkillRequest) async throws -> [PlaceCandidate]
+}
+
+/// Holds Compose's candidates until the coordinator calls `start(_:)`. The
+/// app stages what `PlaceFinder` found, or what the owner typed, under the
+/// interaction's ID; `start` takes them once.
+public actor StagedCandidates: PlaceCandidateSource {
+    private var staged: [InteractionID: [PlaceCandidate]] = [:]
+
+    public init() {}
+
+    public func stage(_ candidates: [PlaceCandidate], for interaction: InteractionID) {
+        staged[interaction] = candidates
+    }
+
+    public func candidates(for request: SkillRequest) async throws -> [PlaceCandidate] {
+        staged.removeValue(forKey: request.interaction) ?? []
+    }
+}
+
+/// The Pick a place skill's runtime (ADR 0230).
+///
+/// As organizer it asks each friend which of the candidates fit, chooses the
+/// venue that fits the most of them (`GroupChoice`), proposes it, and
+/// confirms it with everyone who says yes. As a friend it judges the
+/// candidates against its owner's private limits with facts it looks up
+/// itself (`PlaceJudge`), and sends back only the ones that fit. Budget and
+/// diet never leave the phone. Every send goes through the `Outbox`; every
+/// receive comes from the app's Inbox loop through `handle(_:)`.
+public actor PickAPlaceService: SkillService {
+    public nonisolated let descriptor = PickAPlaceSkill.descriptor
+    public nonisolated let events: AsyncStream<SkillEvent>
+    let continuation: AsyncStream<SkillEvent>.Continuation
+
+    let localPeer: PeerID
+    let outbox: Outbox
+    let pairedPeers: any PairedPeerStore
+    let candidateSource: any PlaceCandidateSource
+    let maps: any PlaceSearching
+    let ownerLimits: @Sendable () async -> ConstraintSet
+    let clock: PickAPlaceClock
+    let configuration: PickAPlaceConfiguration
+
+    var cards: [PeerID: AgentCard] = [:]
+    var organized: [ConversationID: Organizer] = [:]
+    var invites: [ConversationID: Invite] = [:]
+    var conversationOf: [InteractionID: ConversationID] = [:]
+    /// Ended invites, oldest first, for pruning.
+    var endedInvites: [ConversationID] = []
+    var tasks: [ConversationID: [Task<Void, Never>]] = [:]
+
+    /// - Parameters:
+    ///   - localPeer: This phone's ID, the Outbox's transport's `localPeer`.
+    ///   - pairedPeers: Only these peers' requests are handled.
+    ///   - candidates: Compose's candidates for `start(_:)`.
+    ///   - maps: Looks up facts for venues friends suggest, by Maps
+    ///     identifier, on this phone.
+    ///   - ownerLimits: The owner's standing budget, diet, and place limits,
+    ///     for requests from friends. The organizer's own limits come with
+    ///     its `SkillIntent`.
+    public init(
+        localPeer: PeerID,
+        outbox: Outbox,
+        pairedPeers: any PairedPeerStore,
+        candidates: any PlaceCandidateSource,
+        maps: any PlaceSearching,
+        ownerLimits: @escaping @Sendable () async -> ConstraintSet,
+        clock: PickAPlaceClock = .system,
+        configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
+    ) {
+        self.localPeer = localPeer
+        self.outbox = outbox
+        self.pairedPeers = pairedPeers
+        candidateSource = candidates
+        self.maps = maps
+        self.ownerLimits = ownerLimits
+        self.clock = clock
+        self.configuration = configuration
+        (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
+    }
+
+    // MARK: - SkillService
+
+    public func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws {
+        guard let conversation = conversationOf[interaction] else { throw PickAPlaceError.unknownInteraction }
+        if organized[conversation] != nil {
+            try await organizerAnswer(conversation, answer)
+        } else if invites[conversation] != nil {
+            try await inviteAnswer(conversation, answer)
+        } else {
+            throw PickAPlaceError.unknownInteraction
+        }
+    }
+
+    public func withdraw(_ interaction: InteractionID) async {
+        guard let conversation = conversationOf[interaction] else { return }
+        if organized[conversation] != nil {
+            endOrganizer(conversation, event: .withdrawn, reason: .declinedByOwner)
+        } else if invites[conversation] != nil {
+            endInvite(conversation, event: .withdrawn, reply: .declinedByOwner)
+        }
+    }
+
+    /// Every event from the app's Inbox loop. Returns quickly: sends and
+    /// lookups run on their own tasks, so a consent sheet never holds up
+    /// the loop.
+    public func handle(_ event: InboxEvent) async {
+        guard case .message(let envelope) = event else { return }
+        if case .hello(let card) = envelope.body {
+            cards[envelope.sender] = card
+            return
+        }
+        guard let skill = envelope.skill, skill.id == descriptor.id else { return }
+        // Only paired friends. With the secure channel, the sender is
+        // authenticated; the pairing store says whether it is a friend.
+        guard (try? await pairedPeers.peer(for: envelope.sender)) != nil else { return }
+
+        let conversation = envelope.conversation
+        if organized[conversation] != nil {
+            organizerReceived(envelope)
+        } else if invites[conversation] != nil {
+            inviteReceived(envelope)
+        } else if skill.version.isCompatible(with: descriptor.ref.version) {
+            newInvite(envelope)
+        } else if case .query = envelope.body {
+            // Tell an organizer on another major version, once per query,
+            // so it leaves this phone out. Nothing is created here.
+            spawn(conversation) { service in
+                await service.trySend(.reject(Rejection(proposal: envelope.id, reason: .unsupported)), to: envelope.sender,
+                                      conversation: conversation, chainedFrom: envelope.chainedFrom)
+            }
+        }
+    }
+
+    /// Ends every request silently and finishes `events`.
+    public func shutdown() async {
+        for list in tasks.values { list.forEach { $0.cancel() } }
+        tasks = [:]
+        organized = [:]
+        invites = [:]
+        conversationOf = [:]
+        continuation.finish()
+    }
+
+    // MARK: - Shared helpers
+
+    func emit(_ interaction: InteractionID, _ event: InteractionEvent) {
+        continuation.yield(.lifecycle(interaction, event))
+    }
+
+    /// Sends one message of this skill through the Outbox.
+    @discardableResult
+    func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async throws -> Envelope {
+        try await outbox.send(body, to: peer, conversation: conversation, recipientCard: cards[peer],
+                              skill: descriptor.ref, chainedFrom: chainedFrom)
+    }
+
+    /// A send whose failure changes nothing, such as a goodbye.
+    func trySend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async {
+        _ = try? await send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
+    }
+
+    /// Runs work for one conversation on its own task, cancelled when the
+    /// conversation ends.
+    func spawn(_ conversation: ConversationID, _ work: @escaping @Sendable (isolated PickAPlaceService) async -> Void) {
+        let task = Task { await work(self) }
+        tasks[conversation, default: []].append(task)
+    }
+
+    func cancelTasks(_ conversation: ConversationID) {
+        tasks.removeValue(forKey: conversation)?.forEach { $0.cancel() }
+    }
+
+    /// Waits `interval`, then returns the next, doubled up to the maximum;
+    /// nil if cancelled.
+    func pause(_ interval: Duration) async -> Duration? {
+        do { try await clock.sleep(interval) } catch { return nil }
+        if Task.isCancelled { return nil }
+        return min(interval * 2, configuration.maxRetryInterval)
+    }
+
+    /// Sleeps until `date`; false if cancelled.
+    func sleep(until date: Date) async -> Bool {
+        let seconds = max(0, date.timeIntervalSince(clock.now()))
+        do { try await clock.sleep(.milliseconds(Int64(seconds * 1_000))) } catch { return false }
+        return !Task.isCancelled
+    }
+
+    /// The plan the agreed place would make, when the terms say what or when.
+    static func plan(base: Plan?, origin: ConversationID, roster: [PeerID], terms: Terms, place: PlaceChoice) -> Plan? {
+        guard let attendees = try? Attendees(roster) else { return nil }
+        if let base {
+            return try? Plan(id: base.id, origin: base.origin, attendees: attendees, activity: base.activity, time: base.time, place: place)
+        }
+        let activity: Keyword? = if case .keywords(let list)? = terms[.activity] { list.first } else { nil }
+        let time: TimeSlot? = if case .slots(let list)? = terms[.time] { list.first } else { nil }
+        return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place)
+    }
+}
