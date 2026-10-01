@@ -1,0 +1,373 @@
+import Foundation
+import Observation
+import os
+import StarlingCore
+
+/// An event the coordinator did not apply, kept for the Developer section
+/// (Debug builds) and the unified log. Dropping is the safe answer to a
+/// late, replayed, or out-of-order event: the interaction stays as it was.
+public struct DroppedEvent: Hashable, Sendable, Identifiable {
+    public enum Reason: Hashable, Sendable {
+        case invalidTransition(InvalidTransition)
+        case staleProposal(StaleProposal)
+        case staleQuestion(StaleQuestion)
+        case unknownConsentRequest(UnknownConsentRequest)
+        /// No interaction with this ID on the phone.
+        case unknownInteraction
+        /// An incoming request for an ID or conversation already on the phone.
+        case duplicateIncoming
+        /// A service reported an interaction that belongs to another skill.
+        case wrongSkill
+        /// An artifact for an interaction that already ended.
+        case afterEnd
+        /// Any other error from `Interaction.apply`; none exists today.
+        case other(String)
+    }
+
+    public let id = UUID()
+    public let interaction: InteractionID?
+    public let skill: SkillID
+    public let event: String
+    public let reason: Reason
+    public let at: Date
+
+    public static func == (lhs: DroppedEvent, rhs: DroppedEvent) -> Bool { lhs.id == rhs.id }
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+/// Why `LifecycleCoordinator.start(_:chain:)` did not send a request.
+public enum StartRefusal: Error, Hashable, Sendable {
+    /// No registered service runs the skill.
+    case notInThisBuild
+    /// None of the chosen friends runs the skill at a compatible version.
+    case unsupported
+    /// Required topics are set to Never (ADR 0014).
+    case blockedByPrivacy(Set<PrivacyTopic>)
+    /// The service could not start; the interaction ended as failed.
+    case failed(String)
+}
+
+/// The one lifecycle coordinator (ADR 0011 decision 7, ADR 0201).
+///
+/// - It consumes every `SkillService`'s events and applies them to the
+///   `Interaction` records, which only it writes, then persists them.
+/// - The owner's own steps (sending, I'm in, pass, answering a question,
+///   withdrawing, and each consent sheet) are applied here first, then
+///   forwarded to the service, so a tap on a stale card never reaches it.
+/// - Events that do not apply (`InvalidTransition`, `StaleProposal`,
+///   `StaleQuestion`, `UnknownConsentRequest`, and unknown interactions)
+///   are dropped and logged; the record stays unchanged.
+/// - At launch it hands each service its live interactions with
+///   `restore(_:)` before any Inbox event reaches the services.
+@MainActor
+@Observable
+public final class LifecycleCoordinator {
+    public static let maxDropped = 100
+
+    /// Every interaction on the phone, oldest first.
+    public private(set) var interactions: [Interaction] = []
+    /// Newest last, at most `maxDropped`.
+    public private(set) var dropped: [DroppedEvent] = []
+    public private(set) var isLoaded = false
+    /// A plain sentence when the store could not be read or written.
+    public private(set) var notice: String?
+
+    /// Called after every applied change with the record before and after,
+    /// for notifications. Not called for dropped events.
+    public var onChange: @MainActor (_ before: Interaction?, _ after: Interaction) -> Void = { _, _ in }
+
+    public let registry: SkillRegistry
+    private let services: [SkillID: any SkillService]
+    private let store: any InteractionStore
+    private let now: @Sendable () -> Date
+    private let logger = Logger(subsystem: "com.oliverrowebardeen.starling", category: "lifecycle")
+    private var loops: [Task<Void, Never>] = []
+    private var starting: Task<Void, Never>?
+    private var dirty: [InteractionID] = []
+    private var writer: Task<Void, Never>?
+
+    public init(registry: SkillRegistry, services: [any SkillService], store: any InteractionStore, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.registry = registry
+        var byID: [SkillID: any SkillService] = [:]
+        for service in services { byID[service.descriptor.id] = service }
+        self.services = byID
+        self.store = store
+        self.now = now
+    }
+
+    public var skillsInBuild: Set<SkillID> { Set(services.keys) }
+
+    public func service(for skill: SkillID) -> (any SkillService)? { services[skill] }
+
+    public func interaction(_ id: InteractionID) -> Interaction? {
+        interactions.first { $0.id == id }
+    }
+
+    public func interaction(conversation: ConversationID) -> Interaction? {
+        interactions.first { $0.conversation == conversation }
+    }
+
+    // MARK: Launch
+
+    /// Loads the store, restores each service's live interactions, then
+    /// starts consuming every service's events. Runs once; later calls wait
+    /// for the first.
+    public func start() async {
+        if starting == nil {
+            starting = Task { await self.load() }
+        }
+        await starting?.value
+    }
+
+    private func load() async {
+        do {
+            interactions = try await store.all()
+        } catch {
+            interactions = []
+            notice = "Your plans couldn't be read, so Home starts empty. Nothing was sent."
+            logger.error("store unreadable: \(String(describing: error), privacy: .public)")
+        }
+        if let file = store as? FileInteractionStore, await file.quarantined != nil {
+            notice = "Your earlier plans couldn't be read, so Home starts empty. Nothing was sent."
+        }
+        for (id, service) in services {
+            let live = interactions.filter { $0.skill.id == id && !$0.state.isFinal }
+            await service.restore(live)
+        }
+        for service in services.values {
+            let descriptor = service.descriptor
+            loops.append(Task { [weak self] in
+                for await event in service.events {
+                    await self?.handle(event, from: descriptor)
+                }
+            })
+        }
+        isLoaded = true
+    }
+
+    /// Every Inbox event goes to every service, once restore has run.
+    public func route(_ event: InboxEvent) async {
+        await start()
+        for service in services.values { await service.handle(event) }
+    }
+
+    public func shutdown() async {
+        for loop in loops { loop.cancel() }
+        loops = []
+        for service in services.values { await service.shutdown() }
+        await flush()
+    }
+
+    // MARK: Service events
+
+    /// Applies one event a service reported. Internal so tests can apply
+    /// events without waiting on a stream.
+    func handle(_ event: SkillEvent, from skill: SkillDescriptor) async {
+        switch event {
+        case .incoming(let id, let conversation, let peer, _):
+            // `chainedFrom` is a hint only (ADR 0012 decision 6): it never
+            // creates a ChainLink, starts a skill, or asks for a permission.
+            guard interaction(id) == nil, interaction(conversation: conversation) == nil else {
+                return drop(event, id, skill.id, .duplicateIncoming)
+            }
+            let invitee = Interaction(id: id, conversation: conversation, skill: skill.ref, role: .invitee, participants: [peer], createdAt: Timestamp(now()))
+            insert(invitee)
+        case .lifecycle(let id, let lifecycle):
+            guard let current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
+            guard current.skill.id == skill.id else { return drop(event, id, skill.id, .wrongSkill) }
+            apply(lifecycle, to: id, reportedAs: event, skill: skill.id)
+        case .produced(let id, let artifact):
+            guard var current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
+            guard current.skill.id == skill.id else { return drop(event, id, skill.id, .wrongSkill) }
+            if case .ended = current.state { return drop(event, id, skill.id, .afterEnd) }
+            let before = current
+            current.record(artifact)
+            replace(current, before: before)
+        }
+    }
+
+    // MARK: Owner steps
+
+    /// Sends a request the owner composed. Creates the initiator
+    /// interaction, applies `started`, then starts the service. A request
+    /// that cannot run is recorded as ended with its reason and refused.
+    @discardableResult
+    public func start(_ request: SkillRequest, chain: ChainLink? = nil, settings: SkillSettings) async throws(StartRefusal) -> InteractionID {
+        await start()
+        let skill = request.intent.skill
+        guard let service = services[skill.id] else { throw .notInThisBuild }
+        var item = Interaction(
+            id: request.interaction, conversation: request.conversation, skill: skill, role: .initiator,
+            participants: request.participants, createdAt: Timestamp(now()), chain: chain
+        )
+        if case .blockedByPrivacy(let topics) = registry.availability(of: skill.id, in: settings) {
+            try? item.apply(.blockedByPrivacy, at: Timestamp(now()))
+            insert(item)
+            throw .blockedByPrivacy(topics)
+        }
+        if request.participants.isEmpty {
+            try? item.apply(.unsupported, at: Timestamp(now()))
+            insert(item)
+            throw .unsupported
+        }
+        insert(item)
+        apply(.started, to: item.id, reportedAs: nil, skill: skill.id)
+        do {
+            try await service.start(request)
+        } catch {
+            apply(.failed, to: item.id, reportedAs: nil, skill: skill.id)
+            throw .failed(String(describing: error))
+        }
+        return item.id
+    }
+
+    /// The owner's answer on a card. Applied here first: an acceptance of
+    /// anything but the current proposal revision, or a reply to anything
+    /// but the pending question, is dropped and never reaches the service.
+    /// Returns whether it was applied.
+    @discardableResult
+    public func answer(_ id: InteractionID, with answer: OwnerAnswer) async -> Bool {
+        guard let current = interaction(id), let service = services[current.skill.id] else { return false }
+        let event: InteractionEvent = switch answer {
+        case .accept(let revision): .ownerAccepted(revision: revision)
+        case .pass: .ownerPassed
+        case .reply(let question, _): .ownerAnswered(question: question)
+        }
+        guard apply(event, to: id, reportedAs: nil, skill: current.skill.id) else { return false }
+        do {
+            try await service.answer(id, with: answer)
+        } catch {
+            logger.error("service refused an answer for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+        return true
+    }
+
+    /// The owner withdrew a request. Friends learn nothing beyond "no plan".
+    public func withdraw(_ id: InteractionID) async {
+        guard let current = interaction(id), let service = services[current.skill.id] else { return }
+        guard apply(.withdrawn, to: id, reportedAs: nil, skill: current.skill.id) else { return }
+        await service.withdraw(id)
+    }
+
+    // MARK: Consent and egress
+
+    /// A consent sheet is about to ask about a send in `conversation`.
+    /// Suspends the interaction under a new request ID, which it returns,
+    /// or nil when no interaction owns the conversation (the link layer's
+    /// hello) or it cannot be suspended now.
+    public func consentRequested(conversation: ConversationID) -> UInt32? {
+        guard let current = interaction(conversation: conversation), !current.state.isFinal else { return nil }
+        let request = current.consentWatermark &+ 1
+        guard request > current.consentWatermark else { return nil }
+        return apply(.consentNeeded(request: request), to: current.id, reportedAs: nil, skill: current.skill.id) ? request : nil
+    }
+
+    /// The owner answered that sheet. Approval resumes the interrupted step
+    /// once no other request is open; anything else ends it declined.
+    public func consentAnswered(conversation: ConversationID, request: UInt32, approved: Bool) {
+        guard let current = interaction(conversation: conversation) else { return }
+        apply(approved ? .consentGiven(request: request) : .ownerPassed, to: current.id, reportedAs: nil, skill: current.skill.id)
+    }
+
+    /// Records what one send disclosed, for "What left your phone". Sends
+    /// outside any interaction (hello) are not recorded here.
+    public func recordEgress(_ record: EgressRecord, conversation: ConversationID) {
+        guard var current = interaction(conversation: conversation) else { return }
+        let before = current
+        current.record(record)
+        replace(current, before: before)
+    }
+
+    /// Ends plans whose time has passed (`planEnded`). The app calls this at
+    /// launch and when it comes to the foreground.
+    public func tick() {
+        let time = now()
+        for item in interactions where item.state == .planned {
+            guard let end = item.plan?.endsAt, end <= time else { continue }
+            apply(.planEnded, to: item.id, reportedAs: nil, skill: item.skill.id)
+        }
+    }
+
+    // MARK: Applying and saving
+
+    /// Applies one lifecycle event. Returns false and logs a drop if it
+    /// does not apply.
+    @discardableResult
+    private func apply(_ event: InteractionEvent, to id: InteractionID, reportedAs original: SkillEvent?, skill: SkillID) -> Bool {
+        guard var current = interaction(id) else {
+            drop(original.map { "\($0)" } ?? "\(event)", id, skill, .unknownInteraction)
+            return false
+        }
+        let before = current
+        do {
+            try current.apply(event, at: Timestamp(now()))
+        } catch {
+            let reason: DroppedEvent.Reason = switch error {
+            case let error as InvalidTransition: .invalidTransition(error)
+            case let error as StaleProposal: .staleProposal(error)
+            case let error as StaleQuestion: .staleQuestion(error)
+            case let error as UnknownConsentRequest: .unknownConsentRequest(error)
+            default: .other(String(describing: error))
+            }
+            drop(original.map { "\($0)" } ?? "\(event)", id, skill, reason)
+            return false
+        }
+        replace(current, before: before)
+        return true
+    }
+
+    private func insert(_ item: Interaction) {
+        interactions.append(item)
+        markDirty(item.id)
+        onChange(nil, item)
+    }
+
+    private func replace(_ item: Interaction, before: Interaction) {
+        guard let index = interactions.firstIndex(where: { $0.id == item.id }) else { return }
+        interactions[index] = item
+        markDirty(item.id)
+        onChange(before, item)
+    }
+
+    private func drop(_ event: SkillEvent, _ id: InteractionID?, _ skill: SkillID, _ reason: DroppedEvent.Reason) {
+        drop("\(event)", id, skill, reason)
+    }
+
+    private func drop(_ event: String, _ id: InteractionID?, _ skill: SkillID, _ reason: DroppedEvent.Reason) {
+        dropped.append(DroppedEvent(interaction: id, skill: skill, event: event, reason: reason, at: now()))
+        if dropped.count > Self.maxDropped { dropped.removeFirst(dropped.count - Self.maxDropped) }
+        logger.debug("dropped \(skill, privacy: .public) event for \(id?.description ?? "none", privacy: .public): \(String(describing: reason), privacy: .private)")
+    }
+
+    /// Saves changed interactions one at a time, always the latest version,
+    /// so a slow write can never land after a newer one.
+    private func markDirty(_ id: InteractionID) {
+        if !dirty.contains(id) { dirty.append(id) }
+        guard writer == nil else { return }
+        writer = Task { [weak self] in
+            while let self, let next = self.nextDirty() {
+                do {
+                    try await self.store.save(next)
+                } catch {
+                    self.notice = "Starling couldn't save your latest plans. They'll be lost if the app closes."
+                    self.logger.error("save failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+            self?.writer = nil
+        }
+    }
+
+    private func nextDirty() -> Interaction? {
+        while !dirty.isEmpty {
+            let id = dirty.removeFirst()
+            if let item = interaction(id) { return item }
+        }
+        writer = nil
+        return nil
+    }
+
+    /// Waits until every change so far is saved.
+    public func flush() async {
+        while let writer { await writer.value }
+    }
+}
