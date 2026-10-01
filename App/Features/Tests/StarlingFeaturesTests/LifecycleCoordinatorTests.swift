@@ -269,6 +269,28 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.map(\.reason) == [.afterEnd])
     }
 
+    /// ADR 0011 amendment 14: a denied send ends any live step, such as an
+    /// invitee's acceptance, but never calls off an agreed plan.
+    @Test func aPolicyDenialEndsALiveStepButNotAPlan() async throws {
+        let lifecycle = coordinator()
+        await lifecycle.start()
+        let id = InteractionID()
+        await lifecycle.handle(.incoming(id, conversation: ConversationID(), from: maya, chainedFrom: nil), from: SampleSkills.downFor)
+        await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
+        await lifecycle.answer(id, with: .accept(proposal: 1))
+        await lifecycle.handle(.lifecycle(id, .blockedByPrivacy), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(id)?.state == .ended(.blockedByPrivacy))
+
+        let sent = request(to: [maya])
+        let planned = try await lifecycle.start(sent, settings: Self.settings)
+        await lifecycle.handle(.lifecycle(planned, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
+        await lifecycle.answer(planned, with: .accept(proposal: 1))
+        await lifecycle.handle(.lifecycle(planned, .everyoneConfirmed(revision: 1)), from: SampleSkills.downFor)
+        await lifecycle.handle(.lifecycle(planned, .blockedByPrivacy), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(planned)?.state == .planned)
+        #expect(lifecycle.dropped.count == 1)
+    }
+
     @Test func theDropLogIsBounded() async throws {
         let lifecycle = coordinator()
         await lifecycle.start()
