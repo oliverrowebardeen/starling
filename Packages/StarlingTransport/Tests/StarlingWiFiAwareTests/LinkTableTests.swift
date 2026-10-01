@@ -116,6 +116,28 @@ private func orderedPeers() -> (high: PeerID, low: PeerID) {
         #expect(table.peersByDevice[1] == second)
     }
 
+    /// On the phone that picked the device, its own dial can lose to the
+    /// friend's while the surviving incoming link cannot name its device.
+    /// The losing link's hello must still map the device to the peer.
+    @Test func losingLinkStillTeachesWhichPeerIsBehindItsDevice() {
+        let (high, low) = orderedPeers()
+        var table = LinkTable(localPeer: low)
+        _ = table.admit(id: UUID(), peer: high, direction: .incoming, device: nil)
+        let admission = table.admit(id: UUID(), peer: high, direction: .outgoing, device: 4)
+        #expect(admission.state == nil)
+        #expect(table.peersByDevice[4] == high)
+    }
+
+    @Test func losingLinkDoesNotRemapADeviceAnotherPeerHolds() {
+        let (high, low) = orderedPeers()
+        let other = PeerID.random()
+        var table = LinkTable(localPeer: low)
+        _ = table.admit(id: UUID(), peer: other, direction: .outgoing, device: 4)
+        _ = table.admit(id: UUID(), peer: high, direction: .incoming, device: nil)
+        _ = table.admit(id: UUID(), peer: high, direction: .outgoing, device: 4)
+        #expect(table.peersByDevice[4] == other)
+    }
+
     @Test func rejectsOurOwnPeerID() {
         let local = PeerID.random()
         var table = LinkTable(localPeer: local)

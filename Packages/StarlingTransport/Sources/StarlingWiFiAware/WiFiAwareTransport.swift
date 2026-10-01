@@ -40,6 +40,11 @@ public actor WiFiAwareTransport: Transport {
 
     private enum State { case idle, started, stopped }
 
+    private struct DeviceWaiter {
+        let continuation: CheckedContinuation<PeerID?, Never>
+        let timer: Task<Void, Never>
+    }
+
     public nonisolated let kind = TransportKind.wifiAware
     public nonisolated let localPeer: PeerID
     public nonisolated let events: AsyncStream<TransportEvent>
@@ -60,6 +65,8 @@ public actor WiFiAwareTransport: Transport {
     private var retryAttempts: [AwareDeviceID: Int] = [:]
     /// Grace timers for provisional links.
     private var graceTasks: [UUID: Task<Void, Never>] = [:]
+    /// Callers of `peerID(for:waitingUpTo:)` waiting for a device's hello.
+    private var deviceWaiters: [AwareDeviceID: [UUID: DeviceWaiter]] = [:]
     private var browseTask: Task<Void, Never>?
     private var listenTask: Task<Void, Never>?
 
@@ -129,6 +136,7 @@ public actor WiFiAwareTransport: Transport {
         for task in dialTasks.values { task.cancel() }
         for task in waitTasks.values { task.cancel() }
         for task in graceTasks.values { task.cancel() }
+        for device in Array(deviceWaiters.keys) { resolveWaiters(for: device, with: nil) }
         dialTasks.removeAll()
         waitTasks.removeAll()
         graceTasks.removeAll()
@@ -139,6 +147,47 @@ public actor WiFiAwareTransport: Transport {
         }
         live.removeAll()
         continuation.finish()
+    }
+
+    // MARK: - Devices
+
+    /// The `PeerID` behind a paired device, as its link hello claimed it.
+    /// Nil until a hello has arrived from that device; once learned, it stays
+    /// known while the transport runs, even if the link drops.
+    ///
+    /// Use it to start pairing with the device the owner picked in
+    /// `WiFiAwareDevicePicker`. Pass a `timeout` to wait for the hello,
+    /// which arrives shortly after the system finishes pairing; the call then
+    /// returns nil if the hello has not arrived in time, the calling task is
+    /// cancelled, or the transport stops. The ID is a claim like any other a
+    /// transport reports: the pairing ceremony's code comparison is what
+    /// verifies it (ADR 0003).
+    public func peerID(for device: WiFiAwarePairedDevice, waitingUpTo timeout: Duration = .zero) async -> PeerID? {
+        if let peer = table.peersByDevice[device.id] { return peer }
+        guard timeout > .zero, state != .stopped else { return nil }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let timer = Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    await self?.resolveWaiter(id, for: device.id, with: nil)
+                }
+                deviceWaiters[device.id, default: [:]][id] = DeviceWaiter(continuation: continuation, timer: timer)
+            }
+        } onCancel: {
+            Task { await self.resolveWaiter(id, for: device.id, with: nil) }
+        }
+    }
+
+    private func resolveWaiter(_ id: UUID, for device: AwareDeviceID, with peer: PeerID?) {
+        guard let waiter = deviceWaiters[device]?.removeValue(forKey: id) else { return }
+        if deviceWaiters[device]?.isEmpty == true { deviceWaiters[device] = nil }
+        waiter.timer.cancel()
+        waiter.continuation.resume(returning: peer)
+    }
+
+    private func resolveWaiters(for device: AwareDeviceID, with peer: PeerID?) {
+        for id in Array(deviceWaiters[device]?.keys ?? [:].keys) { resolveWaiter(id, for: device, with: peer) }
     }
 
     // MARK: - Radio
@@ -267,6 +316,7 @@ public actor WiFiAwareTransport: Transport {
             await self.receiveLoop(channel, link: id, from: remote)
         }
         let admission = table.admit(id: id, peer: remote, direction: direction, device: device)
+        if let device, let learned = table.peersByDevice[device] { resolveWaiters(for: device, with: learned) }
         guard let linkState = admission.state else {
             task.cancel()
             return
