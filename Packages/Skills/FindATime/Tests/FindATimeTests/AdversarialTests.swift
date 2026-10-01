@@ -149,7 +149,7 @@ struct AdversarialTests {
         let target = world.phone("Ben", policy: FixedPolicyEngine(decide: { message in
             guard case .accept = message.envelope.body else { return .allow }
             return .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: [],
-                                            conversation: message.envelope.conversation, skill: message.envelope.skill))
+                                            conversation: message.envelope.conversation, skill: message.envelope.skill, interaction: message.context.interaction))
         }), consent: sheet)
         try await world.start()
         let conversation = ConversationID()

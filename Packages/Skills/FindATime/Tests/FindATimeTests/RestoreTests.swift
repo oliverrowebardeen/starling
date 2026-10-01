@@ -294,16 +294,13 @@ struct CrashWindowTests {
     /// Finding 4: a restart while the confirmations are still waiting on a
     /// consent sheet is not a plan. The confirmations go out through Outbox
     /// after the restart, with a fresh sheet, and only then is it a plan.
-    // Needs Core v2.1 (#57): a relaunched Outbox restarts sequence numbers
-    // at 0, so Ben drops Ana's confirmation as a replay. Enabled on rebase.
-    @Test(.disabled("needs Core v2.1 Outbox sequences across relaunch (PR #57)"))
-    func aRestartBeforeTheConfirmationsLeftIsNotAPlan() async throws {
+    @Test func aRestartBeforeTheConfirmationsLeftIsNotAPlan() async throws {
         let world = World()
         let sheet = HeldConsent()
         let a = world.phone("Ana", policy: FixedPolicyEngine(decide: { message in
             guard case .accept = message.envelope.body else { return .allow }
             return .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: [],
-                                            conversation: message.envelope.conversation, skill: message.envelope.skill))
+                                            conversation: message.envelope.conversation, skill: message.envelope.skill, interaction: message.context.interaction))
         }), consent: sheet)
         let b = world.phone("Ben")
         try await world.start()

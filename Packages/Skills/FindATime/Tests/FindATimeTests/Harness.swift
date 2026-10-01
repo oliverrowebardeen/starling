@@ -56,6 +56,12 @@ actor Coordinator {
                 ))
             case .lifecycle(let id, let lifecycle):
                 guard var interaction = try await store.interaction(id) else { rejected.append(event); return }
+                // Progress during a consent suspension waits for the step to
+                // resume (ADR 0011, amendment 15).
+                if case .awaitingConsent = interaction.state, Self.waitsForConsent(lifecycle) {
+                    queued[id, default: []].append(lifecycle)
+                    return
+                }
                 try interaction.apply(lifecycle, at: Timestamp(Date()))
                 try await store.save(interaction)
             case .produced(let id, let artifact):
@@ -69,40 +75,71 @@ actor Coordinator {
         }
     }
 
+    private var queued: [InteractionID: [InteractionEvent]] = [:]
+
+    private static func waitsForConsent(_ event: InteractionEvent) -> Bool {
+        switch event {
+        case .ownerNeeded, .proposalReady, .everyoneConfirmed: true
+        default: false
+        }
+    }
+
+    private func drainQueue(_ id: InteractionID) async {
+        guard var interaction = try? await store.interaction(id) else { return }
+        if case .awaitingConsent = interaction.state { return }
+        for event in queued.removeValue(forKey: id) ?? [] {
+            do { try interaction.apply(event, at: Timestamp(Date())) } catch { rejected.append(.lifecycle(id, event)) }
+        }
+        try? await store.save(interaction)
+    }
+
     func begin(_ interaction: Interaction) async throws { try await store.save(interaction) }
 
     /// At launch the coordinator closes consent requests whose sheets died
     /// with the old process, before `restore(_:)` (ADR 0011, amendment 15).
-    /// Core v2.0 has no `consentCancelled` yet, so this stands in with
-    /// `consentGiven`; nothing is sent by it.
     func closeDeadSheets() async {
         for var interaction in (try? await store.all()) ?? [] where !interaction.pendingConsents.isEmpty {
             for request in interaction.pendingConsents.sorted() {
-                try? interaction.apply(.consentGiven(request: request), at: Timestamp(Date()))
+                try? interaction.apply(.consentCancelled(request: request), at: Timestamp(Date()))
             }
             try? await store.save(interaction)
+            await drainQueue(interaction.id)
         }
     }
 
-    /// What the app's consent provider does around a sheet: it applies
-    /// `consentNeeded` before asking, then `consentGiven` after an approval
-    /// or `ownerPassed` after a decline. The skill adds nothing for a decline.
-    func applyConsent(_ event: (UInt32) -> InteractionEvent, conversation: ConversationID?, opening: Bool) async -> UInt32? {
-        guard let conversation else { return nil }
+    /// Opens a consent request on the interaction the send names
+    /// (`Disclosure.interaction`, Core v2.1). The interaction may not be in
+    /// the store yet when the sheet opens, so it waits briefly for it.
+    func openConsent(_ id: InteractionID?) async -> UInt32? {
+        guard let id else { return nil }
         for _ in 0..<200 {
-            if var interaction = try? await store.interaction(conversation: conversation) {
-                // An ended interaction takes no consent events; stop at once.
+            if var interaction = try? await store.interaction(id) {
                 if interaction.state.isFinal { return nil }
-                let request = opening ? interaction.consentWatermark + 1 : (interaction.pendingConsents.max() ?? 0)
-                if (try? interaction.apply(event(request), at: Timestamp(Date()))) != nil {
+                let request = interaction.consentWatermark + 1
+                if (try? interaction.apply(.consentNeeded(request: request), at: Timestamp(Date()))) != nil {
                     try? await store.save(interaction)
-                    consents.append(event(request))
+                    consents.append(.consentNeeded(request: request))
                     return request
                 }
             }
             try? await Task.sleep(for: .milliseconds(5))
         }
         return nil
+    }
+
+    /// Closes the request the sheet opened: given on approval, the owner's
+    /// pass on a decline.
+    func closeConsent(_ id: InteractionID?, request: UInt32?, approved: Bool) async {
+        guard let id, let request, var interaction = try? await store.interaction(id), !interaction.state.isFinal else { return }
+        let event: InteractionEvent = approved ? .consentGiven(request: request) : .ownerPassed
+        do {
+            try interaction.apply(event, at: Timestamp(Date()))
+            try? await store.save(interaction)
+            consents.append(event)
+        } catch {
+            rejected.append(.lifecycle(id, event))
+        }
+        await drainQueue(id)
     }
 
     private(set) var consents: [InteractionEvent] = []
@@ -162,7 +199,7 @@ let alwaysAsk = FixedPolicyEngine(decide: { message in
     guard message.envelope.skill != nil else { return .allow }
     return .needsConsent(Disclosure(
         recipient: message.envelope.recipient, recipientModel: nil, items: [],
-        conversation: message.envelope.conversation, skill: message.envelope.skill
+        conversation: message.envelope.conversation, skill: message.envelope.skill, interaction: message.context.interaction
     ))
 })
 
@@ -195,14 +232,9 @@ struct LifecycleConsent: ConsentProvider {
     let coordinator: Coordinator
 
     func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
-        _ = await coordinator.applyConsent({ .consentNeeded(request: $0) }, conversation: disclosure.conversation, opening: true)
+        let request = await coordinator.openConsent(disclosure.interaction)
         let outcome = await owner.requestConsent(for: disclosure)
-        if outcome == .approved {
-            _ = await coordinator.applyConsent({ .consentGiven(request: $0) }, conversation: disclosure.conversation, opening: false)
-        } else {
-            // A declined sheet is the owner passing; the coordinator applies it.
-            _ = await coordinator.applyConsent({ _ in .ownerPassed }, conversation: disclosure.conversation, opening: false)
-        }
+        await coordinator.closeConsent(disclosure.interaction, request: request, approved: outcome == .approved)
         return outcome
     }
 }
@@ -218,6 +250,9 @@ final class Phone: Sendable {
     let policy: any PolicyEngine
     let consent: any ConsentProvider
     let checkpoints = InMemoryFindATimeCheckpoints()
+    /// Kept across restarts, as the app persists it, so a relaunched Outbox
+    /// never reuses a sequence number (Core v2.1).
+    let sequences = InMemorySentSequenceStore()
     let clock: TestClock
     let standing: ConstraintSet
     private let state: Mutex<(service: FindATimeService?, outbox: Outbox?, coordinator: Coordinator, tasks: [Task<Void, Never>])>
@@ -245,7 +280,7 @@ final class Phone: Sendable {
     /// Builds a service and its coordinator loop. Called at start and again
     /// to simulate an app restart.
     func makeService(configuration: FindATimeConfiguration = fastConfiguration) {
-        let outbox = Outbox(transport: transport, policy: policy, consent: LifecycleConsent(owner: consent, coordinator: coordinator))
+        let outbox = Outbox(transport: transport, policy: policy, consent: LifecycleConsent(owner: consent, coordinator: coordinator), sequences: sequences)
         let availability = OwnerAvailability.standard(calendar: calendar, use: { self.use.withLock { $0 } })
         let service = FindATimeService(
             localPeer: id, outbox: outbox, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
