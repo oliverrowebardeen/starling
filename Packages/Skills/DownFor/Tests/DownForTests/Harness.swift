@@ -8,11 +8,9 @@ import Testing
 
 /// Retries every 20 ms and gives up on an automatic step after 2 s, so a
 /// loaded machine (six lanes share this Mac) does not time out healthy
-/// flows. A starter gathers for 400 ms and checks rosters for 300 ms; a
-/// proposal waits 2 s for people.
+/// flows. A proposal waits 2 s for people.
 let fastConfiguration = DownForConfiguration(
-    retryInterval: .milliseconds(20), maxAttempts: 100, ownerWindow: .seconds(2), maxBackoff: .milliseconds(200),
-    gatherWindow: .milliseconds(400), vetWindow: .milliseconds(300)
+    retryInterval: .milliseconds(20), maxAttempts: 100, ownerWindow: .seconds(2), maxBackoff: .milliseconds(200)
 )
 
 /// Wall time pinned to `T.now`; timers are real, except sleeps of ten
@@ -34,11 +32,15 @@ actor Lifecycle {
     /// Everything the service reported, in order.
     private(set) var events: [SkillEvent] = []
     private(set) var refused: [String] = []
+    /// Cards the owner passed on, hidden on this phone at once while the
+    /// skill decides when the interaction ends (ADR 0011 amendment 16).
+    private(set) var hidden: Set<InteractionID> = []
     private(set) var artifacts: [InteractionID: [Artifact]] = [:]
     private var queued: [InteractionID: [InteractionEvent]] = [:]
     private var consentNumbers: [InteractionID: UInt32] = [:]
 
     func create(_ interaction: Interaction) { interactions[interaction.id] = interaction }
+    func hide(_ id: InteractionID) { hidden.insert(id) }
 
     func apply(_ event: SkillEvent) {
         events.append(event)
@@ -219,6 +221,25 @@ final class Phone: Sendable {
         )
         try await service.start(SkillRequest(interaction: id, conversation: conversation, intent: intent, participants: participants, inputs: inputs, chainedFrom: chainedFrom))
         return id
+    }
+
+    /// Ask quietly for several friends, as lane A's coordinator does: one
+    /// initiator interaction per friend, each with its own conversation
+    /// (ADR 0011 amendment 17). In `friends` order.
+    func downEach(
+        for activities: [String], time: [TimeSlot]? = [T.slot(19, 23)], with friends: [Phone], expires: Date = T.at(24)
+    ) async throws -> [InteractionID] {
+        var ids: [InteractionID] = []
+        for friend in friends { ids.append(try await down(for: activities, time: time, with: [friend], expires: expires)) }
+        return ids
+    }
+
+    /// The owner taps pass on a card, as lane A's coordinator handles it
+    /// (ADR 0011 amendment 16): the card hides at once and the skill is
+    /// told; the interaction ends when the skill reports it.
+    func pass(_ id: InteractionID) async throws {
+        await lifecycle.hide(id)
+        try await service.answer(id, with: .pass)
     }
 
     /// The owner taps "I'm in" on the card they are looking at. A consent

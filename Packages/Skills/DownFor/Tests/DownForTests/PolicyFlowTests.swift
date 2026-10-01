@@ -50,7 +50,7 @@ import Testing
         await world.expectCleanLifecycles()
     }
 
-    @Test func aGroupPlanShowsTheRosterOnTheSheet() async throws {
+    @Test func aGroupInvitationShowsTheRosterOnTheSheet() async throws {
         let consent = ScriptedConsentProvider(.approved)
         let world = Self.world(3, consent: consent)
         try await world.start()
@@ -58,16 +58,19 @@ import Testing
         try await Self.exchangeCards(world)
         let (a, b, c) = (world["A"], world["B"], world["C"])
 
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        for (phone, id) in zip([a, b, c], ids) {
-            try await eventually("\(phone.name) sees all three") { await phone.lifecycle.interaction(id)?.proposal?.participants.count == 3 }
+        // A group plan is an invitation, which names everyone invited
+        // (ADR 0011 amendment 17).
+        let mine = try await a.down(for: ["boba"], with: [b, c], mode: .invite)
+        var invitations: [InteractionID] = []
+        for phone in [b, c] {
+            try await eventually("\(phone.name)'s invitation") { await !phone.lifecycle.invitations.isEmpty }
+            let id = try #require(await phone.lifecycle.invitations.first)
             try await phone.imIn(id)
+            invitations.append(id)
         }
-        for (phone, id) in zip([a, b, c], ids) { try await phone.waitFor(.planned, id) }
+        try await a.imIn(mine)
+        try await a.waitFor(.planned, mine)
+        for (phone, id) in zip([b, c], invitations) { try await phone.waitFor(.planned, id) }
 
         // "Who else is in this" is on the sheet, as the people topic asks.
         let roster = IssueValue.peers([a.id, b.id, c.id])

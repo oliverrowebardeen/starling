@@ -66,10 +66,7 @@ import Testing
     }
 }
 
-@Suite struct GroupPlannerTests {
-    let hub = PeerID.random()
-    let peers = (0..<3).map { _ in PeerID.random() }.sorted()
-
+@Suite struct PairPlannerTests {
     func answers(_ slots: [TimeSlot], _ activities: [String]) -> CandidateAnswers {
         CandidateAnswers(overlap: slots, activities: activities.map(T.keyword))
     }
@@ -78,84 +75,31 @@ import Testing
         stride(from: from, to: to, by: 0.5).map { T.slot($0, $0 + 0.5) }
     }
 
-    @Test func picksThePlanThatIncludesTheMostFriends() throws {
-        let (terms, members) = try #require(GroupPlanner.plan(
-            hub: hub, liked: ["boba", "tacos"].map(T.keyword),
-            candidates: [
-                peers[0]: answers(halfHours(19, 21), ["boba"]),
-                peers[1]: answers(halfHours(20, 22), ["boba", "tacos"]),
-                peers[2]: answers(halfHours(19, 20), ["tacos"]),
-            ],
-            maxMinutes: 120, now: T.now
-        ))
-        // Boba at 20:00 has two friends; nothing has all three.
-        #expect(members == [peers[0], peers[1]])
-        #expect(terms[.people] == .peers([hub, peers[0], peers[1]]))
-        #expect(terms[.activity] == .keywords([T.keyword("boba")]))
-        #expect(terms[.time] == .slots([T.slot(20, 21)]))
-        // Budget never leaves the phone (ADR 0019).
-        #expect(terms[.budget] == nil)
-    }
-
-    @Test func friendsWhoDidNotAskEachOtherAreNeverGrouped() throws {
-        // All three share boba at 19:00, but peers[1] and peers[2] did not
-        // include each other: the plan is the starter and one of them.
-        let everyone = answers(halfHours(19, 21), ["boba"])
-        let (terms, members) = try #require(GroupPlanner.plan(
-            hub: hub, liked: [T.keyword("boba")], candidates: [peers[1]: everyone, peers[2]: everyone],
-            maxMinutes: 120, now: T.now, together: { _, _ in false }
-        ))
-        #expect(members == [peers[1]])
-        #expect(terms[.people] == nil)
-        // Asking in one direction only is not enough either.
-        #expect(GroupPlanner.largestGroup(of: [peers[0], peers[1], peers[2]], together: { asker, _ in asker == peers[0] }) == [peers[0]])
-        #expect(GroupPlanner.largestGroup(of: [peers[0], peers[1], peers[2]], together: { $0 != peers[2] && $1 != peers[2] }) == [peers[0], peers[1]])
-    }
-
-    @Test func tiesGoToTheStartersFirstChoiceThenTheEarliestTime() throws {
-        let (terms, members) = try #require(GroupPlanner.plan(
-            hub: hub, liked: ["boba", "tacos"].map(T.keyword),
-            candidates: [peers[0]: answers(halfHours(19, 23), ["tacos", "boba"])],
-            maxMinutes: 120, now: T.now
+    @Test func picksTheStartersFirstChoiceAtTheEarliestSharedTime() throws {
+        let terms = try #require(PairPlanner.plan(
+            liked: ["boba", "tacos"].map(T.keyword), answers: answers(halfHours(19, 23), ["tacos", "boba"]), maxMinutes: 120, now: T.now
         ))
         #expect(terms[.activity] == .keywords([T.keyword("boba")]))
+        // Grown from the first shared half-hour, up to two hours.
         #expect(terms[.time] == .slots([T.slot(19, 21)]))
-        // A pair: no roster on the wire.
-        #expect(members == [peers[0]] && terms[.people] == nil)
+        // A pair: no roster on the wire, and budget never leaves (ADR 0019).
+        #expect(terms[.people] == nil && terms[.budget] == nil)
     }
 
-    @Test func aPlanThatMustIncludeAFriendDoes() throws {
-        // Two friends share boba at 19:00; a third shares only tacos. The
-        // largest plan leaves the third out; one that must include it is
-        // tacos with the starter alone.
-        let candidates = [
-            peers[0]: answers(halfHours(19, 21), ["boba"]),
-            peers[1]: answers(halfHours(19, 21), ["boba"]),
-            peers[2]: answers(halfHours(19, 21), ["tacos"]),
-        ]
-        let liked = ["boba", "tacos"].map(T.keyword)
-        #expect(GroupPlanner.plan(hub: hub, liked: liked, candidates: candidates, maxMinutes: 120, now: T.now)?.members == [peers[0], peers[1]])
-        let (terms, members) = try #require(GroupPlanner.plan(hub: hub, liked: liked, candidates: candidates, maxMinutes: 120, now: T.now, including: peers[2]))
-        #expect(members == [peers[2]])
-        #expect(terms[.activity] == .keywords([T.keyword("tacos")]))
-        // Friends who did not ask it are not added to it.
-        let alone = GroupPlanner.plan(
-            hub: hub, liked: liked, candidates: candidates, maxMinutes: 120, now: T.now, including: peers[0], together: { _, _ in false }
-        )
-        #expect(alone?.members == [peers[0]])
+    @Test func theTimeStopsWhereTheSharedTimeDoes() throws {
+        let terms = try #require(PairPlanner.plan(
+            liked: [T.keyword("boba")], answers: answers(halfHours(19, 20) + halfHours(21, 22), ["boba"]), maxMinutes: 120, now: T.now
+        ))
+        #expect(terms[.time] == .slots([T.slot(19, 20)]))
     }
 
     @Test func noSharedActivityMeansNoPlan() {
-        #expect(GroupPlanner.plan(
-            hub: hub, liked: [T.keyword("boba")],
-            candidates: [peers[0]: answers(halfHours(19, 21), [])], maxMinutes: 120, now: T.now
-        ) == nil)
+        #expect(PairPlanner.plan(liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), []), maxMinutes: 120, now: T.now) == nil)
     }
 
     @Test func slotsThatHaveStartedAreSkipped() throws {
-        let (terms, _) = try #require(GroupPlanner.plan(
-            hub: hub, liked: [T.keyword("boba")],
-            candidates: [peers[0]: answers(halfHours(19, 21), ["boba"])], maxMinutes: 120, now: T.at(19.6)
+        let terms = try #require(PairPlanner.plan(
+            liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), ["boba"]), maxMinutes: 120, now: T.at(19.6)
         ))
         #expect(terms[.time] == .slots([T.slot(20, 21)]))
     }

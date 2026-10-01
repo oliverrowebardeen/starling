@@ -80,41 +80,6 @@ import Testing
         await world.expectCleanLifecycles()
     }
 
-    @Test func aDenialForAStepAlreadyReplacedIsDropped() async throws {
-        let policy = HeldDenial()
-        let world = World(3, policy: policy)
-        let (a, b, c) = (world["A"], world["B"], world["C"])
-        await policy.hold(groupProposalsTo: b.id)
-        try await world.start()
-        defer { Task { await world.stop() } }
-
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        // Revision 1 (all three) reaches C; the send to B waits in the policy.
-        try await a.waitForProposal(ids[0])
-        try await c.waitForProposal(ids[2])
-        try await eventually("held") { await policy.held == 1 }
-        // C's card now says it cannot run Down for... (an update, say): A
-        // drops C at once and re-plans for two while the send of revision 1
-        // is still in flight.
-        let card = try AgentCard(model: .onDevice, capabilities: [], skills: [])
-        await a.service.handle(.message(try Envelope(conversation: ConversationID(), sender: c.id, recipient: a.id, sequence: 0, sentAt: Timestamp(T.now), body: .hello(card))))
-        try await a.waitForProposal(ids[0], revision: 2)
-
-        // Now revision 1's send is denied: a superseded step says nothing.
-        await policy.release()
-        try await b.waitForProposal(ids[1])
-        #expect(await b.lifecycle.interaction(ids[1])?.proposal?.participants == [a.id, b.id])
-        try await a.imIn(ids[0])
-        try await b.imIn(ids[1])
-        try await a.waitFor(.planned, ids[0])
-        #expect(await !a.lifecycle.reached(.ended(.blockedByPrivacy), ids[0]))
-        await world.expectCleanLifecycles()
-    }
-
     @Test func aDeniedImInBlocksTheRequestAtThatStep() async throws {
         let denier = Denier()
         let world = World(2, policy: FixedPolicyEngine { message in
@@ -207,34 +172,22 @@ import Testing
         await world.expectCleanLifecycles()
     }
 
-    @Test func friendsWhoNeverAnswerAreLeftOutAfterTheWindow() async throws {
-        let world = World(3)
+    @Test func aFriendWhoNeverAnswersIsLeftOutAfterTheWindow() async throws {
+        let world = World(2)
         try await world.start()
         defer { Task { await world.stop() } }
-        let (a, b, c) = (world["A"], world["B"], world["C"])
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        for (phone, id) in zip([a, b, c], ids) { try await phone.waitForProposal(id) }
-        try await a.imIn(ids[0])
-        try await b.imIn(ids[1])
-        // C looks away. After the 2 s window, A and B get a plan for two.
-        // C hears nothing about it: whether A said I'm in is not C's to
-        // learn (final privacy review), so C's card ends when its own wait
-        // does.
-        try await a.waitForProposal(ids[0], revision: 2)
-        try await a.imIn(ids[0])
-        try await b.waitForProposal(ids[1], revision: 2)
-        try await b.imIn(ids[1])
-        try await a.waitFor(.planned, ids[0])
-        try await b.waitFor(.planned, ids[1])
-        #expect(await a.lifecycle.interaction(ids[0])?.plan?.attendees.peers == [a.id, b.id])
-        try await c.waitFor(.ended(.nobodyUp), ids[2])
-        // (B's own group with C stood down for A's, and says so; A says
-        // nothing.)
-        #expect(await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == c.id && $0.body.kind == .reject }.isEmpty)
+        let (a, b) = (world["A"], world["B"])
+        let mine = try await a.down(for: ["boba"], with: [b])
+        let theirs = try await b.down(for: ["boba"], with: [a])
+        try await a.waitForProposal(mine)
+        try await b.waitForProposal(theirs)
+        try await a.imIn(mine)
+        // B looks away. After the 2 s window A's request ends as nobody up.
+        // B hears nothing about it: whether A said I'm in is not B's to
+        // learn, so B's card ends when its own wait does.
+        try await a.waitFor(.ended(.nobodyUp), mine)
+        try await b.waitFor(.ended(.nobodyUp), theirs)
+        #expect(await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .reject }.isEmpty)
         await world.expectCleanLifecycles()
     }
 
@@ -342,30 +295,6 @@ final class Mallory: Sendable {
         guard case .psi(let reply) = try await next(.psi, in: conversation).body else { throw ValidationError("Mallory", "no reply") }
         _ = try await session.handle(reply.payload)
         return conversation
-    }
-}
-
-/// Holds every group proposal to one friend in the policy until released,
-/// then denies it, as a privacy topic changed to Never would.
-actor HeldDenial: PolicyEngine {
-    private var target: PeerID?
-    private var waiting: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-    private(set) var held = 0
-
-    func hold(groupProposalsTo peer: PeerID) { target = peer }
-
-    func release() {
-        released = true
-        for continuation in waiting { continuation.resume() }
-        waiting = []
-    }
-
-    func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
-        guard message.envelope.recipient == target, case .propose(let proposal) = message.envelope.body, proposal.terms[.people] != nil else { return .allow }
-        held += 1
-        if !released { await withCheckedContinuation { waiting.append($0) } }
-        return .deny(PolicyViolation(rule: "disclosure.never", issue: .people))
     }
 }
 

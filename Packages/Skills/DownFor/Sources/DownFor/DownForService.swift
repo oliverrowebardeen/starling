@@ -5,16 +5,17 @@ import StarlingNegotiation
 /// The Down for... skill's runtime (ADR 0210), over the app's one Outbox and
 /// Inbox.
 ///
-/// Each owner request is one initiator `Interaction`. Its starter is the
-/// hub of a group: a PSI run with each friend over free half-hours; details
-/// (activity, budget) only with friends whose time overlaps; then one plan
-/// built from everyone's private answers, with the roster in it. Each
-/// friend's agent answers only while its own owner has an open Down for...
-/// request that includes the starter, so one-sided interest is never shown
-/// to anyone. When two open requests reach each other, the one started by
-/// the lower `PeerID` carries the pair, and a friend joins at most one group.
-/// The proposal appears on each member's own request as a card; nobody is
-/// in a plan until everyone in it said "I'm in".
+/// Each owner request is one initiator `Interaction`. An Ask quietly
+/// request is one friend's: the app starts one per friend, each with its
+/// own conversation (ADR 0011 amendment 17), and nothing in one depends on
+/// another. Its starter runs a PSI with the friend over free half-hours,
+/// asks about activities only if their time overlaps, and proposes a pair
+/// plan. The friend's agent answers only while its own owner has an open
+/// Down for... request for the starter, so one-sided interest is never
+/// shown to anyone. When two such requests reach each other, the one
+/// started by the lower `PeerID` carries the pair. The plan appears on both
+/// requests as a card, and nobody is in a plan until both said "I'm in".
+/// An Invite request goes to everyone it names, as a card, with the roster.
 ///
 /// Every send goes through the Outbox with `DownFor.ref`; the app passes
 /// every `InboxEvent` to `handle(_:)`.
@@ -37,13 +38,15 @@ public actor DownForService: SkillService {
     // MARK: State
 
     enum Engagement: Hashable, Sendable {
-        /// The request runs its own group.
+        /// The request runs its own exchange with its friend, or for an
+        /// invitation, with everyone it invites.
         case hub
-        /// The request answers another starter's group, in that run.
+        /// The request answers its friend's run.
         case member(RunKey)
     }
 
-    /// The hub's current proposal.
+    /// The starter's current proposal, and who it is with: one friend for
+    /// a quiet ask, whoever said I'm in for an invitation.
     struct Group: Sendable {
         var revision: UInt32
         var terms: Terms
@@ -70,26 +73,15 @@ public actor DownForService: SkillService {
         var timer: Task<Void, Never>?
         /// Invite mode: the plan the invitation offers.
         var invitation: Terms?
-        /// When this phone took the request on, for the quiet period
-        /// before the starter proposes.
-        var since = ContinuousClock.now
+        /// Invite mode: the window for friends to answer the invitation.
         var quiet: Task<Void, Never>?
-        /// Audience checks running, each with its own window; the offers
-        /// follow when one ends.
-        var vettings: [UUID: Task<Void, Never>] = [:]
-        /// The owner passed on the card. The request runs on unchanged,
-        /// minus any I'm in from the owner, until the card's window ends
-        /// (final privacy review, finding 1).
+        /// The owner passed on a quiet ask's card. The request runs on
+        /// unchanged, minus any I'm in from the owner, until the proposal's
+        /// schedule and the card's window end (ADR 0011 amendment 16).
         var passed = false
 
         var id: InteractionID { record.interaction }
         var conversation: ConversationID { record.conversation }
-
-        /// Still starting runs with friends: until the plan is being
-        /// confirmed, a card showing or not.
-        var isTakingFriends: Bool {
-            mirror.state != .planned && !mirror.state.isFinal && group?.confirming == nil
-        }
 
         /// Still gathering friends: negotiating, possibly behind a consent sheet.
         var isGathering: Bool {
@@ -214,6 +206,7 @@ public actor DownForService: SkillService {
         guard !profile.tokens(now: now).slots.isEmpty else { throw DownForError.noAvailableTime }
         let participants = Self.unique(request.participants.filter { $0 != localPeer })
         guard !participants.isEmpty else { throw DownForError.noParticipants }
+        guard record.mode == .invite || participants.count == 1 else { throw DownForError.oneFriendPerQuietAsk }
 
         // The coordinator applied `.started` when the owner sent the request
         // (ADR 0011, amendment 13); the local copy follows it without
@@ -253,10 +246,10 @@ public actor DownForService: SkillService {
             default: throw DownForError.notWaitingForOwner
             }
             // "If you pass, they just won't see it". A starter's request
-            // runs on exactly as if the owner had not answered: proposals
-            // keep their schedule and nobody is confirmed, and it ends when
-            // the card's window does (final privacy review, finding 1).
-            // The coordinator shows the pass at once (request 7).
+            // runs on exactly as if the owner had not answered: the
+            // proposal keeps its schedule and nobody is confirmed, and it
+            // ends when the card's window does (ADR 0011 amendment 16). The
+            // coordinator hides the card at once.
             if request.engagement == .hub, request.invitation == nil, request.group != nil {
                 guard !request.passed else { throw DownForError.notWaitingForOwner }
                 requests[interaction]?.passed = true
@@ -340,8 +333,8 @@ public actor DownForService: SkillService {
             case .done, .ended:
                 continue
             default:
-                // A consent sheet, a card, or a group in flight cannot be
-                // rebuilt: the sheet is gone, and so is the starter's group.
+                // A consent sheet, a card, or a plan in flight cannot be
+                // rebuilt: the sheet is gone, and so is the starter's run.
                 requests[interaction.id] = Self.orphan(interaction, timeZone: timeZone)
                 endRequest(interaction.id, with: .failed)
             }
@@ -394,7 +387,7 @@ public actor DownForService: SkillService {
     /// clean ending, and its conversations stay refused here.
     ///
     /// Nothing is sent to friends: a pass, a withdrawal, an expiry, or a
-    /// group that fell apart all look like someone who stopped answering
+    /// plan that fell apart all look like someone who stopped answering
     /// (review of PR #56, finding 4).
     @discardableResult
     func endRequest(_ id: InteractionID, with event: InteractionEvent) -> Bool {
@@ -505,12 +498,11 @@ public actor DownForService: SkillService {
     func discard(_ id: InteractionID, keepingRecord: Bool = false) {
         guard let request = requests.removeValue(forKey: id) else { return }
         // Retiring is the caller's: `endRequest` before it reports an
-        // ending, the plan's cleanup, or nobody for a shutdown. A group it
+        // ending, the plan's cleanup, or nobody for a shutdown. A run it
         // only answered stays open, since that starter may ask again,
         // unless its card had shown (`end`).
         request.timer?.cancel()
         request.quiet?.cancel()
-        for task in request.vettings.values { task.cancel() }
         for key in deliveries.keys where deliveries[key]?.request == id { stopDelivery(key) }
         request.group?.window?.cancel()
         for key in runs.keys where runs[key]?.request == id { end(key, .withdrawn) }

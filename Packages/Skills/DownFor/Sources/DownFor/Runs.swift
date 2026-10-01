@@ -2,8 +2,8 @@ import Foundation
 import StarlingCore
 import StarlingNegotiation
 
-/// One pairwise exchange inside a group: the starter's conversation and the
-/// friend on the other end.
+/// One pairwise exchange: the starter's conversation and the friend on the
+/// other end.
 struct RunKey: Hashable, Sendable {
     let conversation: ConversationID
     let peer: PeerID
@@ -19,12 +19,12 @@ struct Notice: Sendable {
     let lastInbound: MessageID?
 }
 
-/// One friend's part of a group, from either side.
+/// One friend's exchange, from either side.
 struct Run: Sendable {
     enum Role: Hashable, Sendable {
-        /// We started the group; the peer is a candidate member.
+        /// We started it; the peer is the friend we asked.
         case hub
-        /// The peer started the group; we answer it.
+        /// The peer started it; we answer it.
         case member
     }
 
@@ -32,11 +32,8 @@ struct Run: Sendable {
         case psi
         /// Hub: waiting for answers. Member: waiting for queries or a proposal.
         case details
-        /// Hub: answers are in; waiting for the group decision.
+        /// Hub: answers are in; the proposal is being made.
         case ready
-        /// Hub: asking the member which other candidates its own request
-        /// includes, before any of them is named to it.
-        case vetting
         /// A proposal is out (hub) or on the owner's card (member).
         case proposed
         /// The member accepted the current proposal.
@@ -67,18 +64,6 @@ struct Run: Sendable {
     var pendingQueries: Set<IssueKey> = []
     var activityAnswer: [Keyword]?
     var askedActivities: [Keyword] = []
-
-    // Hub: who this member's request includes, among the other candidates
-    // it was asked about, so a roster never names someone it did not ask
-    // (review of PR #56, finding 1).
-    var vetting: (session: UUID, psi: any PSISession, tokens: FriendTokens)?
-    var vettedAgainst: Set<PeerID> = []
-    var allowed: Set<PeerID> = []
-    // Member: how many times the starter asked; bounded, so it cannot map
-    // the owner's audience by asking again and again.
-    var vetCount = 0
-    /// What a vetting step discloses, for the policy (both sides).
-    var vetContext: OutboundContext?
 
     // Member: issues answered, each once, and the queries by envelope, so
     // each answer tells the policy which query it answers.
@@ -173,8 +158,6 @@ enum RunOutcome: String, Hashable, Sendable {
     case noOverlap
     /// The peer said no plan, or the starter left us out.
     case rejected
-    /// Left out of the group by the starter's plan.
-    case excluded
     case timedOut
     case withdrawn
     /// A lower starter's run carries this pair instead.
@@ -189,7 +172,7 @@ enum RunOutcome: String, Hashable, Sendable {
     /// The request is done with this friend.
     var settles: Bool {
         switch self {
-        case .noOverlap, .rejected, .excluded, .policy, .failed, .unsupported: true
+        case .noOverlap, .rejected, .policy, .failed, .unsupported: true
         case .matched, .timedOut, .withdrawn, .yielded: false
         }
     }
@@ -260,6 +243,4 @@ enum Action: Sendable {
     case accept
     /// Hub: confirm the plan to a member that accepted it.
     case confirm
-    /// Hub: ask the member which of these friends its request includes.
-    case vet([PeerID])
 }

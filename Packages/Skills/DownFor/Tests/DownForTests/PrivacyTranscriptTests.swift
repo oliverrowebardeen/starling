@@ -17,11 +17,10 @@ import Testing
         #expect(passed.isEmpty, "B answered a probe: \(passed)")
     }
 
-    /// Mallory starts a quiet group with B, gets B's card on screen, then
+    /// Mallory starts a quiet ask with B, gets B's card on screen, then
     /// (after B passes, or while B has not answered) resends the earlier
-    /// activity query and PSI step in fresh envelopes, starts an audience
-    /// check, sends a plan B must refuse, and asks again in a fresh
-    /// conversation. Returns everything B sent Mallory after the card.
+    /// activity query and PSI step in fresh envelopes, sends a plan B must
+    /// refuse, and asks again in a fresh conversation. Returns everything B sent Mallory after the card.
     static func probesAfterTheCard(pass: Bool) async throws -> [MessageBody.Kind] {
         let world = World(1)
         try await world.start()
@@ -47,11 +46,6 @@ import Testing
 
         try await mallory.send(.query(query), to: b.id, in: conversation)
         try await mallory.send(.psi(firstStep), to: b.id, in: conversation)
-        let vetting = FriendTokens([PeerID.random()], size: FriendTokens.starterSetSize)
-        let session = try InsecurePSIStub().makeSession(role: .initiator, localSet: vetting.elements, configuration: FriendTokens.starterConfiguration())
-        if case .send(let payload) = try await session.start() {
-            try await mallory.send(.psi(try PSIFrame(session: UUID(), step: DownForService.vettingStep, payload: payload)), to: b.id, in: conversation)
-        }
         let late = try Terms([.time: .slots([T.slot(22, 23)]), .activity: .keywords([T.keyword("boba")])])
         try await mallory.send(.propose(try Proposal(round: 1, terms: late)), to: b.id, in: conversation)
         _ = try await mallory.openRun(with: b.id, awaitingReply: false)
@@ -59,14 +53,15 @@ import Testing
         return await mallory.inbox.envelopes.dropFirst(before).map(\.body.kind)
     }
 
-    // MARK: Finding 2: what B hears does not depend on C
+    // MARK: One-to-one: what a friend hears never depends on another friend
 
     @Test func whatAMemberHearsIsTheSameWithOrWithoutAnotherInterestedFriend() async throws {
         let with = try await Self.membersTranscript(otherFriendIsUp: true)
         let without = try await Self.membersTranscript(otherFriendIsUp: false)
         #expect(with.kinds == without.kinds, "with C \(with.kinds), without \(without.kinds)")
-        #expect(with.checks == 1 && without.checks == 1)
-        // The proposal reaches B on the same fixed schedule.
+        // No audience check, or anything else, about other friends.
+        #expect(with.checks == 0 && without.checks == 0)
+        // The proposal reaches B as soon as B's own answers are in.
         let gap = abs((with.proposedAt - without.proposedAt) / .milliseconds(1))
         #expect(gap < 250, "proposal time differs by \(gap) ms")
     }
@@ -74,15 +69,13 @@ import Testing
     struct Transcript: Sendable {
         /// Kinds A sent B, repeats of the same kind collapsed (retries).
         let kinds: [MessageBody.Kind]
-        /// Audience checks A started with B.
+        /// PSI sessions A started with B beyond the first.
         let checks: Int
         /// When A's proposal reached B, after A took the request on.
         let proposedAt: Duration
     }
 
-    /// A asks B and C; B asks only A; C, when up for it, asks only A. B
-    /// and C did not ask each other, so the check excludes C, and B gets a
-    /// plan for two either way.
+    /// A asks B and C, each on its own; B asks A; C, when up for it, asks A.
     static func membersTranscript(otherFriendIsUp: Bool) async throws -> Transcript {
         let world = World(3)
         try await world.start()
@@ -90,7 +83,7 @@ import Testing
         let (a, b, c) = (world["A"], world["B"], world["C"])
         let clock = ContinuousClock()
         let started = clock.now
-        _ = try await a.down(for: ["boba"], with: [b, c])
+        _ = try await a.downEach(for: ["boba"], with: [b, c])
         let bs = try await b.down(for: ["boba"], with: [a])
         if otherFriendIsUp { _ = try await c.down(for: ["boba"], with: [a]) }
         try await b.waitForProposal(bs)
@@ -99,12 +92,8 @@ import Testing
         let toB = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id }
         var kinds: [MessageBody.Kind] = []
         for kind in toB.map(\.body.kind) where kinds.last != kind { kinds.append(kind) }
-        let firstPSI = toB.first { if case .psi = $0.body { true } else { false } }
-        let checks = Set(toB.compactMap { envelope -> UUID? in
-            guard case .psi(let frame) = envelope.body, case .psi(let first)? = firstPSI?.body, frame.session != first.session else { return nil }
-            return frame.session
-        }).count
-        return Transcript(kinds: kinds, checks: checks, proposedAt: proposedAt)
+        let sessions = Set(toB.compactMap { envelope -> UUID? in if case .psi(let frame) = envelope.body { frame.session } else { nil } })
+        return Transcript(kinds: kinds, checks: max(0, sessions.count - 1), proposedAt: proposedAt)
     }
 
     // MARK: Finding 5 (lane part): a restart does not refill the run cap
@@ -220,7 +209,7 @@ import Testing
         await observe()
         if starterPasses {
             try await Task.sleep(for: .milliseconds(150))
-            try await a.service.answer(mine, with: .pass)
+            try await a.pass(mine)
         }
         // The window is 2 s; watch for a second more.
         let until = clock.now.advanced(by: .seconds(3))
@@ -237,32 +226,36 @@ import Testing
         return Delivered(kinds: kinds, count: seen.count, lastAfterFirst: first.duration(to: last))
     }
 
-    // MARK: Final privacy review, finding 2: a friend outside C's audience
+    // MARK: Focused review of 1d52e7b: toggle another friend's interest
 
-    @Test func whatCHearsDoesNotDependOnAFriendOutsideItsAudience() async throws {
-        let bAsksOnlyA = try await Self.cTranscript(bIsUp: true)
-        let bHasNoRequest = try await Self.cTranscript(bIsUp: false)
-        #expect(bAsksOnlyA.terms == bHasNoRequest.terms)
-        #expect(bAsksOnlyA.participants == ["A", "C"] && bHasNoRequest.participants == ["A", "C"])
-        #expect(bAsksOnlyA.kinds == bHasNoRequest.kinds, "B up \(bAsksOnlyA.kinds), B not \(bHasNoRequest.kinds)")
-        #expect(!bAsksOnlyA.kinds.contains(.reject) && !bHasNoRequest.kinds.contains(.reject))
-        #expect(abs(bAsksOnlyA.proposals - bHasNoRequest.proposals) <= 1, "B up \(bAsksOnlyA.proposals), B not \(bHasNoRequest.proposals)")
-        let gap = abs((bAsksOnlyA.firstProposalAt - bHasNoRequest.firstProposalAt) / .milliseconds(1))
+    /// A < B < C. A asks B and C, each on its own; C asks A and B. B either
+    /// asks only A or has no request at all, and C never answers its card.
+    /// Everything that reaches C is the same either way: the same kinds in
+    /// the same order, the same plan, as many proposals, at the same times.
+    @Test func whatCHearsDoesNotDependOnAnotherFriendsInterest() async throws {
+        let bIsUp = try await Self.cTranscript(bIsUp: true)
+        let bIsNot = try await Self.cTranscript(bIsUp: false)
+        #expect(bIsUp.kinds == bIsNot.kinds, "B up \(bIsUp.kinds), B not \(bIsNot.kinds)")
+        #expect(bIsUp.terms == bIsNot.terms && bIsUp.terms != nil)
+        #expect(bIsUp.participants == ["A", "C"] && bIsNot.participants == ["A", "C"])
+        #expect(!bIsUp.kinds.contains(.reject))
+        #expect(abs(bIsUp.proposals - bIsNot.proposals) <= 1, "B up \(bIsUp.proposals), B not \(bIsNot.proposals)")
+        let gap = abs((bIsUp.firstProposalAt - bIsNot.firstProposalAt) / .milliseconds(1))
         #expect(gap < 250, "the proposal reached C \(gap) ms apart")
+        // And nothing at all from B, either way.
+        #expect(bIsUp.fromB.isEmpty && bIsNot.fromB.isEmpty)
     }
 
     struct CView: Sendable {
         let terms: Terms?
         let participants: [String]?
-        /// Everything that reached C, repeats collapsed.
+        /// Everything A sent C, repeats collapsed.
         let kinds: [MessageBody.Kind]
         let proposals: Int
         let firstProposalAt: Duration
+        let fromB: [MessageBody.Kind]
     }
 
-    /// A < B < C. A asks B and C; C asks A and B. B either asks only A,
-    /// leaving C out, or has no request at all. C never answers its card.
-    /// Returns what reached C in the 1.5 s after its card showed.
     static func cTranscript(bIsUp: Bool) async throws -> CView {
         let world = World(3)
         try await world.start()
@@ -270,21 +263,54 @@ import Testing
         let (a, b, c) = (world["A"], world["B"], world["C"])
         let clock = ContinuousClock()
         let started = clock.now
-        _ = try await a.down(for: ["boba"], with: [b, c])
-        let cs = try await c.down(for: ["boba"], with: [a, b])
+        _ = try await a.downEach(for: ["boba"], with: [b, c])
+        let cs = try await c.downEach(for: ["boba"], with: [a, b])
         if bIsUp { _ = try await b.down(for: ["boba"], with: [a]) }
-        try await c.waitForProposal(cs)
+        try await c.waitForProposal(cs[0])
         let proposedAt = started.duration(to: clock.now)
         try await Task.sleep(for: .milliseconds(1_500))
-        let toC = await world.wire.envelopes.filter { $0.recipient == c.id }
+        let toC = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == c.id }
         var kinds: [MessageBody.Kind] = []
         for kind in toC.map(\.body.kind) where kinds.last != kind { kinds.append(kind) }
-        let card = await c.lifecycle.interaction(cs)?.proposal
+        let card = await c.lifecycle.interaction(cs[0])?.proposal
         let names = [a.id: "A", b.id: "B", c.id: "C"]
         return CView(
             terms: card?.terms, participants: card?.participants.map { names[$0] ?? "?" }, kinds: kinds,
-            proposals: toC.filter { $0.body.kind == .propose }.count, firstProposalAt: proposedAt
+            proposals: toC.filter { $0.body.kind == .propose }.count, firstProposalAt: proposedAt,
+            fromB: await world.wire.envelopes.filter { $0.sender == b.id && $0.recipient == c.id }.map(\.body.kind)
         )
+    }
+
+    // MARK: ADR 0011 amendment 16: a starter's pass goes through the skill
+
+    /// The coordinator hides the card and calls the service; the service
+    /// keeps the proposal on its schedule and reports the pass, and retires
+    /// the conversation, only when that schedule and the window are over.
+    @Test func aStartersPassEndsOnlyWhenItsScheduleDoes() async throws {
+        let world = World(2)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let (a, b) = (world["A"], world["B"])
+        let mine = try await a.down(for: ["boba"], with: [b])
+        _ = try await b.down(for: ["boba"], with: [a])
+        try await a.waitForProposal(mine)
+        let clock = ContinuousClock()
+        let cardShown = clock.now
+        try await a.pass(mine)
+        #expect(await a.lifecycle.hidden.contains(mine))
+        let conversation = try #require(await a.lifecycle.interaction(mine)?.conversation)
+        try await Task.sleep(for: .milliseconds(500))
+        // Still running: not reported, not retired, the proposal still going.
+        #expect(await a.lifecycle.state(mine) == .proposed)
+        #expect(try await !a.ledger.isRetired(conversation))
+        let before = await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.count
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.count > before)
+        // Then the pass, after the window, with the conversation retired first.
+        try await a.waitFor(.ended(.declined), mine)
+        #expect(cardShown.duration(to: clock.now) >= .milliseconds(1_800))
+        #expect(try await a.ledger.isRetired(conversation))
+        await world.expectCleanLifecycles()
     }
 }
 

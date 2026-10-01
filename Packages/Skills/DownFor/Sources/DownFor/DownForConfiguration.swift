@@ -29,20 +29,14 @@ public struct DownForConfiguration: Hashable, Sendable {
     /// PSI runs with one friend per request, in either role, so repeated
     /// runs cannot map all of the owner's free time (ADR 0120).
     public var maxRunsPerPeer: Int
-    /// How long a proposal waits for people to tap I'm in. Friends who have
-    /// not answered by then are left out, and the rest get a new proposal.
+    /// How long a proposal waits for people to tap I'm in, and how long a
+    /// starter's proposal is resent. Friends who have not answered by then
+    /// are left out.
     public var ownerWindow: Duration
     /// Steps that wait on people resend with a doubling interval, up to this.
     public var maxBackoff: Duration
     /// Finished conversations remembered so a late retry gets the same reply.
     public var maxFinishedRuns: Int
-    /// How long a starter gathers friends, from taking the request on,
-    /// before it checks who may share a plan. Fixed, so when a friend hears
-    /// from the starter never depends on other friends (review finding 2).
-    public var gatherWindow: Duration
-    /// How long the check of who may share a plan runs before the starter
-    /// proposes, again fixed.
-    public var vetWindow: Duration
 
     public init(
         retryInterval: Duration = .seconds(5),
@@ -51,9 +45,7 @@ public struct DownForConfiguration: Hashable, Sendable {
         maxRunsPerPeer: Int = 3,
         ownerWindow: Duration = .seconds(15 * 60),
         maxBackoff: Duration = .seconds(60),
-        maxFinishedRuns: Int = 64,
-        gatherWindow: Duration = .seconds(30),
-        vetWindow: Duration = .seconds(15)
+        maxFinishedRuns: Int = 64
     ) {
         precondition(maxAttempts > 0 && maxPlanMinutes >= 30 && maxRunsPerPeer > 0 && ownerWindow > .zero && maxBackoff >= retryInterval)
         self.retryInterval = retryInterval
@@ -63,8 +55,6 @@ public struct DownForConfiguration: Hashable, Sendable {
         self.ownerWindow = ownerWindow
         self.maxBackoff = maxBackoff
         self.maxFinishedRuns = maxFinishedRuns
-        self.gatherWindow = gatherWindow
-        self.vetWindow = vetWindow
     }
 }
 
@@ -78,6 +68,9 @@ public enum DownForError: Error, Hashable, Sendable {
     /// The request has no activity: Down for... always has one (ADR 0017).
     case noActivity
     case noParticipants
+    /// A quiet ask is one friend's own interaction (ADR 0011 amendment 17):
+    /// the app starts one per friend.
+    case oneFriendPerQuietAsk
     case alreadyStarted
     case unknownInteraction
     /// An answer for a proposal that is not the current one.

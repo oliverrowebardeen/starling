@@ -11,7 +11,7 @@ extension DownForService {
     // MARK: - Starting runs
 
     /// Starts the request's run with `peer`, as the starter, if the request
-    /// is still gathering its own group.
+    /// is still looking for its plan.
     func initiate(_ id: InteractionID, with peer: PeerID) async {
         if requests[id]?.record.mode == .invite { return await invite(id, peer) }
         guard canStart(id, with: peer), let request = requests[id] else { return }
@@ -36,10 +36,7 @@ extension DownForService {
     }
 
     private func canStart(_ id: InteractionID, with peer: PeerID) -> Bool {
-        // A friend who turns up after the others is taken on all the same,
-        // as it would be if nobody else had: whether it is depends on no
-        // one else's answer (final privacy review, finding 2).
-        guard let request = requests[id], request.isTakingFriends, request.engagement == .hub,
+        guard let request = requests[id], request.isGathering, request.engagement == .hub, request.group == nil,
               request.record.participants.contains(peer), !request.settled.contains(peer), !request.unsupported.contains(peer),
               reachable.contains(peer), request.runs[peer, default: 0] < configuration.maxRunsPerPeer
         else { return false }
@@ -59,7 +56,7 @@ extension DownForService {
             // Only a quiet request answers a quiet ask: one sent as an
             // invitation is not up for matching (review finding 3).
             .filter {
-                $0.record.mode == .askQuietly && $0.isGathering && $0.group == nil && $0.vettings.isEmpty
+                $0.record.mode == .askQuietly && $0.isGathering && $0.group == nil
                     && $0.record.participants.contains(peer) && !$0.settled.contains(peer) && !$0.unsupported.contains(peer)
             }
             .sorted { $0.mirror.createdAt < $1.mirror.createdAt }
@@ -68,7 +65,7 @@ extension DownForService {
                 enqueue(.start(request.id), for: peer)
                 return
             }
-            // Committed to a lower starter already: that group comes first.
+            // Already answering this friend in another conversation.
             if case .member(let current) = request.engagement, current.peer < peer { continue }
             // Our own run with this friend gives way to theirs. Only a run we
             // started that the friend never answered is given back to the
@@ -152,10 +149,6 @@ extension DownForService {
     private func dispatch(_ envelope: Envelope, in key: RunKey) async {
         guard let run = runs[key] else { return }
         switch envelope.body {
-        case .psi(let frame) where run.role == .hub && run.phase == .vetting && frame.session == run.vetting?.session:
-            await handleVettingReply(frame, in: key)
-        case .psi(let frame) where run.role == .member && frame.step >= Self.vettingStep:
-            await answerVetting(frame, envelope: envelope, in: key)
         case .psi(let frame) where run.role == .member && frame.step == 0 && frame.session != run.psiSessionID
             && (run.phase == .psi || run.phase == .details):
             // The starter began this run again, after a restart: its old
@@ -224,8 +217,8 @@ extension DownForService {
             guard run.overlap != nil else { return end(key, .failed) }
             await askDetails(in: key)
         case .member:
-            // One deadline for the whole wait: the starter gathers every
-            // friend before it proposes.
+            // One deadline for the whole wait for the starter's query and
+            // proposal.
             await transmit([], in: key, awaitingReply: false, attemptLimit: 4 * configuration.maxAttempts)
         }
     }
@@ -284,29 +277,19 @@ extension DownForService {
         await transmit([body], in: key, awaitingReply: false, keepDeadline: true)
     }
 
-    /// Commits the request to the starter of run `key`, if it may: a request
-    /// joins at most one group, and prefers the lowest starter. Joining
-    /// another starter's group stops the request's own group, and moving to
-    /// a lower starter leaves a higher one. Each friend left behind is told
-    /// "no plan". A request with a card from a group stays with it.
+    /// Commits the request to its friend's run `key`, the one that proved
+    /// overlap first. Our own run with that friend, if any, gives way
+    /// silently; a quiet ask has no other friend to tell anything.
     private func engage(_ id: InteractionID, in key: RunKey) -> Bool {
         guard let request = requests[id], request.group == nil else { return false }
         switch request.engagement {
-        case .member(let current) where current == key:
-            return true
         case .member(let current):
-            guard key.peer < current.peer, request.mirror.proposal == nil else { return false }
-            if let old = runs[current] { enqueue(.notify(old.notice, .noOverlap), for: current.peer) }
-            requests[id]?.engagement = .member(key)
-            end(current, .yielded, react: false)
+            return current == key
         case .hub:
             requests[id]?.engagement = .member(key)
-            for other in runs.values where other.request == id && other.role == .hub {
-                if other.phase != .psi { enqueue(.notify(other.notice, .noOverlap), for: other.key.peer) }
-                end(other.key, .yielded, react: false)
-            }
+            for other in runs.values where other.request == id && other.role == .hub { end(other.key, .yielded, react: false) }
+            return true
         }
-        return true
     }
 
     private func handleAnswer(_ answer: Answer, in key: RunKey) {
@@ -321,14 +304,14 @@ extension DownForService {
         }
         run.pendingQueries.remove(issue)
         if run.pendingQueries.isEmpty {
-            // Answers are in. Nothing to resend; the group decision is local.
+            // Answers are in. Nothing to resend; the plan is made here.
             run.phase = .ready
             run.outstanding = []
             run.timerToken += 1
             timers.removeValue(forKey: key)?.cancel()
         }
         runs[key] = run
-        if run.phase == .ready { considerProposing(run.request) }
+        if run.phase == .ready { propose(in: key) }
     }
 
     // MARK: - Member: proposals and confirmation
@@ -354,12 +337,10 @@ extension DownForService {
             guard proposal.round >= highest else { return }
             if proposal.round == highest, run.terms != terms { return }
         }
-        // A roster may name only friends this owner's own request includes
-        // (review of PR #56, finding 1); a plan that names anyone else is
-        // refused like any other no.
+        // A quiet ask is between two people, so its plan names nobody else
+        // (ADR 0011 amendment 17); one that does is refused like any no.
         let roster = DownForProfile.roster(of: terms, hub: key.peer, member: localPeer) ?? []
-        let allowed = Set(request.record.participants + [localPeer])
-        guard roster.allSatisfy(allowed.contains),
+        guard terms[.people] == nil,
               request.profile.permits(terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now()) else {
             // Not a plan this owner can be in: no card, and the starter
             // carries on without us. It reads as an ordinary no, and while
@@ -423,11 +404,11 @@ extension DownForService {
     }
 
     /// A member's run ended without a plan. With a card already shown, the
-    /// request ends as nobody up; otherwise it goes back to its own group.
+    /// request ends as nobody up; otherwise it starts its own run again.
     func memberRunEnded(_ key: RunKey, request id: InteractionID) {
         guard let request = requests[id] else { return }
-        // A run we were only answering: our own group may go ahead now.
-        guard request.engagement == .member(key) else { return considerProposing(id) }
+        // A run we were only answering, never committed to.
+        guard request.engagement == .member(key) else { return checkSettled(id) }
         if request.mirror.proposal != nil {
             endRequest(id, with: .noAgreement)
             return
@@ -464,23 +445,9 @@ extension DownForService {
         case .accept:
             guard run.role == .member, run.phase == .accepted, let terms = run.terms, let proposal = run.proposalEnvelopes.last else { return }
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)
-        case .vet(let others):
-            guard run.role == .hub, run.phase == .vetting else { return }
-            // Padded to a fixed size, and sent even with nobody in it, so a
-            // member cannot tell from it whether anyone else is up for it.
-            let tokens = FriendTokens(others, size: FriendTokens.starterSetSize)
-            guard let session = try? psi.makeSession(role: .initiator, localSet: tokens.elements, configuration: FriendTokens.starterConfiguration()),
-                  case .send(let payload)? = try? await session.start(), runs[key]?.phase == .vetting
-            else { return end(key, .failed) }
-            let id = UUID()
-            var inputs: [IssueKey: IssueValue] = [:]
-            if let people = try? IssueValue.peers(others).validated() { inputs[.people] = people }
-            runs[key]?.vetting = (id, session, tokens)
-            runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: inputs), interaction: run.request)
-            guard let frame = try? PSIFrame(session: id, step: Self.vettingStep, payload: payload) else { return end(key, .failed) }
-            await transmit([.psi(frame)], in: key, awaitingReply: true)
         case .confirm:
-            // The group's terms: for an invitation, with the roster added.
+            // The plan's terms: for an invitation, with the roster of
+            // whoever said I'm in.
             if run.role == .hub, let terms = request.group?.terms, let proposal = run.acceptedProposal {
                 _ = await send(.accept(Acceptance(proposal: proposal, terms: terms)), in: key)
             }
@@ -488,53 +455,5 @@ extension DownForService {
             // member who missed it retries, and gets the cached reply.
             confirmationSent(run.request, to: key.peer)
         }
-    }
-
-    // MARK: - Who may share a plan (review of PR #56, finding 1)
-
-    /// The audience check's PSI frames use steps 100 and 101, apart from the
-    /// time PSI's, so a member tells a check from a starter beginning its
-    /// run again.
-    static let vettingStep: UInt8 = 100
-
-    /// The member's answer to the starter's audience check: which of the
-    /// starter's candidates this request includes. Only for the starter
-    /// this request is committed to, and at most twice per run.
-    private func answerVetting(_ frame: PSIFrame, envelope: Envelope, in key: RunKey) async {
-        guard let run = runs[key], frame.step == Self.vettingStep, run.phase == .details,
-              run.vetCount < Self.maxVettingRounds, let request = requests[run.request], request.engagement == .member(key)
-        else { return }
-        runs[key]?.vetCount += 1
-        let tokens = FriendTokens(request.record.participants, size: FriendTokens.memberSetSize)
-        guard let session = try? psi.makeSession(role: .responder, localSet: tokens.elements, configuration: FriendTokens.memberConfiguration()),
-              case .finish(let payload?, let result)? = try? await session.handle(frame.payload), runs[key] != nil,
-              let reply = try? PSIFrame(session: frame.session, step: Self.vettingStep + 1, payload: payload)
-        else { return }
-        // What the reply discloses: the starter's candidates this request
-        // includes, when the provider tells this side.
-        var inputs: [IssueKey: IssueValue] = [:]
-        if case .intersection(let shared)? = result, let people = try? IssueValue.peers(Array(tokens.friends(in: shared)).sorted()).validated() {
-            inputs[.people] = people
-        }
-        runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: inputs), interaction: run.request)
-        runs[key]?.replies[.psi(step: frame.step, payload: frame.payload)] = .psi(reply)
-        _ = await send(.psi(reply), in: key)
-    }
-
-    private func handleVettingReply(_ frame: PSIFrame, in key: RunKey) async {
-        guard let run = runs[key], let vetting = run.vetting, frame.step == Self.vettingStep + 1 else { return }
-        guard case .finish(_, .intersection(let shared)?)? = try? await vetting.psi.handle(frame.payload),
-              let current = runs[key], current.phase == .vetting, current.vetting?.session == vetting.session
-        else { return end(key, .failed) }
-        let asked = Set(vetting.tokens.friends(in: vetting.tokens.elements))
-        runs[key]?.allowed.formUnion(vetting.tokens.friends(in: shared))
-        runs[key]?.vettedAgainst.formUnion(asked)
-        runs[key]?.vetting = nil
-        runs[key]?.phase = .ready
-        runs[key]?.outstanding = []
-        runs[key]?.timerToken += 1
-        timers.removeValue(forKey: key)?.cancel()
-        // The proposal waits for the end of the check's window, not for
-        // the last reply (review finding 2).
     }
 }

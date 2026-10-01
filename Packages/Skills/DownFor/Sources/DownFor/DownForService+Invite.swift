@@ -2,10 +2,11 @@ import Foundation
 import StarlingCore
 import StarlingNegotiation
 
-// Invite mode (ADR 0020, ADR 0210 decisions 18 to 21): the starter's plan
+// Invite mode (ADR 0020, ADR 0210 decisions 19 to 22): the starter's plan
 // goes straight to each friend as a card, with the roster of everyone
 // invited when there are two or more. No mutual reveal: an invitation is
-// meant to be seen. The starter keeps whoever said I'm in, then confirms.
+// meant to be seen, and it is how a group plan is made (ADR 0011
+// amendment 17). The starter keeps whoever said I'm in, then confirms.
 
 extension DownForService {
     /// How many live invitation cards one friend can put on this phone at

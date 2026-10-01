@@ -8,8 +8,8 @@ import StarlingNegotiation
 /// (ARCHITECTURE rule 6).
 ///
 /// A Down for... plan has exactly one time slot, one or more activity
-/// keywords, an optional budget cap, and, for a group of three or more, the
-/// roster under `people` with the plan's starter first. A pair's roster is
+/// keywords, an optional budget cap, and, for an invitation to a group of
+/// three or more, the roster under `people` with the plan's starter first. A pair's roster is
 /// the two ends of the conversation, so it is not sent: a People topic set
 /// to Ask me then raises no sheet for "you and Maya". Nothing else.
 struct DownForProfile: Sendable {

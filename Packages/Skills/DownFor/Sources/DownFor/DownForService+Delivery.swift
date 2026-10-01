@@ -4,8 +4,8 @@ import StarlingCore
 // How a starter's proposal reaches a friend (final privacy review of PR
 // #56, finding 1): on a schedule fixed when it is first sent. It is resent
 // with backoff until the owner window ends, whatever the starter's owner
-// does meanwhile: passing, saying I'm in, or the plan forming with others.
-// It stops early only when that friend says I'm in itself. So a friend can
+// does meanwhile: passing or saying I'm in. It stops early only when that
+// friend says I'm in itself. So a friend can
 // never count its way to the starter's answer.
 
 /// One proposal on its way to one friend.

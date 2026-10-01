@@ -30,7 +30,7 @@ public enum DownFor {
         // Place and budget are read from the owner's words as chips but
         // never sent: Pick a place agrees on venues (ADR 0012), and budget
         // stays on the phone (ADR 0019 makes Never its default). The roster
-        // travels under people once a group plan forms.
+        // travels under people only in an invitation to a group.
         topicsUsed: [.time, .activity, .place, .budget, .people],
         topicsRequired: [.time, .activity],
         accepts: [.timeSlot],

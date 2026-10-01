@@ -56,10 +56,12 @@ import Testing
 
         // B is down, but at another time; C has no request at all.
         _ = try await b.down(for: ["boba"], time: [T.slot(22, 23)], with: [a])
-        let mine = try await a.down(for: ["boba"], time: [T.slot(19, 21)], with: [b, c], expires: T.at(21))
+        let mine = try await a.downEach(for: ["boba"], time: [T.slot(19, 21)], with: [b, c], expires: T.at(21))
 
-        try await a.waitFor(.ended(.nobodyUp), mine)
-        #expect(await !a.lifecycle.reached(.proposed, mine))
+        for id in mine {
+            try await a.waitFor(.ended(.nobodyUp), id)
+            #expect(await !a.lifecycle.reached(.proposed, id))
+        }
         // C never answered, ran the model, or saw anything.
         #expect(await c.lifecycle.events.isEmpty)
         #expect(await world.wire.sent(by: c.id).isEmpty)
@@ -68,105 +70,100 @@ import Testing
         await world.expectCleanLifecycles()
     }
 
-    @Test func aThreePersonPlanAgreesOnTheSameRoster() async throws {
+    /// A group plan is an explicit step (ADR 0011 amendment 17): A matches
+    /// with B and with C, each on its own, then invites both, and the
+    /// invitation names everyone.
+    @Test func aGroupPlanIsAnInvitationAfterTheMatches() async throws {
         let world = World(3)
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b, c) = (world["A"], world["B"], world["C"])
 
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba", "tacos"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        let phones = [a, b, c]
-        for (phone, id) in zip(phones, ids) {
-            try await eventually("\(phone.name) sees all three") {
-                await phone.lifecycle.interaction(id)?.proposal?.participants.count == 3
-            }
+        let mine = try await a.downEach(for: ["boba"], with: [b, c])
+        let bs = try await b.down(for: ["boba"], with: [a])
+        let cs = try await c.down(for: ["boba"], with: [a])
+        for (phone, id) in [(a, mine[0]), (a, mine[1]), (b, bs), (c, cs)] {
+            try await phone.waitForProposal(id)
+            // Each match is its own card, for two.
+            #expect(await phone.lifecycle.interaction(id)?.proposal?.participants.count == 2)
+            try await phone.imIn(id)
         }
-        for (phone, id) in zip(phones, ids) { try await phone.imIn(id) }
-        for (phone, id) in zip(phones, ids) { try await phone.waitFor(.planned, id) }
+        for (phone, id) in [(a, mine[0]), (a, mine[1]), (b, bs), (c, cs)] { try await phone.waitFor(.planned, id) }
 
-        var rosters: Set<[PeerID]> = []
-        var origins: Set<ConversationID> = []
-        for (phone, id) in zip(phones, ids) {
-            let plan = try #require(await phone.lifecycle.interaction(id)?.plan)
-            rosters.insert(plan.attendees.peers)
-            origins.insert(plan.origin)
+        // Then A invites the friends it matched with, as a group.
+        let group = try await a.down(for: ["boba"], with: [b, c], mode: .invite)
+        var invitations: [InteractionID] = []
+        for phone in [b, c] {
+            try await eventually("\(phone.name)'s invitation") { await !phone.lifecycle.invitations.isEmpty }
+            let id = try #require(await phone.lifecycle.invitations.first)
+            try await phone.waitForProposal(id)
+            #expect(await phone.lifecycle.interaction(id)?.proposal?.participants == [a.id, b.id, c.id])
+            try await phone.imIn(id)
+            invitations.append(id)
         }
-        // The lowest starter's group carries everyone, in one roster.
-        #expect(rosters == [[a.id, b.id, c.id]])
-        #expect(origins.count == 1)
+        try await a.waitForProposal(group)
+        #expect(await a.lifecycle.interaction(group)?.proposal?.participants == [a.id, b.id, c.id])
+        try await a.imIn(group)
+        try await a.waitFor(.planned, group)
+        for (phone, id) in zip([b, c], invitations) {
+            try await phone.waitFor(.planned, id)
+            #expect(await phone.lifecycle.interaction(id)?.plan?.attendees.peers == [a.id, b.id, c.id])
+        }
         await world.expectCleanLifecycles()
     }
 
-    /// A pass and no answer at all look the same to the others: in what
-    /// crosses the wire, in what the starter's lifecycle shows, and in when
-    /// the group moves on (the owner window), not just in what is shown
-    /// (review of PR #56, finding 4).
-    @Test func aPassIsInvisibleToOthers() async throws {
-        let passed = try await Self.groupWhereCLeaves(byPassing: true)
-        let silent = try await Self.groupWhereCLeaves(byPassing: false)
-        // Nothing C sent after its card differs between the two.
+    /// A pass and no answer at all look the same to the starter: in what
+    /// crosses the wire, in what its lifecycle shows, and in when it ends
+    /// (the owner window), not just in what is shown (review of PR #56,
+    /// finding 4).
+    @Test func aPassIsInvisibleToTheStarter() async throws {
+        let passed = try await Self.pairWhereBLeaves(byPassing: true)
+        let silent = try await Self.pairWhereBLeaves(byPassing: false)
+        // Nothing B sent after its card differs between the two.
         #expect(passed.afterCard.isEmpty && silent.afterCard.isEmpty)
         #expect(passed.startersEvents == silent.startersEvents)
-        // Both re-plans waited for the window, not for C.
-        #expect(passed.replanAfter >= .milliseconds(1_800) && silent.replanAfter >= .milliseconds(1_800))
+        // Both ended when the window passed, not when B answered.
+        #expect(passed.endedAfter >= .milliseconds(1_800) && silent.endedAfter >= .milliseconds(1_800))
     }
 
     struct Departure: Sendable {
         let afterCard: [MessageBody.Kind]
         let startersEvents: [String]
-        let replanAfter: Duration
+        let endedAfter: Duration
     }
 
-    /// A, B, and C are all down; A and B say I'm in; C passes or never
-    /// answers. Returns what C sent after its card, A's lifecycle event
-    /// kinds, and how long A took to re-plan for two.
-    static func groupWhereCLeaves(byPassing: Bool) async throws -> Departure {
-        let world = World(3)
+    /// A and B are both down; A says I'm in; B passes or never answers.
+    /// Returns what B sent after its card, A's lifecycle event kinds, and
+    /// how long A's request took to end.
+    static func pairWhereBLeaves(byPassing: Bool) async throws -> Departure {
+        let world = World(2)
         try await world.start()
         defer { Task { await world.stop() } }
-        let (a, b, c) = (world["A"], world["B"], world["C"])
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        for (phone, id) in zip([a, b, c], ids) { try await phone.waitForProposal(id) }
-        let sentBefore = await world.wire.sent(by: c.id).count
+        let (a, b) = (world["A"], world["B"])
+        let mine = try await a.down(for: ["boba"], with: [b])
+        let theirs = try await b.down(for: ["boba"], with: [a])
+        try await a.waitForProposal(mine)
+        try await b.waitForProposal(theirs)
+        let sentBefore = await world.wire.sent(by: b.id).count
         let clock = ContinuousClock()
         let cardShown = clock.now
-        try await a.imIn(ids[0])
-        try await b.imIn(ids[1])
+        try await a.imIn(mine)
         if byPassing {
-            try await c.service.answer(ids[2], with: .pass)
-            try await c.waitFor(.ended(.declined), ids[2])
+            try await b.pass(theirs)
+            try await b.waitFor(.ended(.declined), theirs)
         }
-
-        // A and B just get a plan without C: no event says why.
-        try await a.waitForProposal(ids[0], revision: 2)
-        let replanAfter = cardShown.duration(to: clock.now)
-        try await b.waitForProposal(ids[1], revision: 2)
-        for (phone, id) in [(a, ids[0]), (b, ids[1])] {
-            #expect(await phone.lifecycle.interaction(id)?.proposal?.participants == [a.id, b.id])
-        }
-        try await a.imIn(ids[0])
-        try await b.imIn(ids[1])
-        try await a.waitFor(.planned, ids[0])
-        try await b.waitFor(.planned, ids[1])
-        #expect(await a.lifecycle.interaction(ids[0])?.plan?.attendees.peers == [a.id, b.id])
+        try await a.waitFor(.ended(.nobodyUp), mine)
+        let endedAfter = cardShown.duration(to: clock.now)
         await world.expectCleanLifecycles()
 
-        let afterCard = await world.wire.sent(by: c.id).dropFirst(sentBefore).map(\.body.kind)
+        let afterCard = await world.wire.sent(by: b.id).dropFirst(sentBefore).map(\.body.kind)
         let events = await a.lifecycle.lifecycleEvents.map { event -> String in
             switch event {
             case .proposalReady(let proposal): "proposalReady(\(proposal.revision), \(proposal.participants.count))"
             default: "\(event)"
             }
         }
-        return Departure(afterCard: afterCard, startersEvents: events, replanAfter: replanAfter)
+        return Departure(afterCard: afterCard, startersEvents: events, endedAfter: endedAfter)
     }
 
     @Test func aPeerWithoutTheSkillIsReportedAsUnsupported() async throws {
@@ -184,8 +181,8 @@ import Testing
         try await a.waitFor(.ended(.unsupported), alone)
         #expect(await world.wire.sent(by: a.id).filter { $0.recipient == b.id }.isEmpty)
 
-        // With C, B is left out and the plan goes ahead.
-        let mine = try await a.down(for: ["boba"], with: [b, c])
+        // A's ask of C is its own interaction, and goes ahead.
+        let mine = try await a.down(for: ["boba"], with: [c])
         let theirs = try await c.down(for: ["boba"], with: [a])
         try await a.waitForProposal(mine)
         #expect(await a.lifecycle.interaction(mine)?.proposal?.participants == [a.id, c.id])
@@ -198,50 +195,40 @@ import Testing
     }
 
     @Test func aStaleImInNeverAcceptsNewerTerms() async throws {
-        let world = World(3)
+        let world = World(1)
         try await world.start()
         defer { Task { await world.stop() } }
-        let (a, b, c) = (world["A"], world["B"], world["C"])
+        let b = world["A"]
+        let mallory = try Mallory(hub: world.hub)
+        try await mallory.start()
+        defer { Task { await mallory.stop() } }
+        let mine = try await b.down(for: ["boba"], with: [], extraParticipants: [mallory.id])
+        let conversation = try await mallory.findSharedTime(with: b.id)
+        try await mallory.send(.query(try Query(issue: .activity, candidates: .keywords([T.keyword("boba")]))), to: b.id, in: conversation)
+        _ = try await mallory.next(.answer, in: conversation)
 
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        for (phone, id) in zip([a, b, c], ids) { try await phone.waitForProposal(id) }
-        let first = try #require(await b.lifecycle.interaction(ids[1])?.proposal)
-
-        // A and B say I'm in; C never answers, so after the window A
-        // re-plans and B's card moves to a new revision.
-        try await a.imIn(ids[0])
-        try await b.imIn(ids[1])
-        try await b.waitForProposal(ids[1], revision: first.revision + 1)
-        let second = try #require(await b.lifecycle.interaction(ids[1])?.proposal)
-        #expect(second.terms != first.terms)
+        // The starter proposes, then proposes again in a later round: B's
+        // card moves to a new revision.
+        let firstTerms = try Terms([.time: .slots([T.slot(19.5, 20.5)]), .activity: .keywords([T.keyword("boba")])])
+        let secondTerms = try Terms([.time: .slots([T.slot(20.5, 21.5)]), .activity: .keywords([T.keyword("boba")])])
+        try await mallory.send(.propose(try Proposal(round: 0, terms: firstTerms)), to: b.id, in: conversation)
+        try await b.waitForProposal(mine)
+        let first = try #require(await b.lifecycle.interaction(mine)?.proposal)
+        try await mallory.send(.propose(try Proposal(round: 1, terms: secondTerms)), to: b.id, in: conversation)
+        try await b.waitForProposal(mine, revision: first.revision + 1)
+        let second = try #require(await b.lifecycle.interaction(mine)?.proposal)
 
         // A tap on the old card is refused by the service and by the lifecycle.
         await #expect(throws: DownForError.staleProposal(current: second.revision)) {
-            try await b.service.answer(ids[1], with: .accept(proposal: first.revision))
+            try await b.service.answer(mine, with: .accept(proposal: first.revision))
         }
-        var copy = try #require(await b.lifecycle.interaction(ids[1]))
+        var copy = try #require(await b.lifecycle.interaction(mine))
         #expect(throws: StaleProposal.self) { try copy.apply(.ownerAccepted(revision: first.revision), at: Timestamp(T.now)) }
 
-        // A's own "I'm in" again, and B's old acceptance still on the wire,
-        // confirm nothing for B.
-        try await a.waitForProposal(ids[0], revision: 2)
-        try await a.imIn(ids[0])
-        try await Task.sleep(for: .milliseconds(150))
-        #expect(await b.lifecycle.state(ids[1]) == .proposed)
-        #expect(await !a.lifecycle.reached(.planned, ids[0]))
-
-        try await b.imIn(ids[1])
-        try await b.waitFor(.planned, ids[1])
-        #expect(await b.lifecycle.interaction(ids[1])?.plan?.attendees.peers == [a.id, b.id])
-        // A confirmed only the terms of the card B tapped last.
-        let confirmations = await world.wire.sent(by: a.id).filter { $0.recipient == b.id }.compactMap { envelope -> Terms? in
-            if case .accept(let acceptance) = envelope.body { acceptance.terms } else { nil }
-        }
-        #expect(!confirmations.isEmpty && confirmations.allSatisfy { $0 == second.terms })
+        // B's I'm in names only the terms of the card B tapped.
+        try await b.imIn(mine)
+        let accept = try await mallory.next(.accept, in: conversation)
+        if case .accept(let acceptance) = accept.body { #expect(acceptance.terms == secondTerms) }
         await world.expectCleanLifecycles()
     }
 }

@@ -7,65 +7,42 @@ import Testing
 
 /// Core v2.1 (ADRs 0019 and 0020) and review finding 1, over LoopbackHub.
 @Suite(.timeLimit(.minutes(1))) struct SendModeAndAudienceTests {
-    // MARK: Finding 1: rosters name only friends each member asked
+    // MARK: Quiet asks are one-to-one (ADR 0011 amendment 17)
 
-    @Test func friendsWhoDidNotAskEachOtherAreNeverNamedToEachOther() async throws {
+    @Test func aQuietAskTakesOneFriend() async throws {
         let world = World(3)
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b, c) = (world["A"], world["B"], world["C"])
-        // A asks both; B and C each ask only A.
-        let mine = try await a.down(for: ["boba"], with: [b, c])
-        let bs = try await b.down(for: ["boba"], with: [a])
-        let cs = try await c.down(for: ["boba"], with: [a])
-        try await a.waitForProposal(mine)
-        try await Task.sleep(for: .milliseconds(200))
+        await #expect(throws: DownForError.oneFriendPerQuietAsk) {
+            try await a.down(for: ["boba"], with: [b, c])
+        }
+    }
 
-        // A's plan is a pair, and nobody's card or envelope names B and C
-        // together.
-        let card = try #require(await a.lifecycle.interaction(mine)?.proposal)
-        #expect(card.participants.count == 2)
+    @Test func friendsWhoAllAskEachOtherStillMatchInPairs() async throws {
+        let world = World(3)
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let (a, b, c) = (world["A"], world["B"], world["C"])
+        let asks = [
+            (a, try await a.downEach(for: ["boba"], with: [b, c])),
+            (b, try await b.downEach(for: ["boba"], with: [a, c])),
+            (c, try await c.downEach(for: ["boba"], with: [a, b])),
+        ]
+        for (phone, ids) in asks {
+            for id in ids {
+                try await phone.waitForProposal(id)
+                #expect(await phone.lifecycle.interaction(id)?.proposal?.participants.count == 2)
+            }
+        }
+        // Nothing on the wire names a third person.
         for envelope in await world.wire.envelopes {
             if case .propose(let proposal) = envelope.body { #expect(proposal.terms[.people] == nil) }
         }
-        // Each is offered its own pair, whoever else is up for it (final
-        // privacy review, finding 2), and only A's plan is made: with
-        // whichever of them A's card shows.
-        try await b.waitForProposal(bs)
-        try await c.waitForProposal(cs)
-        let cards = [await b.lifecycle.interaction(bs)?.proposal, await c.lifecycle.interaction(cs)?.proposal].compactMap { $0 }
-        #expect(cards.map(\.participants) == [[a.id, b.id], [a.id, c.id]])
-        let chosen = try #require(card.participants.last)
-        let (inIt, leftOut) = chosen == b.id ? ((b, bs), (c, cs)) : ((c, cs), (b, bs))
-        try await a.imIn(mine)
-        try await b.imIn(bs)
-        try await c.imIn(cs)
-        try await a.waitFor(.planned, mine)
-        try await inIt.0.waitFor(.planned, inIt.1)
-        #expect(await a.lifecycle.interaction(mine)?.plan?.attendees.peers == [a.id, chosen])
-        // The other hears nothing more, as from a starter who never answered.
-        try await leftOut.0.waitFor(.ended(.nobodyUp), leftOut.1)
         await world.expectCleanLifecycles()
     }
 
-    @Test func friendsWhoAskedEachOtherAreGrouped() async throws {
-        // The control: with everyone asking everyone, one group of three.
-        let world = World(3)
-        try await world.start()
-        defer { Task { await world.stop() } }
-        let (a, b, c) = (world["A"], world["B"], world["C"])
-        let ids = [
-            try await a.down(for: ["boba"], with: [b, c]),
-            try await b.down(for: ["boba"], with: [a, c]),
-            try await c.down(for: ["boba"], with: [a, b]),
-        ]
-        for (phone, id) in zip([a, b, c], ids) {
-            try await eventually("\(phone.name) sees three") { await phone.lifecycle.interaction(id)?.proposal?.participants.count == 3 }
-        }
-        await world.expectCleanLifecycles()
-    }
-
-    @Test func aRosterNamingSomeoneTheOwnerDidNotAskIsRefused() async throws {
+    @Test func aQuietPlanThatNamesAnyoneElseIsRefused() async throws {
         let world = World(1)
         try await world.start()
         defer { Task { await world.stop() } }
