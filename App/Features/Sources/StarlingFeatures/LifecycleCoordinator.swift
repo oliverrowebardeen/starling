@@ -446,8 +446,17 @@ public final class LifecycleCoordinator {
             }
             // Through the one writer, so a later opt-out can never be
             // overwritten on disk by this start. Nothing is sent unless the
-            // start is saved (ADR 0011 amendment 13).
-            guard apply(.started, to: link.id, reportedAs: nil, skill: link.skill.id) else { return }
+            // start is saved (ADR 0011 amendment 13). The saved link keeps
+            // only the plan's people as they stand now (P15-E 4.5).
+            var started = link
+            started.setParticipants(due.link.participants)
+            do {
+                try started.apply(.started, at: Timestamp(now()))
+            } catch {
+                drop("\(InteractionEvent.started)", link.id, link.skill.id, .other(String(describing: error)))
+                return
+            }
+            replace(started, before: link)
             await flush()
             if unsaved.contains(link.id) {
                 logger.error("scheduled start not saved; not sent")

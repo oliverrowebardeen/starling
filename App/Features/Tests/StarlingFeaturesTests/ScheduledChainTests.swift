@@ -83,6 +83,22 @@ import Testing
         #expect(await swap.started.isEmpty)
     }
 
+    /// P15-E 4.5: someone who left the plan after the opt-in is left out of
+    /// the started link and its request.
+    @Test func aStartedLinkKeepsOnlyThePlansPeopleAsTheyStandNow() async throws {
+        var (parent, waiting) = try optedIn()
+        let narrower = try Plan(origin: parent.conversation, attendees: Attendees([me, maya]), activity: Keyword("boba"),
+                                time: TimeSlot(start: clock.now, end: clock.now.addingTimeInterval(3600)))
+        parent.record(.plan(narrower))
+        let lifecycle = await coordinator([parent, waiting])
+        clock.advance(3700)
+        for result in due(lifecycle, settings: swapOn) {
+            await lifecycle.applyScheduled(result, rules: .empty, expiresAt: Timestamp(clock.now.addingTimeInterval(3600)))
+        }
+        #expect(lifecycle.interaction(waiting.id)?.participants == [maya])
+        #expect(await swap.started.first?.participants == [maya])
+    }
+
     @Test func nothingStartsBeforeThePlanEnds() async throws {
         let (parent, waiting) = try optedIn()
         let lifecycle = await coordinator([parent, waiting])
