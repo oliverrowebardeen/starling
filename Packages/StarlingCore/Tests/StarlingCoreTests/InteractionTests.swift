@@ -191,6 +191,22 @@ import Testing
         #expect(restored.state == .proposed)
     }
 
+    /// Lane E's request 2b (review of PR #51, item 3).
+    @Test func egressRecordsAreIdempotentAndMarkUnknownItems() throws {
+        var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        let message = MessageID()
+        let record = EgressRecord(at: Self.at(1), recipient: Fixtures.bob, items: [], message: message)
+        interaction.record(record)
+        interaction.record(record)
+        #expect(interaction.egress.count == 1 && interaction.egressIsKnown)
+        interaction.record(EgressRecord(at: Self.at(2), recipient: Fixtures.bob, items: [], message: MessageID(), itemsUnknown: true))
+        #expect(!interaction.egressIsKnown)
+        // Records saved before Core v2.1 have neither field.
+        let old = Data(#"{"at":0,"recipient":"\#(String(repeating: "b", count: 64))","items":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(EgressRecord.self, from: old)
+        #expect(decoded.message == nil && !decoded.itemsUnknown)
+    }
+
     /// Review 2 of PR #45: two sends in one interaction ask at once.
     @Test func overlappingConsentRequestsResumeOnlyWhenAllAreApproved() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))

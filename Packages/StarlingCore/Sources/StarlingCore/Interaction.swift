@@ -297,15 +297,32 @@ public struct EgressRecord: Hashable, Sendable, Codable {
     public let at: Timestamp
     public let recipient: PeerID
     public let items: [DisclosedItem]
+    /// The envelope this records, so a retried write never records a send
+    /// twice, across launches too. Nil on records from before Core v2.1.
+    public let message: MessageID?
+    /// The policy could not say what this send disclosed. While any record
+    /// is unknown, nobody may claim a topic stayed on the phone.
+    public let itemsUnknown: Bool
 
-    public init(at: Timestamp, recipient: PeerID, items: [DisclosedItem]) {
+    public init(at: Timestamp, recipient: PeerID, items: [DisclosedItem], message: MessageID? = nil, itemsUnknown: Bool = false) {
         self.at = at
         self.recipient = recipient
         self.items = items
+        self.message = message
+        self.itemsUnknown = itemsUnknown
     }
 
     /// The topics this send touched.
     public var topics: Set<PrivacyTopic> { Set(items.compactMap { $0.issue.flatMap(PrivacyTopic.init(issue:)) }) }
+
+    private enum CodingKeys: String, CodingKey { case at, recipient, items, message, itemsUnknown }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(at: c.decode(Timestamp.self, forKey: .at), recipient: c.decode(PeerID.self, forKey: .recipient),
+                      items: c.decode([DisclosedItem].self, forKey: .items), message: c.decodeIfPresent(MessageID.self, forKey: .message),
+                      itemsUnknown: c.decodeIfPresent(Bool.self, forKey: .itemsUnknown) ?? false)
+    }
 }
 
 /// One use of one skill, from Compose to Remember, on this phone.
@@ -433,7 +450,16 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         artifacts.append(artifact)
     }
 
-    public mutating func record(_ send: EgressRecord) { egress.append(send) }
+    /// Records a send. A record for an envelope already recorded is ignored,
+    /// so a retried write is safe.
+    public mutating func record(_ send: EgressRecord) {
+        if let message = send.message, egress.contains(where: { $0.message == message }) { return }
+        egress.append(send)
+    }
+
+    /// Whether every send is recorded with known items. Only then can
+    /// What left your phone say a topic stayed on the phone.
+    public var egressIsKnown: Bool { !egress.contains(where: \.itemsUnknown) }
 
     public var plan: Plan? {
         artifacts.lazy.compactMap { if case .plan(let plan) = $0 { plan } else { nil } }.first
