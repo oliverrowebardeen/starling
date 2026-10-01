@@ -33,6 +33,12 @@ struct DeveloperView: View {
             #endif
 
             Section {
+                NavigationLink("Wi-Fi Aware") { WiFiAwareView(app: app) }
+            } footer: {
+                Text("Pair two phones and test the link (lane E2's device checklist).")
+            }
+
+            Section {
                 NavigationLink("Audit log") { AuditLogView(log: LiveServices.auditLog, friends: app.friends?.friends ?? []) }
             } footer: {
                 Text("What this phone handed to a transport since launch.")

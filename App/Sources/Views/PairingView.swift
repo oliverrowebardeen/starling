@@ -1,5 +1,6 @@
 import StarlingCore
 import StarlingFeatures
+import StarlingWiFiAware
 import SwiftUI
 
 /// In-person pairing: both phones show a code, both people check it matches,
@@ -90,22 +91,26 @@ struct PairingView: View {
 
 // MARK: - Lane E2 slot
 
-/// LANE E2 SLOT: the DeviceDiscoveryUI views for picking the other phone go
-/// here once `StarlingWiFiAware` exposes them. The picked device should flow
-/// into the pairing session factory (`AppServices.makePairingSession`), which
-/// will then take the chosen endpoint. Until then this is a placeholder and
-/// Debug builds pair with `ScriptedPairingSession`.
+/// Lane E2's DeviceDiscoveryUI views: one phone lets the other find it, the
+/// other finds it, and the system pairs them. Hidden where Wi-Fi Aware cannot
+/// run. OS pairing only links the devices; Starling's own code check (lane
+/// E1's ceremony, started by "Start pairing") pins the friend's key, and
+/// until E1 is wired Debug builds run it with a test friend.
 struct DeviceDiscoverySlot: View {
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Nearby phones")
-                Text("Picking the other phone arrives with Wi-Fi Aware pairing. This build pairs with a test friend.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+        if WiFiAwareSupport.isSupported {
+            WiFiAwarePairingButtons()
+        } else {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Nearby phones")
+                    Text("This iPhone can't pair over Wi-Fi Aware (it needs an iPhone 12 or later, and not the Simulator). This build pairs with a test friend.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "antenna.radiowaves.left.and.right")
             }
-        } icon: {
-            Image(systemName: "antenna.radiowaves.left.and.right")
         }
     }
 }

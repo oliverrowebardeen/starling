@@ -38,6 +38,13 @@ targets:
       - path: Resources/Starling.icon
         type: file
         buildPhase: resources
+    # Wi-Fi Aware entitlement (ADR 0111). XcodeGen writes the file from
+    # `properties`. The App ID needs the Wi-Fi Aware capability enabled in
+    # the developer portal before a signed device build.
+    entitlements:
+      path: Config/Starling.entitlements
+      properties:
+        com.apple.developer.wifi-aware: [Publish, Subscribe]
     configFiles:
       Debug: Config/Starling.xcconfig
       Release: Config/Starling.xcconfig
@@ -77,6 +84,8 @@ targets:
         product: StarlingTransport
       - package: StarlingTransport
         product: StarlingLocalP2P
+      - package: StarlingTransport
+        product: StarlingWiFiAware
       - package: StarlingAgent
         product: StarlingAgent
       - package: StarlingAgent

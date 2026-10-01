@@ -4,6 +4,7 @@ import StarlingAgent
 import StarlingCore
 import StarlingFeatures
 import StarlingPolicy
+import StarlingWiFiAware
 import UserNotifications
 
 extension AppServices {
@@ -40,6 +41,24 @@ enum LiveServices {
     /// paired friends only; without a store the policy asks.
     static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules) -> any PolicyEngine {
         { rules in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: false, pairedPeers: peers) }
+    }
+
+    /// The Wi-Fi Aware link, or nil where it cannot run (the Simulator,
+    /// iPhones before 12). Only one may exist at a time: an app can publish a
+    /// service once per device (ADR 0111).
+    static func wifiAwareTransport() -> WiFiAwareTransport? {
+        WiFiAwareSupport.isSupported ? WiFiAwareTransport(localPeer: linkTestPeer) : nil
+    }
+
+    /// This phone's ID on test links until lane E1 derives it from the
+    /// identity key. Kept across launches so a relaunched phone shows up
+    /// once on the other phone, not twice (E2 checklist step 10).
+    static var linkTestPeer: PeerID {
+        let key = "dev.linkTestPeer"
+        if let hex = UserDefaults.standard.string(forKey: key), let peer = try? PeerID(hex: hex) { return peer }
+        let peer = PeerID.random()
+        UserDefaults.standard.set(peer.hex, forKey: key)
+        return peer
     }
 
     /// The local record of what left the phone. In memory only, latest 1,000
