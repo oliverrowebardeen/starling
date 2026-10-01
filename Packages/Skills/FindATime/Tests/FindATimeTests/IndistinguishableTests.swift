@@ -6,15 +6,20 @@ import StarlingCore
 import StarlingFakes
 import Testing
 
-/// Review of PR #53, finding 1, and ADR 0019 decision 5: every way a
-/// friend can end up not answering, or not agreeing, looks the same to the
-/// starter. These tests compare the friend's whole envelopes across the
-/// cases: one rejection, reason noOverlap, naming the starter's message,
-/// numbered with no gap (Core v2.1 numbers an envelope only once it is
-/// cleared), sent in the same mode with nothing else.
+/// Reviews of PR #53 (first round, finding 1; second round, findings 2
+/// and 3) and ADR 0019 decision 5: the starter must not be able to tell
+/// why a friend said no, from the envelopes or from their timing.
+/// - While answering, every no is silence: no envelope, whatever the cause,
+///   however often the starter retries. The starter ends at its own answer
+///   deadline, on a clock the test controls.
+/// - At a proposal, a "no plan" follows only the owner's tap and is the same
+///   envelope whatever the tap led to: one rejection, reason noOverlap,
+///   naming the proposal, numbered with no gap (Core v2.1 numbers an
+///   envelope only once it is cleared). A no the agent reaches alone is
+///   silent, like an owner who never answers.
 @Suite(.serialized)
 struct IndistinguishableTests {
-    enum Answering: CaseIterable { case busy, refusedByPolicy, pass, declinedSheet }
+    enum Answering: CaseIterable { case busy, standingLimit, refusedByPolicy, pass, declinedSheet }
     enum Agreeing: CaseIterable { case pass, refusedByPolicy, declinedSheet }
 
     static func asks(_ kind: MessageBody.Kind) -> FixedPolicyEngine {
@@ -64,11 +69,12 @@ struct IndistinguishableTests {
     }
 
     @Test(arguments: Answering.allCases)
-    func everyNoToTheQuestionLooksTheSame(_ answering: Answering) async throws {
+    func everyNoToTheQuestionIsSilence(_ answering: Answering) async throws {
         let world = World()
         let a = world.phone("Ana")
         let b: Phone = switch answering {
         case .busy: world.phone("Ben", calendar: FakeCalendarStore(events: [FakeCalendarEvent(title: "Shift", start: T.at(0), end: T.at(48))]))
+        case .standingLimit: world.phone("Ben", standing: try ConstraintSet([.time: [Constraint(.dailyWindow(from: 22 * 60, to: 24 * 60))]]))
         case .refusedByPolicy: world.phone("Ben", policy: Self.denies(.answer))
         case .pass: world.phone("Ben", calendar: FakeCalendarStore(status: .denied))
         case .declinedSheet: world.phone("Ben", policy: Self.asks(.answer), consent: ScriptedConsentProvider(.declined))
@@ -80,23 +86,53 @@ struct IndistinguishableTests {
             let (asked, _) = try await b.waitForQuestion()
             try await b.service.answer(asked, with: .pass)
         }
-        try await a.waitForState(started, .ended(.nobodyUp))
-        // The hub records deliveries on its own task: wait for the rejection,
-        // then a moment more so anything sent after it would show too.
-        try await eventually("Ben's rejection on the wire") { Self.sent(by: b, in: world).contains { $0.body.kind == .reject } }
-        try await Task.sleep(for: .milliseconds(60))
-        let queries = Set(world.envelopes.filter { $0.sender == a.id && $0.body.kind == .query }.map(\.id))
-        let sent = Self.sent(by: b, in: world)
-        // Nothing but plain noes: no answer ever left.
-        #expect(sent.allSatisfy { $0.body.kind == .reject })
-        Self.expectNoGapsAndPlainNoes(sent, about: queries)
-        // Only Ben's own phone knows why.
-        let ended = await b.coordinator.invitee()?.state
-        switch answering {
-        case .busy: #expect(ended == .ended(.nobodyUp))
-        case .refusedByPolicy: #expect(ended == .ended(.blockedByPrivacy))
-        case .pass, .declinedSheet: #expect(ended == .ended(.declined))
+        // Ben's side ends at once; only his own phone knows why.
+        let ended: InteractionState = switch answering {
+        case .busy, .standingLimit: .ended(.nobodyUp)
+        case .refusedByPolicy: .ended(.blockedByPrivacy)
+        case .pass, .declinedSheet: .ended(.declined)
         }
+        try await b.waitForState(nil, ended)
+
+        // Ana keeps asking (retries every 20 ms) and hears nothing: the same
+        // count, zero, at every moment, whatever the cause.
+        try await eventually("Ana retried") {
+            world.envelopes.filter { $0.sender == a.id && $0.body.kind == .query }.count >= 5
+        }
+        #expect(Self.sent(by: b, in: world).isEmpty)
+        #expect(await a.coordinator.interaction(started)?.state == .negotiating)
+
+        // The only clock that ends it is Ana's own answer deadline.
+        world.clock.advance(hours: 1)
+        try await a.waitForState(started, .ended(.nobodyUp))
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(Self.sent(by: b, in: world).isEmpty)
+        await world.stop()
+    }
+
+    enum Unanswered: CaseIterable { case standingLimit, ownerNeverAnswers }
+
+    /// At a proposal, a no the agent reaches by itself (an avoided
+    /// activity) is silent, exactly like an owner who never taps.
+    @Test(arguments: Unanswered.allCases)
+    func anAutomaticNoToTheProposalLooksLikeNoAnswer(_ unanswered: Unanswered) async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b: Phone = switch unanswered {
+        case .standingLimit: world.phone("Ben", standing: try ConstraintSet([.activity: [Constraint(.prefers(liked: [], avoided: [Keyword("stats")]), strength: .soft)]]))
+        case .ownerNeverAnswers: world.phone("Ben")
+        }
+        try await world.start()
+
+        let started = try await a.findATime(with: [b])
+        try await eventually("Ben answered") { Self.sent(by: b, in: world).contains { $0.body.kind == .answer } }
+        try await eventually("Ana proposed, and retried") {
+            world.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.count >= 5
+        }
+        #expect(!Self.sent(by: b, in: world).contains { $0.body.kind != .answer })
+        world.clock.advance(hours: 2)
+        try await a.waitForState(started, .ended(.expired))
+        #expect(!Self.sent(by: b, in: world).contains { $0.body.kind != .answer })
         await world.stop()
     }
 
@@ -119,6 +155,9 @@ struct IndistinguishableTests {
         try await Task.sleep(for: .milliseconds(60))
         let proposals = Set(world.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.map(\.id))
         let sent = Self.sent(by: b, in: world)
+        // Every refusal of this proposal names the proposal (finding 2),
+        // never the query, whatever the tap led to; one per tap.
+        #expect(sent.filter { $0.body.kind == .reject }.count == 1)
         // Answers (one, or replays of it), then plain noes; never an acceptance.
         let kinds = sent.sorted { $0.sequence < $1.sequence }.map(\.body.kind)
         #expect(kinds.first == .answer)

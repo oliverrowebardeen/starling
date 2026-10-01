@@ -85,7 +85,7 @@ struct PrivacyTests {
         try await world.start()
 
         let started = try await a.findATime(with: [b])
-        try await a.waitForState(started, .ended(.nobodyUp))
+        try await b.waitForState(nil, .ended(.declined))
         let requests = await consent.requests
         #expect(requests.count == 1)
         for disclosure in requests {
@@ -93,13 +93,12 @@ struct PrivacyTests {
             #expect(disclosure.items.allSatisfy { $0.issue == .time && $0.category == .availability })
             #expect(Canary.leaks(in: String(describing: disclosure)).isEmpty)
         }
-        // Ben's phone sent a plain "no plan", never his answer.
-        try await eventually("Ben's no plan on the wire") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .reject } }
-        let fromBen = world.envelopes.filter { $0.sender == b.id && $0.skill != nil }.map(\.body.kind)
-        #expect(fromBen == [.reject])
-        // Ben's sheet opened and his decline ended his side as declined.
-        try await b.waitForState(nil, .ended(.declined))
+        // Ben's phone sent nothing at all: a declined sheet is a quiet pass.
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(!world.envelopes.contains { $0.sender == b.id && $0.skill != nil })
         #expect(await b.coordinator.rejected.isEmpty)
+        world.clock.advance(hours: 1)
+        try await a.waitForState(started, .ended(.nobodyUp))
         await world.stop()
     }
 

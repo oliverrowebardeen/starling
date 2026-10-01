@@ -164,9 +164,10 @@ struct FlowTests {
         await world.stop()
     }
 
-    /// The time most friends can make wins; a friend who can make none of
-    /// the offered times is told "no plan" and the others go ahead.
-    @Test func mostFriendsWinsAndTheOddOneOutHearsNoPlan() async throws {
+    /// The time most friends can make wins. A friend who can make none of
+    /// the offered times stays silent (ADR 0221), and at the answer deadline
+    /// the others go ahead.
+    @Test func mostFriendsWinsAndTheOddOneOutIsLeftOut() async throws {
         let world = World()
         let a = world.phone("Ana")
         let b = world.phone("Ben", calendar: FakeCalendarStore(events: [FakeCalendarEvent(title: "Shift", start: T.at(8), end: T.at(24))]))
@@ -174,6 +175,9 @@ struct FlowTests {
         try await world.start()
 
         let started = try await a.findATime(with: [b, c])
+        try await b.waitForState(nil, .ended(.nobodyUp))
+        #expect(!world.envelopes.contains { $0.sender == b.id && $0.skill != nil })
+        world.clock.advance(hours: 1)
         let (_, proposal) = try await a.waitForProposal()
         #expect(proposal.plan?.attendees.peers == [a.id, c.id].sorted())
         // A pair needs no roster on the wire.
@@ -195,8 +199,13 @@ struct FlowTests {
         try await world.start()
 
         let started = try await a.findATime(with: [b])
-        try await a.waitForState(started, .ended(.nobodyUp))
         try await b.waitForState(nil, .ended(.nobodyUp))
+        // Ben's agent says nothing; Ana ends at her answer deadline.
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await a.coordinator.interaction(started)?.state == .negotiating)
+        world.clock.advance(hours: 1)
+        try await a.waitForState(started, .ended(.nobodyUp))
+        #expect(!world.envelopes.contains { $0.sender == b.id && $0.skill != nil })
         // Nobody was asked anything and no card went up.
         #expect(await a.coordinator.all().allSatisfy { $0.proposal == nil })
         #expect(await b.coordinator.all().allSatisfy { $0.proposal == nil && $0.history.allSatisfy { $0.state != .awaitingOwner } })

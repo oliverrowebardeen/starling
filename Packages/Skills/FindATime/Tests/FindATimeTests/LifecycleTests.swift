@@ -67,7 +67,7 @@ struct LifecycleTests {
         await world.stop()
     }
 
-    @Test func anEmptyReplyIsNoTimeAndThePassLooksTheSame() async throws {
+    @Test func anEmptyReplyAndAPassAreBothSilent() async throws {
         let world = World()
         let a = world.phone("Ana")
         let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied))
@@ -79,20 +79,13 @@ struct LifecycleTests {
         let (cAsked, _) = try await c.waitForQuestion()
         try await b.reply(bAsked, question: bQuestion.revision, [])
         try await c.service.answer(cAsked, with: .pass)
-        try await a.waitForState(started, .ended(.nobodyUp))
         try await b.waitForState(bAsked, .ended(.nobodyUp))
         try await c.waitForState(cAsked, .ended(.declined))
-        // On the wire, "none of these" and a pass are the same message.
-        try await eventually("both replies on the wire") {
-            Set(world.envelopes.filter { $0.recipient == a.id && $0.skill != nil }.map(\.sender)) == [b.id, c.id]
-        }
-        let replies = world.envelopes.filter { $0.recipient == a.id && $0.skill != nil }
-        // At least one from each; a retried query gets the same reply again.
-        #expect(Set(replies.map(\.sender)) == [b.id, c.id])
-        for reply in replies {
-            guard case .reject(let rejection) = reply.body else { Issue.record("expected a rejection"); continue }
-            #expect(rejection.reason == .noOverlap)
-        }
+        // "None of these" and a pass are the same on the wire: nothing.
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(!world.envelopes.contains { $0.recipient == a.id && $0.skill != nil })
+        world.clock.advance(hours: 1)
+        try await a.waitForState(started, .ended(.nobodyUp))
         await world.stop()
     }
 
@@ -416,16 +409,19 @@ struct LifecycleTests {
     }
 
     /// A proposal for an activity the friend avoids is passed on by their
-    /// agent: the starter hears "no plan" and no card goes up.
+    /// agent, silently: it looks like an owner who never answered, and the
+    /// starter's request expires at its deadline. No card goes up.
     @Test func aProposalBreakingAStandingLimitIsPassed() async throws {
         let world = World()
         let a = world.phone("Ana")
         let b = world.phone("Ben", standing: try ConstraintSet([.activity: [Constraint(.prefers(liked: [], avoided: [Keyword("karaoke")]), strength: .soft)]]))
         try await world.start()
         let started = try await a.findATime(with: [b], activity: "karaoke")
-        try await a.waitForState(started, .ended(.nobodyUp))
         try await b.waitForState(nil, .ended(.nobodyUp))
         #expect(await b.coordinator.all().allSatisfy { $0.proposal == nil })
+        #expect(!world.envelopes.contains { $0.sender == b.id && $0.body.kind == .reject })
+        world.clock.advance(hours: 2)
+        try await a.waitForState(started, .ended(.expired))
         await world.stop()
     }
 

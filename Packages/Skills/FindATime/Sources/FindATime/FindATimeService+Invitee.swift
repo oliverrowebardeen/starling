@@ -5,6 +5,17 @@ import StarlingCore
 // The answering side: say which offered times work, then confirm. A
 // friend's query creates at most an invitee interaction. It never starts a
 // skill, asks for a permission, or skips Consent (ARCHITECTURE rule 8).
+//
+// What the starter can learn from a no (ADR 0221, review of PR #53):
+// - While answering, every no is silence. No free time, a standing limit,
+//   a policy refusal, a pass, a declined sheet, and an expired request all
+//   send nothing, so neither the count nor the timing of envelopes says
+//   which it was. The starter takes silence at its answer deadline as no.
+// - Once a proposal card is up, a "no plan" is sent only as the direct
+//   result of the owner's tap on it (a pass, a declined sheet, or a refused
+//   acceptance), always naming that proposal's latest envelope. A no the
+//   agent reaches by itself (a standing limit) is silent, like an owner
+//   who never answered.
 
 extension FindATimeService {
     func receiveQuery(_ envelope: Envelope, _ query: Query) {
@@ -19,7 +30,9 @@ extension FindATimeService {
             if let answered = value.answered, value.phase == .answered { sendAnswer(id, answered) }
             return
         }
-        if finished[id] != nil { return replyNoPlanAgain(id, to: envelope) }
+        // A late query for an ended conversation is ignored: no new card,
+        // and no reply whose count could tell how it ended.
+        if finished[id] != nil { return ignore("query for an ended conversation") }
 
         let now = now()
         guard let candidates = QueryCheck.candidates(of: query, now: now, configuration: configuration) else {
@@ -78,7 +91,7 @@ extension FindATimeService {
         switch resolution {
         case .known(let acceptable, _):
             // The owner's calendar or stated intent answered without asking.
-            guard !acceptable.isEmpty else { return inviteeEndWithoutPlan(id, .noAgreement, tellAsker: true) }
+            guard !acceptable.isEmpty else { return inviteeEndWithoutPlan(id, .noAgreement) }
             answer(id, with: acceptable)
         case .askOwner:
             let question = SkillQuestion(
@@ -99,15 +112,14 @@ extension FindATimeService {
             let picked = try checkedReply(reply, revision: revision, interaction: value.interaction)
             emit(.ownerAnswered(question: revision), to: &value.interaction)
             invited[id] = value
-            guard !picked.isEmpty else { return inviteeEndWithoutPlan(id, .noAgreement, tellAsker: true) }
+            guard !picked.isEmpty else { return inviteeEndWithoutPlan(id, .noAgreement) }
             self.answer(id, with: picked)
 
         case (.askingOwner, .pass):
-            // A pass looks the same to the starter as having no time free:
-            // "If you pass, they just won't see it."
+            // Silence, like having no time free: "If you pass, they just
+            // won't see it."
             emit(.ownerPassed, to: &value.interaction)
             invited[id] = value
-            sendNoPlan(about: value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
             finish(id)
 
         case (.proposed, .accept(let revision)):
@@ -124,9 +136,9 @@ extension FindATimeService {
         case (.proposed, .pass):
             emit(.ownerPassed, to: &value.interaction)
             invited[id] = value
-            // The same "no plan" as a refused send at this step, so the
-            // starter cannot tell a pass from a Never setting (ADR 0019).
-            sendNoPlan(about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
+            // The same "no plan", naming the same proposal, as a declined
+            // sheet or a refused acceptance after the same tap (ADR 0019).
+            tellAskerNoPlan(id)
             finish(id)
 
         case (.accepted, .accept(let revision)) where value.offer?.revision == revision:
@@ -142,7 +154,8 @@ extension FindATimeService {
         guard var value = invited[id] else { return }
         emit(.withdrawn, to: &value.interaction)
         invited[id] = value
-        if value.phase != .planned { sendNoPlan(about: value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom) }
+        // Like a pass: silent while answering, "no plan" once a card is up.
+        if value.phase != .planned, value.offer != nil { tellAskerNoPlan(id) }
         finish(id)
     }
 
@@ -174,7 +187,7 @@ extension FindATimeService {
             // A lost answer is recovered when the starter retries its query.
             return
         case .declined, .denied:
-            inviteeRefused(id, outcome)
+            inviteeRefused(id, outcome, tellAsker: false)
         }
     }
 
@@ -182,7 +195,6 @@ extension FindATimeService {
         let id = envelope.conversation
         guard initiating[id] == nil else { return ignore("proposal in our own conversation") }
         guard var value = invited[id] else {
-            if finished[id] != nil { replyNoPlanAgain(id, to: envelope) }
             return ignore("proposal without a request")
         }
         guard envelope.sender == value.asker else { return ignore("proposal from a second sender") }
@@ -196,7 +208,9 @@ extension FindATimeService {
         // A proposal that breaks the owner's standing limits (an activity
         // they avoid) is passed on by the agent, like any "no".
         guard HardLimits.allows(proposal.terms, by: value.limits, timeZone: timeZone) else {
-            return inviteeEndWithoutPlan(id, .noAgreement, tellAsker: true)
+            // Silent: an automatic no must not look different from an owner
+            // who has not answered.
+            return inviteeEndWithoutPlan(id, .noAgreement)
         }
 
         if var offer = value.offer, offer.terms == proposal.terms, offer.round == proposal.round {
@@ -250,19 +264,27 @@ extension FindATimeService {
         case .failed:
             return
         case .declined, .denied:
-            inviteeRefused(id, outcome)
+            inviteeRefused(id, outcome, tellAsker: true)
         }
     }
 
-    /// A send for the current step was refused. The starter hears "no
-    /// plan", like a pass. A declined sheet adds no event (the coordinator
-    /// applies the pass); a denial is blocked by privacy.
-    private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome) {
+    /// A send for the current step was refused. A declined sheet adds no
+    /// event (the coordinator applies the pass); a denial is blocked by
+    /// privacy. The starter hears "no plan" only for a refused acceptance,
+    /// which follows the owner's tap like a pass does.
+    private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome, tellAsker: Bool) {
         guard var value = invited[id] else { return }
         if case .denied = outcome { emit(.blockedByPrivacy, to: &value.interaction) }
         invited[id] = value
-        sendNoPlan(about: value.offer?.latest ?? value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
+        if tellAsker { tellAskerNoPlan(id) }
         finish(id)
+    }
+
+    /// "No plan" for the proposal on the card, naming its latest envelope:
+    /// the same message whatever the owner's tap led to.
+    private func tellAskerNoPlan(_ id: ConversationID) {
+        guard let value = invited[id], let offer = value.offer else { return }
+        sendNoPlan(about: offer.latest, to: [value.asker], in: id, chainedFrom: value.chainedFrom)
     }
 
     /// The starter's confirmation: everyone said "That works".
@@ -303,24 +325,15 @@ extension FindATimeService {
         guard value.phase != .planned else { return ignore("rejection after the plan") }
         // While the owner's question is open, "no plan" means the question
         // no longer matters; the lifecycle calls that expired.
-        inviteeEndWithoutPlan(id, value.phase == .askingOwner ? .expired : .noAgreement, tellAsker: false)
+        inviteeEndWithoutPlan(id, value.phase == .askingOwner ? .expired : .noAgreement)
     }
 
-    func inviteeEndWithoutPlan(_ id: ConversationID, _ event: InteractionEvent, tellAsker: Bool) {
+    /// Ends without a plan and without telling the starter anything.
+    func inviteeEndWithoutPlan(_ id: ConversationID, _ event: InteractionEvent) {
         guard var value = invited[id] else { return }
         if !emit(event, to: &value.interaction) { emit(.failed, to: &value.interaction) }
         invited[id] = value
-        if tellAsker { sendNoPlan(about: value.lastQuery, to: [value.asker], in: id, chainedFrom: value.chainedFrom) }
         finish(id)
-    }
-
-    /// A late query or proposal for a conversation that ended here gets the
-    /// same "no plan", a bounded number of times, and never a new card.
-    private func replyNoPlanAgain(_ id: ConversationID, to envelope: Envelope) {
-        guard var tombstone = finished[id], tombstone.asker == envelope.sender, tombstone.replies < configuration.maxAttempts else { return }
-        tombstone.replies += 1
-        finished[id] = tombstone
-        sendNoPlan(about: envelope.id, to: [envelope.sender], in: id, chainedFrom: envelope.chainedFrom)
     }
 
     func inviteeTick(_ id: ConversationID) {
@@ -330,7 +343,7 @@ extension FindATimeService {
             // The coordinator applies planEnded (ADR 0011, amendment 15).
             if let end = value.offer?.plan.time?.end, now() >= end { finish(id) }
         case _ where expired(value.expiresAt):
-            inviteeEndWithoutPlan(id, .expired, tellAsker: true)
+            inviteeEndWithoutPlan(id, .expired)
         case .accepted:
             inviteeResendAcceptance(id)
         default:

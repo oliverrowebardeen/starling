@@ -337,18 +337,15 @@ struct CrashWindowTests {
         let (asked, _) = try await target.waitForQuestion()
         try await target.service.answer(asked, with: .pass)
         try await target.waitForState(asked, .ended(.declined))
-        // The pass's "no plan" leaves before the app quits.
-        try await eventually("the first no plan") { world.envelopes.contains { $0.sender == target.id && $0.body.kind == .reject } }
 
         await target.restart()
         try await target.greetAgain(world)
         try await mallory.send(query, to: target, conversation: conversation)
-        // The late query gets "no plan" again...
-        try await eventually("a second no plan") {
-            world.envelopes.filter { $0.sender == target.id && $0.body.kind == .reject }.count == 2
+        try await eventually("the late query handled") {
+            await target.service.diagnostics.ignored["query for an ended conversation", default: 0] == 1
         }
-        // ...and never a new card.
-        try await Task.sleep(for: .milliseconds(60))
+        // No new card, and no reply at all.
+        #expect(!world.envelopes.contains { $0.sender == target.id && $0.skill != nil })
         let cards = await target.coordinator.all()
         #expect(cards.count == 1)
         #expect(cards.first?.state == .ended(.declined))

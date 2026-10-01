@@ -57,12 +57,10 @@ public actor FindATimeService: SkillService {
     private var pending: Set<SendKey> = []
 
     struct Tombstone: Hashable, Sendable {
-        /// The starter, for an invitee conversation: a late query or
-        /// proposal from it gets "no plan" again, never a new card.
+        /// The starter, for an invitee conversation.
         let asker: PeerID?
         /// The ended interaction, so its last "no plan" still names it.
         let interaction: InteractionID?
-        var replies = 0
     }
 
     enum CheckpointOp: Sendable {

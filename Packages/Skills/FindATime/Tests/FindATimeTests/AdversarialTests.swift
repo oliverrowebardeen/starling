@@ -186,6 +186,8 @@ struct AdversarialTests {
         let cards = try await settle(target)
         #expect(cards.count == 1)
         #expect(cards.first?.state == .ended(.declined))
+        // Nor any reply: how many there are would tell how it ended.
+        #expect(!world.envelopes.contains { $0.sender == target.id && $0.skill != nil })
         await world.stop()
     }
 
@@ -224,6 +226,7 @@ struct AdversarialTests {
         #expect(await a.coordinator.interaction(started)?.state == .negotiating)
         await world.stop()
     }
+
     /// Review of PR #53 (second round), finding 1: one conversation never
     /// learns about more than 16 times, even after its memory of ending is
     /// pushed out by 257 other conversations, and even after a restart.
