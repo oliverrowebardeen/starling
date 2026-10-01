@@ -38,13 +38,18 @@ enum Fixtures {
 struct Phone {
     let service: SwapPhotosService
     let transport: RecordingTransport
-    let consent: ScriptedConsentProvider
 
-    init(policy: PolicyDecision = .allow, now: Date = Fixtures.afterTonight, knownPlans: [ConversationID: Plan] = [Fixtures.parentConversation: Fixtures.plan]) {
+    init(policy: PolicyDecision = .allow, now: Date = Fixtures.afterTonight) {
+        self.init(now: now) { transport in
+            Outbox(transport: transport, policy: FixedPolicyEngine(policy), consent: ScriptedConsentProvider(.approved), now: { now })
+        }
+    }
+
+    /// A phone whose Outbox the test builds around its transport.
+    init(now: Date = Fixtures.afterTonight, outbox: (RecordingTransport) -> Outbox) {
+        let knownPlans = [Fixtures.parentConversation: Fixtures.plan]
         transport = RecordingTransport(localPeer: Fixtures.me)
-        consent = ScriptedConsentProvider(.approved)
-        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(policy), consent: consent, now: { now })
-        service = SwapPhotosService(outbox: outbox, me: Fixtures.me, planLookup: { knownPlans[$0] }, now: { now })
+        service = SwapPhotosService(outbox: outbox(transport), me: Fixtures.me, planLookup: { knownPlans[$0] }, now: { now })
     }
 
     func sent() async throws -> [Envelope] {

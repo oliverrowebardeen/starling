@@ -58,6 +58,8 @@ public actor SwapPhotosService: SkillService {
 
     private var sessions: [InteractionID: Session] = [:]
     private var byConversation: [ConversationID: InteractionID] = [:]
+    /// Sends still on their way out, per interaction.
+    private var inFlight: [InteractionID: Task<Void, any Error>] = [:]
 
     /// `planLookup` returns the plan made in a conversation on this phone, so
     /// an offer from someone who was not in that plan is dropped.
@@ -99,19 +101,10 @@ public actor SwapPhotosService: SkillService {
         switch (session.step, answer) {
         case (.picking(let question), .reply(let revision, .count(let count))) where revision == question && (1...SwapPhotos.maxPhotos).contains(count):
             let terms = try Terms([.photos: .count(count)])
+            let offer = MessageBody.propose(try Proposal(round: 0, terms: terms))
             sessions[interaction]?.step = .offered(terms, accepted: [])
             emit(interaction, .ownerAnswered(question: question))
-            for friend in session.participants {
-                // Withdrawn while an earlier send waited on a consent sheet.
-                guard sessions[interaction] != nil else { return }
-                do {
-                    try await outbox.send(.propose(try Proposal(round: 0, terms: terms)), to: friend, conversation: session.conversation,
-                                          skill: descriptor.ref, chainedFrom: session.chainedFrom)
-                } catch {
-                    end(interaction, after: error)
-                    return
-                }
-            }
+            _ = await send(session.participants.map { (offer, $0) }, in: interaction, session: session)
 
         case (.picking, .pass):
             emit(interaction, .ownerPassed)
@@ -119,13 +112,7 @@ public actor SwapPhotosService: SkillService {
 
         case (.invited(let from, let offer, let terms, let revision), .accept(let accepted)) where accepted == revision:
             sessions[interaction]?.step = .accepted
-            do {
-                try await outbox.send(.accept(Acceptance(proposal: offer, terms: terms)), to: from, conversation: session.conversation,
-                                      skill: descriptor.ref, chainedFrom: session.chainedFrom)
-            } catch {
-                end(interaction, after: error)
-                return
-            }
+            guard await send([(.accept(Acceptance(proposal: offer, terms: terms)), from)], in: interaction, session: session) else { return }
             emit(interaction, .ownerAccepted(revision: revision))
 
         case (.invited, .pass):
@@ -135,6 +122,33 @@ public actor SwapPhotosService: SkillService {
 
         default:
             throw SwapPhotosError.unexpectedAnswer(interaction)
+        }
+    }
+
+    /// Sends `messages` in order, in a task tracked per interaction, so
+    /// `withdraw` and `shutdown` cancel a send still waiting on a consent
+    /// sheet or on the policy's re-check after it: Outbox checks cancellation
+    /// after both, before anything reaches the transport. Returns true when
+    /// every message went out and the interaction is still live. A
+    /// withdrawal reports nothing more; any other failure ends it.
+    private func send(_ messages: [(MessageBody, PeerID)], in interaction: InteractionID, session: Session) async -> Bool {
+        let outbox = outbox
+        let skill = descriptor.ref
+        let task = Task {
+            for (body, peer) in messages {
+                try Task.checkCancellation()
+                try await outbox.send(body, to: peer, conversation: session.conversation, skill: skill, chainedFrom: session.chainedFrom)
+            }
+        }
+        inFlight[interaction] = task
+        defer { if inFlight[interaction] == task { inFlight[interaction] = nil } }
+        do {
+            try await task.value
+            return sessions[interaction] != nil
+        } catch {
+            guard !task.isCancelled, sessions[interaction] != nil else { return false }
+            end(interaction, after: error)
+            return false
         }
     }
 
@@ -150,7 +164,9 @@ public actor SwapPhotosService: SkillService {
         forget(interaction)
     }
 
+    /// Cancels any send still in flight, so nothing more leaves for it.
     public func withdraw(_ interaction: InteractionID) async {
+        inFlight.removeValue(forKey: interaction)?.cancel()
         forget(interaction)
     }
 
@@ -227,6 +243,8 @@ public actor SwapPhotosService: SkillService {
     }
 
     public func shutdown() async {
+        for task in inFlight.values { task.cancel() }
+        inFlight = [:]
         continuation.finish()
     }
 
