@@ -37,4 +37,11 @@ public struct ChainedFromPolicy: PolicyEngine {
         }
         return await base.evaluate(message)
     }
+
+    /// The wrapped policy's own list. Without this, the protocol's default
+    /// would throw, and the audit would mark every send allowed without a
+    /// sheet as unknown.
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        try await base.disclosedItems(for: message)
+    }
 }
