@@ -46,11 +46,11 @@ Constraints:
 
 ### Every peer value is checked
 
-11. **A query** must ask about `time` with 1 to 16 distinct slots, each 5 minutes to 8 hours long, ending after now and starting within 15 days. Anything else is dropped before an interaction, a question, or a calendar read exists. A friend may have at most 4 open requests here, and all friends together 32. **Each conversation can ask about at most 16 times in all:** a record of the candidates answered about per conversation is kept for the 24-hour restore window, apart from the bounded memory of ended conversations, and survives a relaunch, so ending, forgetting, or restarting a conversation never grants more (ADR 0019, decision 6). When the record is full, new requests are refused rather than an old entry dropped.
+11. **A query** must ask about `time` with 1 to 16 distinct slots, each 5 minutes to 8 hours long, ending after now and starting within 15 days. Anything else is dropped before an interaction, a question, or a calendar read exists. A friend may have at most 4 open requests here, and all friends together 32. **Each conversation can ask about at most 16 times in all**, tracked in the app's one `ConversationLedger` (ADR 0021): a request opens nothing unless the ledger reserves its candidates for that friend, and Outbox reserves them again when the answer leaves. A ledger that cannot be read refuses.
 12. **An answer** must come from a friend who was asked, and list only offered times. One extra time voids the whole answer, so a friend cannot steer the plan to a time the starter never offered.
 13. **A proposal** must come from the friend who asked, name one time this phone said works, carry at most one activity, and, if it has a roster, include both phones. Rounds only rise. One that breaks the owner's standing limits (an activity they avoid) is passed on by the agent, like any no.
 14. **A confirmation** must name a proposal envelope this phone accepted and repeat its terms exactly.
-15. A late query or proposal for a conversation that ended here gets nothing: no card and no reply.
+15. Every ending retires the conversation in the ledger for good, withdrawal included, through `Outbox.retire` once its last "no plan" has left. A query or proposal for a retired conversation gets nothing: no card and no reply, after any wait or relaunch (ADR 0021).
 
 ### Delivery, deadlines, and consent
 
