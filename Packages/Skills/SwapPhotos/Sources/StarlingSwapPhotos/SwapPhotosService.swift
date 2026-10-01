@@ -71,6 +71,10 @@ public actor SwapPhotosService: SkillService {
     private var byConversation: [ConversationID: InteractionID] = [:]
     /// Sends still on their way out, per interaction.
     private var inFlight: [InteractionID: Task<Void, any Error>] = [:]
+    /// Conversations that ended on this phone. A late or retried envelope
+    /// for one is ignored, never reopened as a new card (ADR 0011
+    /// amendment 15).
+    private var closed: Set<ConversationID> = []
 
     /// `planLookup` returns the plan made in a conversation on this phone, so
     /// an offer from someone who was not in that plan is dropped.
@@ -98,7 +102,7 @@ public actor SwapPhotosService: SkillService {
         guard !request.participants.isEmpty, !request.participants.contains(me),
               Set(request.participants).isSubset(of: plan.attendees.peers)
         else { throw SwapPhotosError.notInThePlan }
-        guard sessions[request.interaction] == nil, byConversation[request.conversation] == nil else {
+        guard sessions[request.interaction] == nil, byConversation[request.conversation] == nil, !closed.contains(request.conversation) else {
             throw SwapPhotosError.alreadyStarted(request.interaction)
         }
         let question = SwapPhotos.pickQuestion(revision: 1)
@@ -197,7 +201,7 @@ public actor SwapPhotosService: SkillService {
         // unknown request, so a quiet ask never becomes a card (ADR 0020).
         guard case .message(let envelope) = event, let skill = envelope.skill, skill.id == descriptor.id,
               skill.version.isCompatible(with: descriptor.ref.version), envelope.recipient == me,
-              let mode = envelope.mode, descriptor.sendModes.contains(mode)
+              let mode = envelope.mode, descriptor.sendModes.contains(mode), !closed.contains(envelope.conversation)
         else { return }
 
         if let id = byConversation[envelope.conversation] {
@@ -264,9 +268,15 @@ public actor SwapPhotosService: SkillService {
     /// A pick the owner had not made yet resumes with the same question.
     /// Anything further along cannot be resumed, because the offer's terms
     /// and message IDs are not stored, so it is reported as failed. A link
-    /// still waiting for its plan to end is the scheduler's, not ours.
+    /// still waiting for its plan to end is the scheduler's, not ours. The
+    /// coordinator also passes interactions that ended in the last day; their
+    /// conversations stay closed to late retries.
     public func restore(_ interactions: [Interaction]) async {
-        for interaction in interactions where interaction.skill.id == descriptor.id && !interaction.state.isFinal {
+        for interaction in interactions where interaction.skill.id == descriptor.id {
+            if interaction.state.isFinal {
+                closed.insert(interaction.conversation)
+                continue
+            }
             if interaction.state == .drafting { continue }
             if interaction.role == .initiator, interaction.state == .awaitingOwner,
                let question = interaction.pendingQuestion, let chainedFrom = interaction.chain?.parentConversation {
@@ -275,6 +285,7 @@ public actor SwapPhotosService: SkillService {
                 byConversation[interaction.conversation] = interaction.id
             } else {
                 emit(interaction.id, .failed)
+                closed.insert(interaction.conversation)
             }
         }
     }
@@ -291,7 +302,11 @@ public actor SwapPhotosService: SkillService {
         continuation.yield(.lifecycle(interaction, event))
     }
 
+    /// Ends the session here. Its conversation stays closed, so a friend's
+    /// retried offer after a pass never shows the card again.
     private func forget(_ interaction: InteractionID) {
-        if let conversation = sessions.removeValue(forKey: interaction)?.conversation { byConversation[conversation] = nil }
+        guard let conversation = sessions.removeValue(forKey: interaction)?.conversation else { return }
+        byConversation[conversation] = nil
+        closed.insert(conversation)
     }
 }
