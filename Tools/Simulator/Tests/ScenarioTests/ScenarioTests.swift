@@ -21,6 +21,30 @@ import Testing
         #expect(outcome.accepted.filter { $0.body.kind == .propose }.count == 1)
     }
 
+    @Test func reorderedFramesAreDeliveredOnce() async throws {
+        let outcome = try await ScenarioRunner.run(.reorder)
+        #expect(outcome.accepted.map(\.sequence) == [2, 0, 1])
+        #expect(outcome.dropped == [.replay])
+    }
+
+    @Test func replayWindowHandlesBoundariesWithoutOverflow() async throws {
+        let outcome = try await ScenarioRunner.run(.replayWindow)
+        #expect(outcome.accepted.map(\.sequence) == [64, 1, UInt64.max, UInt64.max - 63])
+        #expect(outcome.dropped == Array(repeating: .replay, count: 4))
+    }
+
+    @Test func staleFramesDoNotPoisonReplayState() async throws {
+        let outcome = try await ScenarioRunner.run(.stale)
+        #expect(outcome.accepted.map(\.sequence) == [0, 1])
+        #expect(outcome.dropped == [.stale, .stale])
+    }
+
+    @Test func futureFramesDoNotPoisonReplayState() async throws {
+        let outcome = try await ScenarioRunner.run(.futureDated)
+        #expect(outcome.accepted.map(\.sequence) == [0, 1])
+        #expect(outcome.dropped == [.fromFuture, .fromFuture])
+    }
+
     @Test func relayedEnvelopesWithMismatchedSendersAreDropped() async throws {
         let outcome = try await ScenarioRunner.run(.senderMismatch)
         #expect(outcome.dropped == [.senderMismatch])
@@ -38,7 +62,7 @@ import Testing
     /// reproducing and the test fails until the marker is removed.
     @Test func impersonationIsAKnownPhase0Gap() async throws {
         let outcome = try await ScenarioRunner.run(.impersonation)
-        withKnownIssue("Phase 0 links are unauthenticated (ADR 0003)") {
+        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/8") {
             #expect(outcome.accepted.allSatisfy { $0.body.kind == .hello })
         }
     }

@@ -9,6 +9,10 @@ public enum Scenario: String, CaseIterable, Sendable {
     case helloMesh = "hello-mesh"
     case proposeAccept = "propose-accept"
     case replay
+    case reorder
+    case replayWindow = "replay-window"
+    case stale
+    case futureDated = "future-dated"
     case senderMismatch = "sender-mismatch"
     case impersonation
     case garbage
@@ -18,6 +22,10 @@ public enum Scenario: String, CaseIterable, Sendable {
         case .helloMesh: "N agents discover each other and exchange agent cards"
         case .proposeAccept: "Alice proposes, Bob accepts"
         case .replay: "Mallory re-sends a frame Bob already accepted"
+        case .reorder: "Out-of-order messages inside the replay window arrive once"
+        case .replayWindow: "Replay-window edges and extreme sequence numbers remain bounded"
+        case .stale: "Old messages are dropped at a fixed-clock age boundary"
+        case .futureDated: "Future messages are dropped without poisoning replay state"
         case .senderMismatch: "Mallory relays Alice's envelope over her own link"
         case .impersonation: "Mallory forges Alice's envelope and link identity (Phase 0 gap)"
         case .garbage: "Mallory sends bytes that are not an envelope"
@@ -35,16 +43,29 @@ public struct ScenarioOutcome: Sendable {
 }
 
 public enum ScenarioRunner {
+    static let now = Date(timeIntervalSince1970: 1_790_967_600)
+
     public static func run(_ scenario: Scenario, agents: Int = 3) async throws -> ScenarioOutcome {
-        let simulation = Simulation(seed: 42)
-        defer { Task { await simulation.stop() } }
+        let simulation = Simulation(seed: 42, now: { now })
+        do {
+            let result = try await run(scenario, simulation: simulation, agents: agents)
+            await simulation.stop()
+            return result
+        } catch {
+            await simulation.stop()
+            throw error
+        }
+    }
+
+    private static func run(_ scenario: Scenario, simulation: Simulation, agents: Int) async throws -> ScenarioOutcome {
         switch scenario {
-        case .helloMesh: return try await helloMesh(simulation, count: agents)
-        case .proposeAccept: return try await proposeAccept(simulation)
-        case .replay: return try await replay(simulation)
-        case .senderMismatch: return try await senderMismatch(simulation)
-        case .impersonation: return try await impersonation(simulation)
-        case .garbage: return try await garbage(simulation)
+        case .helloMesh: try await helloMesh(simulation, count: agents)
+        case .proposeAccept: try await proposeAccept(simulation)
+        case .replay: try await replay(simulation)
+        case .reorder, .replayWindow, .stale, .futureDated: try await temporal(scenario, simulation: simulation)
+        case .senderMismatch: try await senderMismatch(simulation)
+        case .impersonation: try await impersonation(simulation)
+        case .garbage: try await garbage(simulation)
         }
     }
 
@@ -93,7 +114,7 @@ public enum ScenarioRunner {
         let mallory = PeerID.random()
         let forged = try Envelope(
             conversation: ConversationID(), sender: alice.id, recipient: bob.id,
-            sequence: 1_000, sentAt: Timestamp(Date()),
+            sequence: 1_000, sentAt: Timestamp(now),
             body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner))
         )
         try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: mallory, to: bob.id)
@@ -109,7 +130,7 @@ public enum ScenarioRunner {
 
         let forged = try Envelope(
             conversation: ConversationID(), sender: alice.id, recipient: bob.id,
-            sequence: 0, sentAt: Timestamp(Date()),
+            sequence: 0, sentAt: Timestamp(now),
             body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner))
         )
         try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: alice.id, to: bob.id)
