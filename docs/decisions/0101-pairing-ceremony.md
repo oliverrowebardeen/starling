@@ -1,7 +1,7 @@
 # ADR 0101: Pairing ceremony: Noise XX plus a committed 6-digit code
 
 - Status: Proposed
-- Date: 2026-09-30 (revised the same day after three Codex reviews of PR #16; see decision 2)
+- Date: 2026-09-30 (revised the same day after four Codex reviews of PR #16; see decision 2)
 - Owner: Lane E1 (Identity and secure channel)
 
 ## Context
@@ -39,7 +39,7 @@ Usability: in comparative studies, compare-and-confirm had 0 to 20% security fai
    - After that point the ceremony is committed: a late cancel or link loss no longer changes the outcome.
    - A rejection on either side yields `.failed(.codeMismatch)` on both. Cancel, timeout (30 s to reach the code, 120 s to answer), and link loss each fail the ceremony, and nothing is stored on that side.
    - Every local ending (reject, cancel, timeout, abandon) is final before anything is awaited. The notice to the peer is sealed while the keys still exist, the ceremony finishes, and only then is the notice sent, best effort. An `accept` that arrives while the notice is in flight finds the ceremony finished and cannot pin the peer. (Review finding HIGH 2: before this fix, a cancel or timeout that was still sending its notice could be overtaken by the peer's accept and commit the pairing.)
-   - **Unpairing wins** (second and third reviews). A ceremony commits its pin only through the `PinAuthority` that every unpair also goes through, and is cancelled when its peer is revoked. The authority commits only if the peer's revocation token has not moved since the ceremony started, under the same lock as removals. If a revocation starts during the save, it removes the pin before releasing the lock, and the ceremony ends `.failed(.cancelled)` (ADR 0100 decision 11).
+   - **Unpairing wins** (second through fourth reviews). A ceremony commits its pin only through the device's one `PinAuthority`, which every unpair on every transport also goes through, and is cancelled when its peer is revoked. The authority commits only if the peer's epoch has not moved since the ceremony started, under the same lock as removals. If the epoch moves during the save, the commit rolls back: it removes the pin and moves the epoch again, which kills any session authenticated meanwhile on every transport. The ceremony then ends `.failed(.cancelled)` (ADR 0100 decision 11).
 3. **Checks on the remote key.**
    - It must hash to the `PeerID` the link claimed, so `SecureTransport` can find it later.
    - It must not be our own key. Either failure abandons the ceremony.

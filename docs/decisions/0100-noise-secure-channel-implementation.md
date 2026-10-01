@@ -102,7 +102,7 @@ Noise revision 34 facts this design relies on:
     - a `disconnect` during a held commit.
 12. **Bounded state** (third review, finding 3). Only peers with a pinned key get per-peer state; link presence is a separate set cleared on link loss, so an unauthenticated claim alone leaves nothing behind. On link loss a peer keeps only its replay cache, and a revoked peer keeps nothing. Idle state past `maxTrackedPeers` (default 1,024) is forgotten.
 
-    Session generations and revocation tokens live in a bounded `GenerationTable`:
+    Session generations and the authority's epochs live in a bounded `GenerationTable`:
     - Values come from a single counter that only grows.
     - Past capacity, the oldest entry is evicted.
     - Peers without an entry read a floor that every eviction raises above every value handed out so far.
