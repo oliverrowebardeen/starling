@@ -77,6 +77,8 @@ A feature qualifies only if the on-device model does real work: turning messy na
 
 ### 2.6 v1 features (app)
 
+> **Phase 1.5 (2026-09-30):** these features become **skills** on one platform: Down for…, Find a time, Pick a place, and Swap photos (flagged off). See `docs/plans/phase-1.5-prompt.md` and ADRs 0010 to 0018. Where they differ from this section, they win.
+
 1. **Down? matching.** The owner states current intent in plain language ("free tonight, want food, under $15, not far"). Agents check paired friends' agents. Notify only on a mutual match. A "maybe" is revealed only if the other side is also interested.
    - Precedent: Down to Lunch reached #1 in Social Networking on the App Store in April 2016, then suffered from notification spam and was gone by 2018. Match-before-notify is the direct fix.
 2. **Calendar scheduling (adults and families).** Availability comes from pluggable sources: EventKit free/busy; stated intent; and, when the agent has nothing, one quick question to its owner ("Mom's agent wants a time this weekend. Saturday afternoon?").
@@ -269,6 +271,10 @@ Exit: two iPhones exchange typed messages over LocalP2P; a report states tokens 
 - Adversarial tests in the simulator: prompt-injection payloads from a malicious peer, oversized PSI sets, replayed messages.
 
 Exit: two paired iPhones get a notification only on a mutual match; no data leaves a device without passing through the policy layer; adversarial tests pass.
+
+### Phase 1.5: From a Down app to an agent interaction platform
+
+Skills, one lifecycle, chaining through artifacts, just-in-time permissions, global privacy topics, and a new Home, New, Friends, and You. Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`; decisions: ADRs 0010 to 0018.
 
 ### Phase 2: Scheduling, group decision, remote
 
