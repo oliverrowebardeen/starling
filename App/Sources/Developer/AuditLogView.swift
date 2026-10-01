@@ -1,3 +1,5 @@
+#if DEBUG
+// The Developer section is in Debug builds only (ADR 0015 decision 5).
 import StarlingCore
 import StarlingFeatures
 import StarlingPolicy
@@ -46,3 +48,4 @@ struct AuditLogView: View {
         friends.first { $0.id == peer }?.nickname ?? peer.short
     }
 }
+#endif
