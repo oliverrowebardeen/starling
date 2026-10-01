@@ -15,7 +15,7 @@ struct DescriptorTests {
 
     @Test func acceptsAPlanOrATimeAndProducesAPlace() {
         #expect(descriptor.accepts == [.plan, .timeSlot])
-        #expect(descriptor.produces == [.placeChoice])
+        #expect(descriptor.produces == [.placeChoice, .attendees])
         #expect(descriptor.canFollow(SampleSkills.downFor))
         #expect(descriptor.canFollow(SampleSkills.findATime))
         #expect(!descriptor.canFollow(SampleSkills.swapPhotos))

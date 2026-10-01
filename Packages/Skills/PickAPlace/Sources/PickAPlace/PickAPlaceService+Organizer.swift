@@ -324,6 +324,11 @@ extension PickAPlaceService {
         }
         emit(organizer.id, .everyoneConfirmed(revision: proposal.revision))
         continuation.yield(.produced(organizer.id, .placeChoice(place)))
+        // The proposal's roster may name friends who passed or never
+        // answered; these are the people actually in the plan.
+        if let attendees = try? Attendees([localPeer] + yes) {
+            continuation.yield(.produced(organizer.id, .attendees(attendees)))
+        }
     }
 
     func spawnConfirmation(_ conversation: ConversationID, to friend: PeerID, organizer: Organizer) {

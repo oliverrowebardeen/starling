@@ -287,6 +287,9 @@ extension PickAPlaceService {
         remember(conversation)
         emit(invite.id, .everyoneConfirmed(revision: proposal.revision))
         continuation.yield(.produced(invite.id, .placeChoice(place)))
+        if let attendees = try? Attendees(final) {
+            continuation.yield(.produced(invite.id, .attendees(attendees)))
+        }
     }
 
     // MARK: - Ending

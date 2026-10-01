@@ -13,6 +13,8 @@ public enum PickAPlaceSkill {
     /// - Time and activity are used, because a chained pick carries the
     ///   plan's time and activity in the proposal, so a friend who joined
     ///   through Find a time builds the same plan.
+    /// - It also produces `Attendees`: the people who said yes, which can be
+    ///   fewer than the proposal named.
     /// Budget and diet stay in `topicsUsed` only because the intent reads
     /// them; their values never leave the phone.
     public static let descriptor = try! SkillDescriptor(
@@ -30,7 +32,7 @@ public enum PickAPlaceSkill {
         topicsRequired: [.place, .people],
         permissions: [.locationWhenInUse],
         accepts: [.plan, .timeSlot],
-        produces: [.placeChoice],
+        produces: [.placeChoice, .attendees],
         intent: IntentSchema(slots: [
             IntentSlot(.place, required: false, hint: "the kind of place or area, such as dinner near Franklin"),
             IntentSlot(.budget, required: false, hint: "the most they want to spend each"),

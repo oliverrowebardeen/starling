@@ -125,6 +125,10 @@ struct GroupFlowTests {
         #expect(await maya.reaches(.planned, in: conversation))
         #expect(await jake.state(in: conversation) == .ended(.declined))
         #expect(await jake.agreedPlace(in: conversation) == nil)
+        // Oliver and Maya both record who is actually coming.
+        for phone in [oliver, maya] {
+            #expect(await eventually { await phone.attendees(in: conversation) == [oliver.id, maya.id] }, "\(phone.name)")
+        }
         #expect(await group.lifecyclesWereLegal())
     }
 

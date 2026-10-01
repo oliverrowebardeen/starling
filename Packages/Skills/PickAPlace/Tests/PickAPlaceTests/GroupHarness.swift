@@ -322,6 +322,12 @@ final class Phone: Sendable {
         try await service.answer(interaction.id, with: .pass)
     }
 
+    func attendees(in conversation: ConversationID) async -> [PeerID]? {
+        guard let interaction = await interaction(conversation) else { return nil }
+        let artifacts = await coordinator.produced[interaction.id] ?? []
+        return artifacts.lazy.compactMap { if case .attendees(let people) = $0 { people.peers } else { nil } }.first
+    }
+
     func agreedPlace(in conversation: ConversationID) async -> PlaceChoice? {
         guard let interaction = await interaction(conversation) else { return nil }
         let artifacts = await coordinator.produced[interaction.id] ?? []
