@@ -34,15 +34,17 @@ test "$(nm build/Build/Products/Release-iphonesimulator/Starling.app/Starling | 
 
 **Also:** after `.paired`, the app saves the peer again with the owner's chosen nickname (`PairedPeerStore.save` is an upsert). If E1's session already pins the peer, that only updates the name.
 
-**Meanwhile:** Debug builds use `ScriptedPairingSession`; Release shows "Friends isn't in this build yet".
+**Status:** lane E2's views are wired: the pairing screen's slot shows `WiFiAwarePairingView` and `WiFiAwareDevicePicker` where Wi-Fi Aware runs, and Developer > Wi-Fi Aware runs `WiFiAwareTransport` for E2's checklist (ADR 0143). What remains is E1's side: how the app starts Starling's code-check ceremony with the friend the system just paired.
+
+**Meanwhile:** Debug builds use `ScriptedPairingSession` for the code check; Release shows "Friends isn't in this build yet".
 
 ## 4. Down service construction and PSI privacy flag (lane F, via the Orchestrator)
 
 **What lane H needs:**
 
 0. Done on lane H's side for v1.1: the app's single Inbox loop forwards every `InboxEvent` to `DownService.handle(_:)` (`AppServices.inboxEvents`), and approved consent is remembered for 10 minutes within one intent (F request 5, ADR 0142).
-1. A way to build F's `DownService` given the app's `ConsentProvider`, because F's `Outbox` needs one and the consent sheet is the app's (`AppServices.makeDownService: (any ConsentProvider) -> any DownService`).
-2. Whether the PSI provider in use is private (`PSIProviderDescriptor.isPrivate`), so the consent sheet can drop its "this test build's matching step does not hide your free times" note once real PSI lands (`AppServices.psiIsPrivate`).
+1. A way to build F's `DownService` on the app's `Outbox` (lane G's policy, the consent sheet, the audit log; `AppModel.outbox`) and the app's Inbox loop, rather than F building its own.
+2. Resolved by lane G: `ConsentSheetModel` derives the PSI notice from the disclosure itself, so the app no longer needs a separate privacy flag.
 3. Confirmation that one merged `OwnerRules` per intent (standing rules plus the intent, most restrictive sharing wins; ADR 0141) is what F wants in `DownIntent.rules`.
 
 **Meanwhile:** Debug builds use `ScriptedDownService` driven from Developer > Fakes; Release shows "Down? isn't in this build yet".

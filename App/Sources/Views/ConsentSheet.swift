@@ -7,8 +7,6 @@ import SwiftUI
 /// answers Send or Don't send, and no answer times out as a decline.
 struct ConsentSheet: View {
     let request: ConsentCoordinator.Request
-    /// False while the PSI in use is `InsecurePSIStub`.
-    let psiIsPrivate: Bool
     let answer: (ConsentOutcome) -> Void
 
     var body: some View {
@@ -25,18 +23,18 @@ struct ConsentSheet: View {
                     }
                 } header: {
                     Text("What leaves your phone")
-                } footer: {
-                    if !psiIsPrivate && request.disclosure.items.contains(where: { $0.category == .psi }) {
-                        Text("This test build's matching step does not hide your free times from \(request.recipientName).")
-                    }
                 }
 
                 Section {
                     Text(request.recipientModel ?? "Their agent hasn't said where its model runs")
                 } header: {
                     Text("\(request.recipientName)'s agent")
-                } footer: {
-                    Text("Starling can't check this claim yet.")
+                }
+
+                // Lane G's notices: locality is self-declared, what the
+                // matching step reveals, and the protocol metadata sent too.
+                Section {
+                    ForEach(request.notices, id: \.self) { Text($0).font(.footnote) }
                 }
             }
             .navigationTitle("Send to \(request.recipientName)?")
@@ -66,7 +64,7 @@ struct ConsentSheet: View {
     @Previewable @State var app = PreviewSupport.app()
     Color.clear
         .sheet(item: Binding(get: { app.consent.current }, set: { _ in })) { request in
-            ConsentSheet(request: request, psiIsPrivate: false) { app.consent.answer($0, to: request.id) }
+            ConsentSheet(request: request) { app.consent.answer($0, to: request.id) }
         }
         .task {
             let friend = try? await app.services.peers?.all().first

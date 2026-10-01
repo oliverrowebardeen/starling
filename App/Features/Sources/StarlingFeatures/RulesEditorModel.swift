@@ -23,8 +23,15 @@ public final class RulesEditorModel {
     public private(set) var phase = Phase.loading
     public private(set) var notice: String?
     public private(set) var saved: SavedRules?
+    /// True when the saved rules exist but could not be read. Different from
+    /// "nothing saved": the app keeps every send denied until the owner
+    /// saves rules again (review finding 2 on PR #27).
+    public private(set) var loadFailed = false
     /// The words the current draft's model rows came from.
     public private(set) var interpretedFrom: String?
+
+    /// Called after the rules are saved, for example to update the policy.
+    public var onSaved: @MainActor () async -> Void = {}
 
     private let interpreter: RulesInterpreter
     private let store: any RulesStore
@@ -56,8 +63,10 @@ public final class RulesEditorModel {
     public func load() async {
         do {
             saved = try await store.load()
+            loadFailed = false
         } catch {
-            notice = "Your saved rules couldn't be read. Write them again to replace them."
+            loadFailed = true
+            notice = "Your saved rules couldn't be read, so Starling won't send anything until you save your rules again."
         }
         phase = saved == nil ? .writing : .saved
     }
@@ -102,10 +111,12 @@ public final class RulesEditorModel {
             let rules = SavedRules(rules: try draft.build(), savedAt: now())
             try await store.save(rules)
             saved = rules
+            loadFailed = false
             text = ""
             interpretedFrom = nil
             notice = nil
             phase = .saved
+            await onSaved()
             return true
         } catch is RulesDraftError {
             notice = "Fix the rows marked in red before saving."

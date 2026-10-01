@@ -9,5 +9,25 @@
 	<array>
 		<string>_starling._tcp</string>
 	</array>
+	<!-- Lane E2's Wi-Fi Aware services (ADR 0111). Names must match
+	     StarlingWiFiAwareService.link and .pairing exactly: an invalid
+	     name, or a service with neither key, crashes the app. -->
+	<key>WiFiAwareServices</key>
+	<dict>
+		<key>_starling-link._tcp</key>
+		<dict>
+			<key>Publishable</key>
+			<dict/>
+			<key>Subscribable</key>
+			<dict/>
+		</dict>
+		<key>_starling-pair._tcp</key>
+		<dict>
+			<key>Publishable</key>
+			<dict/>
+			<key>Subscribable</key>
+			<dict/>
+		</dict>
+	</dict>
 </dict>
 </plist>
