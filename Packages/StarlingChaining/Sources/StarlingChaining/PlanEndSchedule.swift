@@ -82,6 +82,8 @@ public struct PlanEndSchedule: Sendable {
               parent.conversation == chain.parentConversation,
               let plan = parent.plan, let end = plan.endsAt
         else { return .cancel(link, .withdrawn) }
+        // Only the plan's own people (ADR 0020 decision 9.3).
+        guard Set(link.participants).isSubset(of: plan.attendees.peers) else { return .cancel(link, .withdrawn) }
         // The plan was called off before it happened.
         guard parent.state == .planned || parent.state == .done else { return .cancel(link, .withdrawn) }
         // Opted in at Confirm: the parent was already a plan when the owner

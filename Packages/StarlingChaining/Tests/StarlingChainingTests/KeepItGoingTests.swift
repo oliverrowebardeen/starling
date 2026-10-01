@@ -156,4 +156,37 @@ import Testing
                                  chain: ChainLink(parent: a, parentConversation: ConversationID(), consumed: [.plan], trigger: .atConfirm, optedInAt: Fixtures.at(minutes: 0)))
         #expect([a, b].contains(ChainPlanner.root(of: first, in: [first, second])))
     }
+
+    @Test func aChainGoesOnlyToThePlansAttendees() throws {
+        // The Down for… asked a stranger too, who did not end up in the plan.
+        var asked = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [Fixtures.maya, Fixtures.stranger, Fixtures.jake],
+                                createdAt: Fixtures.at(minutes: 0))
+        try asked.apply(.started, at: Fixtures.at(minutes: 1))
+        let plan = try Plan(origin: asked.conversation, attendees: Attendees([Fixtures.me, Fixtures.maya, Fixtures.jake]), activity: Fixtures.boba, time: Fixtures.tonight)
+        let terms = try Terms([.activity: .keywords([Fixtures.boba])])
+        try asked.apply(.proposalReady(SkillProposal(revision: 1, participants: plan.attendees.peers, terms: terms, plan: plan)), at: Fixtures.at(minutes: 2))
+        try asked.apply(.ownerAccepted(revision: 1), at: Fixtures.at(minutes: 3))
+        try asked.apply(.everyoneConfirmed(revision: 1), at: Fixtures.at(minutes: 4))
+        asked.record(.plan(plan))
+        var cards = Fixtures.cards()
+        cards[Fixtures.stranger] = Fixtures.card(SampleSkills.all)
+        let row = try #require(planner.suggestions(after: asked.id, in: [asked], settings: settings, cards: cards).first)
+        #expect(row.participants == [Fixtures.maya, Fixtures.jake])
+        let start = try planner.begin(row, in: [asked], settings: settings, cards: cards, tap: OwnerTap(at: Fixtures.at(minutes: 5)),
+                                      consent: row.consent(approvedAt: Fixtures.at(minutes: 5)), rules: .empty, expiresAt: Fixtures.at(minutes: 60))
+        #expect(start.request.participants == [Fixtures.maya, Fixtures.jake])
+        #expect(start.request.intent.audience == .picked([Fixtures.maya, Fixtures.jake]))
+        #expect(start.request.intent.mode == SampleSkills.pickAPlace.defaultSendMode)
+    }
+
+    @Test func withoutAPlanThereIsNobodyToChainWith() throws {
+        var slotOnly = Interaction(skill: SampleSkills.findATime.ref, role: .invitee, participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 0))
+        let terms = try Terms([.time: .slots([Fixtures.tonight])])
+        try slotOnly.apply(.proposalReady(SkillProposal(revision: 1, participants: [Fixtures.me, Fixtures.maya], terms: terms)), at: Fixtures.at(minutes: 1))
+        try slotOnly.apply(.ownerAccepted(revision: 1), at: Fixtures.at(minutes: 2))
+        try slotOnly.apply(.everyoneConfirmed(revision: 1), at: Fixtures.at(minutes: 3))
+        // Find a time produced a time slot Pick a place accepts, but no plan.
+        slotOnly.record(.timeSlot(Fixtures.tonight))
+        #expect(planner.suggestions(after: slotOnly.id, in: [slotOnly], settings: settings, cards: Fixtures.cards()).isEmpty)
+    }
 }

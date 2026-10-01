@@ -80,6 +80,12 @@ final class TestClock: Sendable {
                                      chain: ChainLink(parent: plan.id, parentConversation: ConversationID(), consumed: [.plan], trigger: .afterPlanEnds,
                                                       optedInAt: Fixtures.at(minutes: 6)))
         #expect(schedule.check(at: afterTheEnd, interactions: [plan, mismatched], settings: swapOn, cards: Fixtures.cards()) == [.cancel(mismatched, .withdrawn)])
+        // A link to someone the plan did not include.
+        let outsider = Interaction(skill: SampleSkills.swapPhotos.ref, role: .initiator, participants: [Fixtures.maya, Fixtures.stranger],
+                                   createdAt: Fixtures.at(minutes: 6),
+                                   chain: ChainLink(parent: plan.id, parentConversation: plan.conversation, consumed: [.plan], trigger: .afterPlanEnds,
+                                                    optedInAt: Fixtures.at(minutes: 6)))
+        #expect(schedule.check(at: afterTheEnd, interactions: [plan, outsider], settings: swapOn, cards: Fixtures.cards()) == [.cancel(outsider, .withdrawn)])
         // An invitee interaction never waits for a plan's end, whatever it holds.
         let invitee = Interaction(skill: SampleSkills.swapPhotos.ref, role: .invitee, participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 6),
                                   chain: ChainLink(parent: plan.id, parentConversation: plan.conversation, consumed: [.plan], trigger: .afterPlanEnds,

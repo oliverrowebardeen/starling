@@ -136,11 +136,13 @@ public struct ChainPlanner: Sendable {
         interaction.role == .initiator && interaction.state == .drafting && interaction.chain?.trigger == .afterPlanEnds
     }
 
-    /// Everyone in the plan but this phone, in plan order: the plan's
-    /// attendees when there is a plan, otherwise the interaction's people.
+    /// Everyone in the plan but this phone, in plan order. Only the plan's
+    /// attendees: a chain never reaches anyone the plan did not include, so
+    /// `chainedFrom` never names a conversation a recipient was not in (ADR
+    /// 0020 decision 9.3). Without a plan there is nobody to chain with.
     func participants(of interaction: Interaction) -> [PeerID] {
         var seen: Set<PeerID> = [me]
-        return (interaction.plan?.attendees.peers ?? interaction.participants).filter { seen.insert($0).inserted }
+        return (interaction.plan?.attendees.peers ?? []).filter { seen.insert($0).inserted }
     }
 
     /// What the owner already allowed for the plan `interaction` belongs to:
