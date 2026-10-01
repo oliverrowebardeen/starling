@@ -32,7 +32,7 @@ Constraints:
    - The starter's plan exists only once every confirmation has left the phone (cleared policy and consent and reached the link); until then it is confirming, and a restart finishes the sends through Outbox.
    - A friend's plan exists only once its own acceptance has left and a matching confirmation has arrived. A confirmation that comes earlier, for example while the acceptance waits on a consent sheet, is held until then.
    - Both sides then report `everyoneConfirmed` and produce a `TimeSlot` and a `Plan`. The coordinator applies `planEnded` (ADR 0011, amendment 15).
-7. **A pass in a group.** If a friend passes on the proposal, the others get a new revision with the same time and the smaller roster, and everyone confirms again. An "I'm in" on an older card is refused as stale.
+7. **A pass in a group.** A friend's pass is silent (decision 10). At the confirm deadline, a friend who has not said "That works" counts as no. If some friends did, they get a new revision with the same time and the smaller roster, and everyone confirms again; if none did, the request expires. An "I'm in" on an older card is refused as stale. A rejection from an older build drops that friend at once.
 
 ### What each side reveals
 
@@ -40,8 +40,9 @@ Constraints:
 9. **The starter reveals the times it offers.** With a calendar, the gaps between offered times show busy time inside the range, but never why. The sheet's third line therefore differs by role: "Only a few times you're free" when starting, "Only times you're both free" when answering (`FindATimeCopy.PermissionSheet`). Changing ADR 0013's wording is requested in `docs/requests/P15-C.md`.
 10. **A starter cannot tell why a friend said no** (ADR 0019, decision 5; reviews of PR #53).
     - **While answering, every no is silence.** No free time, a standing limit, a policy refusal (a Never setting), a pass, a declined sheet, and an expired request all send nothing, and a retried or late query gets nothing. Neither the count nor the timing of envelopes depends on the cause, and the starter ends on its own clock, at the answer deadline. "If you pass, they just won't see it" holds literally.
-    - **At a proposal, a no follows the owner's tap.** A pass, a declined sheet, and a refused acceptance each send one `reject(noOverlap)` naming that proposal's latest envelope, with no issue values. Core v2.1 numbers an envelope only once it is cleared, so a refused send leaves no gap in sequence numbers. A no the agent reaches by itself here (an avoided activity) is silent, like an owner who never taps.
-    - Tests compare the friend's envelopes across every cause, on a clock the test controls.
+    - **At a proposal, every no is silence too** (final privacy review). A pass ("Not then"), a declined sheet for the acceptance, a refused acceptance, a withdrawal, and an avoided activity close the conversation and retire it, and send nothing, exactly like a card nobody touched. The starter ends at its confirm deadline (decision 7).
+    - Every ending retires the conversation through `Outbox.retire` before it is reported; if retiring fails, the ending is reported as failed and the conversation stays closed (ADR 0021).
+    - Tests compare the friend's wire trace across every cause, with an untouched card as the baseline, on a clock the test controls.
     - **What timing still shows.** A *yes* from a calendar comes at once, while one from an owner comes when they answer, so a starter can tell whether a friend's agent answered alone. That is not a privacy setting, and hiding it would mean delaying every calendar answer.
 
 ### Every peer value is checked
@@ -66,7 +67,7 @@ Constraints:
 - Nothing needs consent under the default topics (time and activity Share) with on-device friends, and a two-person plan never touches the people topic.
 - **Remaining leak.** A starter shows friends up to 16 of its free times. A dishonest friend who keeps starting requests learns 16 of the owner's answers per request; the per-friend cap of 4 open requests bounds the rate, not the total. A private PSI (Nightjar) would remove this; recorded for the threat model.
 - Picking "the most friends" can leave a friend out of a group plan. The friend left out sees "no plan", like a pass.
-- **Silence costs time.** A starter whose friends all say no hears nothing and ends at the answer deadline (30 minutes by default, sooner if the request expires first) instead of at once.
+- **Silence costs time.** A starter whose friends all say no hears nothing and ends at the answer deadline (30 minutes by default) or, at a proposal, the confirm deadline (1 hour), sooner if the request expires first, instead of at once. The Orchestrator confirmed this trade (brief 2.6, silence by default; ADR 0017). The starter's card says it is still checking until then, never that a friend said no.
 - Withdrawing after a plan is made ends it on this phone only; friends are not told. Cancelling a confirmed plan is out of scope for Phase 1.5.
 
 ## Sources
