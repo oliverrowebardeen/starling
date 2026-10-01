@@ -177,20 +177,18 @@ struct GroupFlowTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
-    @Test func aFriendWhomNothingFitsStaysSilentAndIsLeftOut() async throws {
-        let (group, oliver, maya, jake) = try await threeFriends(
-            jakeLimits: limits(budget: 5, needs: ["halal"], avoid: ["boba"]),
-            configuration: PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
-                                                   answerWindow: .milliseconds(600), confirmWindow: .seconds(3))
-        )
+    @Test func aFriendWhomNothingFitsSaysAnOrdinaryNo() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends(jakeLimits: limits(budget: 5, needs: ["halal"], avoid: ["boba"]))
         defer { Task { await group.stop() } }
         let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
 
-        // Jake's phone says nothing at all and never shows the request.
-        #expect(await maya.reaches(.proposed, in: conversation))
+        // Jake's phone answers no, as any no (ADR 0019, decision 5), and
+        // never shows the request; Oliver need not wait out the window.
+        #expect(await maya.reaches(.proposed, in: conversation, within: 1))
         #expect(await jake.interaction(conversation) == nil)
         #expect(await jake.coordinator.incoming.isEmpty)
-        #expect(await group.wire.sent(by: jake.id).isEmpty)
+        let jakes = await group.wire.sent(by: jake.id)
+        #expect(!jakes.isEmpty && jakes.allSatisfy { $0.body.rejection?.reason == .noOverlap })
 
         let card = try #require(await oliver.interaction(conversation)?.proposal)
         #expect(card.participants == [oliver.id, maya.id])
@@ -216,8 +214,9 @@ struct GroupFlowTests {
         #expect(await oliver.reaches(.ended(.nobodyUp), in: conversation))
         #expect(await maya.interaction(conversation) == nil)
         #expect(await jake.interaction(conversation) == nil)
-        #expect(await group.wire.sent(by: maya.id).isEmpty)
-        #expect(await group.wire.sent(by: jake.id).isEmpty)
+        for friend in [maya, jake] {
+            #expect(await group.wire.sent(by: friend.id).allSatisfy { $0.body.rejection?.reason == .noOverlap })
+        }
         #expect(await group.lifecyclesWereLegal())
     }
 

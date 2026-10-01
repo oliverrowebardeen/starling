@@ -114,7 +114,10 @@ extension PickAPlaceService {
         case .negotiating:
             // The coordinator recorded the friend who asked.
             guard let organizer = interaction.participants.first, organizer != localPeer else { return false }
-            var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: nil)
+            // The candidates are not stored: the organizer's next query sets
+            // them, and only that one set is answered.
+            var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
+                                candidates: [])
             invite.announced = true
             invite.revision = interaction.proposalRevision ?? 0
             invites[conversation] = invite
@@ -126,7 +129,8 @@ extension PickAPlaceService {
                   let organizer = roster.first, organizer != localPeer, roster.contains(localPeer),
                   interaction.participants.first.map({ $0 == organizer }) ?? true
             else { return false }
-            var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: nil)
+            var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
+                                candidates: [place])
             invite.announced = true
             // This phone already found the proposed place acceptable.
             invite.acceptable = [place]

@@ -128,6 +128,21 @@ struct AdversarialTests {
         #expect(await group.wire.sent(by: maya.id).isEmpty)
     }
 
+    @Test func oneConversationAnswersAboutOneSetOfPlaces() async throws {
+        let (group, maya, mallory) = try await mayaAndMallory()
+        defer { Task { await group.stop() } }
+        let conversation = ConversationID()
+        try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+        // Asking again about other places in the same conversation gets
+        // nothing, so a friend learns about a bounded set (ADR 0019).
+        try await mallory.outbox.send(query([Venues.teaLab.choice, Venues.fancy.choice]), to: maya.id, conversation: conversation,
+                                      skill: skill, mode: .invite)
+        try await Task.sleep(for: .milliseconds(150))
+        let answers = await group.wire.sent(by: maya.id).compactMap { if case .answer(let answer) = $0.body { answer.acceptable } else { nil } }
+        #expect(answers == [.places([Venues.bobaGuys.choice])])
+    }
+
     @Test func aStrangersCardIsNotKept() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
@@ -205,11 +220,11 @@ struct AdversarialTests {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
         let oliver = Phone("Oliver", hub: hub, maps: maps)
-        // Nothing fits Mallory's own phone, so it stays silent and Mallory
-        // answers by hand.
-        let mallory = Phone("Mallory", hub: hub, maps: maps, limits: limits(avoid: ["boba"]))
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
         let group = try await Group([oliver, mallory], hub: hub)
         defer { Task { await group.stop() } }
+        // Mallory's phone sends nothing itself; Mallory answers by hand.
+        await mallory.transport.lose(.max) { _ in true }
         let request = try await oliver.organize([Venues.bobaGuys, Venues.teaLab], with: [mallory])
         #expect(await eventually { await group.wire.sent(to: mallory.id).contains { $0.body.kind == .query } })
         let queryID = try #require(await group.wire.sent(to: mallory.id).first { $0.body.kind == .query }?.id)

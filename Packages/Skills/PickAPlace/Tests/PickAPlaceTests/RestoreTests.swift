@@ -108,10 +108,10 @@ struct RestoreTests {
         let second = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id]), .time: .slots([slot])])
         try await mallory.outbox.send(.propose(Proposal(round: 1, terms: second)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
 
-        // The new card never shows; the request ends without a word.
+        // The new card never shows; Mallory gets an ordinary no.
         #expect(await maya.reaches(.ended(.nobodyUp), in: conversation))
         #expect(await maya.interaction(conversation)?.proposal?.terms == first)
-        #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .reject })
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.rejection?.reason == .noOverlap } })
     }
 
     @Test func aWithdrawnRequestStaysClosedAfterARestart() async throws {

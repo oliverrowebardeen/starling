@@ -10,6 +10,12 @@ struct Invite {
     let conversation: ConversationID
     let organizer: PeerID
     let chainedFrom: ConversationID?
+    /// The candidates of the first query. A conversation answers about one
+    /// set only, so a friend learns yes or no about at most
+    /// `ProtocolLimits.maxCandidatesAnsweredPerIssue` of them (ADR 0019,
+    /// decision 6). Empty only for a request restored before its list was
+    /// sent; the next query sets it.
+    var candidates: [PlaceChoice]
     /// Whether the coordinator has heard of this request. A request where
     /// nothing fits is never announced.
     var announced = false
@@ -36,7 +42,9 @@ struct Invite {
 extension PickAPlaceService {
     /// A query from a friend for a conversation this phone has not seen.
     func newInvite(_ envelope: Envelope) {
-        guard case .query(let query) = envelope.body, query.issue == .place, case .places(let candidates) = query.candidates else { return }
+        guard case .query(let query) = envelope.body, query.issue == .place, case .places(let candidates) = query.candidates,
+              candidates.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue
+        else { return }
         let live = invites.values.filter { !$0.isFinished }
         guard live.count < configuration.maxLiveRequests,
               live.filter({ $0.organizer == envelope.sender }).count < configuration.maxLiveRequestsPerFriend
@@ -51,10 +59,11 @@ extension PickAPlaceService {
         requestTimes[envelope.sender] = recent + [now]
         let conversation = envelope.conversation
         let sender = envelope.sender
-        invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender, chainedFrom: envelope.chainedFrom)
+        invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender,
+                                       chainedFrom: envelope.chainedFrom, candidates: candidates)
         spawnInviteDeadline(conversation)
         spawn(conversation) { await $0.admissions.record(sender, at: now) }
-        spawn(conversation) { await $0.judgeAndAnswer(conversation, query: envelope.id, candidates: candidates) }
+        spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
     }
 
     /// Ends a request the organizer stops answering: an honest organizer
@@ -74,8 +83,14 @@ extension PickAPlaceService {
         guard let invite = invites[conversation], envelope.sender == invite.organizer, !invite.isFinished else { return }
         switch envelope.body {
         case .query(let query):
-            guard query.issue == .place, case .places(let candidates) = query.candidates else { return }
-            spawn(conversation) { await $0.judgeAndAnswer(conversation, query: envelope.id, candidates: candidates) }
+            // A retry asks about the same candidates; any other set is not
+            // answered (ADR 0019, decision 6).
+            guard query.issue == .place, case .places(let candidates) = query.candidates,
+                  candidates.count <= ProtocolLimits.maxCandidatesAnsweredPerIssue
+            else { return }
+            if invite.candidates.isEmpty { invites[conversation]?.candidates = candidates }
+            guard Set(candidates) == Set(invites[conversation]?.candidates ?? []) else { return }
+            spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
         case .propose(let proposal):
             if let current = invite.proposal, current.terms == proposal.terms {
                 // A retry. If the owner already said yes, say it again.
@@ -98,15 +113,16 @@ extension PickAPlaceService {
     // MARK: - Judging privately
 
     /// Judges the candidates against the owner's limits with facts this
-    /// phone looks up, then answers with the ones that fit. A retry of the
-    /// same query gets the same list. When nothing fits, the phone says
-    /// nothing at all, exactly as if its owner had not answered yet: a
-    /// "none of these" would tell a probing friend about the owner's limits
-    /// without a consent sheet (ADR 0230).
-    func judgeAndAnswer(_ conversation: ConversationID, query: MessageID, candidates: [PlaceChoice]) async {
+    /// phone looks up, then answers with the ones that fit, as a yes or no
+    /// to the friend's own options (ADR 0019, decision 4). A retry of the
+    /// same query gets the same list. When nothing fits, the friend gets an
+    /// ordinary no (`noOverlap`) and the owner sees nothing: a limit set to
+    /// Never looks like any other no (decision 5).
+    func judgeAndAnswer(_ conversation: ConversationID, queryID: MessageID, query: Query) async {
         guard let invite = invites[conversation], !invite.isFinished, !invite.answering else { return }
+        let candidates = invite.candidates
         invites[conversation]?.answering = true
-        invites[conversation]?.lastQuery = query
+        invites[conversation]?.lastQuery = queryID
         defer { invites[conversation]?.answering = false }
 
         let acceptable: [PlaceChoice]
@@ -126,15 +142,19 @@ extension PickAPlaceService {
             invites[conversation]?.facts = facts
         }
         guard !acceptable.isEmpty else {
-            endInvite(conversation, event: .noAgreement, reply: nil)
+            // The no goes out without asking only to an organizer whose
+            // agent runs on its phone, where the policy needs no sheet; to
+            // anyone else the phone stays silent rather than show the owner
+            // a sheet for a request it never showed them.
+            endInvite(conversation, event: .noAgreement, reply: organizerIsOnDevice(invite.organizer) ? .noOverlap : nil)
             return
         }
         announce(conversation)
 
         guard let invite = invites[conversation] else { return }
         do {
-            let answer = try Answer(query: query, issue: .place, status: .answered, acceptable: .places(acceptable))
-            try await send(.answer(answer), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom)
+            let answer = try Answer(query: queryID, issue: .place, status: .answered, acceptable: .places(acceptable))
+            try await send(.answer(answer), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom, answering: query)
         } catch {
             // The list belongs to the step before any proposal; once one has
             // arrived, the result no longer describes the current step
@@ -147,6 +167,13 @@ extension PickAPlaceService {
             // The organizer asks again.
             default: break
             }
+        }
+    }
+
+    func organizerIsOnDevice(_ peer: PeerID) -> Bool {
+        switch cards[peer]?.model {
+        case .onDevice?, ModelLocality.none?: true
+        default: false
         }
     }
 
@@ -191,8 +218,8 @@ extension PickAPlaceService {
               invite.proposal?.terms != proposal.terms
         else { return }
         guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
-            // A private limit: silent, like a list where nothing fits.
-            endInvite(conversation, event: .noAgreement, reply: nil)
+            // A private limit: an ordinary no, like a list where nothing fits.
+            endInvite(conversation, event: .noAgreement, reply: .noOverlap)
             return
         }
         let revision = invite.revision + 1

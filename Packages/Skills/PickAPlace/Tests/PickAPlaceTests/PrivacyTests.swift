@@ -51,19 +51,22 @@ struct PrivacyTests {
         #expect(await maya.interaction(conversation) == nil)
     }
 
-    @Test func placeSetToNeverOnAFriendsPhoneLooksLikeSilence() async throws {
+    /// ADR 0019: with Place set to Never, Maya's agent still says which of
+    /// Oliver's places work (a yes or no to his own options), but her yes
+    /// to a proposal repeats the place as a term, so the policy stops it.
+    @Test func placeSetToNeverStillSaysYesOrNoButCannotAccept() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
-        let quick = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
-                                            answerWindow: .milliseconds(500), confirmWindow: .seconds(3))
-        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: quick)
-        let maya = Phone("Maya", hub: hub, maps: maps, policy: try policy([.place: .never]), configuration: quick)
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let maya = Phone("Maya", hub: hub, maps: maps, policy: try policy([.place: .never]))
         let group = try await Group([oliver, maya], hub: hub)
         defer { Task { await group.stop() } }
         let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer })
+        try await maya.accept(in: conversation)
         #expect(await maya.reaches(.ended(.blockedByPrivacy), in: conversation))
-        #expect(await group.wire.sent(by: maya.id).isEmpty)
-        #expect(await oliver.reaches(.ended(.nobodyUp), in: conversation))
+        #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .accept })
         #expect(await group.lifecyclesWereLegal())
     }
 
@@ -118,12 +121,14 @@ struct PrivacyTests {
         )
         let oliver = Phone("Oliver", hub: hub, maps: maps, policy: excludedByPolicy ? policy : FixedPolicyEngine(.allow), configuration: window)
         let maya = Phone("Maya", hub: hub, maps: maps, configuration: window)
-        // Excluded: Jake's model runs in the cloud. Silent: nothing fits him.
+        // Excluded: Jake's model runs in the cloud. Silent: Jake's phone is
+        // out of reach, and nothing it sends arrives.
         let jake = excludedByPolicy
             ? Phone("Jake", hub: hub, maps: maps, model: .thirdPartyCloud(provider: "acme"), configuration: window)
-            : Phone("Jake", hub: hub, maps: maps, limits: limits(avoid: ["boba", "restaurant"]), configuration: window)
+            : Phone("Jake", hub: hub, maps: maps, configuration: window)
         let group = try await Group([oliver, maya, jake], hub: hub)
         defer { Task { await group.stop() } }
+        if !excludedByPolicy { await jake.transport.lose(.max) { _ in true } }
 
         let started = Date()
         let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
