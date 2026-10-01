@@ -125,6 +125,12 @@ actor GatedPairedPeerStore: PairedPeerStore {
         waiting = []
     }
 
+    /// Lets the oldest held lookup continue; the gate stays armed.
+    func releaseOneLookup() {
+        guard !waiting.isEmpty else { return }
+        waiting.removeFirst().resume()
+    }
+
     /// Points inside `save` and `remove` where a test can hold the caller.
     enum Point: Hashable, Sendable { case saveBeforeWrite, saveAfterWrite, removeBeforeDelete, removeAfterDelete }
     private var armedPoints: Set<Point> = []
@@ -162,6 +168,12 @@ actor GatedPairedPeerStore: PairedPeerStore {
         if armed { await withCheckedContinuation { waiting.append($0) } }
         return snapshot
     }
+}
+
+/// Counts completions from concurrent tasks.
+actor Counter {
+    private(set) var value = 0
+    func increment() { value += 1 }
 }
 
 /// A flag set from synchronous test hooks.
@@ -237,6 +249,8 @@ actor FaultyLink: Transport {
     private var toPass = 0
     private(set) var dropped = 0
     private(set) var failed = 0
+    /// Transport frames that matched the fault filter, whatever happened to them.
+    private(set) var matched = 0
 
     init(_ inner: LoopbackTransport) { self.inner = inner }
 
@@ -254,6 +268,7 @@ actor FaultyLink: Transport {
     func send(_ frame: Frame, to peer: PeerID) async throws {
         if frame.bytes.first == SecureWire.FrameType.transport.rawValue,
            !controlOnly || frame.bytes.count == SecureWire.transportOverhead {
+            matched += 1
             if toPass > 0 { toPass -= 1; try await inner.send(frame, to: peer); return }
             if toDrop > 0 { toDrop -= 1; dropped += 1; return }
             if toFail > 0 { toFail -= 1; failed += 1; throw TransportError.peerUnreachable(peer) }

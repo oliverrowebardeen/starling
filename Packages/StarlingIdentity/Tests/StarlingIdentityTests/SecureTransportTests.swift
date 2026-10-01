@@ -559,6 +559,66 @@ import Testing
         try await alice.waitForMessages(3)
     }
 
+    /// Review 5 finding 3: five reconnects run at once and all wait in the
+    /// pin lookup. Released one at a time, each would install a session
+    /// (S1 to S5) without rechecking admission: S1's confirm reaches Bob but
+    /// his acknowledgement is lost, the later confirms are lost, and
+    /// installing S5 would evict S1, which Bob still uses. Admission must be
+    /// checked after the lookup, and concurrent reconnects coalesced.
+    @Test func concurrentReconnectsCannotEvictASessionThePeerMayStillUse() async throws {
+        let hub = LoopbackHub()
+        let configuration = SecureTransportConfiguration(handshakeTimeout: .seconds(2), handshakeAttempts: 3)
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true, configuration: configuration)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey], faulty: true, configuration: configuration)
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        try await eventually("S0 confirmed") {
+            let aliceBusy = await alice.secure.status(of: bob.id).handshakeInProgress
+            let bobBusy = await bob.secure.status(of: alice.id).handshakeInProgress
+            return !aliceBusy && !bobBusy
+        }
+
+        let aliceLink = try #require(alice.link as? FaultyLink)
+        let bobLink = try #require(bob.link as? FaultyLink)
+        await bobLink.drop(nextTransportFrames: .max, controlOnly: true)
+        await aliceLink.drop(nextTransportFrames: .max, controlOnly: true, afterPassing: 1)
+        let aliceBaseline = await aliceLink.matched
+        let bobBaseline = await bobLink.matched
+        await alice.store.armLookupGate()
+        let returned = Counter()
+        let attempts = 5
+        for _ in 0..<attempts {
+            Task {
+                await alice.secure.reconnect(bob.id)
+                await returned.increment()
+            }
+        }
+        try await eventually("every reconnect is held in its lookup or has returned") {
+            let held = await alice.store.suspendedLookups
+            let done = await returned.value
+            return held + done == attempts
+        }
+
+        var installed = 0
+        while await alice.store.suspendedLookups > 0 {
+            await alice.store.releaseOneLookup()
+            installed += 1
+            let expected = aliceBaseline + installed
+            // The attempt installs its session and sends its first confirm.
+            try await eventually("attempt \(installed) sends its confirm") { await aliceLink.matched == expected }
+            if installed == 1 {
+                // S1's confirm reached Bob, who switched to S1 (his ack is lost).
+                try await eventually("bob switches to S1") { await bobLink.matched > bobBaseline }
+            }
+        }
+        await alice.store.releaseLookups()
+
+        for index in 0..<3 { try await bob.secure.send(Frame(Data("bob \(index)".utf8)), to: alice.id) }
+        try await alice.waitForMessages(3)
+    }
+
     /// Review 2 finding 3: every confirm (or every acknowledgement) is lost,
     /// so no rolled-over session is ever confirmed, and Alice keeps sending,
     /// so each session soon hits the cap. Replacing an unconfirmed session

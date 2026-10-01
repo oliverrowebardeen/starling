@@ -73,6 +73,9 @@ public actor SecureTransport: Transport {
     /// Unauthenticated; kept apart from `peers` so a claim alone creates no
     /// per-peer state, and cleared when the link goes.
     private var linkedPeers: Set<PeerID> = []
+    /// Peers with a handshake's pin lookup in flight, so concurrent
+    /// attempts for one peer coalesce instead of each installing a session.
+    private var lookupsInFlight: Set<PeerID> = []
     private var sendTail: Task<Void, Never>?
     /// Frames dropped since start, for tests and diagnostics. No reasons are kept.
     private(set) var droppedFrames = 0
@@ -223,7 +226,6 @@ public actor SecureTransport: Transport {
     /// pairing. The current session, if any, keeps working until it succeeds.
     public func reconnect(_ peer: PeerID) async {
         guard state == .started else { return }
-        guard admitHandshake(peer) else { return }
         await initiate(with: peer)
     }
 
@@ -289,7 +291,7 @@ public actor SecureTransport: Transport {
             pairingContinuation.yield(event)
             guard peer != localPeer else { return }
             linkedPeers.insert(peer)
-            if peers[peer]?.current == nil, peers[peer]?.initiation == nil, admitHandshake(peer) {
+            if peers[peer]?.current == nil, peers[peer]?.initiation == nil {
                 await initiate(with: peer)
             }
         case .peerUnavailable(let peer):
@@ -425,7 +427,7 @@ public actor SecureTransport: Transport {
             return
         }
         rollOver(peer)
-        if admitHandshake(peer) { await initiate(with: peer) }
+        await initiate(with: peer)
     }
 
     /// Sends a confirm or acknowledgement under the current session. Best
@@ -547,9 +549,7 @@ public actor SecureTransport: Transport {
             // We may not send on it again, but the peer may still send on it
             // until our new session reaches it: rollOver keeps it for receiving.
             rollOver(peer)
-            if admitHandshake(peer) {
-                Task { await self.initiate(with: peer) }
-            }
+            Task { await self.initiate(with: peer) }
             throw TransportError.peerUnreachable(peer)
         }
         var plaintext = Data(capacity: payload.count + 1)
@@ -580,8 +580,23 @@ public actor SecureTransport: Transport {
         try await start()
     }
 
+    /// Starts a KK handshake with `peer`. One attempt per peer at a time: a
+    /// call while a lookup or handshake for the peer is in flight returns
+    /// (concurrent reconnects coalesce). Admission is decided after the
+    /// awaited pin lookup, immediately before the attempt is installed, so
+    /// nothing that happened during the await is missed (ADR 0100 decision
+    /// 5). `attempts` marks a retry of an already admitted attempt.
     private func initiate(with peer: PeerID, attempts: Int? = nil) async {
-        guard state == .started, peer != localPeer, let (pinned, epoch) = await pinnedKey(for: peer) else { return }
+        let isRetry = attempts != nil
+        guard state == .started, peer != localPeer, !lookupsInFlight.contains(peer) else { return }
+        if !isRetry, peers[peer]?.initiation != nil { return }
+        lookupsInFlight.insert(peer)
+        let found = await pinnedKey(for: peer)
+        lookupsInFlight.remove(peer)
+        guard let (pinned, epoch) = found else { return }
+        if !isRetry {
+            guard peers[peer]?.initiation == nil, admitHandshake(peer) else { return }
+        }
         var handshake: NoiseHandshakeState
         let message: Data
         do {
@@ -637,7 +652,8 @@ public actor SecureTransport: Transport {
 
     /// The one gate every new handshake passes, whatever starts it (link-up,
     /// `reconnect`, the nonce cap, a confirm timeout), including when no
-    /// session is current (ADR 0100 decision 5).
+    /// session is current (ADR 0100 decision 5). Called only from `initiate`,
+    /// after its pin lookup and immediately before it installs the attempt.
     ///
     /// While unconfirmed sessions are retained (a current one, or superseded
     /// ones), a new attempt is admitted only if it spends from the restart
