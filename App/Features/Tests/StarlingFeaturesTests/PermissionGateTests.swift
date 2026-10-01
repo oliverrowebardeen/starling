@@ -98,8 +98,11 @@ actor FakeAccess: PermissionAccess {
         #expect(sheet.rows == [
             DisplayLine(title: "Your agent reads", detail: "When you're busy or free"),
             DisplayLine(title: "Never leaves your phone", detail: "Event names, places, people"),
-            DisplayLine(title: "Priya sees", detail: "Only times you're both free"),
+            DisplayLine(title: "Priya sees", detail: "Only a few times you're free"),
         ])
+        // ADR 0013 amendment 6: "both free" is true only when answering.
+        let answering = PermissionExplanation.make(.calendarFullAccess, skill: skill, friends: ["Priya"], role: .invitee)
+        #expect(answering.rows[2] == DisplayLine(title: "Priya sees", detail: "Only times you're both free"))
         #expect(sheet.body.contains("Priya's agent never has to ask you"))
         #expect(PermissionExplanation.make(.calendarFullAccess, skill: skill, friends: ["Maya", "Jake"]).rows[2].title == "Maya and Jake see")
         #expect(PermissionExplanation.continueLabel == "Continue")

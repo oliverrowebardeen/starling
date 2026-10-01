@@ -36,9 +36,12 @@ public struct PermissionExplanation: Hashable, Sendable, Identifiable {
 
     public static let continueLabel = "Continue"
 
-    /// - Parameter friends: The names of the friends the request goes to,
-    ///   the owner's own nicknames, so the sheet can say who sees what.
-    public static func make(_ permission: SystemPermission, skill: SkillDescriptor, friends: [String]) -> PermissionExplanation {
+    /// - Parameters:
+    ///   - friends: The names of the friends the request goes to, the
+    ///     owner's own nicknames, so the sheet can say who sees what.
+    ///   - role: Whether the owner is starting the skill or answering a
+    ///     friend. What the friend sees differs (ADR 0013 amendment 6).
+    public static func make(_ permission: SystemPermission, skill: SkillDescriptor, friends: [String], role: InteractionRole = .initiator) -> PermissionExplanation {
         let who = Self.names(friends)
         let sees = friends.count == 1 ? "\(who) sees" : "\(who) see"
         switch permission {
@@ -50,7 +53,10 @@ public struct PermissionExplanation: Hashable, Sendable, Identifiable {
                 rows: [
                     DisplayLine(title: "Your agent reads", detail: "When you're busy or free"),
                     DisplayLine(title: "Never leaves your phone", detail: "Event names, places, people"),
-                    DisplayLine(title: sees, detail: "Only times you're both free"),
+                    // Without private set intersection, the one who starts
+                    // names some free times first, so "both free" is true
+                    // only for the friend who answers (ADR 0013 amendment 6).
+                    DisplayLine(title: sees, detail: role == .initiator ? "Only a few times you're free" : "Only times you're both free"),
                 ],
                 footnote: "Change this anytime in You › Skills.",
                 fallback: "No problem, your agent will ask you instead."
@@ -130,7 +136,7 @@ public final class PermissionGate {
     }
 
     /// Makes sure `permission` is settled for `skill`, asking at most once.
-    public func prepare(_ permission: SystemPermission, for skill: SkillDescriptor, friends: [String], settings: SettingsModel) async -> Outcome {
+    public func prepare(_ permission: SystemPermission, for skill: SkillDescriptor, friends: [String], role: InteractionRole = .initiator, settings: SettingsModel) async -> Outcome {
         if settings.asksInstead(skill.id) { return .askInstead(fallback: nil) }
         guard let access = access[permission] else { return .unavailable }
         switch await access.status() {
@@ -139,7 +145,7 @@ public final class PermissionGate {
         case .denied: return .askInstead(fallback: nil)
         case .notDetermined: break
         }
-        let explanation = PermissionExplanation.make(permission, skill: skill, friends: friends)
+        let explanation = PermissionExplanation.make(permission, skill: skill, friends: friends, role: role)
         // A second request while a sheet is up waits its turn.
         while waiting != nil { try? await Task.sleep(for: .milliseconds(50)) }
         await withCheckedContinuation { continuation in
