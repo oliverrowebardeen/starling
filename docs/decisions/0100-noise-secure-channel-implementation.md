@@ -97,6 +97,8 @@ Noise revision 34 facts this design relies on:
     - A transport removes only sessions and handshakes stamped with an older epoch, and does not move its generation, so a newer lookup survives.
     - A pairing service cancels a ceremony only if it started under an older epoch.
 
+    **Notices coalesce** (issue #40). Each observer has at most one delivery task, draining pending notices keyed by peer; a newer notice for a peer replaces an older pending one. Because observers act only on what is older than the epoch they are given, the latest notice carries everything an older one would. A stalled observer therefore holds one suspended task and at most one pending notice per peer, however many revocations happen.
+
     **The commit decision is one section** (fifth review). After its save, a commit compares the epoch and, if unchanged, ends (`committing -= 1`) in the same section. If the epoch moved, the commit stays in progress (lookups refused) until its rollback ends it.
 
     **Invariant.** For every peer `p` and every transport sharing the authority:

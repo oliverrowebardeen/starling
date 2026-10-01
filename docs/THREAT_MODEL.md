@@ -120,6 +120,7 @@ The sixth Codex review (2026-10-01, at 1ca5ca3) found no high findings and confi
 | Finding | Class | Guarantee affected | Fix |
 |---------|-------|--------------------|-----|
 | #32 (medium) | Unpair stalling on the network: unpair awaited revocation observers before deleting the pin, and one observer's work includes the ceremony's cancel notice, a network send. A stalled send kept the pin stored indefinitely, and a restart while hung reloaded it. | "No pin survives an unpair" held only once the unpair finished, and a stalled link could keep it from finishing. Sessions were already dead (epoch). | Observers are notified after the delete and never awaited; an unpair awaits only Keychain I/O (ADR 0100 decision 11) |
+| #40 (medium, focused review of the #32 fix) | Unbounded deferred work: with a stalled revocation observer, every revocation added another suspended notification task | Availability only (memory and tasks) | Notices coalesce per observer and peer, keeping the latest epoch; a stalled observer holds one task (ADR 0100 decision 11) |
 
 ## 7. Assumptions
 
