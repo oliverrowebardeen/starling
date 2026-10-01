@@ -124,6 +124,7 @@ extension FindATimeService {
     private func beginCollecting(_ id: ConversationID) {
         guard var value = initiating[id] else { return }
         value.phase = .collecting
+        value.queryIDs = [:]
         value.answerDeadline = deadline(after: configuration.answerWait, capped: value.expiresAt)
         initiating[id] = value
         resetAttempts(id)
@@ -149,11 +150,11 @@ extension FindATimeService {
     private func querySent(_ id: ConversationID, to peer: PeerID, _ outcome: SendOutcome) {
         guard var value = initiating[id], value.phase == .collecting, value.answers[peer] == nil else { return }
         switch outcome {
-        case .sent:
-            if value.contacted.insert(peer).inserted {
-                initiating[id] = value
-                checkpoint(id)
-            }
+        case .sent(let envelope):
+            value.contacted.insert(peer)
+            value.queryIDs[peer, default: []].insert(envelope.id)
+            initiating[id] = value
+            checkpoint(id)
         case .failed:
             return
         case .declined, .denied, .refused:
@@ -186,6 +187,9 @@ extension FindATimeService {
             return ignore("answer out of turn")
         }
         guard value.answers[envelope.sender] == nil else { return ignore("duplicate answer") }
+        // Only an answer to a query this phone sent that friend in this step
+        // counts: not a made-up ID, nor a stale answer relabelled (#68).
+        guard value.queryIDs[envelope.sender]?.contains(answer.query) == true else { return ignore("answer to a query never sent") }
         guard answer.issue == .time else { return ignore("answer for another issue") }
         switch answer.status {
         case .answered:
@@ -205,9 +209,17 @@ extension FindATimeService {
         decideIfEveryoneAnswered(id)
     }
 
-    func receiveInitiatorRejection(_ envelope: Envelope) {
+    func receiveInitiatorRejection(_ envelope: Envelope, _ rejection: Rejection) {
         let id = envelope.conversation
         guard var value = initiating[id], value.invitees.contains(envelope.sender) else { return ignore("rejection from a stranger") }
+        // A rejection (from an older build) counts only if it names a query
+        // or proposal this phone sent that friend in the current step (#68).
+        let named: Set<MessageID> = switch value.phase {
+        case .collecting: value.queryIDs[envelope.sender] ?? []
+        case .proposing: value.proposalIDs[envelope.sender] ?? []
+        default: []
+        }
+        guard named.contains(rejection.proposal) else { return ignore("rejection of nothing sent") }
         switch value.phase {
         case .collecting where value.answers[envelope.sender] == nil:
             value.answers[envelope.sender] = []
