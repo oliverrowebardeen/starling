@@ -14,24 +14,22 @@ binary="$derived/Build/Products/Release-iphonesimulator/Starling.app/Starling"
 symbols="$(nm "$binary")"
 
 # A stripped binary would also pass, so first prove there are symbols.
-if ! grep -q StarlingCore <<<"$symbols"; then
-  echo "No StarlingCore symbols in $binary; cannot check for the Developer section."
-  exit 1
-fi
+case "$symbols" in
+  *StarlingCore*) ;;
+  *) echo "No StarlingCore symbols in $binary; cannot check for the Developer section."; exit 1 ;;
+esac
 
-for name in DeveloperView DebugHarness DemoDriver LifecycleSelfTest DebugPermissionAccess; do
-  if grep -q "$name" <<<"$symbols"; then
-    echo "Release contains $name (ADR 0015)."
-    exit 1
-  fi
-done
-# Capture once: with pipefail, `strings | grep -q` can report a match as a
-# failure when grep exits early and strings gets SIGPIPE.
+# Captured once and matched in the shell itself: no pipe can lose a match to
+# SIGPIPE, and no temporary file can fail inside a condition.
 text_in_binary="$(strings "$binary")"
+for name in DeveloperView DebugHarness DemoDriver LifecycleSelfTest DebugPermissionAccess; do
+  case "$symbols" in
+    *"$name"*) echo "Release contains $name (ADR 0015)."; exit 1 ;;
+  esac
+done
 for text in "This is a test build" "doesn't hide free times" "scripted services"; do
-  if grep -qF "$text" <<<"$text_in_binary"; then
-    echo "Release contains the notice \"$text\" (ADR 0015)."
-    exit 1
-  fi
+  case "$text_in_binary" in
+    *"$text"*) echo "Release contains the notice \"$text\" (ADR 0015)."; exit 1 ;;
+  esac
 done
 echo "Release has no Developer section and no test-build notices."
