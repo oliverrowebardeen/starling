@@ -53,6 +53,7 @@ public actor Outbox {
         recipientCard: AgentCard? = nil,
         context: OutboundContext = .empty,
         skill: SkillRef? = nil,
+        mode: SendMode? = nil,
         chainedFrom: ConversationID? = nil
     ) async throws -> Envelope {
         // Reserve the sequence number before any suspension point so two
@@ -69,6 +70,7 @@ public actor Outbox {
             sentAt: Timestamp(now()),
             body: body,
             skill: skill,
+            mode: mode,
             chainedFrom: chainedFrom
         )
 
