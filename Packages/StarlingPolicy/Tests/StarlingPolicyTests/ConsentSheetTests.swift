@@ -70,11 +70,11 @@ import Testing
         func detail(_ peers: [PeerID], names: [PeerID: String] = [:]) -> String {
             let item = DisclosedItem(category: .terms, issue: .people, value: .peers(peers))
             return ConsentSheetModel(disclosure: Disclosure(recipient: bob, recipientModel: .onDevice, items: [item]),
-                                     peerName: { names[$0] }).rows[0].detail
+                                     friends: names).rows[0].detail
         }
         #expect(detail([alice, bob, c]) != detail([alice, bob, d]))
         let named = detail([alice, bob, c], names: [alice: "Maya", bob: "Jake"])
-        #expect(named.contains("Maya") && named.contains("Jake") && named.contains(c.fingerprint))
+        #expect(named.contains("Maya") && named.contains("Jake") && named.contains(RosterLabels.fullIdentifier(c)))
         #expect(!named.contains(alice.fingerprint))
     }
 }
