@@ -166,6 +166,32 @@ final class Counter {
         #expect(await h.notifier.posted.isEmpty)
     }
 
+    /// Re-review finding 4 on PR #15: after a match was reported (and
+    /// notified), a failure must not claim nobody was notified.
+    @Test func aFailureAfterAMatchDoesNotClaimNobodyWasNotified() async {
+        let h = Harness()
+        await h.goDown()
+        h.service.emit(.matched(DownMatch(peer: h.maya.id, terms: .empty, bothDown: true)))
+        await eventually { !h.model.matches.isEmpty }
+        h.service.emit(.ended(.failed))
+        await eventually { h.model.phase == .composing }
+        #expect(h.model.notice != nil)
+        #expect(h.model.notice?.contains("Nobody was notified") == false)
+        #expect(await h.notifier.posted.count == 1)
+    }
+
+    @Test func aMatchInAnEarlierIntentDoesNotSilenceTheGuarantee() async {
+        let h = Harness()
+        await h.goDown()
+        h.service.emit(.matched(DownMatch(peer: h.maya.id, terms: .empty, bothDown: true)))
+        await eventually { !h.model.matches.isEmpty }
+        await h.model.withdraw()
+        await h.goDown()
+        h.service.emit(.ended(.failed))
+        await eventually { h.model.phase == .composing }
+        #expect(h.model.notice?.contains("Nobody was notified") == true)
+    }
+
     @Test func mergeOverLimitsKeepsTheReviewOpen() async throws {
         let many = try (0..<ConstraintSet.maxConstraintsPerIssue).map { _ in try Constraint(.mustBe(true)) }
         let standing = OwnerRules(constraints: try ConstraintSet([.time: many]))

@@ -97,6 +97,8 @@ public final class DownModel {
     public let formatter: ValueFormatter
     private var listener: Task<Void, Never>?
     private var settle: Task<Void, Never>?
+    /// Whether the current intent reported a match (and so a notification).
+    private var matchedThisIntent = false
 
     public init(
         service: any DownService,
@@ -241,6 +243,7 @@ public final class DownModel {
             // events update it as they arrive (phase stays .starting).
             active = Active(level: level, expiresAt: expiresAt)
             matches = []
+            matchedThisIntent = false
             setStatus(.searching)
             try await service.setIntent(DownIntent(rules: merged, level: level, expiresAt: Timestamp(expiresAt)))
             // An .ended event while in flight already moved on; keep that.
@@ -277,6 +280,7 @@ public final class DownModel {
         case .matched(let match):
             let name = (try? await peers.peer(for: match.peer))?.nickname ?? "A paired friend"
             let row = MatchRow(id: match.peer, friendName: name, lines: formatter.terms(match.terms), bothDown: match.bothDown, matchedAt: now())
+            matchedThisIntent = true
             matches.removeAll { $0.id == row.id }
             matches.insert(row, at: 0)
             if active != nil { setStatus(.match) }
@@ -303,7 +307,12 @@ public final class DownModel {
             switch reason {
             case .expired: notice = "Your Down? reached its end time."
             case .withdrawn: notice = nil
-            case .failed: notice = "Starling stopped checking because something went wrong. Nobody was notified."
+            case .failed:
+                // "Nobody was notified" is a guarantee; it is false once a
+                // match was reported, because that notified both phones.
+                notice = matchedThisIntent
+                    ? "Starling stopped checking because something went wrong."
+                    : "Starling stopped checking because something went wrong. Nobody was notified."
             }
         }
     }
