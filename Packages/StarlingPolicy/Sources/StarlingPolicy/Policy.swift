@@ -62,7 +62,8 @@ public struct DeterministicPolicyEngine: PolicyEngine {
                                   value: context.provider.isPrivate ? nil : context.inputs[issue])
                 }
         }
-        return Disclosure(recipient: envelope.recipient, recipientModel: message.recipientCard?.model, items: items)
+        return Disclosure(recipient: envelope.recipient, recipientModel: message.recipientCard?.model, items: items,
+                          conversation: envelope.conversation, skill: envelope.skill)
     }
 
     public func evaluate(_ message: OutboundMessage) async -> PolicyDecision {

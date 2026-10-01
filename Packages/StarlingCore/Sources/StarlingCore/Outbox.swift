@@ -51,7 +51,9 @@ public actor Outbox {
         to recipient: PeerID,
         conversation: ConversationID,
         recipientCard: AgentCard? = nil,
-        context: OutboundContext = .empty
+        context: OutboundContext = .empty,
+        skill: SkillRef? = nil,
+        chainedFrom: ConversationID? = nil
     ) async throws -> Envelope {
         // Reserve the sequence number before any suspension point so two
         // concurrent sends never share one. Gaps are fine; Inbox only
@@ -65,7 +67,9 @@ public actor Outbox {
             recipient: recipient,
             sequence: sequence,
             sentAt: Timestamp(now()),
-            body: body
+            body: body,
+            skill: skill,
+            chainedFrom: chainedFrom
         )
 
         let message = OutboundMessage(envelope: envelope, recipientCard: recipientCard, transport: transport.kind, context: context)

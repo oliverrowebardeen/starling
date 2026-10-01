@@ -77,7 +77,8 @@ public struct IssueKey: Hashable, Comparable, Sendable, CustomStringConvertible 
         self.rawValue = rawValue
     }
 
-    private init(known: String) { rawValue = known }
+    /// For constants defined in this module; skips validation.
+    init(known: String) { rawValue = known }
 
     public static let time = IssueKey(known: "time")
     public static let activity = IssueKey(known: "activity")
@@ -220,6 +221,12 @@ public enum IssueValue: Hashable, Sendable {
     case amount(MoneyAmount)
     case flag(Bool)
     case count(Int)
+    /// Candidate or agreed venues for `IssueKey.place` (Pick a place, ADR 0012).
+    case places([PlaceChoice])
+    /// The agreed roster for `IssueKey.people`, so everyone in a group plan
+    /// builds the same `Plan.attendees` (ADR 0012). Governed by the people
+    /// topic, which defaults to Ask me.
+    case peers([PeerID])
 
     /// Validates list sizes and ranges. Called by every initializer path that
     /// accepts peer data.
@@ -238,6 +245,16 @@ public enum IssueValue: Hashable, Sendable {
             guard (0...ProtocolLimits.maxCount).contains(count) else {
                 throw ValidationError("IssueValue.count", "out of range")
             }
+        case .places(let places):
+            guard (1...ProtocolLimits.maxPlacesPerValue).contains(places.count) else {
+                throw ValidationError("IssueValue.places", "must list 1-\(ProtocolLimits.maxPlacesPerValue) places")
+            }
+            guard Set(places).count == places.count else { throw ValidationError("IssueValue.places", "duplicate places") }
+        case .peers(let peers):
+            guard (1...ProtocolLimits.maxAttendees).contains(peers.count) else {
+                throw ValidationError("IssueValue.peers", "must list 1-\(ProtocolLimits.maxAttendees) people")
+            }
+            guard Set(peers).count == peers.count else { throw ValidationError("IssueValue.peers", "lists someone twice") }
         case .amount, .flag:
             break
         }
@@ -246,8 +263,8 @@ public enum IssueValue: Hashable, Sendable {
 }
 
 extension IssueValue: Codable {
-    private enum CodingKeys: String, CodingKey { case type, slots, keywords, amount, flag, count }
-    private enum Kind: String, Codable { case slots, keywords, amount, flag, count }
+    private enum CodingKeys: String, CodingKey { case type, slots, keywords, amount, flag, count, places, peers }
+    private enum Kind: String, Codable { case slots, keywords, amount, flag, count, places, peers }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -258,6 +275,8 @@ extension IssueValue: Codable {
         case .amount: value = .amount(try container.decode(MoneyAmount.self, forKey: .amount))
         case .flag: value = .flag(try container.decode(Bool.self, forKey: .flag))
         case .count: value = .count(try container.decode(Int.self, forKey: .count))
+        case .places: value = .places(try container.decode([PlaceChoice].self, forKey: .places))
+        case .peers: value = .peers(try container.decode([PeerID].self, forKey: .peers))
         }
         self = try value.validated()
     }
@@ -280,6 +299,12 @@ extension IssueValue: Codable {
         case .count(let count):
             try container.encode(Kind.count, forKey: .type)
             try container.encode(count, forKey: .count)
+        case .places(let places):
+            try container.encode(Kind.places, forKey: .type)
+            try container.encode(places, forKey: .places)
+        case .peers(let peers):
+            try container.encode(Kind.peers, forKey: .type)
+            try container.encode(peers, forKey: .peers)
         }
     }
 }

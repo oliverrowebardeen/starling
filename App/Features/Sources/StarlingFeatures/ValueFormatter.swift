@@ -20,11 +20,20 @@ public struct ValueFormatter: Sendable {
     public let locale: Locale
     /// "Now", for deciding when a date needs its year.
     private let referenceDate: @Sendable () -> Date
+    /// Every paired friend and the owner's name for them, read when a
+    /// roster value is shown.
+    private let friends: @Sendable () -> [PeerID: String]
 
-    public init(timeZone: TimeZone = .current, locale: Locale = .current, referenceDate: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        timeZone: TimeZone = .current,
+        locale: Locale = .current,
+        referenceDate: @escaping @Sendable () -> Date = { Date() },
+        friends: @escaping @Sendable () -> [PeerID: String] = { [:] }
+    ) {
         self.timeZone = timeZone
         self.locale = locale
         self.referenceDate = referenceDate
+        self.friends = friends
     }
 
     // MARK: Issues
@@ -51,6 +60,10 @@ public struct ValueFormatter: Sendable {
         case .amount(let amount): money(amount)
         case .flag(let flag): flag ? "Yes" : "No"
         case .count(let count): String(count)
+        case .places(let places): places.map(\.name.rawValue).joined(separator: ", ")
+        // One person per line: nicknames may contain commas but never
+        // line breaks (PairedPeer), so the list cannot blur.
+        case .peers(let peers): RosterLabels.labels(for: peers, friends: friends()).joined(separator: "\n")
         }
     }
 

@@ -45,7 +45,7 @@ public struct OutboundMessage: Hashable, Sendable {
 }
 
 /// One item a consent sheet shows: exactly what will leave the phone.
-public struct DisclosedItem: Hashable, Sendable {
+public struct DisclosedItem: Hashable, Sendable, Codable {
     public enum Category: String, Hashable, Sendable, Codable {
         case terms, availability, interest, psi, agentCard
     }
@@ -66,11 +66,19 @@ public struct Disclosure: Hashable, Sendable {
     public let recipient: PeerID
     public let recipientModel: ModelLocality?
     public let items: [DisclosedItem]
+    /// The interaction the send belongs to (v2). Part of equality, so an
+    /// approval remembered for one conversation never approves another
+    /// skill's or chain link's identical-looking send; a retry inside the
+    /// same conversation still matches (ADR 0011, review of PR #45).
+    public let conversation: ConversationID?
+    public let skill: SkillRef?
 
-    public init(recipient: PeerID, recipientModel: ModelLocality?, items: [DisclosedItem]) {
+    public init(recipient: PeerID, recipientModel: ModelLocality?, items: [DisclosedItem], conversation: ConversationID? = nil, skill: SkillRef? = nil) {
         self.recipient = recipient
         self.recipientModel = recipientModel
         self.items = items
+        self.conversation = conversation
+        self.skill = skill
     }
 }
 

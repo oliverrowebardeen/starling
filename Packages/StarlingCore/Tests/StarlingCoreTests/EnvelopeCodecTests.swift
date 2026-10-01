@@ -5,12 +5,54 @@ import Testing
 @Suite struct EnvelopeCodecTests {
     let codec = EnvelopeCodec()
 
-    /// Freezes the v0 wire format. If this fails, you changed the protocol:
+    static let v0Golden = #"{"body":{"type":"propose","value":{"round":0,"terms":{"activity":{"keywords":["food"],"type":"keywords"},"budget":{"amount":{"currency":"USD","minor":1500},"type":"amount"},"time":{"slots":[{"end":29849640,"start":29849460}],"type":"slots"}}}},"conversation":"00000000-0000-4000-8000-000000000001","id":"00000000-0000-4000-8000-000000000002","recipient":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sender":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sentAt":1790967600000,"sequence":0,"version":0}"#
+
+    static let chainedFrom = ConversationID(UUID(uuidString: "00000000-0000-4000-8000-000000000003")!)
+
+    static func v1Envelope() throws -> Envelope {
+        try Envelope(
+            id: Fixtures.messageID, conversation: Fixtures.conversation, sender: Fixtures.alice, recipient: Fixtures.bob,
+            sequence: 0, sentAt: Timestamp(Fixtures.now), body: .propose(try Proposal(round: 0, terms: Fixtures.terms())),
+            skill: SkillRef(.pickAPlace, SkillVersion(1, 0)), chainedFrom: chainedFrom
+        )
+    }
+
+    /// Freezes the v1 wire format. If this fails, you changed the protocol:
     /// bump `Envelope.currentVersion` and go through the Orchestrator.
     @Test func wireFormatIsFrozen() throws {
-        let golden = #"{"body":{"type":"propose","value":{"round":0,"terms":{"activity":{"keywords":["food"],"type":"keywords"},"budget":{"amount":{"currency":"USD","minor":1500},"type":"amount"},"time":{"slots":[{"end":29849640,"start":29849460}],"type":"slots"}}}},"conversation":"00000000-0000-4000-8000-000000000001","id":"00000000-0000-4000-8000-000000000002","recipient":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sender":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sentAt":1790967600000,"sequence":0,"version":0}"#
-        #expect(String(decoding: try codec.encode(Fixtures.proposalEnvelope()), as: UTF8.self) == golden)
-        #expect(try codec.decode(Data(golden.utf8)) == (try Fixtures.proposalEnvelope()))
+        let golden = #"{"body":{"type":"propose","value":{"round":0,"terms":{"activity":{"keywords":["food"],"type":"keywords"},"budget":{"amount":{"currency":"USD","minor":1500},"type":"amount"},"time":{"slots":[{"end":29849640,"start":29849460}],"type":"slots"}}}},"chainedFrom":"00000000-0000-4000-8000-000000000003","conversation":"00000000-0000-4000-8000-000000000001","id":"00000000-0000-4000-8000-000000000002","recipient":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sender":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sentAt":1790967600000,"sequence":0,"skill":{"id":"pick_a_place","version":"1.0"},"version":1}"#
+        #expect(String(decoding: try codec.encode(Self.v1Envelope()), as: UTF8.self) == golden)
+        #expect(try codec.decode(Data(golden.utf8)) == (try Self.v1Envelope()))
+    }
+
+    /// Phase 1 builds send version 0 with no skill; they still decode.
+    @Test func phaseOneFramesStillDecode() throws {
+        let decoded = try codec.decode(Data(Self.v0Golden.utf8))
+        #expect(decoded.version == 0)
+        #expect(decoded.skill == nil && decoded.chainedFrom == nil)
+        let expected = try Envelope(
+            version: 0, id: Fixtures.messageID, conversation: Fixtures.conversation, sender: Fixtures.alice, recipient: Fixtures.bob,
+            sequence: 0, sentAt: Timestamp(Fixtures.now), body: .propose(try Proposal(round: 0, terms: Fixtures.terms()))
+        )
+        #expect(decoded == expected)
+        #expect(String(decoding: try codec.encode(expected), as: UTF8.self) == Self.v0Golden)
+    }
+
+    @Test func versionZeroCannotCarryASkillAndAChainCannotPointAtItself() throws {
+        #expect(throws: ValidationError.self) {
+            try Envelope(version: 0, conversation: Fixtures.conversation, sender: Fixtures.alice, recipient: Fixtures.bob,
+                         sequence: 0, sentAt: Timestamp(Fixtures.now), body: .reject(Rejection(proposal: Fixtures.messageID, reason: .declinedByOwner)),
+                         skill: SkillRef(.downFor, SkillVersion(1)))
+        }
+        #expect(throws: ValidationError.self) {
+            try Envelope(conversation: Fixtures.conversation, sender: Fixtures.alice, recipient: Fixtures.bob,
+                         sequence: 0, sentAt: Timestamp(Fixtures.now), body: .reject(Rejection(proposal: Fixtures.messageID, reason: .declinedByOwner)),
+                         chainedFrom: Fixtures.conversation)
+        }
+        let forged = Self.v0Golden.replacingOccurrences(of: #""version":0"#, with: #""skill":{"id":"down_for","version":"1.0"},"version":0"#)
+        #expect(throws: CodecError.self) { try codec.decode(Data(forged.utf8)) }
+        let future = Self.v0Golden.replacingOccurrences(of: #""version":0"#, with: #""version":2"#)
+        #expect(throws: CodecError.unsupportedVersion(2)) { try codec.decode(Data(future.utf8)) }
     }
 
     @Test(arguments: MessageBody.Kind.allCases)
@@ -35,7 +77,8 @@ import Testing
 
     @Test func rejectsUnsupportedVersion() throws {
         let json = String(decoding: try codec.encode(Fixtures.proposalEnvelope()), as: UTF8.self)
-            .replacingOccurrences(of: #""version":0"#, with: #""version":9"#)
+            .replacingOccurrences(of: "\"version\":\(Envelope.currentVersion)", with: #""version":9"#)
+        #expect(json.contains(#""version":9"#))
         #expect(throws: CodecError.unsupportedVersion(9)) { _ = try codec.decode(Data(json.utf8)) }
     }
 

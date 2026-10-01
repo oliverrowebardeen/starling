@@ -124,6 +124,12 @@ package enum PromptRenderer {
         case .amount(let amount): return money(amount)
         case .flag(let flag): return flag ? "yes" : "no"
         case .count(let count): return "\(count)"
+        // Venue names are peer-supplied display text with spaces and
+        // punctuation, so they stay out of prompts until lane D decides how
+        // the model sees places (ADR 0012).
+        case .places(let places): return places.count == 1 ? "1 place option" : "\(places.count) place options"
+        // Peer IDs mean nothing to the model; only the count does.
+        case .peers(let peers): return peers.count == 1 ? "1 person" : "\(peers.count) people"
         }
     }
 

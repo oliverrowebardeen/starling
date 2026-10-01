@@ -35,7 +35,22 @@ import Testing
         case .propose, .counter, .accept, .query, .answer:
             expected = [DisclosedItem(category: .interest, issue: .activity, value: Fixtures.value)]
         }
-        #expect(disclosure == Disclosure(recipient: Fixtures.bob.id, recipientModel: .onDevice, items: expected))
+        #expect(disclosure == Disclosure(recipient: Fixtures.bob.id, recipientModel: .onDevice, items: expected, conversation: Fixtures.conversation))
+    }
+
+    /// Review of PR #45: identical values sent in two interactions must not
+    /// look like one consent request, or a remembered approval for one would
+    /// approve the other.
+    @Test func disclosuresAreScopedToTheirConversationAndSkill() async throws {
+        let engine = Fixtures.engine(action: .askEachTime)
+        let body = try Fixtures.body(.propose)
+        let first = try engine.disclosure(for: Fixtures.outbound(body))
+        let retry = try engine.disclosure(for: Fixtures.outbound(body))
+        let other = try engine.disclosure(for: Fixtures.outbound(body, conversation: ConversationID()))
+        #expect(first == retry)
+        #expect(first != other)
+        #expect(first.items == other.items)
+        #expect(first.conversation == Fixtures.conversation)
     }
 
     @Test(arguments: [ModelLocality.onDevice, .none, .privateCloudCompute, .thirdPartyCloud(provider: "example")],

@@ -34,6 +34,24 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
 6. **`InteractionStore`** is the persistence protocol. The shell lane chooses the storage; `StarlingFakes.InMemoryInteractionStore` is the double.
 7. **One coordinator.** The app runs one lifecycle coordinator. It consumes every `SkillService`'s `SkillEvent`s, applies them to the store, and drives the shared screens. Skills never write interactions themselves.
 
+### Amendments after the review of PR #45 (2026-09-30)
+
+8. **Consent suspends the step it interrupts.** Any send can need consent, including the acceptance an invitee's "I'm in" sends. `awaitingConsent(resume:)` records the interrupted step (negotiating, awaiting the owner, proposed, or confirmed).
+   - Granting consent resumes that step.
+   - Passing ends declined.
+   - The others giving up meanwhile ends nobody up.
+9. **Answers bind to a proposal revision.** Revisions only increase.
+   - `SkillProposal`, `SkillQuestion`, `OwnerAnswer.accept(proposal:)`, `.reply(question:_:)`, and the `proposalReady`, `ownerAccepted`, and `everyoneConfirmed` events carry one.
+   - `Interaction` throws `StaleProposal` for an acceptance or confirmation of anything but the current revision, so a tap on an older card never accepts newer terms.
+10. **Content travels with its event** (review 3).
+    - `ownerNeeded` carries the `SkillQuestion`, and `proposalReady` the `SkillProposal`, so content, revision, and state change in one validated step. The current revision is read from the stored proposal.
+    - `ownerAnswered(question:)` names the question it answers.
+    - A restarted app rebuilds every card from the store, and `SkillService.restore(_:)` hands each skill its live interactions.
+11. **Consent requests carry IDs** (reviews 2 and 3). `consentNeeded` and `consentGiven` name a request.
+    - The interaction resumes only when its last open request is approved.
+    - Question revisions and consent IDs each keep a high-water mark that only rises, persisted with the interaction, so a completed one can never be reopened or replayed.
+12. **Consent requests are scoped to their interaction.** `Disclosure` carries the conversation and skill, and both are part of its equality. A remembered approval, or a queued request settled with it, never crosses into another interaction. A retry inside one conversation still reuses the approval.
+
 ## Consequences
 
 - Home, the proposal card, It's a plan, and the plan timeline render any skill, including future ones, from `Interaction` and `SkillDescriptor` alone.

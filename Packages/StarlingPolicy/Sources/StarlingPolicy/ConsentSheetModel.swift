@@ -18,7 +18,10 @@ public struct ConsentSheetModel: Hashable, Sendable {
     public let protocolNotice: String
     public let psiNotice: String?
 
-    public init(disclosure: Disclosure) {
+    /// - Parameter friends: Every paired friend and the owner's name for
+    ///   them. Roster rows use it through `RosterLabels`, so two different
+    ///   rosters never read alike on the sheet.
+    public init(disclosure: Disclosure, friends: [PeerID: String] = [:]) {
         recipient = disclosure.recipient
         title = "Share with this peer?"
         switch disclosure.recipientModel {
@@ -33,7 +36,7 @@ public struct ConsentSheetModel: Hashable, Sendable {
             ? "No agent card has been received. The recipient could use a cloud model."
             : "Model location is self-declared by the recipient and has not been independently verified."
         rows = disclosure.items.map { item in
-            ConsentRow(item: item, title: Self.title(for: item), detail: Self.detail(for: item))
+            ConsentRow(item: item, title: Self.title(for: item), detail: Self.detail(for: item, friends: friends))
         }
         protocolNotice = "Each message also sends peer identifiers, message and conversation identifiers, a sequence number, a timestamp, and protocol metadata."
         if disclosure.items.contains(where: { $0.category == .psi && $0.value != nil }) {
@@ -67,14 +70,14 @@ public struct ConsentSheetModel: Hashable, Sendable {
         }
     }
 
-    private static func detail(for item: DisclosedItem) -> String {
+    private static func detail(for item: DisclosedItem, friends: [PeerID: String]) -> String {
         if let value = item.value {
             if item.issue == .downLevel, case .keywords(let keywords) = value,
                keywords.count == 1, ["down", "maybe"].contains(keywords[0].value) {
                 let text = "You said \"\(keywords[0].value)\"."
                 return item.category == .psi ? "Full input set: \(text)" : text
             }
-            let text = describe(value)
+            let text = describe(value, friends: friends)
             return item.category == .psi ? "Full input set: \(text)" : text
         }
         switch item.category {
@@ -87,7 +90,7 @@ public struct ConsentSheetModel: Hashable, Sendable {
         }
     }
 
-    private static func describe(_ value: IssueValue) -> String {
+    private static func describe(_ value: IssueValue, friends: [PeerID: String]) -> String {
         switch value {
         case .keywords(let keywords):
             return keywords.isEmpty ? "Empty keyword list" : keywords.map(\.value).joined(separator: ", ")
@@ -104,6 +107,11 @@ public struct ConsentSheetModel: Hashable, Sendable {
             return "\(amount.minorUnits) minor units (\(amount.currency))"
         case .flag(let flag): return flag ? "Yes" : "No"
         case .count(let count): return String(count)
+        case .places(let places): return places.map(\.name.rawValue).joined(separator: "\n")
+        // Everyone whose ID leaves the phone, by the owner's name for them
+        // or, for someone not paired with this phone, a short ID.
+        case .peers(let peers):
+            return RosterLabels.labels(for: peers, friends: friends).joined(separator: "\n")
         }
     }
 
