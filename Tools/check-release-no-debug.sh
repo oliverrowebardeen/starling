@@ -2,6 +2,9 @@
 # Fails if a Release build contains the Debug-only Developer section or a
 # test-build notice (ADR 0015 decision 5, requested by lane P15-A). Reuses
 # the Release build that check-release-no-fakes.sh makes, so run that first.
+# Not yet in CI or the local gate: main's Phase 1 app still has the Developer
+# section in Release until lane P15-A's shell lands, and wiring it now would
+# fail every lane's gate. The Orchestrator wires it when that PR merges.
 # Usage: Tools/check-release-no-debug.sh [derived-data-path]
 set -euo pipefail
 
