@@ -16,12 +16,13 @@ Facts about a venue are needed to judge it against a limit. Apple Maps does not 
    1. **Ask.** The organizer sends `query(place, .places(candidates))` to each friend. Candidates are only the venues that fit the organizer's own limits, so those limits never leave the phone either.
    2. **Judge privately.** Each friend's phone looks up facts for each candidate itself (`PlaceSearching.facts(for:)`, by Maps identifier) and checks them against its owner's standing limits in code (`PlaceJudge`). It answers `answer(place, .places(acceptable))`, best first. This list is the only thing derived from the owner's limits that leaves the phone.
       - It is a yes or no to the organizer's own options, so the service passes the query in `OutboundContext.answering`, and the policy allows it under any topic choice to an on-device agent (ADR 0019, decision 4).
-      - A conversation answers about the candidate set of its first query only, at most 8 places, under the limit of 16 (decision 6).
+      - Within one launch a conversation answers about the candidate set of its first query only. Across launches, the conversation ledger caps it at 16 places per friend (ADR 0021): the Outbox reserves every candidate an answer covers, and the service reserves a no's candidates the same way before sending it.
+      - Once a proposal is on the card, no query is answered again, so a friend who passed and one who has not decided look the same.
    3. **Choose.** The organizer picks the venue that fits the organizer and the most friends, then the lowest total rank, then its own order (`GroupChoice`). Friends it does not fit hear `reject(noOverlap)` and nothing else.
    4. **Propose.** `propose` carries `{place: one venue, people: roster}`, plus `time` and `activity` when the request was chained from a plan or a time. The roster starts with the organizer, so a friend's phone can tell who organized it after a restart.
    5. **Confirm.** Each person says yes with `accept`: the exact terms, naming a proposal the organizer sent them, and passing the proposal in `OutboundContext.accepting`, so the policy lets it through under any topic choice (ADR 0019, amendment 10).
       - **A pass sends nothing.** It looks exactly like silence (ADR 0017: "If you pass, they just won't see it"; ADR 0020, decision 9). Only yeses settle a friend before the confirm deadline. A pass, like silence, is left out at the deadline, and the shortened roster goes out on the same schedule either way.
-      - **Taking a yes back** sends the ordinary no (`noOverlap`). It is final for that person: a later yes from them is ignored. The phone keeps it in the ledger and retries it until the organizer acknowledges it with an ordinary no, across relaunches, for at most a day.
+      - **Taking a yes back** sends the ordinary no (`noOverlap`). It is final for that person: a later yes from them is ignored. The phone keeps it in the ledger and retries it until the organizer acknowledges it with an ordinary no, across relaunches, for at most a day. Until then the conversation answers nothing and sends only that no, and it is retired once the no is heard. Each retry names its interaction, after a relaunch too, so the consent sheet and the audit find it. Only an organizer acknowledges a rejection, so two phones never acknowledge each other's acknowledgments.
       - **Confirmation.** The organizer then sends `accept` with the same terms and the people who said yes. That roster may be smaller than the proposed one, never different. Everyone's coordinator then sees `everyoneConfirmed`, and the service reports `.produced(.placeChoice)` and `.produced(.attendees)` with the people who said yes.
       - **A withdrawal that crosses the confirmation wins.** The friend's phone has already ended, so the organizer sends everyone left the same terms with the shortened roster, and every phone records the new attendees. If nobody else is left, the organizer's plan fails.
       - No Pick a place message carries `declinedByOwner`. Rejections say only `noOverlap` or `expired`.
@@ -44,15 +45,14 @@ Facts about a venue are needed to judge it against a limit. Apple Maps does not 
 
    An organizer still collecting lists is reported as failed, because candidates and lists are in memory only.
 
-   Planned and ended interactions (the coordinator passes those that ended in the last 24 hours, ADR 0011 amendment 15) leave a marker, so a late query never opens an ended request again.
+   Every ending retires its conversation for good through `Outbox.retire(_:)` (ADR 0021), after any goodbye has gone, since retiring cancels sends in flight. A retired conversation is never answered or opened again, and an unreadable conversation ledger opens nothing. Restore retires ended interactions again, in case the app stopped first. A confirmed plan stays open for a shorter roster or a call-off; the organizer's owner, or a friend, can still withdraw it, which cancels confirmations still on their way and retires it.
 
    What must survive a relaunch is kept in a `PickAPlaceLedger` on the device (`UserDefaultsPickAPlaceLedger` in the app):
    - admission times, so the hourly limit does not reset;
-   - every candidate answered in each conversation, recorded before a list or a no leaves, so a restored request answers only the same set and never more than 16;
    - each organizer's request expiry, recorded before its first query, and its confirm deadline, recorded before its proposal. A restored organizer keeps both, and one past either ends as expired before sending anything;
    - withdrawals waiting for the organizer's acknowledgment.
 
-   The ledger fails closed. If it cannot be read or written, no request is admitted, no candidate is answered, and no request is sent.
+   The ledger fails closed. If it cannot be read or written, no request is admitted and no request is sent.
 7. **Starting.** The coordinator applies `.started` and then calls `start` (ADR 0011, amendment 13); the service never emits it. Compose checks `PickAPlaceSkill.askable` first, because a `start` that throws ends the interaction as failed. With no friend whose card supports the skill, the service reports `.unsupported`.
 8. **Limits on a peer.**
    - At most 4 live requests per friend, 32 in total, and 8 new ones per friend per hour.
