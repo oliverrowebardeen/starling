@@ -128,6 +128,13 @@ actor Coordinator {
         }
     }
 
+    /// Passing on the sheet is the owner's pass; the coordinator applies it.
+    func consentDeclined(conversation: ConversationID?) {
+        guard let conversation, var interaction = interaction(conversation: conversation) else { return }
+        try? interaction.apply(.ownerPassed, at: Timestamp(Date()))
+        interactions[interaction.id] = interaction
+    }
+
     func consentApproved(_ request: UInt32, conversation: ConversationID?) {
         guard let conversation, var interaction = interaction(conversation: conversation) else { return }
         try? interaction.apply(.consentGiven(request: request), at: Timestamp(Date()))
@@ -159,6 +166,7 @@ final class CoordinatorConsent: ConsentProvider {
         let request = await coordinator.consentRequested(for: disclosure.conversation)
         await gate?.wait()
         if outcome == .approved, let request { await coordinator.consentApproved(request, conversation: disclosure.conversation) }
+        if outcome == .declined { await coordinator.consentDeclined(conversation: disclosure.conversation) }
         return outcome
     }
 }

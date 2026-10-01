@@ -317,14 +317,14 @@ extension PickAPlaceService {
     // MARK: - Ending
 
     /// Ends the request: friends still involved hear `reason` and nothing
-    /// else, and the coordinator gets `event`.
-    func endOrganizer(_ conversation: ConversationID, event: InteractionEvent, reason: Rejection.Reason) {
+    /// else, and the coordinator gets `event`, if any.
+    func endOrganizer(_ conversation: ConversationID, event: InteractionEvent?, reason: Rejection.Reason) {
         guard var organizer = organized[conversation], !organizer.isFinished else { return }
         let tell = organizer.stillInvolved
         organizer.phase = .ended
         organized[conversation] = organizer
         cancelTasks(conversation)
-        emit(organizer.id, event)
+        if let event { emit(organizer.id, event) }
         let chainedFrom = organizer.chainedFrom
         for friend in tell {
             let lastHeard = organizer.lastHeard[friend]
@@ -341,13 +341,13 @@ extension PickAPlaceService {
         guard let organizer = organized[conversation], !organizer.isFinished else { return false }
         switch error {
         case OutboxError.denied:
-            // A topic set to Never. Before a proposal, the skill is blocked
-            // by privacy; after one, the state machine calls it a failure.
-            endOrganizer(conversation, event: organizer.phase == .asking ? .blockedByPrivacy : .failed, reason: .declinedByOwner)
+            // A topic set to Never, at any live step.
+            endOrganizer(conversation, event: .blockedByPrivacy, reason: .declinedByOwner)
             return false
         case OutboxError.consentDeclined:
-            // Passing on the consent sheet passes on the request (ADR 0011).
-            endOrganizer(conversation, event: .ownerPassed, reason: .declinedByOwner)
+            // Passing on the consent sheet passes on the request; the
+            // coordinator applies the pass, so the service adds nothing.
+            endOrganizer(conversation, event: nil, reason: .declinedByOwner)
             return false
         case is CancellationError:
             return false

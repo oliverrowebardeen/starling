@@ -101,7 +101,8 @@ extension PickAPlaceService {
         } catch OutboxError.denied {
             endInvite(conversation, event: .blockedByPrivacy, reply: nil)
         } catch OutboxError.consentDeclined {
-            endInvite(conversation, event: .ownerPassed, reply: nil)
+            // The coordinator applies the pass.
+            endInvite(conversation, event: nil, reply: nil)
         } catch {
             // The organizer asks again.
         }
@@ -180,11 +181,12 @@ extension PickAPlaceService {
                 // Withdrawn or ended while the send waited; nothing left.
                 return
             case OutboxError.consentDeclined?:
-                endInvite(conversation, event: .ownerPassed, reply: .declinedByOwner)
+                // The coordinator applies the pass.
+                endInvite(conversation, event: nil, reply: .declinedByOwner)
                 return
             case OutboxError.denied?:
-                endInvite(conversation, event: .failed, reply: .declinedByOwner)
-                throw OutboxError.denied(PolicyViolation(rule: "pick_a_place.acceptance"))
+                endInvite(conversation, event: .blockedByPrivacy, reply: .declinedByOwner)
+                return
             case let error?:
                 // Unreachable for now: the owner can tap again.
                 throw error
@@ -248,11 +250,11 @@ extension PickAPlaceService {
 
     /// Ends this phone's part. `reply` is sent only for the owner's own
     /// explicit choices, never for a private limit.
-    func endInvite(_ conversation: ConversationID, event: InteractionEvent, reply: Rejection.Reason?) {
+    func endInvite(_ conversation: ConversationID, event: InteractionEvent?, reply: Rejection.Reason?) {
         guard let invite = invites[conversation], !invite.isFinished else { return }
         invites[conversation]?.finished = true
         cancelTasks(conversation)
-        if invite.announced { emit(invite.id, event) }
+        if invite.announced, let event { emit(invite.id, event) }
         if let reply {
             let rejection = Rejection(proposal: invite.proposeID ?? invite.lastQuery ?? MessageID(), reason: reply)
             spawn(conversation) { service in
