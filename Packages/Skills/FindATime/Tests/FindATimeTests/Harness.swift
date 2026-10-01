@@ -253,6 +253,9 @@ final class Phone: Sendable {
     /// Kept across restarts, as the app persists it, so a relaunched Outbox
     /// never reuses a sequence number (Core v2.1).
     let sequences = InMemorySentSequenceStore()
+    /// The phone's one conversation ledger, kept across restarts as the app
+    /// persists it, shared by its Outbox and the service (ADR 0021).
+    let conversations = InMemoryConversationLedger()
     let clock: TestClock
     let standing: ConstraintSet
     private let state: Mutex<(service: FindATimeService?, outbox: Outbox?, coordinator: Coordinator, tasks: [Task<Void, Never>])>
@@ -280,10 +283,11 @@ final class Phone: Sendable {
     /// Builds a service and its coordinator loop. Called at start and again
     /// to simulate an app restart.
     func makeService(configuration: FindATimeConfiguration = fastConfiguration) {
-        let outbox = Outbox(transport: transport, policy: policy, consent: LifecycleConsent(owner: consent, coordinator: coordinator), sequences: sequences)
+        let outbox = Outbox(transport: transport, policy: policy, consent: LifecycleConsent(owner: consent, coordinator: coordinator),
+                            sequences: sequences, ledger: conversations)
         let availability = OwnerAvailability.standard(calendar: calendar, use: { self.use.withLock { $0 } })
         let service = FindATimeService(
-            localPeer: id, outbox: outbox, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
+            localPeer: id, outbox: outbox, conversations: conversations, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
             clock: clock.clock, timeZone: T.utc, configuration: configuration,
             standingRules: { [standing] in standing }
         )
@@ -299,9 +303,10 @@ final class Phone: Sendable {
     /// modified app could.
     @discardableResult
     func send(_ body: MessageBody, to peer: Phone, conversation: ConversationID, skill: SkillRef? = FindATimeSkill.ref,
-              mode: SendMode = .invite, chainedFrom: ConversationID? = nil) async throws -> Envelope {
+              mode: SendMode = .invite, chainedFrom: ConversationID? = nil, answering: Query? = nil) async throws -> Envelope {
         let outbox = state.withLock { $0.outbox! }
-        return try await outbox.send(body, to: peer.id, conversation: conversation, skill: skill, mode: skill == nil ? nil : mode, chainedFrom: chainedFrom)
+        return try await outbox.send(body, to: peer.id, conversation: conversation, context: OutboundContext(answering: answering),
+                                     skill: skill, mode: skill == nil ? nil : mode, chainedFrom: chainedFrom)
     }
 
     static let card = try! AgentCard(model: .onDevice, capabilities: [], skills: [FindATimeSkill.ref])

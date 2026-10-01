@@ -331,6 +331,53 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    enum Ending: CaseIterable { case friendPasses, starterWithdraws, nobodyFree, planPasses }
+
+    /// ADR 0021: every ending retires the conversation in each phone's
+    /// ledger, withdrawal included, and the last "no plan" still leaves
+    /// first (retiring cancels the conversation's sends).
+    @Test(arguments: Ending.allCases)
+    func everyEndingRetiresTheConversation(_ ending: Ending) async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b: Phone = switch ending {
+        case .friendPasses, .starterWithdraws: world.phone("Ben", calendar: FakeCalendarStore(status: .denied))
+        case .nobodyFree: world.phone("Ben", calendar: FakeCalendarStore(events: [FakeCalendarEvent(title: "Away", start: T.at(0), end: T.at(48))]))
+        case .planPasses: world.phone("Ben")
+        }
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        let conversation = await a.coordinator.interaction(started)!.conversation
+
+        switch ending {
+        case .friendPasses:
+            let (asked, _) = try await b.waitForQuestion()
+            try await b.service.answer(asked, with: .pass)
+            world.clock.advance(hours: 1)
+            try await a.waitForState(started, .ended(.nobodyUp))
+        case .starterWithdraws:
+            let (asked, _) = try await b.waitForQuestion()
+            await a.service.withdraw(started)
+            // Ana's "no plan" reaches Ben before her side is retired.
+            try await b.waitForState(asked, .ended(.expired))
+        case .nobodyFree:
+            try await b.waitForState(nil, .ended(.nobodyUp))
+            world.clock.advance(hours: 1)
+            try await a.waitForState(started, .ended(.nobodyUp))
+        case .planPasses:
+            let (bCard, _) = try await b.waitForProposal()
+            try await a.accept(started)
+            try await b.accept(bCard)
+            try await a.waitForState(started, .planned)
+            try await b.waitForState(bCard, .planned)
+            world.clock.advance(hours: 30)
+        }
+        for phone in [a, b] {
+            try await eventually("\(phone.name) retired it") { (try? await phone.conversations.isRetired(conversation)) == true }
+        }
+        await world.stop()
+    }
+
     @Test func noFriendsIsUnsupported() async throws {
         let world = World()
         let a = world.phone("Ana")

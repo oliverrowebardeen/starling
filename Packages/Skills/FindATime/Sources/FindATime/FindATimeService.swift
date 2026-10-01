@@ -66,7 +66,6 @@ public actor FindATimeService: SkillService {
     enum CheckpointOp: Sendable {
         case save(FindATimeCheckpoint)
         case remove(InteractionID)
-        case ledger(AnsweredLedger)
         case flush(CheckedContinuation<Void, Never>)
     }
 
@@ -77,22 +76,19 @@ public actor FindATimeService: SkillService {
         var unappliedEvents = 0
         var sends = 0
         var failedSends = 0
+        var retireFailures = 0
     }
 
     private(set) var diagnostics = Diagnostics()
 
     static let maxTombstones = 256
-    /// How long the answered-candidate record keeps a conversation: the
-    /// restore window, in which the coordinator still hands ended
-    /// interactions back (ADR 0011, amendment 15).
-    static let ledgerWindow: TimeInterval = 24 * 60 * 60
-    /// Conversations the record holds at most. When full, new requests are
-    /// refused rather than an old record dropped.
-    static let maxLedgerEntries = 4_096
-
-    var ledger = AnsweredLedger()
-    private var ledgerLoad: Task<AnsweredLedger, Never>?
-    private var ledgerLoaded = false
+    /// The app's one `ConversationLedger`, shared with its Outbox (ADR 0021):
+    /// retired conversations are never opened again, and every candidate a
+    /// friend is answered about is reserved there.
+    let conversations: any ConversationLedger
+    /// The last "no plan" of each ending conversation, which must leave
+    /// before the conversation is retired (retiring cancels its sends).
+    private var lastWords: [ConversationID: [Task<Void, Never>]] = [:]
 
     /// - Parameters:
     ///   - localPeer: This phone's ID (the Outbox transport's `localPeer`).
@@ -103,6 +99,8 @@ public actor FindATimeService: SkillService {
     ///     resume them after a restart. Pass a persistent store in the app.
     ///   - isTurnedOn: Whether the owner has Find a time switched on. When
     ///     off, friends' requests are ignored.
+    ///   - conversations: The app's `ConversationLedger`, the same one its
+    ///     Outbox enforces (ADR 0021).
     ///   - standingRules: The owner's standing hard limits ("no plans
     ///     before 10"). A friend's request is answered and its proposals
     ///     accepted only within them. The owner's own requests arrive with
@@ -110,6 +108,7 @@ public actor FindATimeService: SkillService {
     public init(
         localPeer: PeerID,
         outbox: Outbox,
+        conversations: any ConversationLedger,
         pairedPeers: any PairedPeerStore,
         availability: OwnerAvailability,
         checkpoints: any FindATimeCheckpointStore = InMemoryFindATimeCheckpoints(),
@@ -121,6 +120,7 @@ public actor FindATimeService: SkillService {
     ) {
         self.localPeer = localPeer
         self.outbox = outbox
+        self.conversations = conversations
         self.pairedPeers = pairedPeers
         self.availability = availability
         self.clock = clock
@@ -136,7 +136,6 @@ public actor FindATimeService: SkillService {
                 switch op {
                 case .save(let checkpoint): try? await checkpoints.save(checkpoint)
                 case .remove(let id): try? await checkpoints.remove(id)
-                case .ledger(let ledger): try? await checkpoints.saveLedger(ledger)
                 case .flush(let done): done.resume()
                 }
             }
@@ -190,7 +189,7 @@ public actor FindATimeService: SkillService {
             switch envelope.body {
             case .query(let query):
                 guard await isTurnedOn() else { return ignore("turned off") }
-                await loadLedger()
+                guard await mayOpen(envelope, query) else { return }
                 receiveQuery(envelope, query)
             case .answer(let answer): receiveAnswer(envelope, answer)
             case .propose(let proposal): receiveProposal(envelope, proposal)
@@ -205,7 +204,6 @@ public actor FindATimeService: SkillService {
     }
 
     public func restore(_ interactions: [Interaction]) async {
-        await loadLedger()
         let saved = (try? await checkpointStore.all()) ?? []
         resume(interactions, from: saved)
     }
@@ -215,6 +213,8 @@ public actor FindATimeService: SkillService {
         isShutDown = true
         for task in tickers.values { task.cancel() }
         for task in effects.values { task.cancel() }
+        for task in lastWords.values.flatMap({ $0 }) { task.cancel() }
+        lastWords = [:]
         tickers = [:]
         effects = [:]
         continuation.finish()
@@ -294,7 +294,9 @@ public actor FindATimeService: SkillService {
         startTicker(conversation)
     }
 
-    /// Forgets a conversation. Late messages for it get at most "no plan".
+    /// Ends a conversation on this phone: its work stops at once, and once
+    /// its last "no plan" has left, it is retired for good through Outbox
+    /// (ADR 0021). Nothing is sent in it, and nothing is opened for it, again.
     func finish(_ conversation: ConversationID) {
         let interaction = initiating[conversation]?.interaction.id ?? invited[conversation]?.interaction.id
         let asker = invited[conversation]?.asker
@@ -308,44 +310,57 @@ public actor FindATimeService: SkillService {
             checkpointQueue.yield(.remove(interaction))
         }
         remember(conversation, asker: asker, interaction: interaction)
+        retireAfterLastWords(conversation)
     }
 
-    /// Records an ended conversation so late messages for it get at most
-    /// "no plan" and never open it again.
+    /// Retires `conversation` once its last "no plan" has gone. Shutting down
+    /// first leaves it unretired; restore retires every ended interaction.
+    func retireAfterLastWords(_ conversation: ConversationID) {
+        let words = lastWords.removeValue(forKey: conversation) ?? []
+        let outbox = outbox
+        spawn(for: nil) {
+            for word in words { await word.value }
+            do {
+                try await outbox.retire(conversation)
+            } catch {
+                await self.retireFailed()
+            }
+        }
+    }
+
+    private func retireFailed() { diagnostics.retireFailures += 1 }
+
+    /// Whether a friend's query may open an invitee interaction: not in a
+    /// retired conversation, and only if the ledger reserves its candidates
+    /// (at most 16 per friend and conversation, ADR 0021). A ledger that
+    /// cannot answer refuses. A retry for a request already open passes.
+    private func mayOpen(_ envelope: Envelope, _ query: Query) async -> Bool {
+        let id = envelope.conversation
+        if initiating[id] != nil || invited[id] != nil || finished[id] != nil { return true }
+        guard let candidates = QueryCheck.candidates(of: query, now: now(), configuration: configuration) else { return true }
+        do {
+            guard try await !conversations.isRetired(id) else {
+                ignore("retired conversation")
+                return false
+            }
+            guard try await conversations.reserve(candidates.map { .slots([$0]) }, issue: .time, to: envelope.sender, in: id) else {
+                ignore("answer budget spent")
+                return false
+            }
+            return true
+        } catch {
+            ignore("ledger unavailable")
+            return false
+        }
+    }
+
+    /// Keeps ended conversations in memory until they are retired, so a late
+    /// message meanwhile opens nothing. The ledger is the lasting record.
     func remember(_ conversation: ConversationID, asker: PeerID?, interaction: InteractionID?) {
         guard finished[conversation] == nil else { return }
         finished[conversation] = Tombstone(asker: asker, interaction: interaction)
         finishedOrder.append(conversation)
         if finishedOrder.count > Self.maxTombstones { finished[finishedOrder.removeFirst()] = nil }
-    }
-
-    /// Loads the answered-candidate record once, before the first request
-    /// is handled, so a relaunch keeps every conversation's budget.
-    func loadLedger() async {
-        guard !ledgerLoaded else { return }
-        let store = checkpointStore
-        let load = ledgerLoad ?? Task { (try? await store.ledger()) ?? AnsweredLedger() }
-        ledgerLoad = load
-        let loaded = await load.value
-        guard !ledgerLoaded else { return }
-        ledger = loaded
-        ledger.prune(now: now(), window: Self.ledgerWindow)
-        ledgerLoaded = true
-    }
-
-    /// Records the candidates a new request in `conversation` would have
-    /// this phone answer about, or refuses it if that would take the
-    /// conversation past `maxCandidates` (ADR 0019, decision 6).
-    func spendAnswerBudget(_ candidates: [TimeSlot], in conversation: ConversationID, asker: PeerID) -> Bool {
-        ledger.prune(now: now(), window: Self.ledgerWindow)
-        let entry = ledger.entries[conversation]
-        if let entry, entry.asker != asker { return false }
-        let union = (entry?.slots ?? []).union(candidates)
-        guard union.count <= configuration.maxCandidates else { return false }
-        guard entry != nil || ledger.entries.count < Self.maxLedgerEntries else { return false }
-        ledger.entries[conversation] = AnsweredLedger.Entry(asker: asker, slots: union, updatedAt: Timestamp(now()))
-        checkpointQueue.yield(.ledger(ledger))
-        return true
     }
 
     func removeCheckpoint(_ interaction: InteractionID) {
@@ -375,6 +390,9 @@ public actor FindATimeService: SkillService {
         case denied(PolicyViolation)
         /// Unreachable or changed during consent: a retry may succeed.
         case failed
+        /// The conversation ledger or the numbering refused for good: retired,
+        /// over the answer limit (ADR 0021).
+        case refused
     }
 
     /// One step's send to one friend. A retry of a step whose send is still
@@ -428,6 +446,9 @@ public actor FindATimeService: SkillService {
             return .declined
         } catch OutboxError.denied(let violation) {
             return .denied(violation)
+        } catch OutboxError.conversationRetired, OutboxError.answerLimitReached, OutboxError.answerWithoutItsQuery, OutboxError.sequenceExhausted {
+            // The ledger or the numbering refuses for good (ADR 0021).
+            return .refused
         } catch {
             diagnostics.failedSends += 1
             return .failed
@@ -438,13 +459,15 @@ public actor FindATimeService: SkillService {
     /// always `noOverlap`, whether the cause was no time, a pass, a declined
     /// sheet, or a Never setting (ADR 0019, decision 5).
     func sendNoPlan(about message: MessageID, to peers: [PeerID], in conversation: ConversationID, chainedFrom: ConversationID?) {
-        guard !peers.isEmpty else { return }
-        // Not tied to the conversation: it is what is sent as it ends.
-        spawn(for: nil) {
+        guard !peers.isEmpty, !isShutDown else { return }
+        // Not tied to the conversation's work, which ending cancels: it is
+        // what is sent as it ends, and retiring waits for it.
+        let word = Task {
             for peer in peers {
                 _ = await self.send(.reject(Rejection(proposal: message, reason: .noOverlap)), to: peer, conversation: conversation, chainedFrom: chainedFrom)
             }
         }
+        lastWords[conversation, default: []].append(word)
     }
 
     func countAttempt(_ conversation: ConversationID, _ peer: PeerID) -> Bool {

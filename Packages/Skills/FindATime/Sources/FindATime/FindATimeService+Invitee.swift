@@ -44,9 +44,6 @@ extension FindATimeService {
               open.filter({ $0.asker == envelope.sender }).count < configuration.maxOpenInvitationsPerFriend
         else { return ignore("too many open requests") }
         guard let skill = envelope.skill else { return }
-        // However the conversation was ended, forgotten, or restarted, it
-        // never learns about more than maxCandidates times in all.
-        guard spendAnswerBudget(candidates, in: id, asker: envelope.sender) else { return ignore("answer budget spent") }
 
         let value = Invited(
             interaction: Interaction(
@@ -186,7 +183,7 @@ extension FindATimeService {
         case .sent, .failed:
             // A lost answer is recovered when the starter retries its query.
             return
-        case .declined, .denied:
+        case .declined, .denied, .refused:
             inviteeRefused(id, outcome, tellAsker: false)
         }
     }
@@ -265,6 +262,9 @@ extension FindATimeService {
             return
         case .declined, .denied:
             inviteeRefused(id, outcome, tellAsker: true)
+        case .refused:
+            // The ledger refused: the conversation is over here; say nothing.
+            inviteeRefused(id, outcome, tellAsker: false)
         }
     }
 
@@ -274,7 +274,11 @@ extension FindATimeService {
     /// which follows the owner's tap like a pass does.
     private func inviteeRefused(_ id: ConversationID, _ outcome: SendOutcome, tellAsker: Bool) {
         guard var value = invited[id] else { return }
-        if case .denied = outcome { emit(.blockedByPrivacy, to: &value.interaction) }
+        switch outcome {
+        case .denied: emit(.blockedByPrivacy, to: &value.interaction)
+        case .refused: emit(.failed, to: &value.interaction)
+        default: break
+        }
         invited[id] = value
         if tellAsker { tellAskerNoPlan(id) }
         finish(id)

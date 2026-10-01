@@ -162,7 +162,7 @@ extension FindATimeService {
             }
         case .failed:
             return
-        case .declined, .denied:
+        case .declined, .denied, .refused:
             initiatorRefused(id, outcome)
         }
     }
@@ -176,7 +176,12 @@ extension FindATimeService {
     ///   every live step except planned: a plan already agreed stands.
     private func initiatorRefused(_ id: ConversationID, _ outcome: SendOutcome) {
         guard var value = initiating[id] else { return }
-        if case .denied = outcome { emit(.blockedByPrivacy, to: &value.interaction) }
+        switch outcome {
+        case .denied: emit(.blockedByPrivacy, to: &value.interaction)
+        // The ledger refused for good (ADR 0021).
+        case .refused: emit(.failed, to: &value.interaction)
+        default: break
+        }
         initiating[id] = value
         tellEveryoneNoPlan(id)
         finish(id)
@@ -295,7 +300,7 @@ extension FindATimeService {
                 let outcome = await self.send(.propose(proposal), to: peer, conversation: id, chainedFrom: chainedFrom)
                 switch outcome {
                 case .sent(let envelope): await self.proposalSent(id, revision: revision, to: peer, envelope.id)
-                case .declined, .denied: refusal = outcome
+                case .declined, .denied, .refused: refusal = outcome
                 case .failed: continue
                 }
                 if refusal != nil { break }
@@ -385,6 +390,7 @@ extension FindATimeService {
                 await self.confirmationSent(id, revision: draft.revision, to: peer, outcome)
                 if case .declined = outcome { break }
                 if case .denied = outcome { break }
+                if case .refused = outcome { break }
             }
         }
     }
@@ -400,7 +406,7 @@ extension FindATimeService {
         case .failed:
             // Retried on the timer, or when the friend resends its acceptance.
             return
-        case .declined, .denied:
+        case .declined, .denied, .refused:
             initiatorRefused(id, outcome)
         }
     }

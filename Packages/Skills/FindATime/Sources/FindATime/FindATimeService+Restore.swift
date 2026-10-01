@@ -18,10 +18,12 @@ extension FindATimeService {
         let checkpoints = Dictionary(saved.map { ($0.interaction, $0) }, uniquingKeysWith: { _, last in last })
         let mine = interactions.filter { $0.skill.id == FindATimeSkill.ref.id }
 
-        // Interactions that ended recently (ADR 0011, amendment 15) become
-        // tombstones first, so a late retry for one is never opened again.
+        // Interactions that ended recently (ADR 0011, amendment 15) are
+        // retired again, in case the app quit before their retirement was
+        // recorded. Retiring is idempotent; the ledger keeps it for good.
         for ended in mine where ended.state.isFinal {
             remember(ended.conversation, asker: ended.role == .invitee ? ended.participants.first : nil, interaction: ended.id)
+            retireAfterLastWords(ended.conversation)
         }
 
         var live: Set<InteractionID> = []
@@ -162,6 +164,7 @@ extension FindATimeService {
         emit(.failed, to: &copy)
         removeCheckpoint(interaction.id)
         remember(interaction.conversation, asker: interaction.role == .invitee ? interaction.participants.first : nil, interaction: interaction.id)
+        retireAfterLastWords(interaction.conversation)
     }
 
     /// The service's copy never sees consent; a sheet open at the restart

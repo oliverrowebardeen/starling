@@ -211,7 +211,9 @@ struct AdversarialTests {
         let steer = try Answer(query: queryID, issue: .time, status: .answered, acceptable: .slots([T.slot(3, 4)]))
         // Mallory was never asked; Ben's real phone is silenced, so a forged
         // answer under Ben's name would have to come through Ben's key.
-        try await mallory.send(.answer(steer), to: a, conversation: conversation)
+        // Mallory's own Outbox wants the query an answer replies to (ADR 0021).
+        try await mallory.send(.answer(steer), to: a, conversation: conversation,
+                               answering: try Query(issue: .time, candidates: .slots([T.slot(3, 4)])))
         try await eventually("Mallory's answer refused") { await a.service.diagnostics.ignored["answer out of turn", default: 0] >= 1 }
         #expect(await a.coordinator.interaction(started)?.state == .negotiating)
 
@@ -227,10 +229,11 @@ struct AdversarialTests {
         await world.stop()
     }
 
-    /// Review of PR #53 (second round), finding 1: one conversation never
-    /// learns about more than 16 times, even after its memory of ending is
-    /// pushed out by 257 other conversations, and even after a restart.
-    @Test func theAnswerBudgetSurvivesForgettingAndRestarts() async throws {
+    /// Reviews of PR #53 (second and final rounds) and ADR 0021: an ended
+    /// conversation is retired for good in the conversation ledger, so its
+    /// ID can never be reused for more answers, however many other
+    /// conversations push it out of memory, and after a restart.
+    @Test func anEndedConversationStaysClosedAfterForgettingAndRestarts() async throws {
         let world = World()
         let mallory = world.phone("Mallory")
         // Free on day 0, busy all of day 2 (where the filler requests go).
@@ -242,9 +245,9 @@ struct AdversarialTests {
         try await mallory.send(query(first), to: target, conversation: conversation)
         try await eventually("Ben answered about 16 times") { world.envelopes.contains { $0.sender == target.id && $0.body.kind == .answer } }
         try await mallory.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: target, conversation: conversation)
-        try await eventually("conversation ended") { await target.service.invited.isEmpty }
+        try await eventually("conversation retired") { (try? await target.conversations.isRetired(conversation)) == true }
 
-        // Push the ended conversation out of the bounded memory of endings.
+        // Push the ended conversation out of the service's memory.
         for i in 0...FindATimeService.maxTombstones {
             try await mallory.send(query([T.slot(48 + Double(i % 20) * 0.5, 48.5 + Double(i % 20) * 0.5)]), to: target, conversation: ConversationID())
             try await eventually("filler \(i) ended") { await target.service.invited.isEmpty }
@@ -255,16 +258,49 @@ struct AdversarialTests {
         let second = (0..<16).map { T.slot(24 + 9 + Double($0) * 0.5, 24 + 9.5 + Double($0) * 0.5) }
         let answersBefore = world.envelopes.filter { $0.sender == target.id && $0.body.kind == .answer }.count
         try await mallory.send(query(second), to: target, conversation: conversation)
-        try await eventually("refused") { await target.service.diagnostics.ignored["answer budget spent", default: 0] == 1 }
+        try await eventually("refused") { await target.service.diagnostics.ignored["retired conversation", default: 0] == 1 }
 
-        // And again after a relaunch, with only the saved record to go on.
+        // And again after a relaunch, with only the ledger to go on.
         await target.restart()
         try await target.greetAgain(world)
         try await mallory.send(query(second), to: target, conversation: conversation)
-        try await eventually("refused after a restart") { await target.service.diagnostics.ignored["answer budget spent", default: 0] == 1 }
+        try await eventually("refused after a restart") { await target.service.diagnostics.ignored["retired conversation", default: 0] == 1 }
         try await Task.sleep(for: .milliseconds(60))
         #expect(world.envelopes.filter { $0.sender == target.id && $0.body.kind == .answer }.count == answersBefore)
         #expect(await target.coordinator.all().filter { $0.conversation == conversation }.count == 1)
+        await world.stop()
+    }
+
+    /// ADR 0021: a conversation whose 16 candidates are already reserved for
+    /// this friend gets no card for new times, and no answer leaves.
+    @Test func aSpentConversationOpensNothing() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory")
+        let target = world.phone("Ben")
+        try await world.start()
+        let conversation = ConversationID()
+        let earlier = (0..<16).map { IssueValue.slots([T.slot(9 + Double($0) * 0.5, 9.5 + Double($0) * 0.5)]) }
+        #expect(try await target.conversations.reserve(earlier, issue: .time, to: mallory.id, in: conversation))
+
+        try await mallory.send(query([T.slot(30, 31)]), to: target, conversation: conversation)
+        try await eventually("refused") { await target.service.diagnostics.ignored["answer budget spent", default: 0] == 1 }
+        #expect(await target.coordinator.all().isEmpty)
+        #expect(!world.envelopes.contains { $0.sender == target.id && $0.skill != nil })
+        await world.stop()
+    }
+
+    /// ADR 0021: a ledger that cannot be read refuses; nothing opens and
+    /// nothing is sent, rather than answering as if it were empty.
+    @Test func aFailingLedgerRefuses() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory")
+        let target = world.phone("Ben")
+        try await world.start()
+        await target.conversations.failAll()
+        try await mallory.send(query([T.slot(9, 10)]), to: target, conversation: ConversationID())
+        try await eventually("refused") { await target.service.diagnostics.ignored["ledger unavailable", default: 0] == 1 }
+        #expect(await target.coordinator.all().isEmpty)
+        #expect(!world.envelopes.contains { $0.sender == target.id && $0.skill != nil })
         await world.stop()
     }
 }
