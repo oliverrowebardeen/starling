@@ -130,6 +130,35 @@ func readyToPair(_ model: PairingModel) async {
         #expect(model.phase == .failed(.transportFailed))
     }
 
+    /// Lane E2's WiFiAwareTransport.peerID(for:waitingUpTo:) (PR #38): the
+    /// phone picked in the system's device picker becomes the one to pair.
+    @Test func aPickedDeviceIsSelectedByItsPeerIDWithItsNameSuggested() async {
+        let peer = PeerID.random()
+        var directory = Self.scripted().directory
+        directory.peerForPickedDevice = { id in id == 42 ? peer : nil }
+        let model = PairingModel(directory: directory)
+        await model.refreshCandidates()
+
+        await model.pickedDevice(id: 42, name: "Maya's iPhone")
+        #expect(model.selected?.peer == peer)
+        #expect(model.selected?.link == "Wi-Fi Aware")
+        #expect(model.candidates.contains { $0.peer == peer })
+        #expect(model.nickname == "Maya's iPhone")
+
+        model.nickname = "Maya"
+        await model.pickedDevice(id: 42, name: "Maya's iPhone")
+        #expect(model.nickname == "Maya", "an owner's own name is not replaced")
+    }
+
+    @Test func aPickedDeviceThatNeverSaysHelloIsReported() async {
+        var directory = Self.scripted().directory
+        directory.peerForPickedDevice = { _ in nil }
+        let model = PairingModel(directory: directory)
+        await model.pickedDevice(id: 7, name: "Phone")
+        #expect(model.selected == nil)
+        #expect(model.notice != nil)
+    }
+
     @Test func everyFailureHasAMessage() {
         for failure in [PairingFailure.codeMismatch, .cancelled, .timedOut, .transportFailed, .protocolError] {
             #expect(!PairingModel.message(for: failure).isEmpty)

@@ -21,6 +21,8 @@ struct SecureLinks: Sendable {
     let friends: any PairedPeerStore
     let authority: PinAuthority
     let links: [Link]
+    /// The raw Wi-Fi Aware link, for lane E2's picked-device lookup.
+    let wifiAware: WiFiAwareTransport?
     let transport: CompositeTransport
     let inboxEvents: AsyncStream<InboxEvent>
 
@@ -36,9 +38,8 @@ struct SecureLinks: Sendable {
         // sessions and commits (ADR 0100 decision 11).
         let authority = PinAuthority(identity: identity, store: friends)
         var raw: [(String, any Transport)] = []
-        if WiFiAwareSupport.isSupported {
-            raw.append(("Wi-Fi Aware", WiFiAwareTransport(localPeer: identity.peerID)))
-        }
+        let wifiAware = WiFiAwareSupport.isSupported ? WiFiAwareTransport(localPeer: identity.peerID) : nil
+        if let wifiAware { raw.append(("Wi-Fi Aware", wifiAware)) }
         raw.append(("Nearby", LocalP2PTransport(localPeer: identity.peerID)))
         raw += extraLinks
         let links = raw.map { label, transport in
@@ -52,6 +53,7 @@ struct SecureLinks: Sendable {
             friends: friends,
             authority: authority,
             links: links,
+            wifiAware: wifiAware,
             transport: transport,
             inboxEvents: Inbox(localPeer: identity.peerID).events(from: transport)
         )
@@ -76,6 +78,12 @@ struct SecureLinks: Sendable {
 
     var pairingDirectory: PairingDirectory {
         let links = links
+        var peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)?
+        if let aware = wifiAware {
+            peerForPickedDevice = { id in
+                await aware.peerID(for: WiFiAwarePairedDevice(id: id, name: ""), waitingUpTo: .seconds(15))
+            }
+        }
         let friends = friends
         let me = identity.peerID
         return PairingDirectory(
@@ -100,7 +108,10 @@ struct SecureLinks: Sendable {
             paired: { peer in
                 // E1: on .paired, reconnect on each transport.
                 for link in links { await link.secure.reconnect(peer.id) }
-            }
+            },
+            // Lane E2 (PR #38): the PeerID behind the device the owner picked,
+            // waiting for its link hello, which follows the system pairing.
+            peerForPickedDevice: peerForPickedDevice
         )
     }
 }

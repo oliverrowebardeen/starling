@@ -27,13 +27,19 @@ public struct PairingDirectory: Sendable {
     public var pair: @Sendable (PairingCandidate, String) async throws -> any PairingSession
     /// Called once paired, to reconnect each link to the new friend.
     public var paired: @Sendable (PairedPeer) async -> Void
+    /// The PeerID behind a device the owner picked in the system's Wi-Fi
+    /// Aware picker (lane E2's `peerID(for:waitingUpTo:)`), or nil if its
+    /// link hello did not arrive in time. Nil where Wi-Fi Aware is absent.
+    public var peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)?
 
     public init(
         localPeer: PeerID,
         candidates: @escaping @Sendable () async -> [PairingCandidate],
         pair: @escaping @Sendable (PairingCandidate, String) async throws -> any PairingSession,
-        paired: @escaping @Sendable (PairedPeer) async -> Void
+        paired: @escaping @Sendable (PairedPeer) async -> Void,
+        peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)? = nil
     ) {
+        self.peerForPickedDevice = peerForPickedDevice
         self.localPeer = localPeer
         self.candidates = candidates
         self.pair = pair
@@ -78,8 +84,27 @@ public final class PairingModel {
     }
 
     public func refreshCandidates() async {
-        candidates = await directory.candidates()
-        if let selected, !candidates.contains(selected) { self.selected = nil }
+        var fresh = await directory.candidates()
+        // A phone picked in the system picker stays listed even before the
+        // link watcher reports it.
+        if let selected, !fresh.contains(selected) { fresh.insert(selected, at: 0) }
+        candidates = fresh
+    }
+
+    /// The owner picked a device in the system's Wi-Fi Aware picker: select
+    /// the PeerID behind it, and suggest the device's name if the owner has
+    /// not typed one. The code comparison still verifies the pick (ADR 0003).
+    public func pickedDevice(id: UInt64, name: String) async {
+        guard let resolve = directory.peerForPickedDevice else { return }
+        notice = nil
+        guard let peer = await resolve(id) else {
+            notice = "Starling couldn't reach the phone you picked. Keep both phones close and open Starling on both, then try again."
+            return
+        }
+        let candidate = candidates.first { $0.peer == peer } ?? PairingCandidate(peer: peer, link: "Wi-Fi Aware")
+        if !candidates.contains(candidate) { candidates.insert(candidate, at: 0) }
+        selected = candidate
+        if nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { nickname = name }
     }
 
     /// A phone is chosen and the nickname is one lane E1 will accept.

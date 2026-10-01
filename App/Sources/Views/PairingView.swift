@@ -14,7 +14,9 @@ struct PairingView: View {
             switch model.phase {
             case .idle:
                 Section {
-                    DeviceDiscoverySlot()
+                    DeviceDiscoverySlot { device in
+                        Task { await model.pickedDevice(id: device.id, name: device.name) }
+                    }
                 } footer: {
                     Text("Pairing only works with both of you together. On Wi-Fi Aware phones, let the system pair the two phones first.")
                 }
@@ -123,9 +125,13 @@ struct PairingView: View {
 /// E1's ceremony, started by "Start pairing") pins the friend's key, and
 /// until E1 is wired Debug builds run it with a test friend.
 struct DeviceDiscoverySlot: View {
+    /// The device the owner picked in the system picker; the pairing model
+    /// turns it into the PeerID to pair with (lane E2, PR #38).
+    var onPicked: (WiFiAwarePairedDevice) -> Void = { _ in }
+
     var body: some View {
         if WiFiAwareSupport.isSupported {
-            WiFiAwarePairingButtons()
+            WiFiAwarePairingButtons(onPicked: onPicked)
         } else {
             Label {
                 VStack(alignment: .leading, spacing: 4) {

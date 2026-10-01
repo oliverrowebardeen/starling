@@ -78,7 +78,10 @@ struct WiFiAwareView: View {
 }
 
 /// Lane E2's DeviceDiscoveryUI views, shown only where Wi-Fi Aware runs.
+/// `onPicked` receives the device the owner picked once the system paired it.
 struct WiFiAwarePairingButtons: View {
+    var onPicked: (WiFiAwarePairedDevice) -> Void = { _ in }
+
     var body: some View {
         #if canImport(DeviceDiscoveryUI) && canImport(WiFiAware) && os(iOS) && !targetEnvironment(macCatalyst)
         if WiFiAwareSupport.isSupported {
@@ -87,7 +90,7 @@ struct WiFiAwarePairingButtons: View {
             } fallback: {
                 Text("Pairing isn't available on this iPhone.").foregroundStyle(.secondary)
             }
-            WiFiAwareDevicePicker {
+            WiFiAwareDevicePicker(onPaired: onPicked) {
                 Label("Find a friend's phone", systemImage: "magnifyingglass")
             } fallback: {
                 Text("Pairing isn't available on this iPhone.").foregroundStyle(.secondary)
