@@ -5,18 +5,28 @@ import StarlingCore
 public actor FixedPolicyEngine: PolicyEngine {
     public private(set) var evaluated: [OutboundMessage] = []
     private let decision: @Sendable (OutboundMessage) -> PolicyDecision
+    private let explain: (@Sendable (OutboundMessage) -> Disclosure)?
 
-    public init(_ decision: PolicyDecision) {
+    /// - Parameter explain: What `disclosedItems(for:)` returns; without it,
+    ///   the engine cannot say and throws `DisclosureUnavailable`.
+    public init(_ decision: PolicyDecision, explain: (@Sendable (OutboundMessage) -> Disclosure)? = nil) {
         self.decision = { _ in decision }
+        self.explain = explain
     }
 
-    public init(decide: @escaping @Sendable (OutboundMessage) -> PolicyDecision) {
+    public init(decide: @escaping @Sendable (OutboundMessage) -> PolicyDecision, explain: (@Sendable (OutboundMessage) -> Disclosure)? = nil) {
         self.decision = decide
+        self.explain = explain
     }
 
     public func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
         evaluated.append(message)
         return decision(message)
+    }
+
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        guard let explain else { throw DisclosureUnavailable() }
+        return explain(message).items
     }
 }
 
@@ -55,13 +65,19 @@ public actor RecordingOutboxObserver: OutboxObserver {
         public let envelope: Envelope
         public let context: OutboundContext
         public let decision: PolicyDecision
+        /// Nil when the policy could not say what the send disclosed.
+        public let disclosed: [DisclosedItem]?
     }
 
     public private(set) var records: [Record] = []
 
     public init() {}
 
+    public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        records.append(Record(envelope: envelope, context: context, decision: decision, disclosed: disclosed))
+    }
+
     public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {
-        records.append(Record(envelope: envelope, context: context, decision: decision))
+        records.append(Record(envelope: envelope, context: context, decision: decision, disclosed: nil))
     }
 }

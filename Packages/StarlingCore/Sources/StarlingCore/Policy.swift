@@ -128,6 +128,23 @@ public enum PolicyDecision: Hashable, Sendable {
 /// this call (brief 3.5). `Outbox` consults it for every outbound envelope.
 public protocol PolicyEngine: Sendable {
     func evaluate(_ message: OutboundMessage) async -> PolicyDecision
+    /// What `message` discloses, item by item: the items a consent sheet
+    /// would show. `Outbox` asks after a send the policy allowed without a
+    /// sheet, so the audit lists it in the policy's own terms (ADR 0011
+    /// decision 5). Throws `DisclosureUnavailable` by default.
+    func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem]
+}
+
+/// A policy engine that cannot say what a message discloses. The audit then
+/// marks the send's items as unknown instead of guessing.
+public struct DisclosureUnavailable: Error, Hashable, Sendable {
+    public init() {}
+}
+
+extension PolicyEngine {
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        throw DisclosureUnavailable()
+    }
 }
 
 public enum ConsentOutcome: Hashable, Sendable {

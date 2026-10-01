@@ -192,6 +192,24 @@ actor GatedSecondEvaluationPolicy: PolicyEngine {
         }
     }
 
+    /// Lane E: the audit lists a send allowed without a sheet in the
+    /// policy's own terms, and says so when the policy cannot.
+    @Test func observerHearsWhatEachSendDisclosed() async throws {
+        let sheet = try disclosure(100)
+        let policyItems = try disclosure(200)
+        for (policy, expected) in [
+            (FixedPolicyEngine(.needsConsent(sheet)), sheet.items as [DisclosedItem]?),
+            (FixedPolicyEngine(.allow, explain: { _ in policyItems }), policyItems.items),
+            (FixedPolicyEngine(.allow), nil),
+        ] {
+            let observer = RecordingOutboxObserver()
+            let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: policy,
+                                consent: ScriptedConsentProvider(.approved), observer: observer)
+            try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            #expect(await observer.records.map(\.disclosed) == [expected])
+        }
+    }
+
     @Test func policyIsRecheckedAfterConsent() async throws {
         let first = try disclosure(1_000)
         let violation = PolicyViolation(rule: "rules-changed")

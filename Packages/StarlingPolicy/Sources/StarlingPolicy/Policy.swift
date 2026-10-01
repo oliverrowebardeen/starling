@@ -66,6 +66,12 @@ public struct DeterministicPolicyEngine: PolicyEngine {
                           conversation: envelope.conversation, skill: envelope.skill)
     }
 
+    /// The protocol's form of `disclosure(for:)`, for the audit (ADR 0011
+    /// decision 5).
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        try disclosure(for: message).items
+    }
+
     public func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
         // Hello is the bootstrap: it carries a card, never owner issue values.
         if case .hello = message.envelope.body { return .allow }

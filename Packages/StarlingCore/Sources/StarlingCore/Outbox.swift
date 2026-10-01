@@ -10,8 +10,20 @@ public enum OutboxError: Error, Hashable, Sendable {
 
 /// Told about every envelope the transport accepted, for example to keep an
 /// audit log. Never told about denied, declined, cancelled, or failed sends.
+/// `Outbox` calls the method with `disclosed`, which by default forwards to
+/// the three-argument one; implement it as well when you need the items.
 public protocol OutboxObserver: Sendable {
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async
+    /// - Parameter disclosed: What the send disclosed: the consent sheet's
+    ///   items, or for a send allowed without a sheet the policy's own list.
+    ///   Nil when the policy could not say.
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async
+}
+
+extension OutboxObserver {
+    public func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        await outbox(didSend: envelope, context: context, decision: decision)
+    }
 }
 
 /// The only sanctioned way to send a message.
@@ -110,7 +122,14 @@ public actor Outbox {
         // including one cancelled while the re-check above was running.
         try Task.checkCancellation()
         try await transport.send(Frame(codec.encode(envelope)), to: recipient)
-        await observer?.outbox(didSend: envelope, context: context, decision: decision)
+        if let observer {
+            let disclosed: [DisclosedItem]? = switch decision {
+            case .needsConsent(let disclosure): disclosure.items
+            case .allow: try? await policy.disclosedItems(for: message)
+            case .deny: nil
+            }
+            await observer.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
+        }
         return envelope
     }
 }
