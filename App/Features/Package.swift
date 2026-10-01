@@ -16,10 +16,13 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../Packages/StarlingCore"),
-        // Lane E's chaining and audit, and lane D's Pick a place (its
-        // Foundation-only library; the MapKit half stays in the app).
+        // Lane E's chaining and audit, lane D's Pick a place (its
+        // Foundation-only library; the MapKit half stays in the app), and
+        // lane C's Find a time with its calendar access.
         .package(path: "../../Packages/StarlingChaining"),
         .package(path: "../../Packages/Skills/PickAPlace"),
+        .package(path: "../../Packages/Skills/FindATime"),
+        .package(path: "../../Packages/StarlingAvailability"),
     ],
     targets: [
         // StarlingFakes is for tests and Debug builds; the app injects
@@ -28,6 +31,8 @@ let package = Package(
             .product(name: "StarlingCore", package: "StarlingCore"),
             .product(name: "StarlingChaining", package: "StarlingChaining"),
             .product(name: "PickAPlace", package: "PickAPlace"),
+            .product(name: "FindATime", package: "FindATime"),
+            .product(name: "StarlingAvailability", package: "StarlingAvailability"),
         ]),
         .testTarget(
             name: "StarlingFeaturesTests",

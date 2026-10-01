@@ -28,9 +28,14 @@ packages:
   # Lane E1's identity, pinned friends, pairing, and secure channel.
   StarlingIdentity:
     path: ../Packages/StarlingIdentity
-  # Lane D's Pick a place, lane E's chaining and audit, and its Swap photos.
+  # Lane C's Find a time and calendar access, lane D's Pick a place, lane
+  # E's chaining and audit, and its Swap photos.
+  FindATime:
+    path: ../Packages/Skills/FindATime
   PickAPlace:
     path: ../Packages/Skills/PickAPlace
+  StarlingAvailability:
+    path: ../Packages/StarlingAvailability
   StarlingChaining:
     path: ../Packages/StarlingChaining
   SwapPhotos:
@@ -90,6 +95,10 @@ targets:
         product: StarlingFeatures
       - package: StarlingDesign
         product: StarlingDesign
+      - package: FindATime
+        product: FindATime
+      - package: StarlingAvailability
+        product: StarlingAvailability
       - package: PickAPlace
         product: PickAPlace
       - package: PickAPlace
