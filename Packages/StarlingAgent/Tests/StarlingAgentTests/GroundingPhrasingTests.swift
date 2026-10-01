@@ -63,6 +63,22 @@ import Testing
         Hours("11 to 1 tomorrow", nil, 11, 1, 11, 13),
         Hours("from 11am to 2", nil, 11, 2, 11, 14),
         Hours("8 to 12", nil, 8, 12, 8, 12),
+        // The same hour with both markers keeps each boundary's own marker.
+        Hours("today from 6am to 6pm", nil, 6, 18, 6, 18),
+        Hours("today from 6am to 6pm", nil, 6, 6, 6, 18),
+        Hours("6 am to 6 pm", nil, 6, 6, 6, 18),
+        // Clock times with minutes, with and without markers.
+        Hours("6:00am to 8:00pm", nil, 6, 20, 6, 20),
+        Hours("6:00am to 8:00pm", nil, 6, 8, 6, 20),
+        Hours("dinner at 6:30pm", nil, 18, nil, 18, nil),
+        Hours("dinner at 6:30pm", nil, 6, nil, 18, nil),
+        Hours("run at 6:30am", nil, 6, nil, 6, nil),
+        Hours("after 6 p.m.", nil, 6, nil, 18, nil),
+        Hours("from 5:45pm to 7:15pm", nil, 17, 19, 17, 19),
+        Hours("from 9:30am to 12:30pm", nil, 9, 12, 9, 12),
+        Hours("from 6:30 to 8:30", nil, 6, 8, 18, 20),
+        Hours("at 7:30", nil, 7, nil, 19, nil),
+        Hours("10:00 to 11:00 tomorrow morning", .morning, 10, 11, 10, 11),
         // Already on a 24-hour clock.
         Hours("from 14:00 to 16:00", nil, 14, 16, 14, 16),
         Hours("at 19:30", nil, 19, nil, 19, nil),
@@ -71,6 +87,13 @@ import Testing
         let checked = Grounding.check(RawRules(partOfDay: row.part, earliestHour: row.from, latestHour: row.to), against: row.text)
         #expect(checked.earliestHour == row.expectedFrom, "start")
         #expect(checked.latestHour == row.expectedTo, "end")
+    }
+
+    /// Clock times are found in order with their own markers; amounts are not clock times.
+    @Test func clockTimesSkipAmounts() {
+        let clocks = Grounding.clockTimes(in: "$15, 15.50, 1,000, 2k, 6:30pm, 6 p.m., 6am, 18:00")
+        #expect(clocks.map(\.hour) == [6, 6, 6, 18])
+        #expect(clocks.map(\.marker) == ["pm", "pm", "am", nil])
     }
 
     /// A correct budget from the model must survive grounding.

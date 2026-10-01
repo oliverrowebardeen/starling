@@ -15,7 +15,7 @@ package enum Grounding {
         var checked = raw
         if let day = raw.day, !isNamed(day, in: words) { checked.day = nil }
         if let part = raw.partOfDay, words.allSatisfy({ !(partWords[part] ?? []).contains($0) }) { checked.partOfDay = nil }
-        (checked.earliestHour, checked.latestHour) = hours(checked, words: words)
+        (checked.earliestHour, checked.latestHour) = hours(checked, text: utterance, words: words)
         checked.wants = raw.wants.filter { isActivity($0, stems: stems) }
         checked.avoids = raw.avoids.map(dropLeadingNegation).filter { isActivity($0, stems: stems) }
         if let dollars = raw.maxDollars, !numbers(in: words).contains(dollars) {
@@ -65,38 +65,45 @@ package enum Grounding {
     /// the half of the day the message states ("morning", "tonight"), and
     /// otherwise the plans-with-friends default: 1 to 7 is afternoon or
     /// evening.
-    static func hours(_ raw: RawRules, words: [String]) -> (Int?, Int?) {
-        let stated = numbers(in: words)
+    static func hours(_ raw: RawRules, text: String, words: [String]) -> (Int?, Int?) {
+        let clocks = clockTimes(in: text)
+        // Hours spelled in words ("at seven") carry no marker.
+        let spelled = Set(words.indices.compactMap { spelledNumber(in: words, from: $0)?.0 })
         let saysNoon = words.contains("noon")
         let saysMidnight = words.contains("midnight")
-        let marked = meridiems(in: words)
-        let saysAM = marked.values.contains { $0.contains("am") }
-        let saysPM = marked.values.contains { $0.contains("pm") }
-        func grounded(_ hour: Int?) -> Int? {
-            guard let hour else { return nil }
-            if stated.contains(hour) { return hour }
-            // 21 is stated as "9" or "9pm", but not by "9am" alone.
-            if hour > 12, stated.contains(hour - 12), marked[hour - 12] != ["am"] { return hour }
-            if hour == 12 && saysNoon { return hour }
-            if (hour == 0 || hour == 24) && saysMidnight { return hour }
-            return nil
+        let saysAM = clocks.contains { $0.marker == "am" }
+        let saysPM = clocks.contains { $0.marker == "pm" }
+        // The clock times in the message that can mean `hour`: the same
+        // number, or 12 less unless that clock says "am" (21 is "9" or
+        // "9pm", not "9am").
+        func candidates(_ hour: Int) -> [ClockTime] {
+            clocks.filter { $0.hour == hour || ($0.hour + 12 == hour && $0.marker != "am") }
         }
-        var earliest = grounded(raw.earliestHour)
-        var latest = grounded(raw.latestHour)
+        func stated(_ hour: Int) -> Bool {
+            spelled.contains(hour) || (hour > 12 && spelled.contains(hour - 12))
+                || (hour == 12 && saysNoon) || ((hour == 0 || hour == 24) && saysMidnight)
+        }
+        // The start is the first clock time that can mean it and the end the
+        // last other one, so "6am to 6pm" keeps am on the start and pm on the
+        // end even when the model wrote 6 for both.
+        let startClock = raw.earliestHour.flatMap { candidates($0).first }
+        let endClock = raw.latestHour.flatMap { hour in candidates(hour).last { $0.position != startClock?.position } }
+        var earliest = raw.earliestHour.flatMap { startClock != nil || stated($0) ? $0 : nil }
+        var latest = raw.latestHour.flatMap { endClock != nil || stated($0) ? $0 : nil }
         // A single point in time ("at 3", "after 9") is a start, not a window.
-        if let from = earliest, from == latest { latest = nil }
+        if let from = earliest, from == latest, endClock == nil { latest = nil }
         // Midnight as an end is the end of the day, not its start.
         if latest == 0 { latest = 24 }
         // Which half of the day the message states, apart from any one hour.
         let morning = raw.partOfDay == .morning || saysAM || words.contains { morningWords.contains($0) }
         let later = raw.partOfDay == .afternoon || raw.partOfDay == .evening || saysPM || words.contains { laterWords.contains($0) }
-        func clock(_ hour: Int?) -> Int? {
+        func clock(_ hour: Int?, _ marker: String?) -> Int? {
             guard let hour, (1...11).contains(hour) else { return hour }
             // An hour with its own "am" or "pm" ("9am to 1pm") follows it,
             // whatever the rest of the message says.
-            switch marked[hour] {
-            case ["am"]?: return hour
-            case ["pm"]?: return hour + 12
+            switch marker {
+            case "am"?: return hour
+            case "pm"?: return hour + 12
             default: break
             }
             switch (morning, later) {
@@ -109,11 +116,11 @@ package enum Grounding {
             default: return hour <= 7 ? hour + 12 : hour
             }
         }
-        let unmarkedStart = earliest.map { marked[$0] == nil } ?? false
-        let unmarkedEnd = latest.map { marked[$0] == nil } ?? false
+        let unmarkedStart = earliest != nil && startClock?.marker == nil
+        let unmarkedEnd = latest != nil && endClock?.marker == nil
         let morningStart = earliest
-        earliest = clock(earliest)
-        latest = clock(latest)
+        earliest = clock(earliest, startClock?.marker)
+        latest = clock(latest, endClock?.marker)
         // A window that ends before it starts moves whichever end the owner
         // did not mark. "between 5 and 7": the end joins the start's half of
         // the day. "from 9 to 1pm": the start stays in the morning.
@@ -127,18 +134,53 @@ package enum Grounding {
         return (earliest, latest)
     }
 
-    /// For each number the message marks with "am" or "pm", glued ("9am")
-    /// or as the next word ("9 am"), which markers it carries.
-    static func meridiems(in words: [String]) -> [Int: Set<String>] {
-        var marked: [Int: Set<String>] = [:]
-        for (index, word) in words.enumerated() {
-            if let suffix = meridiem(word), let hour = Int(word.dropLast(2)) {
-                marked[hour, default: []].insert(suffix)
-            } else if word == "am" || word == "pm", index > 0, let hour = Int(words[index - 1]) {
-                marked[hour, default: []].insert(word)
-            }
+    /// One clock time in the message: "6", "6pm", "6 pm", "6:30pm",
+    /// "6 p.m.", or "18:00".
+    struct ClockTime: Hashable {
+        let hour: Int
+        let marker: String?
+        /// Offset in the message, so two clock times with the same hour
+        /// stay apart.
+        let position: Int
+    }
+
+    /// Every clock time in the message, in order. Amounts are not clock
+    /// times: a number after "$", inside "1,000" or "15.50", longer than two
+    /// digits, or followed by a letter that is not "am" or "pm" ("2k").
+    static func clockTimes(in text: String) -> [ClockTime] {
+        let characters = Array(text.lowercased())
+        func isDigit(_ index: Int) -> Bool { index < characters.count && characters[index].isNumber }
+        func at(_ index: Int, _ literal: String) -> Bool {
+            let pattern = Array(literal)
+            return index + pattern.count <= characters.count && Array(characters[index..<index + pattern.count]) == pattern
         }
-        return marked
+        var clocks: [ClockTime] = []
+        var index = 0
+        while index < characters.count {
+            guard isDigit(index) else { index += 1; continue }
+            let start = index
+            while isDigit(index) { index += 1 }
+            let previous = start > 0 ? characters[start - 1] : " "
+            guard index - start <= 2, !"$,.:".contains(previous), !previous.isNumber, !previous.isLetter,
+                  let hour = Int(String(characters[start..<index])), hour <= 24 else { continue }
+            if at(index, ","), isDigit(index + 1), isDigit(index + 2), isDigit(index + 3) { continue }
+            if at(index, "."), isDigit(index + 1) { continue }
+            if at(index, ":"), isDigit(index + 1), isDigit(index + 2), !isDigit(index + 3) { index += 3 }
+            var probe = index
+            while probe < characters.count, characters[probe] == " " { probe += 1 }
+            var marker: String?
+            for (literal, value) in [("a.m.", "am"), ("p.m.", "pm"), ("a.m", "am"), ("p.m", "pm"), ("am", "am"), ("pm", "pm")] where at(probe, literal) {
+                let after = probe + literal.count
+                if after >= characters.count || !characters[after].isLetter {
+                    marker = value
+                    index = after
+                }
+                break
+            }
+            if marker == nil, probe == index, index < characters.count, characters[index].isLetter { continue }
+            clocks.append(ClockTime(hour: hour, marker: marker, position: start))
+        }
+        return clocks
     }
 
     /// "am" or "pm" when `word` is a number glued to one, like "10pm".
