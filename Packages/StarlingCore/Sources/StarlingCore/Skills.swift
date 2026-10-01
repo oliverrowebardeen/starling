@@ -100,6 +100,16 @@ public enum BuildingBlock: String, Hashable, Sendable, Codable, CaseIterable {
     case privateAggregation, mutualReveal, privateQuery, negotiationWithPrivateLimits, matchedExchange
 }
 
+/// How a request reaches friends (ADR 0020). Chosen in Compose, carried on
+/// every envelope of the conversation.
+public enum SendMode: String, Hashable, Sendable, Codable, CaseIterable {
+    /// Mutual reveal: a friend sees nothing unless they are up for it too.
+    /// "If nobody's up for it, nobody sees you asked."
+    case askQuietly = "ask_quietly"
+    /// The friend's agent shows the request as a card.
+    case invite
+}
+
 /// System permissions a skill may need. Requested just in time, the first
 /// time the owner uses the feature that needs it, never at launch (ADR 0013).
 public enum SystemPermission: String, Hashable, Sendable, Codable, CaseIterable {
@@ -222,15 +232,21 @@ public struct SkillDescriptor: Hashable, Sendable, Identifiable {
     public let ref: SkillRef
     public let wording: SkillWording
     public let buildingBlock: BuildingBlock
-    /// Every topic the skill may send a value for.
+    /// Every topic the skill may send a value for or use on the phone.
     public let topicsUsed: Set<PrivacyTopic>
-    /// Topics without which the skill cannot run. A subset of `topicsUsed`.
+    /// Topics whose own values must leave the phone for the skill to run at
+    /// all, such as photos for Swap photos. A topic the skill only uses
+    /// locally is not required: Never keeps its value on the phone but does
+    /// not stop the skill (ADR 0019). A subset of `topicsUsed`.
     public let topicsRequired: Set<PrivacyTopic>
     public let permissions: Set<SystemPermission>
     public let accepts: Set<ArtifactKind>
     public let produces: Set<ArtifactKind>
     public let intent: IntentSchema
     public let chainTrigger: ChainTrigger
+    /// The modes Compose offers, the first being the default. Ask quietly
+    /// needs the mutual reveal building block (ADR 0020).
+    public let sendModes: [SendMode]
 
     public init(
         ref: SkillRef,
@@ -242,7 +258,8 @@ public struct SkillDescriptor: Hashable, Sendable, Identifiable {
         accepts: Set<ArtifactKind> = [],
         produces: Set<ArtifactKind>,
         intent: IntentSchema,
-        chainTrigger: ChainTrigger = .atConfirm
+        chainTrigger: ChainTrigger = .atConfirm,
+        sendModes: [SendMode] = [.invite]
     ) throws {
         guard topicsRequired.isSubset(of: topicsUsed) else {
             throw ValidationError("SkillDescriptor.topicsRequired", "must be a subset of topicsUsed")
@@ -251,6 +268,12 @@ public struct SkillDescriptor: Hashable, Sendable, Identifiable {
             guard let topic = PrivacyTopic(issue: slot.issue), topicsUsed.contains(topic) else {
                 throw ValidationError("SkillDescriptor.intent", "slot \(slot.issue) is not covered by topicsUsed")
             }
+        }
+        guard !sendModes.isEmpty, Set(sendModes).count == sendModes.count else {
+            throw ValidationError("SkillDescriptor.sendModes", "must list at least one mode, each once")
+        }
+        guard !sendModes.contains(.askQuietly) || buildingBlock == .mutualReveal else {
+            throw ValidationError("SkillDescriptor.sendModes", "ask quietly needs the mutual reveal building block")
         }
         self.ref = ref
         self.wording = wording
@@ -262,14 +285,19 @@ public struct SkillDescriptor: Hashable, Sendable, Identifiable {
         self.produces = produces
         self.intent = intent
         self.chainTrigger = chainTrigger
+        self.sendModes = sendModes
     }
+
+    /// The mode Compose starts with.
+    public var defaultSendMode: SendMode { sendModes[0] }
 
     public var id: SkillID { ref.id }
 
     public var exposure: SkillExposure { SkillExposure(topics: topicsUsed, permissions: permissions) }
 
     /// Required topics the owner set to Never. Non-empty means the skill must
-    /// explain why it cannot run instead of failing silently (ADR 0014).
+    /// explain why it cannot run instead of failing silently (ADR 0014,
+    /// narrowed by ADR 0019 to values that must leave).
     public func blockingTopics(in settings: PrivacySettings) -> Set<PrivacyTopic> {
         topicsRequired.intersection(settings.neverTopics)
     }

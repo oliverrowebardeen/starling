@@ -63,7 +63,13 @@ public struct DeterministicPolicyEngine: PolicyEngine {
                 }
         }
         return Disclosure(recipient: envelope.recipient, recipientModel: message.recipientCard?.model, items: items,
-                          conversation: envelope.conversation, skill: envelope.skill)
+                          conversation: envelope.conversation, skill: envelope.skill, interaction: message.context.interaction)
+    }
+
+    /// The protocol's form of `disclosure(for:)`, for the audit (ADR 0011
+    /// decision 5).
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        try disclosure(for: message).items
     }
 
     public func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
@@ -84,7 +90,15 @@ public struct DeterministicPolicyEngine: PolicyEngine {
             // egress if a future context validation adds a different error.
             return .deny(PolicyViolation(rule: "disclosure.unavailable"))
         }
-        for item in disclosure.items {
+        // A yes or no to the friend's own candidates carries no value of the
+        // owner's, so the topic's choice does not apply to it (ADR 0019).
+        // The query comes from trusted local context, never from the peer.
+        let yesOrNo: Bool = if case .answer(let answer) = message.envelope.body, let query = message.context.answering {
+            query.isAnsweredYesOrNo(by: answer)
+        } else {
+            false
+        }
+        for item in disclosure.items where !yesOrNo {
             if let issue = item.issue, rules[issue] == .never {
                 return .deny(PolicyViolation(rule: PolicyRuleID.never, issue: issue))
             }
@@ -95,7 +109,7 @@ public struct DeterministicPolicyEngine: PolicyEngine {
             // Disclosure already rejected missing or invalid PSI provenance.
             needsConsent = needsConsent || !context.provider.isPrivate || context.inputs.isEmpty
         }
-        for item in disclosure.items {
+        for item in disclosure.items where !yesOrNo {
             if let issue = item.issue, rules[issue] != .allowOnDevicePeers { needsConsent = true }
         }
         if needsConsent { return .needsConsent(disclosure) }

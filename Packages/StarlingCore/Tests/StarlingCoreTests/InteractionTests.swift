@@ -171,6 +171,55 @@ import Testing
         #expect(throws: InvalidTransition.self) { try InteractionState.done.applying(.blockedByPrivacy) }
     }
 
+    /// Lanes C and D: a sheet that died with the app, or a send cancelled
+    /// while its sheet was up, must not leave the interaction suspended.
+    @Test func aCancelledConsentRequestResumesWithoutAnApproval() throws {
+        var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        try interaction.apply(.started, at: Self.at(1))
+        try interaction.apply(.consentNeeded(request: 1), at: Self.at(2))
+        try interaction.apply(.consentNeeded(request: 2), at: Self.at(3))
+        // After a restart the coordinator cancels what died with the app.
+        var restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(interaction))
+        try restored.apply(.consentCancelled(request: 1), at: Self.at(4))
+        #expect(restored.state == .awaitingConsent(resume: .negotiating) && restored.pendingConsents == [2])
+        try restored.apply(.consentCancelled(request: 2), at: Self.at(5))
+        #expect(restored.state == .negotiating && restored.pendingConsents.isEmpty)
+        // Nothing can cancel a request that is not open, or reopen one.
+        #expect(throws: UnknownConsentRequest.self) { try restored.apply(.consentCancelled(request: 2), at: Self.at(6)) }
+        #expect(throws: UnknownConsentRequest.self) { try restored.apply(.consentNeeded(request: 2), at: Self.at(6)) }
+        try restored.apply(.proposalReady(Self.proposal(1)), at: Self.at(7))
+        #expect(restored.state == .proposed)
+    }
+
+    /// Lane E's request 2: a friend's chained request is grouped on the
+    /// timeline, kept across a restart, and never becomes a ChainLink.
+    @Test func aFriendsChainHintIsKeptOnTheInviteeOnly() throws {
+        let parent = ConversationID()
+        var invitee = Interaction(skill: Self.ref, role: .invitee, participants: [Fixtures.alice], createdAt: Self.at(0))
+        try invitee.setFriendChainHint(parent)
+        let restored = try JSONDecoder().decode(Interaction.self, from: JSONEncoder().encode(invitee))
+        #expect(restored.friendChainHint == parent && restored.chain == nil)
+        #expect(throws: ValidationError.self) { try invitee.setFriendChainHint(invitee.conversation) }
+        var mine = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        #expect(throws: ValidationError.self) { try mine.setFriendChainHint(parent) }
+    }
+
+    /// Lane E's request 2b (review of PR #51, item 3).
+    @Test func egressRecordsAreIdempotentAndMarkUnknownItems() throws {
+        var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))
+        let message = MessageID()
+        let record = EgressRecord(at: Self.at(1), recipient: Fixtures.bob, items: [], message: message)
+        interaction.record(record)
+        interaction.record(record)
+        #expect(interaction.egress.count == 1 && interaction.egressIsKnown)
+        interaction.record(EgressRecord(at: Self.at(2), recipient: Fixtures.bob, items: [], message: MessageID(), itemsUnknown: true))
+        #expect(!interaction.egressIsKnown)
+        // Records saved before Core v2.1 have neither field.
+        let old = Data(#"{"at":0,"recipient":"\#(String(repeating: "b", count: 64))","items":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(EgressRecord.self, from: old)
+        #expect(decoded.message == nil && !decoded.itemsUnknown)
+    }
+
     /// Review 2 of PR #45: two sends in one interaction ask at once.
     @Test func overlappingConsentRequestsResumeOnlyWhenAllAreApproved() throws {
         var interaction = Interaction(skill: Self.ref, role: .initiator, participants: [Fixtures.bob], createdAt: Self.at(0))

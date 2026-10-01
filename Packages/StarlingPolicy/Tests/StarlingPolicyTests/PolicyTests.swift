@@ -51,6 +51,11 @@ import Testing
         #expect(first != other)
         #expect(first.items == other.items)
         #expect(first.conversation == Fixtures.conversation)
+        // Lane B: a group member sends in the starter's conversation, so the
+        // send names its own interaction too.
+        let member = InteractionID()
+        let named = try engine.disclosure(for: Fixtures.outbound(body, context: OutboundContext(interaction: member)))
+        #expect(named.interaction == member && named != first && named.items == first.items)
     }
 
     @Test(arguments: [ModelLocality.onDevice, .none, .privateCloudCompute, .thirdPartyCloud(provider: "example")],

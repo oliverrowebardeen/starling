@@ -24,7 +24,8 @@ public enum SampleSkills {
             IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
             IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
             IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-        ])
+        ]),
+        sendModes: [.askQuietly, .invite]
     )
 
     public static let findATime = try! SkillDescriptor(
@@ -34,7 +35,9 @@ public enum SampleSkills {
             acceptAction: "That works", declineAction: "Not then", declineNote: "If you pass, they just won't see it."
         ),
         buildingBlock: .privateQuery,
-        topicsUsed: [.time, .activity],
+        // Calendar details are read on the phone only; a group plan sends
+        // its roster under people.
+        topicsUsed: [.time, .activity, .people, .calendarDetails],
         topicsRequired: [.time],
         permissions: [.calendarFullAccess],
         produces: [.timeSlot, .plan],
@@ -51,7 +54,8 @@ public enum SampleSkills {
             acceptAction: "Sounds good", declineAction: "Somewhere else", declineNote: "If you pass, they just won't see it."
         ),
         buildingBlock: .privateAggregation,
-        topicsUsed: [.place, .budget, .diet],
+        // Budget, diet, and location judge venues on the phone (ADR 0019).
+        topicsUsed: [.place, .location, .budget, .diet],
         topicsRequired: [.place],
         permissions: [.locationWhenInUse],
         accepts: [.plan, .timeSlot],

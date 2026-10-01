@@ -127,6 +127,10 @@ public enum InteractionEvent: Hashable, Sendable, Codable {
     case consentNeeded(request: UInt32)
     /// The owner approved that request.
     case consentGiven(request: UInt32)
+    /// The send waiting on a consent sheet was cancelled, or its sheet died
+    /// with the app: the owner gave no answer and nothing was sent. Resumes
+    /// the step when it was the last open request, like `consentGiven`.
+    case consentCancelled(request: UInt32)
     /// The agent needs its owner to answer this question. The content
     /// travels with the event, so the stored question is always the one
     /// the state machine is waiting on.
@@ -225,6 +229,7 @@ extension InteractionState {
         // Another send asks while a sheet is already up: still suspended.
         case (.awaitingConsent(let resume), .consentNeeded): return .awaitingConsent(resume: resume)
         case (.awaitingConsent(let resume), .consentGiven): return resume.state
+        case (.awaitingConsent(let resume), .consentCancelled): return resume.state
         case (.awaitingConsent, .ownerPassed): return .ended(.declined)
         // The others gave up while the sheet was open.
         case (.awaitingConsent, .noAgreement): return .ended(.nobodyUp)
@@ -292,15 +297,32 @@ public struct EgressRecord: Hashable, Sendable, Codable {
     public let at: Timestamp
     public let recipient: PeerID
     public let items: [DisclosedItem]
+    /// The envelope this records, so a retried write never records a send
+    /// twice, across launches too. Nil on records from before Core v2.1.
+    public let message: MessageID?
+    /// The policy could not say what this send disclosed. While any record
+    /// is unknown, nobody may claim a topic stayed on the phone.
+    public let itemsUnknown: Bool
 
-    public init(at: Timestamp, recipient: PeerID, items: [DisclosedItem]) {
+    public init(at: Timestamp, recipient: PeerID, items: [DisclosedItem], message: MessageID? = nil, itemsUnknown: Bool = false) {
         self.at = at
         self.recipient = recipient
         self.items = items
+        self.message = message
+        self.itemsUnknown = itemsUnknown
     }
 
     /// The topics this send touched.
     public var topics: Set<PrivacyTopic> { Set(items.compactMap { $0.issue.flatMap(PrivacyTopic.init(issue:)) }) }
+
+    private enum CodingKeys: String, CodingKey { case at, recipient, items, message, itemsUnknown }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(at: c.decode(Timestamp.self, forKey: .at), recipient: c.decode(PeerID.self, forKey: .recipient),
+                      items: c.decode([DisclosedItem].self, forKey: .items), message: c.decodeIfPresent(MessageID.self, forKey: .message),
+                      itemsUnknown: c.decodeIfPresent(Bool.self, forKey: .itemsUnknown) ?? false)
+    }
 }
 
 /// One use of one skill, from Compose to Remember, on this phone.
@@ -332,6 +354,11 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
     /// reopened or replayed, including after a restart.
     public private(set) var questionWatermark: UInt32
     public private(set) var consentWatermark: UInt32
+    /// For an invitee: the conversation a friend's request said it continues
+    /// (`Envelope.chainedFrom`), once the coordinator has checked it names a
+    /// plan this phone was in. Grouping on the timeline only: never a
+    /// `ChainLink`, which records the owner's own opt-in (ADR 0012).
+    public private(set) var friendChainHint: ConversationID?
 
     /// The revision of the proposal the owner is looking at or accepted.
     public var proposalRevision: UInt32? { proposal?.revision }
@@ -383,7 +410,7 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
             guard revision == pendingQuestion?.revision else { throw StaleQuestion(current: pendingQuestion?.revision, event: event) }
         case .consentNeeded(let request):
             guard request > consentWatermark else { throw UnknownConsentRequest(request: request) }
-        case .consentGiven(let request):
+        case .consentGiven(let request), .consentCancelled(let request):
             guard pendingConsents.contains(request) else { throw UnknownConsentRequest(request: request) }
             // Other requests are still open: stay suspended, with no new
             // state in the history.
@@ -410,7 +437,7 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         case .consentNeeded(let request):
             pendingConsents.insert(request)
             consentWatermark = request
-        case .consentGiven(let request): pendingConsents.remove(request)
+        case .consentGiven(let request), .consentCancelled(let request): pendingConsents.remove(request)
         default: break
         }
         if next.isFinal {
@@ -421,6 +448,16 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
 
     public mutating func setParticipants(_ peers: [PeerID]) { participants = peers }
 
+    /// Keeps a friend's chain hint. Only an invitee has one, and it cannot
+    /// name this interaction's own conversation.
+    public mutating func setFriendChainHint(_ hint: ConversationID?) throws {
+        guard hint == nil || role == .invitee else {
+            throw ValidationError("Interaction.friendChainHint", "only a friend's request carries one")
+        }
+        guard hint != conversation else { throw ValidationError("Interaction.friendChainHint", "cannot be its own conversation") }
+        friendChainHint = hint
+    }
+
     /// Records an artifact this interaction produced. A newer artifact of the
     /// same kind replaces the older one (a plan updated with a place).
     public mutating func record(_ artifact: Artifact) {
@@ -428,7 +465,16 @@ public struct Interaction: Hashable, Sendable, Codable, Identifiable {
         artifacts.append(artifact)
     }
 
-    public mutating func record(_ send: EgressRecord) { egress.append(send) }
+    /// Records a send. A record for an envelope already recorded is ignored,
+    /// so a retried write is safe.
+    public mutating func record(_ send: EgressRecord) {
+        if let message = send.message, egress.contains(where: { $0.message == message }) { return }
+        egress.append(send)
+    }
+
+    /// Whether every send is recorded with known items. Only then can
+    /// What left your phone say a topic stayed on the phone.
+    public var egressIsKnown: Bool { !egress.contains(where: \.itemsUnknown) }
 
     public var plan: Plan? {
         artifacts.lazy.compactMap { if case .plan(let plan) = $0 { plan } else { nil } }.first

@@ -18,7 +18,10 @@ import Testing
         #expect(sent.first?.peer == Fixtures.bob)
         #expect(try EnvelopeCodec().decode(#require(sent.first).frame.bytes) == envelope)
         #expect(envelope.sender == Fixtures.alice)
-        #expect(await policy.evaluated.map(\.envelope) == [envelope])
+        // The policy judged the draft: the same message, before its number
+        // and send time were set.
+        #expect(await policy.evaluated.map(\.envelope.id) == [envelope.id])
+        #expect(await policy.evaluated.map(\.envelope.body) == [envelope.body])
     }
 
     @Test func deniedMessagesNeverReachTheTransport() async throws {
@@ -54,14 +57,81 @@ import Testing
     }
 
     @Test func sequenceNumbersIncreasePerConversation() async throws {
-        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved))
+        let start = UInt64(Fixtures.now.timeIntervalSince1970 * 1000)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: FixedPolicyEngine(.allow),
+                            consent: ScriptedConsentProvider(.approved), now: { Fixtures.now })
         let other = ConversationID()
 
         let first = try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
         let second = try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
         let elsewhere = try await outbox.send(body, to: Fixtures.bob, conversation: other)
 
-        #expect([first.sequence, second.sequence, elsewhere.sequence] == [0, 1, 0])
+        #expect([first.sequence, second.sequence, elsewhere.sequence] == [start, start + 1, start])
+    }
+
+    /// Review of PR #57: the clock moved back before the relaunch. The
+    /// store keeps the numbers rising, so the friend drops nothing.
+    @Test func aRelaunchAfterTheClockMovedBackStillRises() async throws {
+        let inbox = Inbox(localPeer: Fixtures.bob, now: { Fixtures.now })
+        let store = InMemorySentSequenceStore()
+        for (launch, offset) in [(0, 0.0), (1, -60.0)] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let launchedAt = Fixtures.now.addingTimeInterval(offset)
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                                sequences: store, now: { launchedAt })
+            for _ in 0..<5 { try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+            for sent in await transport.sent {
+                guard case .success = await inbox.accept(sent.frame, from: Fixtures.alice) else {
+                    Issue.record("launch \(launch) had a frame dropped")
+                    return
+                }
+            }
+        }
+        #expect(store.highestSent(in: Fixtures.conversation) == UInt64(Fixtures.now.timeIntervalSince1970 * 1000) + 9)
+    }
+
+    /// Re-review of PR #57: never wrap or repeat at the top of the range,
+    /// and never send a number the store failed to record.
+    @Test func numbersThatCannotBeRecordedOrWouldRepeatAreNeverSent() async throws {
+        for seeded in [UInt64.max - 1, .max] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                                sequences: InMemorySentSequenceStore([Fixtures.conversation: seeded]), now: { Fixtures.now })
+            await #expect(throws: OutboxError.sequenceExhausted) {
+                try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            }
+            #expect(await transport.sent.isEmpty)
+        }
+        let store = InMemorySentSequenceStore()
+        store.failWrites()
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            sequences: store, now: { Fixtures.now })
+        await #expect(throws: InMemorySentSequenceStore.WriteFailed.self) {
+            try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        }
+        #expect(await transport.sent.isEmpty)
+    }
+
+    /// Lane C: a relaunched app restarted at 0, and the friend's Inbox
+    /// dropped every number it had already seen as a replay.
+    @Test func aRelaunchedOutboxNeverReusesANumberTheFriendSaw() async throws {
+        let inbox = Inbox(localPeer: Fixtures.bob, now: { Fixtures.now })
+        var clock = Fixtures.now
+        for launch in 0..<2 {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let launchedAt = clock
+            let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                                now: { launchedAt })
+            for _ in 0..<70 { try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+            for sent in await transport.sent {
+                guard case .success = await inbox.accept(sent.frame, from: Fixtures.alice) else {
+                    Issue.record("launch \(launch) had a frame dropped")
+                    return
+                }
+            }
+            clock = clock.addingTimeInterval(1)
+        }
     }
 
     @Test func transportFailuresPropagate() async throws {
@@ -150,6 +220,33 @@ actor GatedSecondEvaluationPolicy: PolicyEngine {
         #expect(!wire.contains("boba"))
     }
 
+    /// Review of PR #53: a refused send must leave no gap in the numbers,
+    /// or the friend learns that something was refused (with Time set to
+    /// Never, that their slot was free).
+    @Test func aRefusedSendConsumesNoSequenceNumber() async throws {
+        let start = UInt64(Fixtures.now.timeIntervalSince1970 * 1000)
+        for refusal in [PolicyDecision.deny(PolicyViolation(rule: "never")), .needsConsent(try disclosure(100))] {
+            let transport = RecordingTransport(localPeer: Fixtures.alice)
+            let refused = Outbox(transport: transport, policy: SequencedPolicyEngine([refusal, .allow]),
+                                 consent: ScriptedConsentProvider(.declined), now: { Fixtures.now })
+            _ = try? await refused.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            let sent = try await refused.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            #expect(sent.sequence == start)
+            #expect(await transport.sent.count == 1)
+        }
+    }
+
+    /// The send time is when the envelope leaves, not when it was drafted:
+    /// a consent sheet answered after the receiver's age limit must not
+    /// make the friend drop the envelope.
+    @Test func theSendTimeIsTakenAfterConsent() async throws {
+        let clock = Clock(Fixtures.now)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: FixedPolicyEngine(.needsConsent(try disclosure(100))),
+                            consent: AdvancingConsent(clock: clock, by: 900), now: { clock.now })
+        let sent = try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+        #expect(sent.sentAt == Timestamp(Fixtures.now.addingTimeInterval(900)))
+    }
+
     @Test func observerHearsOnlySuccessfulSends() async throws {
         let violation = PolicyViolation(rule: "deny")
         for (decision, consent, fails, expected) in [
@@ -166,6 +263,24 @@ actor GatedSecondEvaluationPolicy: PolicyEngine {
             let records = await observer.records
             #expect(records.count == expected)
             if expected == 1 { #expect(records.first?.decision == decision) }
+        }
+    }
+
+    /// Lane E: the audit lists a send allowed without a sheet in the
+    /// policy's own terms, and says so when the policy cannot.
+    @Test func observerHearsWhatEachSendDisclosed() async throws {
+        let sheet = try disclosure(100)
+        let policyItems = try disclosure(200)
+        for (policy, expected) in [
+            (FixedPolicyEngine(.needsConsent(sheet)), sheet.items as [DisclosedItem]?),
+            (FixedPolicyEngine(.allow, explain: { _ in policyItems }), policyItems.items),
+            (FixedPolicyEngine(.allow), nil),
+        ] {
+            let observer = RecordingOutboxObserver()
+            let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.alice), policy: policy,
+                                consent: ScriptedConsentProvider(.approved), observer: observer)
+            try await outbox.send(body, to: Fixtures.bob, conversation: Fixtures.conversation)
+            #expect(await observer.records.map(\.disclosed) == [expected])
         }
     }
 
@@ -222,5 +337,24 @@ actor GatedSecondEvaluationPolicy: PolicyEngine {
 
         await #expect(throws: CancellationError.self) { try await send.value }
         #expect(await transport.sent.isEmpty)
+    }
+}
+
+/// A clock a test can move from inside a consent sheet.
+final class Clock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ start: Date) { value = start }
+    var now: Date { lock.withLock { value } }
+    func advance(by seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
+}
+
+/// Approves after the owner "took" `seconds` to decide.
+struct AdvancingConsent: ConsentProvider {
+    let clock: Clock
+    let by: TimeInterval
+    func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        clock.advance(by: by)
+        return .approved
     }
 }

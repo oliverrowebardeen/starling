@@ -8,16 +8,22 @@ import Foundation
 /// Build envelopes with `Outbox`, which assigns `id`, `sender`, `sequence`, and
 /// `sentAt`, so callers cannot forge them.
 public struct Envelope: Hashable, Sendable, Codable {
-    /// 1 adds `skill` and `chainedFrom` (Phase 1.5, ADR 0010). Version 0
-    /// frames from Phase 1 builds still decode, with neither field.
-    public static let currentVersion: UInt16 = 1
+    /// 1 added `skill` and `chainedFrom` (ADR 0010); 2 adds `mode` (ADR
+    /// 0020) and retires 1, so no build that cannot honor a quiet ask ever
+    /// accepts one. Version 0 frames from Phase 1 builds still decode, with
+    /// none of the three.
+    public static let currentVersion: UInt16 = 2
 
     public let version: UInt16
     public let id: MessageID
     public let conversation: ConversationID
     public let sender: PeerID
     public let recipient: PeerID
-    /// Unique and increasing per `(sender, conversation)`, starting at 0.
+    /// Unique and increasing per `(sender, conversation)`. `Outbox` starts a
+    /// conversation on each launch above both the sender's clock in
+    /// milliseconds and the highest number its `SentSequenceStore` recorded,
+    /// so numbers keep rising across relaunches; receivers only need them
+    /// unique and increasing.
     /// Gaps are allowed. `Inbox` rejects duplicates and anything more than
     /// `Inbox.replayWindow` below the highest value it has accepted.
     public let sequence: UInt64
@@ -31,6 +37,9 @@ public struct Envelope: Hashable, Sendable, Codable {
     /// receiver's timeline only: it never starts a skill or asks for a
     /// permission by itself (ADR 0012).
     public let chainedFrom: ConversationID?
+    /// Ask quietly or Invite (ADR 0020). Present exactly when `skill` is:
+    /// the starter sets it, and an invitee echoes it on every reply.
+    public let mode: SendMode?
 
     public init(
         version: UInt16 = Envelope.currentVersion,
@@ -42,11 +51,16 @@ public struct Envelope: Hashable, Sendable, Codable {
         sentAt: Timestamp,
         body: MessageBody,
         skill: SkillRef? = nil,
+        mode: SendMode? = nil,
         chainedFrom: ConversationID? = nil
     ) throws {
         guard sender != recipient else { throw ValidationError("Envelope", "sender equals recipient") }
-        guard version > 0 || (skill == nil && chainedFrom == nil) else {
-            throw ValidationError("Envelope", "version 0 carries no skill or chain")
+        guard version > 0 || (skill == nil && chainedFrom == nil && mode == nil) else {
+            throw ValidationError("Envelope", "version 0 carries no skill, mode, or chain")
+        }
+        guard version != 1 else { throw ValidationError("Envelope", "version 1 is retired: it cannot carry a send mode") }
+        guard version == 0 || (skill == nil) == (mode == nil) else {
+            throw ValidationError("Envelope.mode", "present exactly when a skill is")
         }
         guard chainedFrom != conversation else { throw ValidationError("Envelope.chainedFrom", "cannot be its own conversation") }
         self.version = version
@@ -59,9 +73,10 @@ public struct Envelope: Hashable, Sendable, Codable {
         self.body = body
         self.skill = skill
         self.chainedFrom = chainedFrom
+        self.mode = mode
     }
 
-    private enum CodingKeys: String, CodingKey { case version, id, conversation, sender, recipient, sequence, sentAt, body, skill, chainedFrom }
+    private enum CodingKeys: String, CodingKey { case version, id, conversation, sender, recipient, sequence, sentAt, body, skill, chainedFrom, mode }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -75,6 +90,7 @@ public struct Envelope: Hashable, Sendable, Codable {
             sentAt: c.decode(Timestamp.self, forKey: .sentAt),
             body: c.decode(MessageBody.self, forKey: .body),
             skill: c.decodeIfPresent(SkillRef.self, forKey: .skill),
+            mode: c.decodeIfPresent(SendMode.self, forKey: .mode),
             chainedFrom: c.decodeIfPresent(ConversationID.self, forKey: .chainedFrom)
         )
     }

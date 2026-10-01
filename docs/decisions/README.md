@@ -17,11 +17,13 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0011](0011-one-lifecycle-and-interactions.md) | One lifecycle for every skill, recorded as Interactions | Accepted |
 | [0012](0012-artifacts-and-chaining.md) | Skills chain through typed artifacts, with consent per link | Accepted |
 | [0013](0013-just-in-time-permissions.md) | Permissions belong to skills and are requested just in time | Accepted |
-| [0014](0014-global-privacy-topics.md) | Global privacy topics: Share, Ask me, Never | Accepted |
+| [0014](0014-global-privacy-topics.md) | Global privacy topics: Share, Ask me, Never | Accepted (amended by 0019) |
 | [0015](0015-information-architecture.md) | Home, New, Friends, You | Accepted |
 | [0016](0016-model-in-the-core-loop.md) | The model works in the core loop | Accepted |
 | [0017](0017-copy-reads-as-plans-with-friends.md) | Copy reads as plans with friends, not a dating app | Accepted |
 | [0018](0018-hand-offs.md) | Hand-offs to Calendar, Messages, Maps, and Siri | Accepted (Muse and Dots open) |
+| [0019](0019-never-stays-on-the-phone.md) | Never keeps a value on the phone, and every topic has the same control | Accepted (amends 0014) |
+| [0020](0020-send-modes-and-audience.md) | Send modes and audience: Ask quietly, Invite, and undetectable exclusion | Accepted (amends 0010, 0011) |
 | [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Proposed |
 | [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Proposed |
 | [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |

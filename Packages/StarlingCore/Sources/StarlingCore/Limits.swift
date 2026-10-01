@@ -33,6 +33,10 @@ public enum ProtocolLimits {
     public static let maxPlacesPerValue = 8
     /// People in one plan, the owner included.
     public static let maxAttendees = 16
+    /// The most candidates a service answers yes or no to, per issue per
+    /// conversation, so repeated queries cannot pin down a Never value
+    /// (ADR 0019 decision 6). Services enforce it; lane F tests it.
+    public static let maxCandidatesAnsweredPerIssue = 16
     public static let maxProviderNameCharacters = 32
     public static let maxPSIPayloadBytes = 32 * 1024
     public static let maxOwnerUtteranceCharacters = 500

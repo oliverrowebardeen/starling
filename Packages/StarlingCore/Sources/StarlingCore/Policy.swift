@@ -18,16 +18,48 @@ public struct OutboundContext: Hashable, Sendable {
     }
 
     public let psi: PSIInputs?
+    /// The friend's query an `.answer` replies to, as the service received
+    /// it. With it, the policy can see that an answer only says which of
+    /// the friend's own candidates work (ADR 0019).
+    public let answering: Query?
+    /// The interaction on this phone the send belongs to. A group member
+    /// sends in the starter's conversation, so the conversation alone does
+    /// not identify it (lane B). Every skill service sets it on every send.
+    public let interaction: InteractionID?
 
-    public init(psi: PSIInputs? = nil) {
+    public init(psi: PSIInputs? = nil, answering: Query? = nil, interaction: InteractionID? = nil) {
         self.psi = psi
+        self.answering = answering
+        self.interaction = interaction
     }
 
     public static let empty = OutboundContext()
 }
 
+extension Query {
+    /// Whether `answer` only says yes or no to this query's own candidates:
+    /// the same issue, and an acceptable value made only of candidates
+    /// (exact members of a list, or the single candidate itself). Such an
+    /// answer carries no value of the owner's, so Never does not stop it
+    /// (ADR 0019 decision 4). A declined answer carries nothing at all.
+    public func isAnsweredYesOrNo(by answer: Answer) -> Bool {
+        guard answer.issue == issue else { return false }
+        guard let acceptable = answer.acceptable else { return answer.status != .answered }
+        switch (acceptable, candidates) {
+        case (.keywords(let yes), .keywords(let asked)): return Set(yes).isSubset(of: asked)
+        case (.slots(let yes), .slots(let asked)): return Set(yes).isSubset(of: asked)
+        case (.places(let yes), .places(let asked)): return Set(yes).isSubset(of: asked)
+        case (.peers(let yes), .peers(let asked)): return Set(yes).isSubset(of: asked)
+        case (.amount, .amount), (.flag, .flag), (.count, .count): return acceptable == candidates
+        default: return false
+        }
+    }
+}
+
 /// A message about to leave the device, with what the policy needs to judge it.
 public struct OutboundMessage: Hashable, Sendable {
+    /// The envelope as drafted. `Outbox` sets its sequence number and send
+    /// time only once the send is cleared, so a policy must not rely on them.
     public let envelope: Envelope
     /// The recipient's card, if a `hello` has been received.
     public let recipientCard: AgentCard?
@@ -72,13 +104,18 @@ public struct Disclosure: Hashable, Sendable {
     /// same conversation still matches (ADR 0011, review of PR #45).
     public let conversation: ConversationID?
     public let skill: SkillRef?
+    /// From `OutboundContext.interaction` (v2.1): which interaction to
+    /// suspend while the sheet is up, and which one an approval belongs to.
+    public let interaction: InteractionID?
 
-    public init(recipient: PeerID, recipientModel: ModelLocality?, items: [DisclosedItem], conversation: ConversationID? = nil, skill: SkillRef? = nil) {
+    public init(recipient: PeerID, recipientModel: ModelLocality?, items: [DisclosedItem], conversation: ConversationID? = nil,
+                skill: SkillRef? = nil, interaction: InteractionID? = nil) {
         self.recipient = recipient
         self.recipientModel = recipientModel
         self.items = items
         self.conversation = conversation
         self.skill = skill
+        self.interaction = interaction
     }
 }
 
@@ -103,6 +140,23 @@ public enum PolicyDecision: Hashable, Sendable {
 /// this call (brief 3.5). `Outbox` consults it for every outbound envelope.
 public protocol PolicyEngine: Sendable {
     func evaluate(_ message: OutboundMessage) async -> PolicyDecision
+    /// What `message` discloses, item by item: the items a consent sheet
+    /// would show. `Outbox` asks after a send the policy allowed without a
+    /// sheet, so the audit lists it in the policy's own terms (ADR 0011
+    /// decision 5). Throws `DisclosureUnavailable` by default.
+    func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem]
+}
+
+/// A policy engine that cannot say what a message discloses. The audit then
+/// marks the send's items as unknown instead of guessing.
+public struct DisclosureUnavailable: Error, Hashable, Sendable {
+    public init() {}
+}
+
+extension PolicyEngine {
+    public func disclosedItems(for message: OutboundMessage) async throws -> [DisclosedItem] {
+        throw DisclosureUnavailable()
+    }
 }
 
 public enum ConsentOutcome: Hashable, Sendable {

@@ -50,6 +50,17 @@ The Find a time mockup ("Just-in-time permission · Find a time") shows a sheet 
 5. **Find a time reads busy and free only.** Event titles, locations, and attendees never leave the device and never enter a prompt that involves a peer's data. Availability reaches the negotiation as `TimeSlot`s only.
 6. **Purpose strings name the skill's use.** For example: "Starling checks when you're busy so friends' agents can find a time without asking you. Event details stay on your iPhone." Lane C owns the calendar string, lane D location, lane E photos, and lane A Local Network.
 
+### Amendment (2026-10-01, lane P15-C's request 3)
+
+6. **"The friend sees" says what is true for the owner's role.** Without private set intersection, the one who starts Find a time names some free times first (ADR 0221), so "only times you're both free" is true only for the friend who answers. The line therefore reads:
+
+   | Role | "Priya sees" |
+   |---|---|
+   | Starting Find a time | "Only a few times you're free" |
+   | Answering a friend | "Only times you're both free" |
+
+   The sheet appears when the owner starts Find a time, so the first row is the one it normally shows. The other two lines and the single "Continue" button are unchanged.
+
 ## Consequences
 
 - First launch has no permission alerts. Each prompt appears in context with Starling's explanation, so the system alert's purpose is clear.

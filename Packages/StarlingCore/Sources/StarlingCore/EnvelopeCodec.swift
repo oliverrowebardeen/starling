@@ -7,13 +7,14 @@ public enum CodecError: Error, Hashable, Sendable {
     case unsupportedVersion(UInt16)
 }
 
-/// Encodes envelopes as sorted-key JSON (protocol versions 0 and 1).
+/// Encodes envelopes as sorted-key JSON (protocol versions 0 and 2; 1 is
+/// retired, ADR 0020).
 ///
 /// JSON keeps v0 debuggable and maps directly onto A2A's JSON messages later.
 /// Decoding checks the size before parsing, and every nested type validates
 /// itself, so a hostile frame fails here or not at all.
 public struct EnvelopeCodec: Sendable {
-    public static let supportedVersions: Set<UInt16> = [0, 1]
+    public static let supportedVersions: Set<UInt16> = [0, 2]
 
     public init() {}
 

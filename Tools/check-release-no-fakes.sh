@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the app's Release configuration for the iOS Simulator and fails if
-# any StarlingFakes symbol is linked in (ADR 0140). The exclusion relies on
-# Xcode naming the linked object StarlingFakes.o, so only a real Release build
-# can show that it still holds.
+# any test-double module is linked in (ADR 0140): StarlingFakes, or any other
+# module whose name ends in Fakes, such as StarlingAvailabilityFakes. Only a
+# real Release build can show that the exclusion still holds.
 # Expects App/Starling.xcodeproj to exist (xcodegen generate --spec App/project.yml).
 # Usage: Tools/check-release-no-fakes.sh [derived-data-path]
 set -euo pipefail
@@ -26,10 +26,13 @@ if ! grep -q StarlingCore <<<"$symbols"; then
   exit 1
 fi
 
-fakes="$(grep -c StarlingFakes <<<"$symbols" || true)"
+# Swift mangles a module name as its length and then the name, for example
+# 15StarlingFakes or 25StarlingAvailabilityFakes.
+pattern='[0-9]+[A-Z][A-Za-z0-9]*Fakes'
+fakes="$(grep -cE "$pattern" <<<"$symbols" || true)"
 if [ "$fakes" != 0 ]; then
-  echo "Release links $fakes StarlingFakes symbols (ADR 0140), for example:"
-  grep StarlingFakes <<<"$symbols" | head -5
+  echo "Release links $fakes symbols from a Fakes module (ADR 0140), for example:"
+  grep -E "$pattern" <<<"$symbols" | head -5
   exit 1
 fi
-echo "Release has no StarlingFakes symbols."
+echo "Release has no StarlingFakes symbols and no other Fakes module."
