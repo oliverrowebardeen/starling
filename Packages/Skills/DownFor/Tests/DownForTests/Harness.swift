@@ -216,8 +216,10 @@ final class Phone: Sendable {
         return id
     }
 
-    /// The owner taps "I'm in" on the card they are looking at.
+    /// The owner taps "I'm in" on the card they are looking at. A consent
+    /// sheet covers the card while it is up, as in the app.
     func imIn(_ id: InteractionID) async throws {
+        try await eventually("\(name) sees the card") { await self.lifecycle.state(id) == .proposed }
         let revision = try #require(await lifecycle.interaction(id)?.proposalRevision)
         try await service.answer(id, with: .accept(proposal: revision))
     }
