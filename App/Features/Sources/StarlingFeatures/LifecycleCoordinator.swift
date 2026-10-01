@@ -368,6 +368,42 @@ public final class LifecycleCoordinator {
         }
     }
 
+    /// Acts on one of lane E's after-plan-ends decisions (P15-E request
+    /// 4.5). Checked against the stored link right before acting, in the
+    /// same main-actor step, so a link the owner opted out of, or one that
+    /// already started, is left alone. A start is saved before the service
+    /// hears of it, like any other start (ADR 0011 amendment 13).
+    public func applyScheduled(_ scheduled: ScheduledChain, rules: OwnerRules, expiresAt: Timestamp) async {
+        let current = interaction(scheduled.link.id)
+        guard scheduled.isCurrent(current), let link = current else { return }
+        switch scheduled {
+        case .cancel(_, let event):
+            apply(event, to: link.id, reportedAs: nil, skill: link.skill.id)
+        case .start(let due):
+            guard let service = services[link.skill.id] else {
+                apply(.failed, to: link.id, reportedAs: nil, skill: link.skill.id)
+                return
+            }
+            // Through the one writer, so a later opt-out can never be
+            // overwritten on disk by this start. Nothing is sent unless the
+            // start is saved (ADR 0011 amendment 13).
+            guard apply(.started, to: link.id, reportedAs: nil, skill: link.skill.id) else { return }
+            await flush()
+            if unsaved.contains(link.id) {
+                logger.error("scheduled start not saved; not sent")
+                apply(.failed, to: link.id, reportedAs: nil, skill: link.skill.id)
+                return
+            }
+            // The owner may have withdrawn it while it saved.
+            guard let saved = interaction(link.id), !saved.state.isFinal else { return }
+            do {
+                try await service.start(due.request(rules: rules, expiresAt: expiresAt))
+            } catch {
+                apply(.failed, to: link.id, reportedAs: nil, skill: link.skill.id)
+            }
+        }
+    }
+
     /// Saves a change made from another interaction, such as lane E moving a
     /// plan to the place its chained link agreed on. Only for an interaction
     /// already on the phone; its state machine is untouched.

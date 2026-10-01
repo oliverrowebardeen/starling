@@ -182,6 +182,9 @@ public final class AppModel {
     public let proposals: ProposalTexts
 
     private var inboxLoop: Task<Void, Never>?
+    /// Lane E's after-plan-ends scheduler, running while the app is open.
+    private var scheduler: PlanEndScheduler?
+    private var schedulerLoop: Task<Void, Never>?
     private var started = false
     private var linksStarted = false
     private var friendNames: [PeerID: String] = [:]
@@ -369,6 +372,7 @@ public final class AppModel {
         // holds, so their conversations read as unconfirmed (P15-E 4.1).
         await egress.recover()
         await refreshAudit()
+        startScheduler()
         if let ledger = services.ledger {
             do {
                 _ = try await ledger.isRetired(ConversationID())
@@ -450,16 +454,45 @@ public final class AppModel {
         egressJournalUnreadable = await egress.journalUnreadable
     }
 
-    /// Ends plans whose time has passed; the app calls it when it comes to
-    /// the foreground.
+    /// Ends plans whose time has passed and checks what is due after one;
+    /// the app calls it when it comes to the foreground.
     public func foreground() {
         lifecycle.tick()
+        Task {
+            if let due = try? await scheduler?.due() { await handleScheduled(due) }
+        }
+    }
+
+    /// Runs lane E's PlanEndScheduler while the app is open (P15-E 4.5): an
+    /// after-plan-ends link the owner opted into starts when its plan ends.
+    private func startScheduler() {
+        guard schedulerLoop == nil, let me = localPeer else { return }
+        let settings = settings
+        let cards = cards
+        let scheduler = PlanEndScheduler(
+            schedule: PlanEndSchedule(planner: ChainPlanner(registry: services.registry, me: me)),
+            store: services.interactions,
+            settings: { await MainActor.run { settings.skillSettings } },
+            cards: { await MainActor.run { cards.cards } }
+        )
+        self.scheduler = scheduler
+        let handle: @Sendable ([ScheduledChain]) async -> Void = { [weak self] results in await self?.handleScheduled(results) }
+        schedulerLoop = Task { await scheduler.run(handle) }
+    }
+
+    func handleScheduled(_ results: [ScheduledChain]) async {
+        // A link that starts after the plan carries the owner's standing
+        // rules, and stays out for a day.
+        let expires = Timestamp(Date().addingTimeInterval(24 * 3600))
+        for result in results { await lifecycle.applyScheduled(result, rules: standingRules, expiresAt: expires) }
     }
 
     /// Tears down the skills and the link.
     public func shutdown() async {
         inboxLoop?.cancel()
         inboxLoop = nil
+        schedulerLoop?.cancel()
+        schedulerLoop = nil
         await lifecycle.shutdown()
         await services.transport?.stop()
     }
