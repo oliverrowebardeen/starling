@@ -1,5 +1,6 @@
 import Foundation
 import StarlingCore
+import StarlingFeatures
 
 enum Fixtures {
     static let noon = Date(timeIntervalSince1970: 1_790_000_000)
@@ -30,4 +31,24 @@ func eventually(_ condition: () -> Bool) async {
     for _ in 0..<2000 where !condition() {
         try? await Task.sleep(for: .milliseconds(1))
     }
+}
+
+actor RecordingNotifier: PlanNotifier {
+    private(set) var posted: [LifecycleNotice] = []
+    private(set) var authorizationRequests = 0
+    let allow: Bool
+
+    init(allow: Bool = true) { self.allow = allow }
+
+    func requestAuthorization() async -> Bool {
+        authorizationRequests += 1
+        return allow
+    }
+
+    func post(_ notice: LifecycleNotice) async { posted.append(notice) }
+}
+
+actor CountingPrompter: LocalNetworkPrompter {
+    private(set) var prompts = 0
+    func prompt() async { prompts += 1 }
 }

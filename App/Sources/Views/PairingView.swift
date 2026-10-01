@@ -47,7 +47,16 @@ struct PairingView: View {
                     TextField("Name", text: $model.nickname)
                         .textContentType(.name)
                         .submitLabel(.done)
-                    Button("Pair") { Task { await model.start() } }
+                    // The picked phone's own name came from that phone, so it
+                    // is offered, never filled in (issue #46).
+                    if let suggested = model.suggestedName, model.nickname != suggested {
+                        Button("Use \"\(suggested)\", the name that phone gave itself") { model.useSuggestedName() }
+                            .font(.subheadline)
+                    }
+                    if let warning = model.nicknameWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
+                    }
+                    Button(model.nicknameWarning == nil ? "Pair" : "Pair anyway") { Task { await model.start() } }
                         .disabled(!model.canStart)
                 } header: {
                     Text("What do you call them?")
@@ -136,7 +145,7 @@ struct DeviceDiscoverySlot: View {
             Label {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Nearby phones")
-                    Text("This iPhone can't pair over Wi-Fi Aware (it needs an iPhone 12 or later, and not the Simulator). This build pairs with a test friend.")
+                    Text("This iPhone can't pair over Wi-Fi Aware (it needs an iPhone 12 or later, and not the Simulator). Pick a phone below instead.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

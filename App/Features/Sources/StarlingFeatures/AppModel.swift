@@ -2,24 +2,25 @@ import Foundation
 import Observation
 import StarlingCore
 
-/// A Down service that must be told when the app tears it down (lane F's
-/// DownNegotiator: "Call shutdown() when tearing the service down").
-public protocol StoppableDownService: DownService {
-    func shutdown() async
-}
-
 /// Everything the app's features are built from. The app target assembles
-/// one for Debug (fakes from StarlingFakes) and one for Release (only real
-/// implementations). A nil service means that feature is not in this build
-/// yet, and its screen says so instead of pretending.
+/// one for Debug (fakes from StarlingFakes for lanes not merged yet) and one
+/// for Release (only real implementations). A nil service means that
+/// feature is not in this build yet, and its screen says so instead of
+/// pretending (ADR 0140).
 public struct AppServices: Sendable {
+    /// The model for turning rules text into rules (You, Rules).
     public var agent: (any AgentModel)?
+    /// Routing, chips, and proposal sentences in New and Home (ADR 0016).
+    public var skillModel: (any SkillModel)?
+    public var registry: SkillRegistry
+    public var flags: SkillFlags
+    /// Each skill's service, built on the app's one `Outbox` so every send
+    /// is judged the same way. Empty until a skill lane merges.
+    public var makeSkills: @Sendable (Outbox) -> [any SkillService]
+    public var interactions: any InteractionStore
+    public var settings: any OwnerSettingsStore
     public var rules: any RulesStore
     public var peers: (any PairedPeerStore)?
-    /// Lane F's service, built on the app's `Outbox` (lane G's policy, the
-    /// consent sheet, the audit log) so every Down send is judged the same
-    /// way. Its local peer must be the Outbox transport's.
-    public var makeDownService: (@Sendable (Outbox) -> any DownService)?
     /// Lane E1's pairing over the app's links, or nil if pairing is not in
     /// this build.
     public var pairing: PairingDirectory?
@@ -27,205 +28,282 @@ public struct AppServices: Sendable {
     public var unpair: @Sendable (PeerID) async throws -> Void
     /// Renames a friend, or nil when the build has no safe way to.
     public var rename: (@Sendable (PeerID, String) async throws -> Void)?
-    /// The app's one `Inbox` stream (v1.1: `Inbox.events(from:)` over the
-    /// secure channel). `AppModel` is its single consumer and routes every
-    /// event to the features; nil until a transport is in the build.
+    /// The app's one `Inbox` stream. `AppModel` is its single consumer.
     public var inboxEvents: AsyncStream<InboxEvent>?
-    /// Builds lane G's policy engine for a snapshot of the owner's rules.
-    /// `AppModel` wraps it in a `RulesPolicy` that follows rule changes.
-    public var makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)?
-    /// Lane G's audit log, installed as the Outbox observer.
+    /// Lane G's policy engine for a snapshot of the rules and the
+    /// on-device-only choice. `AppModel` wraps it in a `RulesPolicy`.
+    public var makePolicy: (@Sendable (OwnerRules, Bool) -> any PolicyEngine)?
+    /// Lane G's audit log, called after every send.
     public var auditLog: (any OutboxObserver)?
+    /// The items a send the policy allowed without asking disclosed, for
+    /// "What left your phone" (lane G's `disclosure(for:)`).
+    public var describeEgress: @Sendable (Envelope, OutboundContext) -> [DisclosedItem]
     /// The link the app's `Outbox` sends on. Nil until a transport the app
-    /// may send owner data over is in the build (lane E1's secure channel).
+    /// may send owner data over is in the build.
     public var transport: (any Transport)?
-    /// Runs once the transport has started, for example lane E1's pairing
-    /// services, which must start after their secure transports.
+    /// Runs once the transport has started (lane E1's pairing services).
     public var afterStart: (@Sendable () async -> Void)?
-    /// Where this agent's model runs, for its card. AppModel builds the card
-    /// itself from what the build actually runs. Nil means no card and no
-    /// link layer.
+    /// Where this agent's model runs, for its card. Nil means no card and
+    /// no link layer.
     public var agentLocality: ModelLocality?
-    /// Whether Down's PSI provider hides the owner's free times.
-    public var downMatchingIsPrivate: Bool
-    /// Plain words for the Down service's own errors.
-    public var describeDownError: @Sendable (any Error) -> String?
     /// Lane G's consent sheet content for a disclosure.
     public var presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)?
-    public var notifier: any MatchNotifier
+    public var notifier: any PlanNotifier
     public var localNetwork: any LocalNetworkPrompter
+    /// Access APIs for skill permissions, from the skill lanes.
+    public var permissions: [any PermissionAccess]
+    /// Where friends' cards and plan notes are kept, or nil for memory only.
+    public var cardsFile: JSONFile?
+    public var notesFile: JSONFile?
     public var timeZone: TimeZone
     public var formatter: ValueFormatter
 
     public init(
-        agent: (any AgentModel)?,
+        agent: (any AgentModel)? = nil,
+        skillModel: (any SkillModel)? = nil,
+        registry: SkillRegistry,
+        flags: SkillFlags = .phase1_5,
+        makeSkills: @escaping @Sendable (Outbox) -> [any SkillService] = { _ in [] },
+        interactions: any InteractionStore,
+        settings: any OwnerSettingsStore,
         rules: any RulesStore,
         peers: (any PairedPeerStore)?,
-        makeDownService: (@Sendable (Outbox) -> any DownService)?,
-        pairing: PairingDirectory?,
+        pairing: PairingDirectory? = nil,
         unpair: @escaping @Sendable (PeerID) async throws -> Void = { _ in },
         rename: (@Sendable (PeerID, String) async throws -> Void)? = nil,
         inboxEvents: AsyncStream<InboxEvent>? = nil,
-        makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
+        makePolicy: (@Sendable (OwnerRules, Bool) -> any PolicyEngine)? = nil,
         auditLog: (any OutboxObserver)? = nil,
+        describeEgress: @escaping @Sendable (Envelope, OutboundContext) -> [DisclosedItem] = { _, _ in [] },
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
-        downMatchingIsPrivate: Bool = false,
-        describeDownError: @escaping @Sendable (any Error) -> String? = { _ in nil },
         presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)? = nil,
-        notifier: any MatchNotifier,
+        notifier: any PlanNotifier,
         localNetwork: any LocalNetworkPrompter,
+        permissions: [any PermissionAccess] = [],
+        cardsFile: JSONFile? = nil,
+        notesFile: JSONFile? = nil,
         timeZone: TimeZone = .current,
         formatter: ValueFormatter = ValueFormatter()
     ) {
         self.agent = agent
+        self.skillModel = skillModel
+        self.registry = registry
+        self.flags = flags
+        self.makeSkills = makeSkills
+        self.interactions = interactions
+        self.settings = settings
         self.rules = rules
         self.peers = peers
-        self.makeDownService = makeDownService
         self.pairing = pairing
         self.unpair = unpair
         self.rename = rename
         self.inboxEvents = inboxEvents
         self.makePolicy = makePolicy
         self.auditLog = auditLog
+        self.describeEgress = describeEgress
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
-        self.downMatchingIsPrivate = downMatchingIsPrivate
-        self.describeDownError = describeDownError
         self.presentConsent = presentConsent
         self.notifier = notifier
         self.localNetwork = localNetwork
+        self.permissions = permissions
+        self.cardsFile = cardsFile
+        self.notesFile = notesFile
         self.timeZone = timeZone
         self.formatter = formatter
     }
 }
 
-/// Owns the feature models for the app's lifetime.
+/// Owns the features for the app's lifetime: Home, New, Friends, and You
+/// over one lifecycle coordinator (ADRs 0011 and 0015).
 @MainActor
 @Observable
 public final class AppModel {
     public let services: AppServices
     public let consent: ConsentCoordinator
     public let rulesEditor: RulesEditorModel
-    /// Nil until a `DownService` and a paired-peer store are in the build.
-    public let down: DownModel?
+    public let settings: SettingsModel
+    public let lifecycle: LifecycleCoordinator
+    public let cards: PeerCards
+    public let notes: PlanNotes
+    public let permissions: PermissionGate
+    public let composer: ComposerModel
+    /// Nil until a paired-peer store is in the build.
     public let friends: FriendsModel?
-    /// The card this agent sends in each `hello`, built from what the build
-    /// runs: `.down` and `.psi` only when a Down service exists, so a friend's
-    /// Down never starts a negotiation this phone cannot answer.
-    public let agentCard: AgentCard?
-    /// The app's link layer: greets peers, answers hellos, and shows each
-    /// peer's connection and round trips. Nil without an Outbox and a card.
+    /// The app's link layer: greets peers with this agent's card and answers
+    /// hellos. Nil without an Outbox and a card.
     public let link: LinkTestModel?
-    /// The policy every app send is judged by, following the owner's rules.
+    /// The policy every app send is judged by.
     public let policy: RulesPolicy?
-    /// The app's one `Outbox`: lane G's policy, the consent sheet, and the
-    /// audit log. Nil until a transport is in the build.
+    /// The app's one `Outbox`: lane G's policy, the consent sheet, the audit
+    /// log, and the egress log. Nil until a transport is in the build.
     public let outbox: Outbox?
-    private let downService: (any DownService)?
+    public let words: InteractionWords
+    /// This phone's PeerID, when a transport is in the build.
+    public let localPeer: PeerID?
+    /// Whether the owner allowed notifications, once asked.
+    public private(set) var notificationsAllowed: Bool?
+    /// An interaction that just became a plan, for the It's a plan screen.
+    public var celebrating: InteractionID?
+    public let proposals: ProposalTexts
+
     private var inboxLoop: Task<Void, Never>?
     private var started = false
     private var linksStarted = false
+    private var friendNames: [PeerID: String] = [:]
 
     public init(services: AppServices) {
         self.services = services
-        consent = ConsentCoordinator(peers: services.peers, formatter: services.formatter, present: services.presentConsent)
+        let localPeer = services.transport?.localPeer
+        self.localPeer = localPeer
+        consent = ConsentCoordinator(peers: services.peers, localPeer: localPeer, formatter: services.formatter, present: services.presentConsent)
         policy = services.makePolicy.map(RulesPolicy.init(make:))
-        if let policy, let transport = services.transport {
-            outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: services.auditLog)
-        } else {
-            outbox = nil
-        }
+        settings = SettingsModel(store: services.settings, flags: services.flags)
+        notes = PlanNotes(file: services.notesFile)
+        permissions = PermissionGate(access: services.permissions)
+        proposals = ProposalTexts(model: services.skillModel)
         rulesEditor = RulesEditorModel(
             interpreter: RulesInterpreter(agent: services.agent, issues: RulesInterpreter.standingIssues, timeZone: services.timeZone),
             store: services.rules,
             formatter: services.formatter
         )
-        if let makeDown = services.makeDownService, let peers = services.peers, let outbox {
-            let service = makeDown(outbox)
-            downService = service
-            down = DownModel(
-                service: service,
-                interpreter: RulesInterpreter(agent: services.agent, issues: RulesInterpreter.intentIssues, timeZone: services.timeZone),
-                rules: services.rules,
-                peers: peers,
-                notifier: services.notifier,
-                matchingIsPrivate: services.downMatchingIsPrivate,
-                describeError: services.describeDownError,
-                formatter: services.formatter,
-                timeZone: services.timeZone
+        let friends = services.peers.map { FriendsModel(store: $0, unpair: services.unpair, rename: services.rename) }
+        self.friends = friends
+        cards = PeerCards(file: services.cardsFile) { peer in friends?.friends.contains { $0.id == peer } ?? false }
+
+        // The Outbox's observer records egress on the lifecycle, which does
+        // not exist yet; it is set right after.
+        let recorder = EgressRelay()
+        let outbox: Outbox? = if let policy, let transport = services.transport {
+            Outbox(
+                transport: transport, policy: policy, consent: consent,
+                observer: EgressObserver(forward: services.auditLog, describe: services.describeEgress) { record, conversation in
+                    recorder.lifecycle?.recordEgress(record, conversation: conversation)
+                }
             )
         } else {
-            downService = nil
-            down = nil
+            nil
         }
-        friends = services.peers.map { FriendsModel(store: $0, unpair: services.unpair, rename: services.rename) }
-        let offersDown = downService != nil
-        agentCard = services.agentLocality.map { AgentCard.offering(down: offersDown, locality: $0) }
-        if let outbox, let card = agentCard {
-            let friends = friends
-            link = LinkTestModel(outbox: outbox, card: card, name: { peer in friends?.friends.first { $0.id == peer }?.nickname })
+        self.outbox = outbox
+        lifecycle = LifecycleCoordinator(
+            registry: services.registry,
+            services: outbox.map(services.makeSkills) ?? [],
+            store: services.interactions
+        )
+        recorder.lifecycle = lifecycle
+        consent.tracker = lifecycle
+
+        let names = NameBox()
+        words = InteractionWords(registry: services.registry, localPeer: localPeer, formatter: services.formatter, names: { names.value })
+        nameBox = names
+
+        if let outbox, let locality = services.agentLocality {
+            link = LinkTestModel(outbox: outbox, card: AgentCard.forBuild(skills: [], usesPSI: false, locality: locality), name: { peer in
+                friends?.friends.first { $0.id == peer }?.nickname
+            })
         } else {
             link = nil
         }
+
+        let rulesEditor = rulesEditor
+        composer = ComposerModel(
+            skillModel: services.skillModel, lifecycle: lifecycle, settings: settings, cards: cards, permissions: permissions,
+            friends: { friends?.friends ?? [] }, savedRules: { rulesEditor.saved?.rules }, localPeer: localPeer,
+            formatter: services.formatter
+        )
+        composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
+
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
-        down?.intentChanged = { [weak self] in
+        settings.onChange = { [weak self] in
             guard let self else { return }
-            consent.forgetApprovals()
             await refreshPolicy()
+            refreshCard()
+        }
+        let notifier = services.notifier
+        let words = words
+        lifecycle.onChange = { [weak self] before, after in
+            if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
+            guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
+            Task { await notifier.post(notice) }
         }
     }
 
-    /// The rules sends are judged by: the saved rules, merged with the
-    /// active Down intent's rules when one is out (most restrictive sharing
-    /// wins, ADR 0141). Nil when they cannot be combined: the saved rules
-    /// changed after the intent went out and the constraints together break
-    /// a limit. Never falls back to the saved rules alone, which would drop
-    /// the intent's own "never share" rules.
-    public var effectiveRules: OwnerRules? {
-        let standing = rulesEditor.saved?.rules ?? .empty
-        guard let intent = down?.activeIntentRules else { return standing }
-        let sharing = RulesMerge.sharing(intent: intent.disclosure, standing: standing.disclosure)
-        guard let constraints = try? RulesMerge.constraints(intent: intent.constraints, standing: standing.constraints) else { return nil }
-        return OwnerRules(constraints: constraints, disclosure: sharing)
+    /// Friends' names for words and notifications, kept in step with Friends.
+    private let nameBox: NameBox
+
+    public var home: HomeContent {
+        syncNames()
+        return HomeContent(lifecycle.interactions, words: words)
+    }
+
+    /// The card this agent sends in each `hello`: where its model runs and
+    /// the skills that are in the build and switched on.
+    public var agentCard: AgentCard? {
+        guard let locality = services.agentLocality else { return nil }
+        let inBuild = lifecycle.skillsInBuild
+        let skills = services.registry.advertised(in: settings.skillSettings).filter { inBuild.contains($0.id) }
+        let usesPSI = skills.contains { services.registry.descriptor(for: $0.id)?.buildingBlock == .mutualReveal }
+        return AgentCard.forBuild(skills: skills, usesPSI: usesPSI, locality: locality)
+    }
+
+    /// The rules sends are judged by: saved constraints, with the privacy
+    /// topics as the only standing sharing (ADR 0014).
+    public var standingRules: OwnerRules {
+        StandingRules.standing(saved: rulesEditor.saved?.rules, privacy: settings.settings.privacy)
     }
 
     func refreshPolicy() async {
         guard let policy else { return }
-        // Unreadable saved rules may hold "never share" rules the app cannot
-        // see. Leave the policy denying everything until the owner saves.
-        if rulesEditor.loadFailed { return }
-        if let rules = effectiveRules {
-            await policy.update(rules)
-            return
-        }
-        // Fail closed: block every send first, then end the intent. Ending
-        // it reports an intent change, which updates the policy again with
-        // the saved rules once nothing can send for the intent any more.
-        await policy.block()
-        await down?.endBecauseRulesChanged()
+        // Unreadable saved rules may hold limits the app cannot see, and
+        // unreadable settings may hold a Never. Leave the policy denying
+        // everything until the owner saves again.
+        if rulesEditor.loadFailed || !settings.isLoaded { return }
+        await policy.update(standingRules, onlyOnDeviceAgents: settings.settings.onlyOnDeviceAgents)
     }
 
-    /// Called once at launch.
+    private func refreshCard() {
+        guard let link, let card = agentCard, link.card != card else { return }
+        link.card = card
+        // Tell friends who are around now; others hear at the next hello.
+        for peer in friends?.reachable ?? [] { Task { await link.ping(peer) } }
+    }
+
+    private func syncNames() {
+        var names: [PeerID: String] = [:]
+        for friend in friends?.friends ?? [] { names[friend.id] = friend.nickname }
+        if names != nameBox.value { nameBox.value = names }
+    }
+
+    /// Called once at launch. Loads rules, settings, friends, and the
+    /// interactions, restores every skill's live work, and listens to the
+    /// Inbox. The radios start only once Local Network has been asked for
+    /// (at the first Pair or request); before that nobody could reach this
+    /// phone anyway, because nobody is paired.
     public func start() async {
         guard !started else { return }
         started = true
-        // Rules first: the policy denies every send until it has them.
+        // Rules and settings first: the policy denies every send until both
+        // are loaded.
         await rulesEditor.load()
+        await settings.load(phaseOneSharing: rulesEditor.saved?.rules.disclosure ?? [])
         await refreshPolicy()
-        down?.listen()
+        await friends?.load()
+        syncNames()
+        cards.load()
+        notes.load()
+        refreshCard()
+        await lifecycle.start()
+        lifecycle.tick()
         // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
-        await friends?.load()
+        if settings.settings.localNetworkAsked { await startLinks() }
     }
 
     /// Starts the radios and then whatever must follow them (lane E1's
-    /// pairing services). Separate from `start()` because the radios'
-    /// Bonjour work raises the Local Network alert: the app calls this after
-    /// onboarding's Local Network step, or at launch once onboarding is done
-    /// (ADR 0142). Runs once.
+    /// pairing services). Runs once.
     public func startLinks() async {
         await start()
         guard !linksStarted else { return }
@@ -234,53 +312,107 @@ public final class AppModel {
         await services.afterStart?()
     }
 
+    /// The first Pair or the first request: the deliberate Local Network
+    /// prompt, then the radios (ADR 0013 decision 2, ADR 0202).
+    public func ensureLocalNetwork() async {
+        if !settings.settings.localNetworkAsked {
+            await services.localNetwork.prompt()
+            await settings.markLocalNetworkAsked()
+        }
+        await startLinks()
+    }
+
+    /// The owner's answer to "Want a heads-up when friends are up for it?",
+    /// asked after their first request.
+    public func answerNotifications(_ yes: Bool) async {
+        composer.offerNotifications = false
+        await settings.markNotificationsOffered()
+        guard yes else { return }
+        notificationsAllowed = await services.notifier.requestAuthorization()
+    }
+
     /// The single Inbox loop: every event, in arrival order, goes to the
-    /// friends list (reachability), the link layer (hello and round trips),
-    /// and the Down service, which ignores what is not part of Down. In
-    /// Phase 1 every conversation is Down's (F request 4).
+    /// friends list (reachability), friends' cards, the link layer (hello),
+    /// and through the lifecycle coordinator to every skill service.
     private func routeInbox() {
-        // Runs whenever there is an Inbox: Release has friends (and their
-        // reachability) even without Down.
         guard inboxLoop == nil, let events = services.inboxEvents else { return }
-        let downService = downService
         let friends = friends
+        let cards = cards
         let link = link
+        let lifecycle = lifecycle
         inboxLoop = Task {
             for await event in events {
                 friends?.handle(event)
+                cards.handle(event)
                 await link?.handle(event)
-                await downService?.handle(event)
+                await lifecycle.route(event)
             }
         }
     }
 
-    /// Tears down the Down service and the link. Call when the app's
-    /// services go away; lane F requires shutdown() on its service.
+    /// Ends plans whose time has passed; the app calls it when it comes to
+    /// the foreground.
+    public func foreground() {
+        lifecycle.tick()
+    }
+
+    /// Tears down the skills and the link.
     public func shutdown() async {
         inboxLoop?.cancel()
         inboxLoop = nil
-        if let stoppable = downService as? any StoppableDownService { await stoppable.shutdown() }
+        await lifecycle.shutdown()
         await services.transport?.stop()
     }
 
-    public func makeOnboarding() -> OnboardingModel {
-        OnboardingModel(localNetwork: services.localNetwork, notifier: services.notifier) { [weak self] in
-            await self?.startLinks()
-        }
+    /// Unpairs a friend and forgets what Starling kept about them.
+    public func unpair(_ friend: PeerID) async {
+        await friends?.remove(friend)
+        guard !(friends?.friends.contains { $0.id == friend } ?? false) else { return }
+        cards.forget(friend)
+        notes.unlink(friend)
+        await settings.setClose(friend, false)
     }
 
     /// A fresh ceremony model, or nil if pairing is not in this build.
     public func makePairing() -> PairingModel? {
         guard let directory = services.pairing, services.peers != nil else { return nil }
-        return PairingModel(directory: directory)
+        let friends = friends
+        return PairingModel(directory: directory, friends: { friends?.friends ?? [] })
+    }
+
+    /// Plan detail for a planned or finished interaction.
+    public func planDetail(_ root: Interaction) -> PlanDetail {
+        syncNames()
+        return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes)
+    }
+
+    /// "Keep it going" after a plan: skills that accept what it produced,
+    /// can run now, are in the build, and every friend in it supports
+    /// (`SkillRegistry.chainSuggestions`, ADR 0012). A friend with no card
+    /// yet hides the suggestion, since support cannot be shown.
+    public func chainSuggestions(after plan: Interaction) -> [SkillDescriptor] {
+        let peers = (plan.plan?.attendees.peers ?? plan.participants).filter { $0 != localPeer }
+        let peerCards = peers.compactMap(cards.card(for:))
+        guard peerCards.count == peers.count else { return [] }
+        let inBuild = lifecycle.skillsInBuild
+        return services.registry.chainSuggestions(after: plan.skill.id, in: settings.skillSettings, peers: peerCards)
+            .filter { inBuild.contains($0.id) && $0.chainTrigger == .atConfirm }
     }
 }
 
-extension AgentCard {
-    /// The card for a build: always the model's location; `.down` and `.psi`
-    /// only if this build runs Down (Codex review of PR #42, finding 2).
-    public static func offering(down: Bool, locality: ModelLocality) -> AgentCard {
-        // Cannot throw: one protocol version and at most two capabilities.
-        try! AgentCard(model: locality, capabilities: down ? [.down, .psi] : [])
+/// Lets the Outbox's observer reach the lifecycle coordinator, which is
+/// built after the Outbox.
+@MainActor
+private final class EgressRelay: Sendable {
+    weak var lifecycle: LifecycleCoordinator?
+}
+
+/// Friends' names, readable from the `@Sendable` closures words use.
+private final class NameBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: [PeerID: String] = [:]
+    var value: [PeerID: String] {
+        get { lock.withLock { names } }
+        set { lock.withLock { names = newValue } }
     }
 }

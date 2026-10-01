@@ -3,7 +3,8 @@ import StarlingFeatures
 import SwiftUI
 
 /// The editable review of interpreted rules, shared by the rules editor and
-/// the Down screen. Every row can be changed or deleted before saving.
+/// New's Edit. Every row can be changed or deleted before saving. Sharing is
+/// set per topic in You (ADR 0014), not here.
 struct RulesReviewSections: View {
     @Binding var draft: RulesDraft
     let flags: [UUID: String]
@@ -11,10 +12,6 @@ struct RulesReviewSections: View {
     let formatter: ValueFormatter
     /// True when rows came from the model, so the review warning shows.
     let fromModel: Bool
-    /// One row per disclosable issue, shown whether or not the rules mention
-    /// it (ADR 0161: interpretation can miss a "never share").
-    let sharingRows: [RulesDraft.SharingRow]
-    let setSharing: (DisclosureRule.Action, IssueKey) -> Void
 
     var body: some View {
         Section {
@@ -32,18 +29,6 @@ struct RulesReviewSections: View {
             if fromModel {
                 Text("Check every row. The on-device model can add things you didn't say or miss things you did. Swipe to delete.")
             }
-        }
-
-        Section {
-            ForEach(sharingRows) { row in
-                SharingRowView(row: row, flag: row.ruleID.flatMap { flags[$0] }, problem: row.ruleID.flatMap(problem(for:)), formatter: formatter) {
-                    setSharing($0, row.issue)
-                }
-            }
-        } header: {
-            Text("What may leave your phone")
-        } footer: {
-            Text("Check every topic. Starling can miss a \"never share\" you wrote, so set it here. Topics you leave on \"Ask me each time\" show a sheet before anything is sent.")
         }
 
         let general = problems.filter { $0.itemID == nil }
@@ -156,40 +141,6 @@ private struct KeywordField: View {
         TextField(title, text: $raw, prompt: Text("\(title): comma separated"))
             .textInputAutocapitalization(.never)
             .onChange(of: raw) { _, new in text = new }
-    }
-}
-
-/// A topic's sharing: an always-visible "Never share" toggle, and when it is
-/// off, whether to ask each time or share with on-device agents.
-private struct SharingRowView: View {
-    let row: RulesDraft.SharingRow
-    let flag: String?
-    let problem: String?
-    let formatter: ValueFormatter
-    let set: (DisclosureRule.Action) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Never share \(formatter.issueName(row.issue).lowercased())", isOn: Binding(
-                get: { row.action == .never },
-                set: { set($0 ? .never : .askEachTime) }
-            ))
-            .disabled(row.choices == [.never])
-            if row.action != .never {
-                Picker("Otherwise", selection: Binding(get: { row.action }, set: { set($0) })) {
-                    ForEach(row.choices.filter { $0 != .never }, id: \.self) {
-                        Text(formatter.disclosureAction($0)).tag($0)
-                    }
-                }
-                .font(.subheadline)
-            }
-            if row.fromSavedRules {
-                Text("Set by your saved rules. This Down? can only be stricter.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Notes(flag: flag, problem: problem)
-        }
     }
 }
 

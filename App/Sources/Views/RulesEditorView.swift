@@ -31,9 +31,7 @@ struct RulesEditorView: View {
                     flags: model.flags,
                     problems: model.problems,
                     formatter: model.formatter,
-                    fromModel: model.interpretedFrom != nil,
-                    sharingRows: model.sharingRows,
-                    setSharing: model.setSharing
+                    fromModel: model.interpretedFrom != nil
                 )
                 Section {
                     Button("Save rules") { Task { await model.save() } }
@@ -47,7 +45,7 @@ struct RulesEditorView: View {
 
     @ViewBuilder private var compose: some View {
         Section {
-            TextField("Rules", text: $model.text, prompt: Text("No plans before 10. Never share where I am. Vegetarian."), axis: .vertical)
+            TextField("Rules", text: $model.text, prompt: Text("No plans before 10. Vegetarian. Nothing over $20."), axis: .vertical)
                 .lineLimit(3...6)
             Button(model.saved == nil ? "Turn into rules" : "Add these rules") { Task { await model.interpret() } }
                 .disabled(model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -57,7 +55,7 @@ struct RulesEditorView: View {
         } header: {
             Text("Say it your way")
         } footer: {
-            Text("Starling reads this on your iPhone and shows you what it understood before saving anything. Your rules never leave your phone.")
+            Text("Starling reads this on your iPhone and shows you what it understood before saving anything. Your rules never leave your phone. What you share is set per topic under Privacy.")
         }
         if let notice = model.notice { NoticeSection(text: notice) }
     }
@@ -70,16 +68,13 @@ struct SavedRulesSection: View {
     var body: some View {
         Section("Saved rules") {
             let issues = rules.constraints.constraints.keys.sorted()
-            if issues.isEmpty && rules.disclosure.isEmpty {
+            if issues.isEmpty {
                 Text("None").foregroundStyle(.secondary)
             }
             ForEach(issues, id: \.self) { issue in
                 ForEach(Array(rules.constraints[issue].enumerated()), id: \.offset) { _, constraint in
                     LabeledContent(formatter.issueName(issue), value: formatter.constraint(constraint))
                 }
-            }
-            ForEach(rules.disclosure, id: \.issue) { rule in
-                LabeledContent(formatter.issueName(rule.issue), value: formatter.disclosureAction(rule.action))
             }
         }
     }

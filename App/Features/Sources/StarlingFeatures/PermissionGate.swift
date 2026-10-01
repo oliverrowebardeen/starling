@@ -85,7 +85,7 @@ public struct PermissionExplanation: Hashable, Sendable, Identifiable {
     }
 
     /// "Maya", "Maya and Jake", "Maya, Jake and Leo", or "Your friends".
-    static func names(_ friends: [String]) -> String {
+    public static func names(_ friends: [String]) -> String {
         switch friends.count {
         case 0: "Your friends"
         case 1: friends[0]

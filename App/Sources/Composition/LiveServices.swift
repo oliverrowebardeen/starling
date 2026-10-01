@@ -4,64 +4,114 @@ import StarlingAgent
 import StarlingCore
 import StarlingFeatures
 import StarlingIdentity
-import StarlingNegotiation
 import StarlingPolicy
 import StarlingWiFiAware
 import UserNotifications
 
 extension AppServices {
-    /// Release builds: real implementations only, never StarlingFakes.
-    /// Lane E1's identity, pinned friends, pairing, and secure links, lane
-    /// G's policy and audit log, lane E2's Wi-Fi Aware. Down stays out: lane
-    /// F's DownNegotiator needs a PSI provider and the only one,
-    /// InsecurePSIStub, lives in StarlingFakes, so Release shows "Down? isn't
-    /// in this build yet" until a private provider (Nightjar) exists.
+    /// Release builds: real implementations only, never StarlingFakes
+    /// (ADR 0140). Lane E1's identity, pinned friends, pairing, and secure
+    /// links; lane G's policy and audit log; lane E2's Wi-Fi Aware. No skill
+    /// service is in the build until the skill lanes merge (B, C, D, E), so
+    /// New shows each tile as "Not in this build yet" instead of running a
+    /// fake. Permission access APIs arrive with lanes C and D.
     static func release() async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
         let links = SecureLinks.make(identity: identity, friends: KeychainPairedPeerStore())
         return AppServices(
             agent: FoundationModelsAgent(),
+            registry: LiveServices.registry,
+            interactions: LiveServices.interactionStore(),
+            settings: LiveServices.settingsStore(),
             rules: LiveServices.rulesStore(),
             peers: links.friends,
-            makeDownService: nil,
             pairing: links.pairingDirectory,
             unpair: links.unpair,
             rename: links.rename,
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
+            describeEgress: LiveServices.describeEgress,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
-            describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
-            localNetwork: BonjourLocalNetworkPrompter()
+            localNetwork: BonjourLocalNetworkPrompter(),
+            cardsFile: try? .standard("peer-cards.json"),
+            notesFile: try? .standard("plan-notes.json")
         )
     }
 }
 
 enum LiveServices {
+    /// Every Phase 1.5 skill's descriptor, until each skill package ships
+    /// its own. Data only: a descriptor runs nothing without its service.
+    /// The values match StarlingFakes.SampleSkills, which Release cannot link.
+    static let registry: SkillRegistry = try! SkillRegistry([
+        try! SkillDescriptor(
+            ref: SkillRef(.downFor, SkillVersion(1)),
+            wording: SkillWording(name: "Down for…", summary: "See who's up for something", startAction: "See who's up for it",
+                                  acceptAction: "I'm in", declineAction: "Not tonight", declineNote: "If you pass, they just won't see it."),
+            buildingBlock: .mutualReveal, topicsUsed: [.time, .activity, .place, .budget], topicsRequired: [.time, .activity],
+            accepts: [.timeSlot], produces: [.plan],
+            intent: IntentSchema(slots: [
+                IntentSlot(.activity, required: true, hint: "what they want to do, such as boba or a walk"),
+                IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
+                IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
+                IntentSlot(.budget, required: false, hint: "the most they want to spend"),
+            ])
+        ),
+        try! SkillDescriptor(
+            ref: SkillRef(.findATime, SkillVersion(1)),
+            wording: SkillWording(name: "Find a time", summary: "Agree on when", startAction: "Find a time",
+                                  acceptAction: "That works", declineAction: "Not then", declineNote: "If you pass, they just won't see it."),
+            buildingBlock: .privateQuery, topicsUsed: [.time, .activity], topicsRequired: [.time],
+            permissions: [.calendarFullAccess], produces: [.timeSlot, .plan],
+            intent: IntentSchema(slots: [
+                IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
+                IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
+            ])
+        ),
+        try! SkillDescriptor(
+            ref: SkillRef(.pickAPlace, SkillVersion(1)),
+            wording: SkillWording(name: "Pick a place", summary: "Agree on where", startAction: "Find a place",
+                                  acceptAction: "Sounds good", declineAction: "Somewhere else", declineNote: "If you pass, they just won't see it."),
+            buildingBlock: .privateAggregation, topicsUsed: [.place, .budget, .diet], topicsRequired: [.place],
+            permissions: [.locationWhenInUse], accepts: [.plan, .timeSlot], produces: [.placeChoice],
+            intent: IntentSchema(slots: [
+                IntentSlot(.place, required: false, hint: "the kind of place or area, such as near Franklin"),
+                IntentSlot(.budget, required: false, hint: "the most they want to spend"),
+                IntentSlot(.diet, required: false, hint: "what they can't eat"),
+            ])
+        ),
+    ])
+
     static func rulesStore() -> any RulesStore {
         (try? FileRulesStore.standard()) ?? InMemoryRulesStore()
     }
 
-    /// Lane G's engine for one snapshot of the owner's rules (StarlingPolicy
-    /// README). `onlyOnDeviceAgents` stays off until the app has a setting
-    /// for it, so cloud agents get a consent sheet on every message instead
-    /// of a refusal. `peers` lets "share with on-device agents" apply to
-    /// paired friends only; without a store the policy asks.
-    static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules) -> any PolicyEngine {
-        { rules in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: false, pairedPeers: peers) }
+    static func interactionStore() -> any InteractionStore {
+        (try? FileInteractionStore.standard())
+            ?? FileInteractionStore(file: JSONFile(url: FileManager.default.temporaryDirectory.appending(path: "interactions.json")))
     }
 
-    /// Plain words for lane F's own setIntent errors (docs/requests/F.md).
-    static let describeDownError: @Sendable (any Error) -> String? = { error in
-        switch error as? DownError {
-        case .expired: "This Down? would already be over. Pick a later end time."
-        case .noAvailableTime: "Your rules leave no free half-hour before this ends. Change the times or pick a later end."
-        case nil: nil
-        }
+    static func settingsStore() -> any OwnerSettingsStore {
+        (try? FileOwnerSettingsStore.standard()) ?? InMemoryOwnerSettingsStore()
+    }
+
+    /// Lane G's engine for one snapshot of the owner's rules and the
+    /// on-device-only choice in You (StarlingPolicy README). `peers` lets
+    /// "Share" apply to paired friends only; without a store the policy asks.
+    static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules, Bool) -> any PolicyEngine {
+        { rules, onlyOnDevice in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: onlyOnDevice, pairedPeers: peers) }
+    }
+
+    /// The items a send the policy allowed without a sheet disclosed, the
+    /// same way the policy computes them for a sheet (ADR 0201 decision 5).
+    static let describeEgress: @Sendable (Envelope, OutboundContext) -> [DisclosedItem] = { envelope, context in
+        let message = OutboundMessage(envelope: envelope, recipientCard: nil, transport: .loopback, context: context)
+        return (try? DeterministicPolicyEngine().disclosure(for: message).items) ?? []
     }
 
     /// The local record of what left the phone. In memory only, latest 1,000
@@ -81,8 +131,8 @@ enum LiveServices {
     }
 }
 
-/// Posts match notifications and shows them while Starling is open.
-final class UserNotificationsNotifier: NSObject, MatchNotifier, UNUserNotificationCenterDelegate {
+/// Posts plan notifications and shows them while Starling is open.
+final class UserNotificationsNotifier: NSObject, PlanNotifier, UNUserNotificationCenterDelegate {
     static let shared = UserNotificationsNotifier()
 
     /// Call at launch so banners appear in the foreground too.
@@ -94,13 +144,13 @@ final class UserNotificationsNotifier: NSObject, MatchNotifier, UNUserNotificati
         (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
-    func post(_ notice: MatchNotice) async {
+    func post(_ notice: LifecycleNotice) async {
         let content = UNMutableNotificationContent()
         content.title = notice.title
         content.body = notice.body
         content.sound = .default
-        content.threadIdentifier = "down-matches"
-        // The same identifier replaces an earlier banner for this friend.
+        content.threadIdentifier = "plans"
+        // The same identifier replaces an earlier banner for this interaction.
         let request = UNNotificationRequest(identifier: notice.id, content: content, trigger: nil)
         try? await UNUserNotificationCenter.current().add(request)
     }
@@ -113,8 +163,8 @@ final class UserNotificationsNotifier: NSObject, MatchNotifier, UNUserNotificati
 /// Browses for Starling's Bonjour service, which makes iOS show the Local
 /// Network alert (TN3179: "Browsing for Bonjour services" requires local
 /// network access). Waits until browsing works, meaning the owner allowed
-/// it or already had, or gives up after `timeout` so onboarding never hangs
-/// if they tapped Don't Allow.
+/// it or already had, or gives up after `timeout` so the first Pair or
+/// request never hangs if they tapped Don't Allow.
 struct BonjourLocalNetworkPrompter: LocalNetworkPrompter {
     /// Listed in NSBonjourServices in Info.plist.
     static let serviceType = "_starling._tcp"
@@ -143,8 +193,3 @@ struct BonjourLocalNetworkPrompter: LocalNetworkPrompter {
         continuation.finish()
     }
 }
-
-/// Lane F requires shutdown() when the app tears the service down.
-/// Retroactive because StarlingNegotiation does not depend on
-/// StarlingFeatures, so lane F can never add this conformance itself.
-extension DownNegotiator: @retroactive StoppableDownService {}

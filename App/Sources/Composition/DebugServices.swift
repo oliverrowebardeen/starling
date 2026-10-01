@@ -8,95 +8,88 @@ import StarlingCore
 import StarlingFakes
 import StarlingFeatures
 import StarlingIdentity
-import StarlingNegotiation
 import StarlingTransport
 
 /// The Debug composition: the same lane E1 stack as Release (Keychain
 /// identity, one PinAuthority, secure LocalP2P and Wi-Fi Aware links, real
-/// pairing), plus lane F's Down with the insecure PSI stub, plus a simulated
-/// friend on an in-process secure Loopback link so the whole Down journey
-/// runs on one phone or the Simulator (ADR 0144, ADR 0145). Fakes stay where
-/// no lane has delivered: the PSI stub, the scripted model, sample friends.
+/// pairing), with the skills that have not merged yet played by
+/// `ScriptedSkillService`s and a `DemoDriver` that moves them through the
+/// lifecycle, so Home, New, the cards, and It's a plan can be walked on one
+/// phone or the Simulator. Each skill lane's real service replaces its
+/// scripted one as it merges.
 @MainActor
 final class DebugHarness {
-    static let scriptedModelKey = "dev.scriptedModel"
+    nonisolated static let scriptedModelKey = "dev.scriptedModel"
+    nonisolated static let denyPermissionsKey = "dev.denyPermissions"
 
     let usesScriptedModel: Bool
-    let hub = LoopbackHub()
-    /// Friends that exist only in this Debug session (the simulated friend,
-    /// sample friends). Never written to the Keychain.
+    /// Friends that exist only in this Debug session. Never written to the
+    /// Keychain.
     let overlay = InMemoryPairedPeerStore()
-    /// Set once services() has loaded the identity.
-    private(set) var simFriend: SimulatedFriend?
+    let skills = SampleSkills.registry.descriptors.filter { SkillFlags.phase1_5.enabled.contains($0.id) }.map(ScriptedSkillService.init(descriptor:))
+    private(set) var driver: DemoDriver?
     private(set) var friends: (any PairedPeerStore)?
-    private(set) var appTransport: (any Transport)?
-    /// Fixed per launch so a repeated demo send has an identical disclosure
-    /// and the consent memory can be seen.
+    private(set) var localPeer: PeerID?
+    /// Fixed per launch so a repeated demo send has an identical disclosure.
     let sampleStart: Date
-    private var pairingCount = 0
+    private var sampleCount = 0
 
     init(defaults: UserDefaults = .standard) {
         usesScriptedModel = defaults.bool(forKey: Self.scriptedModelKey)
         sampleStart = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 3600).rounded(.up) * 3600)
     }
 
-    /// The Debug app's services: lane E1's identity from the Keychain, then
-    /// the same secure links as Release with the simulated friend's
-    /// Loopback link added.
-    func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) async throws -> AppServices {
+    func services(rules: any RulesStore = LiveServices.rulesStore()) async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
-        let agent: any AgentModel = usesScriptedModel ? Self.scriptedModel() : FoundationModelsAgent()
-        // The simulated friend runs Down, so its card offers it.
-        let card = AgentCard.offering(down: true, locality: .onDevice)
-
-        let me = try PairedPeer(publicKey: identity.publicKey, nickname: "This phone", pairedAt: Timestamp(Date()))
-        let simFriend = SimulatedFriend(hub: hub, owner: me, card: card)
-        try await overlay.save(simFriend.peer)
+        let agent: any AgentModel = usesScriptedModel ? Self.scriptedAgent() : FoundationModelsAgent()
         let friends = OverlayPairedPeerStore(base: KeychainPairedPeerStore(), overlay: overlay)
-        let loopback = LoopbackTransport(localPeer: identity.peerID, hub: hub)
-        let links = SecureLinks.make(identity: identity, friends: friends, extraLinks: [("In-app sim", loopback)])
-        self.simFriend = simFriend
+        let links = SecureLinks.make(identity: identity, friends: friends)
         self.friends = friends
-        appTransport = links.transport
-        Task { await simFriend.start() }
+        localPeer = identity.peerID
+        let skills = skills
+        driver = DemoDriver(me: identity.peerID, services: skills)
 
         return AppServices(
             agent: agent,
+            skillModel: Self.scriptedSkillModel(),
+            registry: SampleSkills.registry,
+            makeSkills: { _ in skills },
+            interactions: LiveServices.interactionStore(),
+            settings: LiveServices.settingsStore(),
             rules: rules,
             peers: friends,
-            makeDownService: { outbox in
-                // docs/requests/F.md, answers to lane H: the app's Outbox, and
-                // the insecure PSI stub until Nightjar.
-                DownNegotiator(localPeer: identity.peerID, outbox: outbox, pairedPeers: friends, model: agent, psi: InsecurePSIStub())
-            },
             pairing: links.pairingDirectory,
             unpair: links.unpair,
             rename: links.rename,
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
+            describeEgress: LiveServices.describeEgress,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,
-            downMatchingIsPrivate: InsecurePSIStub().descriptor.isPrivate,
-            describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
-            notifier: notifier,
-            localNetwork: BonjourLocalNetworkPrompter()
+            notifier: UserNotificationsNotifier.shared,
+            localNetwork: BonjourLocalNetworkPrompter(),
+            permissions: SystemPermission.allCases.map(DebugPermissionAccess.init),
+            cardsFile: try? .standard("peer-cards.json"),
+            notesFile: try? .standard("plan-notes.json")
         )
     }
 
-    /// Fakes only, built synchronously for SwiftUI previews: sample friends,
-    /// a recording transport, a scripted Down service and pairing ceremony.
+    /// Fakes only, built synchronously for SwiftUI previews.
     static func previewServices(friends: [String]) -> AppServices {
         let peers = InMemoryPairedPeerStore(friends.map { randomPeer(nickname: $0) })
         let demo = randomPeer(nickname: "Demo phone")
-        let agent = scriptedModel()
         return AppServices(
-            agent: agent,
+            agent: scriptedAgent(),
+            skillModel: scriptedSkillModel(),
+            registry: SampleSkills.registry,
+            makeSkills: { _ in SampleSkills.registry.descriptors.filter { SkillFlags.phase1_5.enabled.contains($0.id) }.map(ScriptedSkillService.init(descriptor:)) },
+            interactions: InMemoryInteractionStore(),
+            settings: InMemoryOwnerSettingsStore(),
             rules: InMemoryRulesStore(),
             peers: peers,
-            makeDownService: { _ in ScriptedDownService() },
             pairing: PairingDirectory(
                 localPeer: .random(),
                 candidates: { [PairingCandidate(peer: demo.id, link: "Preview")] },
@@ -111,7 +104,8 @@ final class DebugHarness {
             agentLocality: .onDevice,
             presentConsent: LiveServices.presentConsent,
             notifier: PreviewSupport.SilentNotifier(),
-            localNetwork: PreviewSupport.SilentPrompter()
+            localNetwork: PreviewSupport.SilentPrompter(),
+            permissions: SystemPermission.allCases.map(DebugPermissionAccess.init)
         )
     }
 
@@ -120,41 +114,98 @@ final class DebugHarness {
         return try! PairedPeer(publicKey: key, nickname: nickname, pairedAt: Timestamp(Date()))
     }
 
-    /// Stands in for the on-device model where it cannot run (the Simulator,
-    /// ineligible phones). Always returns the same rules, including one
-    /// keyword ("karaoke") that is rarely in what was typed, so the review
-    /// screen's "not in your words" flag can be seen.
-    static func scriptedModel() -> ScriptedAgentModel {
+    /// Stands in for the rules model where it cannot run (the Simulator,
+    /// ineligible phones).
+    static func scriptedAgent() -> ScriptedAgentModel {
         ScriptedAgentModel(onInterpret: { _, context in
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = context.timeZone
             let evening = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: context.now) ?? context.now
-            let slot = try TimeSlot(start: evening, end: evening.addingTimeInterval(4 * 3600))
-            return OwnerRules(
-                constraints: try ConstraintSet([
-                    .time: [try Constraint(.within([slot]))],
-                    .activity: [try Constraint(.prefers(liked: [try Keyword("food"), try Keyword("karaoke")], avoided: []))],
-                    .budget: [try Constraint(.atMost(try MoneyAmount(minorUnits: 1500)))],
-                ]),
-                disclosure: [DisclosureRule(issue: .time, action: .allowOnDevicePeers)]
-            )
+            return OwnerRules(constraints: try ConstraintSet([
+                .time: [try Constraint(.within([try TimeSlot(start: evening, end: evening.addingTimeInterval(4 * 3600))]))],
+                .budget: [try Constraint(.atMost(try MoneyAmount(minorUnits: 1500)))],
+            ]))
         }, onDecide: { _ in .accept })
     }
 
-    // MARK: Simulation (Developer screen)
-
-    /// A friend that is never reachable, kept in the in-memory overlay.
-    func addSampleFriend() async {
-        pairingCount += 1
-        try? await overlay.save(Self.randomPeer(nickname: ["Maya", "Sam", "Jordan", "Priya", "Alex"][(pairingCount - 1) % 5]))
+    /// Stands in for lane B's SkillModel until it merges: routes by a few
+    /// words and reads the first word as the activity, "tonight" as 7 to 11
+    /// PM, and "near" or "nearby" as nearby. Deliberately simple: it shows
+    /// the composer working, not the model's quality.
+    static func scriptedSkillModel() -> ScriptedSkillModel {
+        ScriptedSkillModel(
+            onRoute: { text, skills in
+                let lower = text.lowercased()
+                let wanted: SkillID = if lower.contains("time") || lower.contains("when") || lower.contains("schedule") { .findATime }
+                    else if lower.contains("place") || lower.contains("where") { .pickAPlace }
+                    else { .downFor }
+                return skills.contains { $0.id == wanted } ? wanted : nil
+            },
+            onIntent: { text, skill in
+                let words = text.lowercased().split { !$0.isLetter }.map(String.init)
+                let skip: Set = ["find", "a", "time", "with", "for", "tonight", "tomorrow", "next", "week", "whoever", "s", "free", "nothing", "far", "near", "nearby", "pick", "place", "the", "to", "go", "get"]
+                var constraints: [IssueKey: [Constraint]] = [:]
+                let slots = Set(skill.intent.slots.map(\.issue))
+                if slots.contains(.activity), let first = words.first(where: { !skip.contains($0) && $0.count > 2 }), let keyword = try? Keyword(first) {
+                    constraints[.activity] = [try Constraint(.prefers(liked: [keyword], avoided: []))]
+                }
+                if slots.contains(.time) {
+                    var calendar = Calendar(identifier: .gregorian)
+                    calendar.timeZone = .current
+                    let now = Date()
+                    let day = words.contains("tomorrow") ? now.addingTimeInterval(86_400) : now
+                    let start = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: day) ?? now
+                    let range = words.contains("week") ? (start, start.addingTimeInterval(6 * 86_400)) : (max(start, now), start.addingTimeInterval(4 * 3600))
+                    if range.1 > range.0 { constraints[.time] = [try Constraint(.within([try TimeSlot(start: range.0, end: range.1)]))] }
+                }
+                if slots.contains(.place), words.contains(where: { ["near", "nearby", "far"].contains($0) }) {
+                    constraints[.place] = [try Constraint(.prefers(liked: [try Keyword("nearby")], avoided: []))]
+                }
+                let names = words.indices.compactMap { index in index > 0 && words[index - 1] == "with" && words[index] != "whoever" ? words[index] : nil }
+                return ParsedIntent(constraints: try ConstraintSet(constraints), mentionedNames: names)
+            },
+            onProposal: { _ in throw AgentModelError.unsupported }
+        )
     }
 
-    /// Sends a sample proposal to the simulated friend through the app's
-    /// Outbox: lane G's policy, the consent sheet, and the audit log, over
-    /// the secure Loopback link. Returns what happened in plain words.
-    func sendSample(through outbox: Outbox?) async -> String {
-        guard let outbox else { return "This build has no Outbox." }
-        guard let friend = simFriend?.peer, let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart)) else {
+    // MARK: Developer controls
+
+    /// A friend who exists only in this session, with a card that runs
+    /// every Phase 1.5 skill.
+    func addSampleFriend(to app: AppModel) async {
+        sampleCount += 1
+        let friend = Self.randomPeer(nickname: ["Maya", "Jake", "Priya", "Leo", "Sam", "Ana"][(sampleCount - 1) % 6])
+        try? await overlay.save(friend)
+        await app.friends?.load()
+        guard let me = localPeer else { return }
+        let card = AgentCard.forBuild(skills: SampleSkills.registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
+        if let hello = try? Envelope(conversation: ConversationID(), sender: friend.id, recipient: me, sequence: 0, sentAt: Timestamp(Date()), body: .hello(card)) {
+            app.cards.handle(.message(hello))
+        }
+    }
+
+    static func sampleTerms(start: Date = Date().addingTimeInterval(3600)) throws -> Terms {
+        try Terms([
+            .time: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(2 * 3600))]),
+            .activity: .keywords([try Keyword("boba")]),
+            .budget: .amount(try MoneyAmount(minorUnits: 1200)),
+        ])
+    }
+
+    static func sampleDisclosure(to peer: PeerID, start: Date, roster: [PeerID] = []) throws -> Disclosure {
+        var items = [
+            DisclosedItem(category: .psi, issue: .time, value: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(4 * 3600))])),
+            DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")])),
+        ]
+        if !roster.isEmpty { items.append(DisclosedItem(category: .terms, issue: .people, value: .peers(roster))) }
+        return Disclosure(recipient: peer, recipientModel: .onDevice, items: items)
+    }
+
+    /// Sends a sample proposal to the first friend through the app's Outbox:
+    /// lane G's policy, the consent sheet, and the audit log.
+    func sendSample(through app: AppModel) async -> String {
+        guard let outbox = app.outbox else { return "This build has no Outbox." }
+        guard let friend = app.friends?.friends.first, let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart)) else {
             return "Add a friend first."
         }
         do {
@@ -164,188 +215,220 @@ final class DebugHarness {
             return SendFailureMessage.text(for: error) ?? "Failed: \(error)"
         }
     }
-
-    /// Core v1.1's refusal when the policy's answer changes while the owner
-    /// decides. Lane G's policy computes the same disclosure from the same
-    /// message, so a real rule edit ends in a denial instead; this demo uses
-    /// a stand-in policy whose re-check returns a different disclosure.
-    func sendWithPolicyChangingDuringConsent(through consent: any ConsentProvider) async -> String {
-        guard let transport = appTransport, let friend = simFriend?.peer,
-              let asked = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 1800),
-              let changed = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 2500),
-              let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart))
-        else { return "Add a friend first." }
-        let outbox = Outbox(transport: transport, policy: DemoPolicy(first: asked, recheck: changed), consent: consent)
-        do {
-            try await outbox.send(.propose(proposal), to: friend.id, conversation: ConversationID())
-            return "Sent to \(friend.nickname)."
-        } catch {
-            return SendFailureMessage.text(for: error) ?? "Failed: \(error)"
-        }
-    }
-
-    static func sampleTerms(start: Date = Date().addingTimeInterval(3600)) throws -> Terms {
-        try Terms([
-            .time: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(2 * 3600))]),
-            .activity: .keywords([try Keyword("boba run")]),
-            .budget: .amount(try MoneyAmount(minorUnits: 1200)),
-        ])
-    }
-
-    static func sampleDisclosure(to peer: PeerID, start: Date, budgetMinorUnits: Int64 = 1500) throws -> Disclosure {
-        Disclosure(recipient: peer, recipientModel: .onDevice, items: [
-            DisclosedItem(category: .psi, issue: .time, value: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(4 * 3600))])),
-            DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("food")])),
-            DisclosedItem(category: .terms, issue: .budget, value: .amount(try MoneyAmount(minorUnits: budgetMinorUnits))),
-        ])
-    }
 }
 
-/// A second phone in the same process, paired with this one: its own lane E1
-/// identity and PinAuthority, a SecureTransport over an in-process Loopback
-/// link, lane F's DownNegotiator, and the app's link layer for hellos. It
-/// approves its own consent and allows every send, because only this
-/// phone's side should exercise lane G's policy and the consent sheet.
+/// Moves the scripted skills through the lifecycle the way a skill service
+/// would: a request gets a proposal after a moment, "I'm in" becomes a
+/// plan, and Developer buttons play a friend's side.
 @MainActor
 @Observable
-final class SimulatedFriend {
-    let peer: PairedPeer
-    private(set) var state = "Not down"
-    private(set) var inRange = true
-    private let ownerID: PeerID
-    private let hub: LoopbackHub
-    private let transport: SecureTransport
-    private let outbox: Outbox
-    private let negotiator: DownNegotiator
-    private let link: LinkTestModel
-    private var started = false
+final class DemoDriver {
+    let me: PeerID
+    let services: [ScriptedSkillService]
+    private var seenStarts: Set<InteractionID> = []
+    private var seenAnswers = 0
+    private var requests: [InteractionID: (SkillRequest, ScriptedSkillService)] = [:]
+    private var revisions: [InteractionID: UInt32] = [:]
+    private var questions: [InteractionID: UInt32] = [:]
+    var autoPropose = true
+    private var loop: Task<Void, Never>?
 
-    init(hub: LoopbackHub, owner: PairedPeer, card: AgentCard) {
-        let identity = IdentityKeyPair.generate()
-        peer = try! PairedPeer(publicKey: identity.publicKey, nickname: "Sim friend", pairedAt: Timestamp(Date()))
-        ownerID = owner.id
-        self.hub = hub
-        let pinned = InMemoryPairedPeerStore([owner])
-        transport = SecureTransport(
-            wrapping: LoopbackTransport(localPeer: identity.peerID, hub: hub),
-            authority: PinAuthority(identity: identity, store: pinned)
-        )
-        outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved))
-        negotiator = DownNegotiator(
-            localPeer: identity.peerID,
-            outbox: outbox,
-            pairedPeers: pinned,
-            model: ScriptedAgentModel(onDecide: { _ in .accept }),
-            psi: InsecurePSIStub()
-        )
-        link = LinkTestModel(outbox: outbox, card: card, name: { _ in nil })
+    init(me: PeerID, services: [ScriptedSkillService]) {
+        self.me = me
+        self.services = services
     }
 
-    func start() async {
-        guard !started else { return }
-        started = true
-        let events = Inbox(localPeer: peer.id).events(from: transport)
-        let negotiator = negotiator
-        let link = link
-        Task {
-            for await event in events {
-                await link.handle(event)
-                await negotiator.handle(event)
+    func run() {
+        guard loop == nil else { return }
+        loop = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.step()
+                try? await Task.sleep(for: .milliseconds(400))
             }
         }
-        Task { [weak self] in
-            for await event in negotiator.events { self?.show(event) }
+    }
+
+    private func step() async {
+        for service in services {
+            for request in await service.started where !seenStarts.contains(request.interaction) {
+                seenStarts.insert(request.interaction)
+                requests[request.interaction] = (request, service)
+                if autoPropose {
+                    try? await Task.sleep(for: .seconds(2))
+                    await propose(request.interaction)
+                }
+            }
         }
-        try? await transport.start()
+        var answers: [(InteractionID, OwnerAnswer)] = []
+        for service in services { answers += await service.answers }
+        for (id, answer) in answers.dropFirst(seenAnswers) {
+            if case .accept(let revision) = answer { await confirm(id, revision: revision) }
+        }
+        seenAnswers = answers.count
     }
 
-    /// Free for the next eight hours, wants food or a boba run, up to $20.
-    func goDown(_ level: DownLevel) async {
-        let now = Date()
-        let start = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 1800).rounded(.up) * 1800)
-        let end = start.addingTimeInterval(8 * 3600)
-        do {
-            let rules = OwnerRules(constraints: try ConstraintSet([
-                .time: [try Constraint(.within([try TimeSlot(start: start, end: end)]))],
-                .activity: [try Constraint(.prefers(liked: [try Keyword("food"), try Keyword("boba run")], avoided: []))],
-                .budget: [try Constraint(.atMost(try MoneyAmount(minorUnits: 2000)))],
-            ]))
-            try await negotiator.setIntent(DownIntent(rules: rules, level: level, expiresAt: Timestamp(end)))
-            state = level == .down ? "Down: food or boba, up to $20, next 8 hours" : "Maybe: food or boba, up to $20, next 8 hours"
-        } catch {
-            state = "Couldn't go down: \(error)"
+    /// The agents agreed: a proposal card from the request's own chips.
+    func propose(_ id: InteractionID) async {
+        guard let (request, service) = requests[id] else { return }
+        let revision = (revisions[id] ?? 0) + 1
+        revisions[id] = revision
+        var terms: [IssueKey: IssueValue] = [:]
+        for (issue, list) in request.intent.rules.constraints.constraints {
+            for constraint in list {
+                switch constraint.rule {
+                case .prefers(let liked, _) where !liked.isEmpty: terms[issue] = .keywords(Array(liked.prefix(1)))
+                case .within(let slots): if let first = slots.sorted().first {
+                    let start = first.start
+                    terms[issue] = .slots([(try? TimeSlot(start: start, end: min(first.end, start.addingTimeInterval(2 * 3600)))) ?? first])
+                }
+                default: break
+                }
+            }
+        }
+        if request.intent.skill.id == .pickAPlace, let place = try? PlaceChoice(name: PlaceName("Boba Guys"), coordinate: Coordinate(latitude: 37.7599, longitude: -122.4214)) {
+            terms[.place] = .places([place])
+        }
+        guard let terms = try? Terms(terms) else { return }
+        await service.emit(.lifecycle(id, .proposalReady(SkillProposal(revision: revision, participants: [me] + request.participants, terms: terms))))
+    }
+
+    /// Everyone said yes: the plan.
+    private func confirm(_ id: InteractionID, revision: UInt32) async {
+        guard let (request, service) = requests[id] else { return }
+        try? await Task.sleep(for: .seconds(1))
+        await service.emit(.lifecycle(id, .everyoneConfirmed(revision: revision)))
+        let people = Array(([me] + request.participants).prefix(ProtocolLimits.maxAttendees))
+        guard let attendees = try? Attendees(people) else { return }
+        var activity: Keyword?
+        var time: TimeSlot?
+        for constraint in request.intent.rules.constraints.constraints[.activity] ?? [] {
+            if case .prefers(let liked, _) = constraint.rule { activity = activity ?? liked.first }
+        }
+        for constraint in request.intent.rules.constraints.constraints[.time] ?? [] {
+            if case .within(let slots) = constraint.rule, let first = slots.sorted().first {
+                time = time ?? (try? TimeSlot(start: first.start, end: min(first.end, first.start.addingTimeInterval(2 * 3600))))
+            }
+        }
+        if request.intent.skill.id == .pickAPlace, let place = try? PlaceChoice(name: PlaceName("Boba Guys"), coordinate: Coordinate(latitude: 37.7599, longitude: -122.4214)) {
+            await service.emit(.produced(id, .placeChoice(place)))
+            return
+        }
+        if let plan = try? Plan(origin: request.conversation, attendees: attendees, activity: activity ?? (try? Keyword("hang out")), time: time) {
+            await service.emit(.produced(id, .plan(plan)))
         }
     }
 
-    func withdraw() async {
-        await negotiator.clearIntent()
+    /// The live requests this phone sent, newest first.
+    var live: [InteractionID] { Array(requests.keys) }
+
+    func nobodyUp(_ id: InteractionID) async {
+        await requests[id]?.1.emit(.lifecycle(id, .noAgreement))
     }
 
-    func setInRange(_ inRange: Bool) async {
-        if inRange { await hub.heal(peer.id, ownerID) } else { await hub.partition(peer.id, ownerID) }
-        self.inRange = inRange
+    /// A friend's Find a time reaches this phone and asks when the owner is free.
+    func friendAsksForATime(from friend: PeerID) async {
+        guard let service = services.first(where: { $0.descriptor.id == .findATime }) else { return }
+        let id = InteractionID()
+        await service.emit(.incoming(id, conversation: ConversationID(), from: friend, chainedFrom: nil))
+        let calendar = Calendar(identifier: .gregorian)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.date(bySettingHour: 16, minute: 0, second: 0, of: Date()) ?? Date()) ?? Date()
+        let slots = (0..<3).compactMap { day in try? TimeSlot(start: tomorrow.addingTimeInterval(Double(day) * 86_400), end: tomorrow.addingTimeInterval(Double(day) * 86_400 + 3600)) }
+        let revision = (questions[id] ?? 0) + 1
+        questions[id] = revision
+        await service.emit(.lifecycle(id, .ownerNeeded(SkillQuestion(revision: revision, issue: .time, candidates: .slots(slots), asker: friend))))
     }
 
-    private func show(_ event: DownEvent) {
-        switch event {
-        case .checking(let friends): state += " (checking \(friends))"
-        case .matched(let match): state = "Matched (\(match.bothDown ? "both down" : "a maybe"))"
-        case .ended(let reason): state = "Not down (\(reason.rawValue))"
-        }
+    /// A friend's Down for… lines up with the owner's: both are down.
+    func friendIsDownToo(_ friend: PeerID) async {
+        guard let service = services.first(where: { $0.descriptor.id == .downFor }) else { return }
+        let id = InteractionID()
+        let conversation = ConversationID()
+        await service.emit(.incoming(id, conversation: conversation, from: friend, chainedFrom: nil))
+        let start = Date().addingTimeInterval(3 * 3600)
+        guard let slot = try? TimeSlot(start: start, end: start.addingTimeInterval(2 * 3600)),
+              let terms = try? Terms([.activity: .keywords([try Keyword("tacos")]), .time: .slots([slot])]) else { return }
+        let request = SkillRequest(interaction: id, conversation: conversation,
+                                   intent: SkillIntent(skill: service.descriptor.ref, rules: OwnerRules(constraints: (try? ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("tacos")], avoided: []))], .time: [try Constraint(.within([slot]))]])) ?? .empty), audience: .picked([friend]), expiresAt: Timestamp(start)),
+                                   participants: [friend])
+        requests[id] = (request, service)
+        revisions[id] = 1
+        await service.emit(.lifecycle(id, .proposalReady(SkillProposal(revision: 1, participants: [me, friend], terms: terms))))
     }
 }
 
-/// Runs the whole Down journey headless when the app is launched with
-/// `-starlingSelfTestDown YES`, and prints the outcome: the simulated friend
-/// goes down, this phone goes down with overlapping time, every consent
-/// sheet is approved, and the test waits for a match. Evidence that lane F's
-/// DownNegotiator, lane G's policy, the consent sheet, and the app's Inbox
-/// loop work together, where the Simulator cannot be tapped through.
+/// Stands in for lanes C, D, and E's access APIs: "the system alert"
+/// answers yes, or no when Developer says so. It never shows a real alert,
+/// because the purpose strings arrive with those lanes.
+struct DebugPermissionAccess: PermissionAccess {
+    let permission: SystemPermission
+
+    private var key: String { "dev.permission.\(permission.rawValue)" }
+
+    func status() async -> PermissionStatus {
+        switch UserDefaults.standard.string(forKey: key) {
+        case "granted": .granted
+        case "denied": .denied
+        default: .notDetermined
+        }
+    }
+
+    func request() async -> PermissionStatus {
+        let deny = UserDefaults.standard.bool(forKey: DebugHarness.denyPermissionsKey)
+        UserDefaults.standard.set(deny ? "denied" : "granted", forKey: key)
+        return deny ? .denied : .granted
+    }
+
+    static func reset() {
+        for permission in SystemPermission.allCases { UserDefaults.standard.removeObject(forKey: "dev.permission.\(permission.rawValue)") }
+    }
+}
+
+/// Runs a whole Down for… headless when the app is launched with
+/// `-starlingSelfTestLifecycle YES` and prints the outcome: two sample
+/// friends, a request from New, every consent sheet approved, the demo
+/// proposal accepted, and the plan. Evidence that the composer, the
+/// coordinator, the consent sheet, and Home work together where the
+/// Simulator cannot be tapped through.
 @MainActor
-enum DownSelfTest {
+enum LifecycleSelfTest {
     static func runIfRequested(app: AppModel, harness: DebugHarness) async {
-        guard UserDefaults.standard.bool(forKey: "starlingSelfTestDown"), let down = app.down, let sim = harness.simFriend else { return }
-        await app.startLinks()
+        guard UserDefaults.standard.bool(forKey: "starlingSelfTestLifecycle") else { return }
+        await app.start()
+        harness.driver?.run()
+        await harness.addSampleFriend(to: app)
+        await harness.addSampleFriend(to: app)
         let approver = Task {
             while !Task.isCancelled {
-                if let request = app.consent.current {
-                    print("SELFTEST consent: \(request.items.map(\.title).joined(separator: ", ")) to \(request.recipientName)")
-                    app.consent.answer(.approved, to: request.id)
-                }
+                if let request = app.consent.current { app.consent.answer(.approved, to: request.id) }
+                if app.permissions.pending != nil { app.permissions.proceed() }
                 try? await Task.sleep(for: .milliseconds(50))
             }
         }
         defer { approver.cancel() }
 
-        await sim.goDown(.down)
-        print("SELFTEST sim friend: \(sim.state)")
-        await down.editByHand()
-        down.draft.add(.within, issue: .time)
-        down.draft.add(.prefers, issue: .activity)
-        down.draft.items[down.draft.items.count - 1].likedText = "food"
-        down.draft.add(.atMost, issue: .budget)
-        down.draft.items[down.draft.items.count - 1].amountMinorUnits = 1500
-        down.level = .down
-        down.duration = .threeHours
-        await down.goDown()
-        print("SELFTEST owner: phase \(down.phase), notice \(down.notice ?? "none")")
-
-        for _ in 0..<600 where down.matches.isEmpty {
-            try? await Task.sleep(for: .milliseconds(100))
+        app.composer.text = "boba tonight with whoever's free"
+        await app.composer.understand()
+        print("SELFTEST understood: \(app.composer.skillChip ?? "none") \(app.composer.chips)")
+        guard let id = await app.composer.send() else {
+            print("SELFTEST NOT SENT: \(app.composer.notice ?? app.composer.blocker ?? "unknown")")
+            return
         }
-        if let match = down.matches.first {
-            print("SELFTEST MATCH with \(match.friendName): \(match.lines.map { "\($0.title)=\($0.detail ?? "")" }.joined(separator: "; ")); bothDown \(match.bothDown); status \(down.status)")
-        } else {
-            print("SELFTEST NO MATCH after 60 s; status \(down.status); checking \(String(describing: down.active?.checkingFriends)); sim friend \(sim.state)")
+        for _ in 0..<100 where app.lifecycle.interaction(id)?.state != .proposed { try? await Task.sleep(for: .milliseconds(100)) }
+        print("SELFTEST home: \(app.home.headline); needs you \(app.home.needsYou.map(\.status))")
+        guard let revision = app.lifecycle.interaction(id)?.proposalRevision else {
+            print("SELFTEST NO PROPOSAL; state \(String(describing: app.lifecycle.interaction(id)?.state))")
+            return
         }
-        let audited = await LiveServices.auditLog.entries()
-        print("SELFTEST audit: \(audited.map { $0.kind.rawValue }.joined(separator: ","))")
+        await app.lifecycle.answer(id, with: .accept(proposal: revision))
+        for _ in 0..<100 where app.lifecycle.interaction(id)?.plan == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        let final = app.lifecycle.interaction(id)
+        print("SELFTEST PLAN: state \(String(describing: final?.state)); \(final.map { app.planDetail($0).title } ?? "none"); history \(final?.history.map { "\($0.state)" } ?? []); dropped \(app.lifecycle.dropped.count)")
     }
 }
 
-/// The Keychain friends plus friends that exist only in this Debug session
-/// (the simulated friend, sample friends), which are never written to the
-/// Keychain. Lane E1's authority commits real pairings to the Keychain part.
+/// The Keychain friends plus friends that exist only in this Debug session,
+/// which are never written to the Keychain. Lane E1's authority commits real
+/// pairings to the Keychain part.
 actor OverlayPairedPeerStore: PairedPeerStore {
     private let base: any PairedPeerStore
     private let overlay: InMemoryPairedPeerStore
@@ -375,34 +458,16 @@ actor OverlayPairedPeerStore: PairedPeerStore {
     }
 }
 
-/// Asks for consent on every send; the re-check after consent can return a
-/// different disclosure to exercise `OutboxError.policyChangedDuringConsent`.
-actor DemoPolicy: PolicyEngine {
-    private let first: Disclosure
-    private let recheck: Disclosure
-    private var evaluations = 0
-
-    init(first: Disclosure, recheck: Disclosure) {
-        self.first = first
-        self.recheck = recheck
-    }
-
-    func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
-        evaluations += 1
-        return .needsConsent(evaluations == 1 ? first : recheck)
-    }
-}
-
 /// Fakes-backed models for SwiftUI previews.
 @MainActor
 enum PreviewSupport {
-    static func app(friends: [String] = ["Maya", "Sam"]) -> AppModel {
+    static func app(friends: [String] = ["Maya", "Jake"]) -> AppModel {
         AppModel(services: DebugHarness.previewServices(friends: friends))
     }
 
-    struct SilentNotifier: MatchNotifier {
+    struct SilentNotifier: PlanNotifier {
         func requestAuthorization() async -> Bool { true }
-        func post(_ notice: MatchNotice) async {}
+        func post(_ notice: LifecycleNotice) async {}
     }
 
     struct SilentPrompter: LocalNetworkPrompter {

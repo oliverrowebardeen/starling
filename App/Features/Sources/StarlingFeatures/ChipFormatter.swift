@@ -71,7 +71,7 @@ public struct ChipFormatter: Sendable {
         return "Expires \(dayWord(date).lowercased())"
     }
 
-    func dayWord(_ date: Date) -> String {
+    public func dayWord(_ date: Date) -> String {
         let today = calendar.startOfDay(for: now())
         let days = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: date)).day ?? 0
         switch days {

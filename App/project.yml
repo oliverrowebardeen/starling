@@ -18,7 +18,8 @@ packages:
     path: ../Packages/StarlingTransport
   StarlingAgent:
     path: ../Packages/StarlingAgent
-  # Lane H's view models and presentation logic, tested with `swift test`.
+  # The app's view models and presentation logic (lane P15-A), tested with
+  # `swift test`.
   StarlingFeatures:
     path: Features
   # Lane G's deterministic policy, consent sheet model, and audit log.
@@ -27,9 +28,6 @@ packages:
   # Lane E1's identity, pinned friends, pairing, and secure channel.
   StarlingIdentity:
     path: ../Packages/StarlingIdentity
-  # Lane F's Down negotiation (DownNegotiator).
-  StarlingNegotiation:
-    path: ../Packages/StarlingNegotiation
   # Lane BR's status mark and palette (ADR 0172).
   StarlingDesign:
     path: ../Packages/StarlingDesign
@@ -76,8 +74,9 @@ targets:
     dependencies:
       - package: StarlingCore
         product: StarlingCore
-      # Fakes for lanes that have not merged. Every import sits inside
-      # `#if DEBUG`, so Release builds do not link them (ADR 0140).
+      # Fakes for lanes that have not merged (the skills until lanes B to E
+      # land). Every import sits inside `#if DEBUG`, so Release builds do
+      # not link them (ADR 0140).
       - package: StarlingCore
         product: StarlingFakes
       - package: StarlingFeatures
@@ -86,8 +85,6 @@ targets:
         product: StarlingDesign
       - package: StarlingPolicy
         product: StarlingPolicy
-      - package: StarlingNegotiation
-        product: StarlingNegotiation
       - package: StarlingIdentity
         product: StarlingIdentity
       - package: StarlingTransport

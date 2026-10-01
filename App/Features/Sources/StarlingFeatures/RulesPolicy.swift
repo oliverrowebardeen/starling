@@ -2,8 +2,8 @@ import StarlingCore
 
 /// The app's `PolicyEngine`. `Outbox` keeps one policy for its lifetime, but
 /// lane G's engine holds an immutable snapshot of the owner's rules, so this
-/// rebuilds the engine whenever the rules change: saved rules, or saved
-/// rules merged with the active Down intent (ADR 0141).
+/// rebuilds the engine whenever the rules change: saved constraints with the
+/// privacy topics as sharing (ADR 0014), and the on-device-only choice.
 ///
 /// Until the first `update`, every send is denied, so nothing can leave the
 /// phone before a saved "never share" has been loaded.
@@ -11,20 +11,28 @@ public actor RulesPolicy: PolicyEngine {
     public static let notLoadedRule = "app.rules_not_loaded"
     public static let blockedRule = "app.rules_cannot_combine"
 
-    private let make: @Sendable (OwnerRules) -> any PolicyEngine
+    private let make: @Sendable (OwnerRules, Bool) -> any PolicyEngine
     private var engine: (any PolicyEngine)?
     private var isBlocked = false
     public private(set) var rules: OwnerRules?
+    public private(set) var onlyOnDeviceAgents = false
 
-    public init(make: @escaping @Sendable (OwnerRules) -> any PolicyEngine) {
+    /// - Parameter make: Lane G's engine for one snapshot of the rules and
+    ///   whether to refuse agents whose model is not on their own phone.
+    public init(make: @escaping @Sendable (OwnerRules, Bool) -> any PolicyEngine) {
         self.make = make
     }
 
-    public func update(_ rules: OwnerRules) {
+    public init(make: @escaping @Sendable (OwnerRules) -> any PolicyEngine) {
+        self.make = { rules, _ in make(rules) }
+    }
+
+    public func update(_ rules: OwnerRules, onlyOnDeviceAgents: Bool = false) {
         isBlocked = false
-        guard rules != self.rules else { return }
+        guard rules != self.rules || onlyOnDeviceAgents != self.onlyOnDeviceAgents || engine == nil else { return }
         self.rules = rules
-        engine = make(rules)
+        self.onlyOnDeviceAgents = onlyOnDeviceAgents
+        engine = make(rules, onlyOnDeviceAgents)
     }
 
     /// Denies every send until the next `update`: the app could not work out

@@ -11,41 +11,41 @@ import Testing
         let factory = EngineFactory()
         let transport = RecordingTransport()
         let observer = RecordingOutboxObserver()
-        let down = ScriptedDownService()
         let maya = Fixtures.peer("Maya")
+        let down = ScriptedSkillService(descriptor: SampleSkills.downFor)
         let app: AppModel
 
-        init(saved: OwnerRules? = nil) {
+        init(saved: OwnerRules? = nil, settings: OwnerSettings? = nil) {
+            let factory = factory
             let down = down
             app = AppModel(services: AppServices(
-                agent: nil,
+                registry: SampleSkills.registry,
+                makeSkills: { _ in [down] },
+                interactions: InMemoryInteractionStore(),
+                settings: InMemoryOwnerSettingsStore(settings),
                 rules: InMemoryRulesStore(saved.map { SavedRules(rules: $0, savedAt: Fixtures.noon) }),
                 peers: InMemoryPairedPeerStore([maya]),
-                makeDownService: { _ in down },
-                pairing: nil,
-                makePolicy: factory.make,
+                makePolicy: { rules, _ in factory.make(rules) },
                 auditLog: observer,
+                describeEgress: { envelope, _ in
+                    guard case .propose(let proposal) = envelope.body else { return [] }
+                    return proposal.terms.values.keys.sorted().map { DisclosedItem(category: .terms, issue: $0, value: proposal.terms.values[$0]) }
+                },
                 transport: transport,
                 presentConsent: { disclosure in
-                    ConsentPresentation(rows: [DisplayLine(title: "G row", detail: "\(disclosure.items.count) items")], recipientModel: "G model", notices: ["G notice"])
+                    ConsentPresentation(rows: disclosure.items.map { _ in DisplayLine(title: "G row", detail: nil) }, recipientModel: "G model", notices: ["G notice"])
                 },
                 notifier: RecordingNotifier(),
                 localNetwork: CountingPrompter()
             ))
         }
 
-        func send() async throws {
-            try await app.outbox!.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya.id, conversation: ConversationID())
+        func send(conversation: ConversationID = ConversationID(), terms: Terms = .empty) async throws {
+            try await app.outbox!.send(.propose(try Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation)
         }
     }
 
-    static let neverPlace = OwnerRules(constraints: .empty, disclosure: [DisclosureRule(issue: .place, action: .never)])
-
-    @Test func noOutboxWithoutATransport() {
-        var services = AppModelTests.services(down: nil, peers: nil)
-        services.transport = nil
-        #expect(AppModel(services: services).outbox == nil)
-    }
+    static let neverPlace = DisclosureRule(issue: .place, action: .never)
 
     @Test func sendsBeforeStartAreDenied() async throws {
         let setup = Setup()
@@ -59,55 +59,67 @@ import Testing
         let send = Task { try await setup.send() }
         await eventually { setup.app.consent.current != nil }
         let request = try #require(setup.app.consent.current)
-        #expect(request.items == [DisplayLine(title: "G row", detail: "0 items")])
         #expect(request.recipientModel == "G model")
         #expect(request.notices == ["G notice"])
         setup.app.consent.answerCurrent(.approved)
         try await send.value
-
         #expect(await setup.transport.sent.count == 1)
         #expect(await setup.observer.records.count == 1)
     }
 
-    @Test func savedRulesApplyFromLaunch() async throws {
-        let setup = Setup(saved: Self.neverPlace)
+    /// ADR 0014: privacy topics are the standing sharing, from launch.
+    @Test func topicsApplyFromLaunchAndFollowChanges() async throws {
+        var settings = OwnerSettings()
+        try settings.privacy.set(.never, for: .place)
+        let setup = Setup(settings: settings)
         await setup.app.start()
+        #expect(await setup.app.policy?.rules?.disclosure.contains(Self.neverPlace) == true)
         await #expect(throws: OutboxError.denied(PolicyViolation(rule: "never", issue: .place))) { try await setup.send() }
-        #expect(await setup.observer.records.isEmpty)
+
+        await setup.app.settings.set(.askMe, for: .place)
+        #expect(await setup.app.policy?.rules?.disclosure.contains(DisclosureRule(issue: .place, action: .askEachTime)) == true)
     }
 
-    @Test func savingRulesUpdatesThePolicy() async throws {
-        let setup = Setup()
+    /// Phase 1's saved "never share place" becomes Place: Never on the first
+    /// Phase 1.5 launch, and saved constraints still apply.
+    @Test func phaseOneSharingMigratesIntoTopics() async throws {
+        let saved = OwnerRules(constraints: try ConstraintSet([.budget: [try Constraint(.atMost(try MoneyAmount(minorUnits: 1500)))]]), disclosure: [Self.neverPlace])
+        let setup = Setup(saved: saved)
         await setup.app.start()
-        setup.app.rulesEditor.editByHand()
-        setup.app.rulesEditor.setSharing(.never, for: .place)
-        #expect(await setup.app.rulesEditor.save())
-        #expect(await setup.app.policy?.rules == Self.neverPlace)
+        #expect(setup.app.settings.choice(for: .place) == .never)
+        let rules = try #require(await setup.app.policy?.rules)
+        #expect(rules.constraints == saved.constraints)
+        #expect(rules.disclosure == setup.app.settings.settings.privacy.disclosureRules)
     }
 
-    @Test func anIntentsSharingAppliesWhileItIsOutAndEndsWithIt() async throws {
+    @Test func theOnDeviceOnlyChoiceReachesThePolicy() async throws {
         let setup = Setup()
         await setup.app.start()
-        let down = try #require(setup.app.down)
-        await down.editByHand()
-        down.setSharing(.never, for: .place)
-        await down.goDown()
-        #expect(await setup.app.policy?.rules == Self.neverPlace)
-
-        await down.withdraw()
-        #expect(await setup.app.policy?.rules == .empty)
+        await setup.app.settings.setOnlyOnDeviceAgents(true)
+        #expect(await setup.app.policy?.onlyOnDeviceAgents == true)
     }
 
-    @Test func theIntentPolicyIsInPlaceBeforeTheServiceHearsOfIt() async throws {
+    /// "What left your phone" records what each send disclosed on its
+    /// interaction: the sheet's items when asked, the policy's otherwise.
+    @Test func everySendIsRecordedOnItsInteraction() async throws {
         let setup = Setup()
         await setup.app.start()
-        let down = try #require(setup.app.down)
-        await down.editByHand()
-        down.setSharing(.never, for: .place)
-        await down.goDown()
-        // setIntent ran after the hook, so the policy it could send under
-        // already had the intent's rules.
-        #expect(await setup.down.intents.count == 1)
-        #expect(setup.factory.snapshots.last == Self.neverPlace)
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [setup.maya.id]
+        )
+        try await setup.app.lifecycle.start(request, settings: setup.app.settings.skillSettings)
+        let terms = try Terms([.activity: .keywords([try Keyword("boba")])])
+        let send = Task { try await setup.send(conversation: request.conversation, terms: terms) }
+        await eventually { setup.app.consent.current != nil }
+        #expect(setup.app.lifecycle.interaction(request.interaction)?.state == .awaitingConsent(resume: .negotiating))
+        setup.app.consent.answerCurrent(.approved)
+        try await send.value
+        await eventually { setup.app.lifecycle.interaction(request.interaction)?.egress.isEmpty == false }
+        let interaction = try #require(setup.app.lifecycle.interaction(request.interaction))
+        #expect(interaction.state == .negotiating)
+        #expect(interaction.egress.count == 1)
+        #expect(interaction.egress.first?.recipient == setup.maya.id)
     }
 }

@@ -15,7 +15,7 @@ ADR 0011 gives the app one lifecycle coordinator that consumes every `SkillServi
 
 1. **Skill services report what their agents do:** `incoming`, `ownerNeeded(question)`, `proposalReady(proposal)`, `everyoneConfirmed(revision)`, `noAgreement`, `expired`, `failed`, `unsupported`, `blockedByPrivacy`, and `produced(artifact)`.
 2. **The coordinator applies the owner's steps itself, before the service hears of them:**
-   - `started` when the owner sends from New, then `SkillService.start(_:)`. If `start` throws, the interaction ends `failed`.
+   - `started` when the owner sends from New, then `SkillService.start(_:)`. If `start` throws, the interaction ends `failed`. This is ADR 0011 amendment 13, which the Orchestrator announced on 2026-10-01: skill services never emit `.lifecycle(_, .started)`, and invitees start in negotiating without it.
    - `ownerAccepted(revision:)`, `ownerPassed`, and `ownerAnswered(question:)` when the owner taps a card, then `SkillService.answer(_:with:)`. A tap on a stale card throws `StaleProposal` or `StaleQuestion` here and never reaches the service.
    - `withdrawn`, then `SkillService.withdraw(_:)`.
    - A service that reports these anyway is harmless: the copy is dropped as an invalid transition.
