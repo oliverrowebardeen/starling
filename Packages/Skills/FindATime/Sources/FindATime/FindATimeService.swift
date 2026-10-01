@@ -54,6 +54,7 @@ public actor FindATimeService: SkillService {
     private let checkpointQueue: AsyncStream<CheckpointOp>.Continuation
     private let checkpointTask: Task<Void, Never>
     private var isShutDown = false
+    private var pending: Set<SendKey> = []
 
     struct Tombstone: Hashable, Sendable {
         /// The starter, for an invitee conversation: a late query or
@@ -322,7 +323,36 @@ public actor FindATimeService: SkillService {
         case failed
     }
 
+    /// One step's send to one friend. A retry of a step whose send is still
+    /// pending (on a consent sheet, say) is skipped, so a retry never opens
+    /// a second sheet for the same message.
+    struct SendKey: Hashable, Sendable {
+        let conversation: ConversationID
+        let peer: PeerID
+        let step: String
+
+        init?(_ body: MessageBody, to peer: PeerID, in conversation: ConversationID) {
+            let step: String
+            switch body {
+            case .query: step = "query"
+            case .answer: step = "answer"
+            case .propose(let proposal): step = "propose \(proposal.round)"
+            case .accept(let acceptance): step = "accept \(acceptance.terms.hashValue)"
+            default: return nil
+            }
+            self.conversation = conversation
+            self.peer = peer
+            self.step = step
+        }
+    }
+
     func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async -> SendOutcome {
+        let key = SendKey(body, to: peer, in: conversation)
+        if let key {
+            // Reported like a lost send: the next retry tries again.
+            guard pending.insert(key).inserted else { return .failed }
+        }
+        defer { if let key { pending.remove(key) } }
         do {
             let envelope = try await outbox.send(
                 body, to: peer, conversation: conversation, recipientCard: cards[peer],

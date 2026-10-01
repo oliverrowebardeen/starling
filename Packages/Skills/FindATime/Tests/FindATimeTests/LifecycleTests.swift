@@ -186,6 +186,26 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// Retries never open a second sheet for a send still waiting on one.
+    @Test func retriesWaitForAnOpenSheet() async throws {
+        let world = World()
+        let sheet = HeldConsent()
+        let a = world.phone("Ana", policy: alwaysAsk, consent: sheet)
+        let b = world.phone("Ben")
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        try await eventually("the sheet is open") { await sheet.asked == 1 }
+        // Ten retry intervals.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await sheet.asked == 1)
+        // The proposal waits on a sheet of its own; keep approving.
+        try await eventually("a proposal") {
+            await sheet.answerAll(.approved)
+            return await a.coordinator.interaction(started)?.state == .proposed
+        }
+        await world.stop()
+    }
+
     /// The same on the answering side: a friend who withdraws while the
     /// sheet for their answer is open never sends the answer.
     @Test func anInviteeWithdrawingWhileASheetIsOpenSendsNoAnswer() async throws {
