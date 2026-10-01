@@ -90,6 +90,11 @@ public final class DownModel {
     private let rules: any RulesStore
     private let peers: any PairedPeerStore
     private let notifier: any MatchNotifier
+    /// Plain words for the service's own errors (lane F's DownError), which
+    /// this package cannot name. Nil means the generic message.
+    private let describeError: @Sendable (any Error) -> String?
+    /// Whether the PSI provider hides the owner's free times from friends.
+    private let matchingIsPrivate: Bool
     private let timeZone: TimeZone
     private let now: @Sendable () -> Date
     /// Called whenever the intent starts, is withdrawn, or ends, after
@@ -109,6 +114,8 @@ public final class DownModel {
         rules: any RulesStore,
         peers: any PairedPeerStore,
         notifier: any MatchNotifier,
+        matchingIsPrivate: Bool = false,
+        describeError: @escaping @Sendable (any Error) -> String? = { _ in nil },
         formatter: ValueFormatter = ValueFormatter(),
         timeZone: TimeZone = .current,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -122,6 +129,8 @@ public final class DownModel {
         self.rules = rules
         self.peers = peers
         self.notifier = notifier
+        self.matchingIsPrivate = matchingIsPrivate
+        self.describeError = describeError
         self.formatter = formatter
         self.timeZone = timeZone
         self.now = now
@@ -172,6 +181,29 @@ public final class DownModel {
     /// Sets one issue's sharing for this intent, never looser than the saved rules.
     public func setSharing(_ action: DisclosureRule.Action, for issue: IssueKey) {
         draft.setSharing(action, for: issue, standing: standingSharing)
+    }
+
+    /// What the review should say about the matching step: nil when the
+    /// PSI provider hides free times, a plain warning while it does not
+    /// (the insecure stub until Nightjar, docs/requests/F.md).
+    public var matchingNote: String? {
+        matchingIsPrivate ? nil : "In this test build, matching does not hide your free times from the friends Starling checks with."
+    }
+
+    /// Consequences of "never share" that lane F documents: the policy
+    /// refuses every matching step without time, and refuses the activity
+    /// or budget question, which ends that friend's check without a match.
+    public var sharingWarnings: [String] {
+        let never = Set(sharingRows.filter { $0.action == .never }.map(\.issue))
+        var warnings: [String] = []
+        if never.contains(.time) {
+            warnings.append("With Time set to never share, Down can't check with anyone: matching needs your free times.")
+        }
+        let blocking = [IssueKey.activity, .budget].filter(never.contains).map(formatter.issueName)
+        if !blocking.isEmpty {
+            warnings.append("With \(blocking.joined(separator: " and ")) set to never share, each friend's check ends without a match.")
+        }
+        return warnings
     }
 
     public var sharingRows: [RulesDraft.SharingRow] {
@@ -263,7 +295,7 @@ public final class DownModel {
                 activeIntentRules = nil
                 await intentChanged()
             }
-            notice = SendFailureMessage.text(for: error) ?? "Starling couldn't start checking. Try again."
+            notice = SendFailureMessage.text(for: error) ?? describeError(error) ?? "Starling couldn't start checking. Try again."
             phase = .reviewing
         }
     }

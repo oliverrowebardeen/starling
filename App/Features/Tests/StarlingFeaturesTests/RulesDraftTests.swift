@@ -157,7 +157,16 @@ import Testing
         let slot = try TimeSlot(startMinute: 100, endMinute: 200)
         let intent = OwnerRules(constraints: try ConstraintSet([.time: [try Constraint(.within([slot]))]]))
         let merged = try RulesMerge.intent(intent, standing: standing)
-        #expect(merged.constraints[.time] == standing.constraints[.time] + intent.constraints[.time])
+        #expect(merged.constraints[.time] == intent.constraints[.time] + standing.constraints[.time])
+    }
+
+    /// Lane F takes liked keywords in order, so "want food tonight" must
+    /// outrank a standing preference (docs/requests/F.md, answer 2).
+    @Test func theIntentsPreferencesComeBeforeStandingOnes() throws {
+        let standing = OwnerRules(constraints: try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("hiking")], avoided: []))]]))
+        let intent = OwnerRules(constraints: try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("food")], avoided: []))]]))
+        let merged = try RulesMerge.intent(intent, standing: standing)
+        #expect(merged.constraints[.activity].first == intent.constraints[.activity].first)
     }
 
     @Test func mostRestrictiveSharingRuleWins() throws {

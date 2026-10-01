@@ -4,13 +4,30 @@ import StarlingFakes
 import StarlingFeatures
 import Testing
 
+/// A Down service that counts shutdowns, like lane F's DownNegotiator.
+actor StoppableScriptedDown: StoppableDownService {
+    nonisolated let events: AsyncStream<DownEvent> = AsyncStream { _ in }
+    private(set) var shutdowns = 0
+    func setIntent(_ intent: DownIntent) async throws {}
+    func clearIntent() async {}
+    func handle(_ event: InboxEvent) async {}
+    func shutdown() async { shutdowns += 1 }
+}
+
 @MainActor
 @Suite struct AppModelTests {
-    static func services(down: ScriptedDownService?, peers: InMemoryPairedPeerStore?, captured: ConsentCapture? = nil, inbox: AsyncStream<InboxEvent>? = nil) -> AppServices {
-        var makeDown: (@Sendable (any ConsentProvider) -> any DownService)?
+    static func services(
+        down: (any DownService)?,
+        peers: InMemoryPairedPeerStore?,
+        captured: OutboxCapture? = nil,
+        inbox: AsyncStream<InboxEvent>? = nil,
+        transport: RecordingTransport = RecordingTransport(),
+        card: AgentCard? = nil
+    ) -> AppServices {
+        var makeDown: (@Sendable (Outbox) -> any DownService)?
         if let down {
-            makeDown = { consent in
-                captured?.set(consent)
+            makeDown = { outbox in
+                captured?.set(outbox)
                 return down
             }
         }
@@ -21,23 +38,61 @@ import Testing
             makeDownService: makeDown,
             makePairingSession: { ScriptedPairingSession(code: "123 456", peer: Fixtures.peer("Test")) },
             inboxEvents: inbox,
+            makePolicy: { _ in FixedPolicyEngine(.allow) },
+            transport: transport,
+            agentCard: card,
             notifier: RecordingNotifier(),
             localNetwork: CountingPrompter()
         )
     }
 
-    final class ConsentCapture: @unchecked Sendable {
+    final class OutboxCapture: @unchecked Sendable {
         private let lock = NSLock()
-        private var value: (any ConsentProvider)?
-        func set(_ provider: any ConsentProvider) { lock.withLock { value = provider } }
-        func get() -> (any ConsentProvider)? { lock.withLock { value } }
+        private var value: Outbox?
+        func set(_ outbox: Outbox) { lock.withLock { value = outbox } }
+        func get() -> Outbox? { lock.withLock { value } }
     }
 
-    @Test func givesTheDownServiceTheAppsConsentSheet() async {
-        let capture = ConsentCapture()
+    @Test func buildsTheDownServiceOnTheAppsOutbox() async {
+        let capture = OutboxCapture()
         let app = AppModel(services: Self.services(down: ScriptedDownService(), peers: InMemoryPairedPeerStore(), captured: capture))
         #expect(app.down != nil)
-        #expect((capture.get() as? ConsentCoordinator) === app.consent)
+        #expect(capture.get() === app.outbox)
+    }
+
+    @Test func noDownWithoutAnOutbox() {
+        var services = Self.services(down: ScriptedDownService(), peers: InMemoryPairedPeerStore())
+        services.transport = nil
+        #expect(AppModel(services: services).down == nil)
+    }
+
+    @Test func startStartsTheTransportAndShutdownStopsEverything() async {
+        let transport = RecordingTransport()
+        let down = StoppableScriptedDown()
+        let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), transport: transport))
+        await app.start()
+        #expect(await transport.isStarted)
+        await app.shutdown()
+        #expect(await down.shutdowns == 1)
+        #expect(await transport.isStarted == false)
+    }
+
+    /// Lane F: "Down does not send hello; the app's link layer does."
+    @Test func greetsEachPeerThatBecomesAvailableWithTheAgentCard() async throws {
+        let transport = RecordingTransport()
+        let card = try AgentCard(model: .onDevice, capabilities: [.down])
+        let down = ScriptedDownService()
+        let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
+        let app = AppModel(services: Self.services(down: down, peers: InMemoryPairedPeerStore(), inbox: inbox, transport: transport, card: card))
+        await app.start()
+        let friend = PeerID.random()
+        continuation.yield(.peerAvailable(friend))
+
+        for _ in 0..<2000 where await transport.sent.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+        let sent = try #require(await transport.sent.first)
+        #expect(sent.peer == friend)
+        #expect(try EnvelopeCodec().decode(sent.frame.bytes).body == .hello(card))
+        #expect(await down.handled == [.peerAvailable(friend)], "the event still reaches Down")
     }
 
     @Test func aNewIntentForgetsConsentApprovals() async throws {

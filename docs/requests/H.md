@@ -40,11 +40,4 @@ test "$(nm build/Build/Products/Release-iphonesimulator/Starling.app/Starling | 
 
 ## 4. Down service construction and PSI privacy flag (lane F, via the Orchestrator)
 
-**What lane H needs:**
-
-0. Done on lane H's side for v1.1: the app's single Inbox loop forwards every `InboxEvent` to `DownService.handle(_:)` (`AppServices.inboxEvents`), and approved consent is remembered for 10 minutes within one intent (F request 5, ADR 0142).
-1. A way to build F's `DownService` on the app's `Outbox` (lane G's policy, the consent sheet, the audit log; `AppModel.outbox`) and the app's Inbox loop, rather than F building its own.
-2. Resolved by lane G: `ConsentSheetModel` derives the PSI notice from the disclosure itself, so the app no longer needs a separate privacy flag.
-3. Confirmation that one merged `OwnerRules` per intent (standing rules plus the intent, most restrictive sharing wins; ADR 0141) is what F wants in `DownIntent.rules`.
-
-**Meanwhile:** Debug builds use `ScriptedDownService` driven from Developer > Fakes; Release shows "Down? isn't in this build yet".
+**Status:** resolved by lane F's answers (`docs/requests/F.md`, "Answers to lane H") and wired in ADR 0144: Down is built on the app's `Outbox`, the Inbox loop passes it every event and greets peers with `hello`, the review shows F's errors and the matching note from `psiProvider.isPrivate`, intent constraints come before standing ones, and `shutdown()` runs on teardown. Debug builds run it against a simulated friend; Release keeps "Down? isn't in this build yet" until a PSI provider exists outside `StarlingFakes`.
