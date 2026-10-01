@@ -17,7 +17,10 @@ struct Initiating: Hashable, Sendable, Codable {
         case collecting
         /// A proposal is out; collecting "That works".
         case proposing
-        /// Everyone confirmed. Kept until the plan ends, to replay the
+        /// Everyone said "That works"; confirmations are going out. The plan
+        /// exists only once every one has left the phone.
+        case confirming
+        /// Every confirmation left. Kept until the plan ends, to replay the
         /// confirmation if a friend did not get it.
         case planned
     }
@@ -49,6 +52,8 @@ struct Initiating: Hashable, Sendable, Codable {
     /// Friends who said "That works", with the proposal envelope they named.
     var accepted: [PeerID: MessageID] = [:]
     var ownerAccepted = false
+    /// Friends whose confirmation has left the phone.
+    var confirmed: Set<PeerID> = []
     var confirmDeadline: Timestamp?
 
     var conversation: ConversationID { interaction.conversation }
@@ -58,6 +63,7 @@ struct Initiating: Hashable, Sendable, Codable {
         switch phase {
         case .collecting: invitees.filter { answers[$0] == nil }
         case .proposing: (draft?.members ?? []).filter { accepted[$0] == nil }
+        case .confirming: (draft?.members ?? []).filter { !confirmed.contains($0) }
         default: []
         }
     }

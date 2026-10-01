@@ -260,6 +260,7 @@ extension FindATimeService {
         value.proposalIDs = [:]
         value.accepted = [:]
         value.ownerAccepted = false
+        value.confirmed = []
         value.confirmDeadline = deadline(after: configuration.confirmWait, capped: value.expiresAt)
         initiating[id] = value
         resetAttempts(id)
@@ -334,7 +335,9 @@ extension FindATimeService {
             initiating[id] = value
             checkpoint(id)
             confirmIfEveryoneAccepted(id)
-        case .planned:
+        case .confirming where !value.confirmed.contains(peer):
+            sendConfirmations(id, to: [peer])
+        case .confirming, .planned:
             // Our confirmation was lost: send it again.
             let chainedFrom = value.chainedFrom
             spawn(for: id) {
@@ -358,32 +361,57 @@ extension FindATimeService {
         guard var value = initiating[id], value.phase == .proposing, value.ownerAccepted, let draft = value.draft,
               draft.members.allSatisfy({ value.accepted[$0] != nil })
         else { return }
-        value.phase = .planned
+        value.phase = .confirming
+        value.confirmed = []
         initiating[id] = value
+        resetAttempts(id)
         checkpoint(id)
+        sendConfirmations(id, to: draft.members)
+    }
+
+    /// Sends confirmations through Outbox (policy and consent apply, also
+    /// after a restart) and records each one that leaves.
+    func sendConfirmations(_ id: ConversationID, to peers: [PeerID]) {
+        guard let value = initiating[id], value.phase == .confirming, let draft = value.draft else { return }
+        let targets = peers.filter { !value.confirmed.contains($0) && value.accepted[$0] != nil && countAttempt(id, $0) }
+        guard !targets.isEmpty else { return }
         let ids = value.accepted
         let chainedFrom = value.chainedFrom
         spawn(for: id) {
-            var refusal: SendOutcome?
-            for peer in draft.members {
+            for peer in targets {
                 guard let message = ids[peer] else { continue }
                 let outcome = await self.send(.accept(Acceptance(proposal: message, terms: draft.terms)), to: peer, conversation: id, chainedFrom: chainedFrom)
-                switch outcome {
-                case .declined, .denied: refusal = outcome
-                case .sent, .failed: break
-                }
-                if refusal != nil { break }
+                await self.confirmationSent(id, revision: draft.revision, to: peer, outcome)
+                if case .declined = outcome { break }
+                if case .denied = outcome { break }
             }
-            await self.confirmationsDone(id, revision: draft.revision, refusal: refusal)
         }
     }
 
-    func confirmationsDone(_ id: ConversationID, revision: UInt32, refusal: SendOutcome?) {
-        guard var value = initiating[id], value.phase == .planned, let draft = value.draft, draft.revision == revision else { return }
-        if let refusal { return initiatorRefused(id, refusal) }
-        // A friend who missed the confirmation resends its acceptance, and
-        // `receiveAcceptance` answers it, so the plan stands on this phone.
-        emit(.everyoneConfirmed(revision: revision), to: &value.interaction)
+    private func confirmationSent(_ id: ConversationID, revision: UInt32, to peer: PeerID, _ outcome: SendOutcome) {
+        guard var value = initiating[id], value.phase == .confirming, value.draft?.revision == revision else { return }
+        switch outcome {
+        case .sent:
+            value.confirmed.insert(peer)
+            initiating[id] = value
+            checkpoint(id)
+            finishPlanIfConfirmed(id)
+        case .failed:
+            // Retried on the timer, or when the friend resends its acceptance.
+            return
+        case .declined, .denied:
+            initiatorRefused(id, outcome)
+        }
+    }
+
+    /// The plan exists once every confirmation has left the phone: the
+    /// only evidence this phone has that everyone was told.
+    func finishPlanIfConfirmed(_ id: ConversationID) {
+        guard var value = initiating[id], value.phase == .confirming, let draft = value.draft,
+              draft.members.allSatisfy(value.confirmed.contains)
+        else { return }
+        value.phase = .planned
+        emit(.everyoneConfirmed(revision: draft.revision), to: &value.interaction)
         initiating[id] = value
         produce(.timeSlot(draft.slot), for: value.interaction.id)
         produce(.plan(draft.plan), for: value.interaction.id)
@@ -424,7 +452,9 @@ extension FindATimeService {
             decide(id)
         case .proposing where expired(value.confirmDeadline):
             endWithoutPlan(id, .expired)
-        case .collecting, .proposing:
+        case .confirming where expired(value.confirmDeadline):
+            endWithoutPlan(id, .expired)
+        case .collecting, .proposing, .confirming:
             initiatorResend(id, to: value.waitingOn)
         case .resolving, .askingOwner:
             break
@@ -436,6 +466,7 @@ extension FindATimeService {
         switch value.phase {
         case .collecting: sendQueries(id, to: peers)
         case .proposing: if let revision = value.draft?.revision { sendProposals(id, revision: revision, to: peers, announce: false) }
+        case .confirming: sendConfirmations(id, to: peers)
         default: break
         }
     }

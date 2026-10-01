@@ -71,6 +71,19 @@ actor Coordinator {
 
     func begin(_ interaction: Interaction) async throws { try await store.save(interaction) }
 
+    /// At launch the coordinator closes consent requests whose sheets died
+    /// with the old process, before `restore(_:)` (ADR 0011, amendment 15).
+    /// Core v2.0 has no `consentCancelled` yet, so this stands in with
+    /// `consentGiven`; nothing is sent by it.
+    func closeDeadSheets() async {
+        for var interaction in (try? await store.all()) ?? [] where !interaction.pendingConsents.isEmpty {
+            for request in interaction.pendingConsents.sorted() {
+                try? interaction.apply(.consentGiven(request: request), at: Timestamp(Date()))
+            }
+            try? await store.save(interaction)
+        }
+    }
+
     /// What the app's consent provider does around a sheet: it applies
     /// `consentNeeded` before asking, then `consentGiven` after an approval
     /// or `ownerPassed` after a decline. The skill adds nothing for a decline.
@@ -285,6 +298,7 @@ final class Phone: Sendable {
         await old.flushCheckpoints()
         await old.shutdown()
         makeService(configuration: configuration)
+        await coordinator.closeDeadSheets()
         await service.restore(await coordinator.all())
     }
 

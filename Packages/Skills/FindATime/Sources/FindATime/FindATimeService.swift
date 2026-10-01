@@ -289,6 +289,13 @@ public actor FindATimeService: SkillService {
             conversationOf[interaction] = nil
             checkpointQueue.yield(.remove(interaction))
         }
+        remember(conversation, asker: asker)
+    }
+
+    /// Records an ended conversation so late messages for it get at most
+    /// "no plan" and never open it again.
+    func remember(_ conversation: ConversationID, asker: PeerID?) {
+        guard finished[conversation] == nil else { return }
         finished[conversation] = Tombstone(asker: asker)
         finishedOrder.append(conversation)
         if finishedOrder.count > Self.maxTombstones { finished[finishedOrder.removeFirst()] = nil }

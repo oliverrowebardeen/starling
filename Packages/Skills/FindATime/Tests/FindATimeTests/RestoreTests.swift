@@ -211,4 +211,144 @@ struct CrashWindowTests {
         #expect(await a.coordinator.interaction(started)?.plan == stored.plan)
         await world.stop()
     }
+
+    /// Review of PR #53, finding 2 (invitee): Ben's checkpoint has
+    /// proposal 2, but the store still has his "That works" for proposal 1.
+    /// The acceptance must not move to proposal 2: the card is shown again.
+    @Test func anAcceptanceNeverMovesToANewerProposalOnRestore() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben")
+        let c = world.phone("Cy")
+        try await world.start()
+        let started = try await a.findATime(with: [b, c])
+        let (bCard, first) = try await b.waitForProposal(revision: 1)
+        let (cCard, _) = try await c.waitForProposal(revision: 1)
+        try await b.accept(bCard, revision: 1)
+        try await c.service.answer(cCard, with: .pass)
+        let (_, second) = try await b.waitForProposal(revision: 2)
+        await b.service.flushCheckpoints()
+
+        let stored = await b.coordinator.interaction(bCard)!
+        var rolledBack = Interaction(id: stored.id, conversation: stored.conversation, skill: stored.skill, role: .invitee,
+                                     participants: stored.participants, createdAt: stored.createdAt)
+        try rolledBack.apply(.proposalReady(first), at: stored.createdAt)
+        try rolledBack.apply(.ownerAccepted(revision: 1), at: stored.createdAt)
+        try await b.coordinator.begin(rolledBack)
+        let acceptancesBefore = world.envelopes.filter { $0.sender == b.id && $0.body.kind == .accept }.count
+        await b.restart()
+        try await b.greetAgain(world)
+
+        _ = try await b.waitForProposal(revision: 2)
+        try await Task.sleep(for: .milliseconds(100))
+        // Nothing accepted proposal 2 on Ben's behalf.
+        let acceptances = world.envelopes.filter { $0.sender == b.id && $0.body.kind == .accept }
+        #expect(acceptances.count == acceptancesBefore)
+        #expect(!acceptances.contains { if case .accept(let a) = $0.body { a.terms == second.terms } else { false } })
+
+        try await b.accept(bCard, revision: 2)
+        try await a.accept(started, revision: 2)
+        try await b.waitForState(bCard, .planned)
+        await world.stop()
+    }
+
+    /// Finding 2 (starter): Ana's checkpoint has proposal 2, the store her
+    /// "That works" for proposal 1. Her card is shown again and nothing is
+    /// confirmed until she says yes to proposal 2.
+    @Test func theStartersAcceptanceNeverMovesToANewerProposalOnRestore() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben")
+        let c = world.phone("Cy")
+        try await world.start()
+        let started = try await a.findATime(with: [b, c])
+        let (_, first) = try await a.waitForProposal(revision: 1)
+        let (bCard, _) = try await b.waitForProposal(revision: 1)
+        let (cCard, _) = try await c.waitForProposal(revision: 1)
+        try await a.accept(started, revision: 1)
+        try await c.service.answer(cCard, with: .pass)
+        _ = try await a.waitForProposal(revision: 2)
+        await a.service.flushCheckpoints()
+
+        let stored = await a.coordinator.interaction(started)!
+        var rolledBack = Interaction(id: stored.id, conversation: stored.conversation, skill: stored.skill, role: .initiator,
+                                     participants: stored.participants, createdAt: stored.createdAt)
+        try rolledBack.apply(.started, at: stored.createdAt)
+        try rolledBack.apply(.proposalReady(first), at: stored.createdAt)
+        try rolledBack.apply(.ownerAccepted(revision: 1), at: stored.createdAt)
+        try await a.coordinator.begin(rolledBack)
+        await a.restart()
+        try await a.greetAgain(world)
+
+        _ = try await a.waitForProposal(revision: 2)
+        try await b.accept(bCard, revision: 2)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await a.coordinator.interaction(started)?.state == .proposed)
+        #expect(await b.coordinator.interaction(bCard)?.state == .confirmed)
+        try await a.accept(started, revision: 2)
+        try await a.waitForState(started, .planned)
+        try await b.waitForState(bCard, .planned)
+        await world.stop()
+    }
+
+    /// Finding 4: a restart while the confirmations are still waiting on a
+    /// consent sheet is not a plan. The confirmations go out through Outbox
+    /// after the restart, with a fresh sheet, and only then is it a plan.
+    // Needs Core v2.1 (#57): a relaunched Outbox restarts sequence numbers
+    // at 0, so Ben drops Ana's confirmation as a replay. Enabled on rebase.
+    @Test(.disabled("needs Core v2.1 Outbox sequences across relaunch (PR #57)"))
+    func aRestartBeforeTheConfirmationsLeftIsNotAPlan() async throws {
+        let world = World()
+        let sheet = HeldConsent()
+        let a = world.phone("Ana", policy: FixedPolicyEngine(decide: { message in
+            guard case .accept = message.envelope.body else { return .allow }
+            return .needsConsent(Disclosure(recipient: message.envelope.recipient, recipientModel: nil, items: [],
+                                            conversation: message.envelope.conversation, skill: message.envelope.skill))
+        }), consent: sheet)
+        let b = world.phone("Ben")
+        try await world.start()
+        let started = try await a.findATime(with: [b])
+        _ = try await a.waitForProposal()
+        let (bCard, _) = try await b.waitForProposal()
+        try await a.accept(started)
+        try await b.accept(bCard)
+        try await eventually("the confirmation's sheet is open") { await sheet.asked == 1 }
+        await a.service.flushCheckpoints()
+
+        await a.restart()
+        try await a.greetAgain(world)
+        try await eventually("a fresh sheet after the restart") { await sheet.asked == 2 }
+        #expect(await a.coordinator.interaction(started)?.state == .awaitingConsent(resume: .confirmed))
+        #expect(!world.envelopes.contains { $0.sender == a.id && $0.body.kind == .accept })
+
+        await sheet.answerAll(.approved)
+        try await a.waitForState(started, .planned)
+        try await b.waitForState(bCard, .planned)
+        await world.stop()
+    }
+
+    /// Finding 5: a conversation that ended before a restart stays ended.
+    /// A late query for it gets "no plan", never a new card.
+    @Test func anEndedConversationStaysEndedAfterARestart() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory")
+        let target = world.phone("Ben", calendar: FakeCalendarStore(status: .denied))
+        try await world.start()
+        let conversation = ConversationID()
+        let query = MessageBody.query(try Query(issue: .time, candidates: .slots([T.slot(9, 10)])))
+        try await mallory.send(query, to: target, conversation: conversation)
+        let (asked, _) = try await target.waitForQuestion()
+        try await target.service.answer(asked, with: .pass)
+        try await target.waitForState(asked, .ended(.declined))
+
+        await target.restart()
+        try await target.greetAgain(world)
+        try await mallory.send(query, to: target, conversation: conversation)
+        try await Task.sleep(for: .milliseconds(100))
+        let cards = await target.coordinator.all()
+        #expect(cards.count == 1)
+        #expect(cards.first?.state == .ended(.declined))
+        #expect(world.envelopes.filter { $0.sender == target.id && $0.body.kind == .reject }.count == 2)
+        await world.stop()
+    }
 }
