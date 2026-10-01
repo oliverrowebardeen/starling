@@ -25,7 +25,8 @@ extension FindATimeService {
         guard let candidates = QueryCheck.candidates(of: query, now: now, configuration: configuration) else {
             return ignore("query out of bounds")
         }
-        let open = invited.values
+        // Plans already made stay until their time passes; they are not open requests.
+        let open = invited.values.filter { $0.phase != .planned }
         guard open.count < configuration.maxOpenInvitations,
               open.filter({ $0.asker == envelope.sender }).count < configuration.maxOpenInvitationsPerFriend
         else { return ignore("too many open requests") }

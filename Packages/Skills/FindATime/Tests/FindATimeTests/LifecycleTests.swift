@@ -143,6 +143,28 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// Plans already made do not count toward a friend's open requests.
+    @Test func plansDoNotFillTheOpenRequestLimit() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let b = world.phone("Ben")
+        try await world.start()
+        let limit = FindATimeConfiguration().maxOpenInvitationsPerFriend
+        for round in 1...(limit + 1) {
+            let started = try await a.findATime(with: [b])
+            try await eventually("proposal \(round)") {
+                await b.coordinator.all().contains { $0.state == .proposed }
+            }
+            let card = await b.coordinator.all().first { $0.state == .proposed }!
+            try await b.accept(card.id)
+            try await a.waitForState(started, .proposed)
+            try await a.accept(started)
+            try await a.waitForState(started, .planned)
+            try await b.waitForState(card.id, .planned)
+        }
+        await world.stop()
+    }
+
     @Test func noFriendsIsUnsupported() async throws {
         let world = World()
         let a = world.phone("Ana")
