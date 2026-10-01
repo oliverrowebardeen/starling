@@ -161,17 +161,32 @@ struct RestoreTests {
         #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
     }
 
+    @Test func anUnreadableLedgerAdmitsNothing() async throws {
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all))
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        await maya.ledger.setFailing(true)
+        await maya.restart()
+        try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
+                                      conversation: ConversationID(), skill: PickAPlaceSkill.ref, mode: .invite)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await maya.coordinator.incoming.isEmpty)
+        #expect(await group.wire.sent(by: maya.id).isEmpty)
+    }
+
     @Test func theAppsAdmissionLogKeepsTheLastHour() async throws {
         let suite = "starling.tests.\(UUID().uuidString)"
         defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         let peer = PeerID.random()
         let now = Date()
-        let log = UserDefaultsRequestAdmissionLog(suiteName: suite)
-        await log.record(peer, at: now.addingTimeInterval(-4_000))
-        await log.record(peer, at: now.addingTimeInterval(-60))
-        await log.record(peer, at: now)
+        let log = UserDefaultsPickAPlaceLedger(suiteName: suite)
+        try await log.recordAdmission(peer, at: now.addingTimeInterval(-4_000))
+        try await log.recordAdmission(peer, at: now.addingTimeInterval(-60))
+        try await log.recordAdmission(peer, at: now)
         // A new instance reads what the old one wrote, as after a relaunch.
-        let reloaded = await UserDefaultsRequestAdmissionLog(suiteName: suite).admissions(since: now.addingTimeInterval(-3_600))
+        let reloaded = try await UserDefaultsPickAPlaceLedger(suiteName: suite).admissions(since: now.addingTimeInterval(-3_600))
         #expect(reloaded[peer]?.count == 2)
     }
 
@@ -190,7 +205,7 @@ struct RestoreTests {
         let service = PickAPlaceService(
             localPeer: .random(), outbox: Outbox(transport: RecordingTransport(), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved)),
             pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty },
-            admissions: InMemoryRequestAdmissionLog()
+            ledger: InMemoryPickAPlaceLedger()
         )
         let now = Timestamp(Date())
         let otherVersion = Interaction(skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), role: .invitee, participants: [.random()], createdAt: now)

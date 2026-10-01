@@ -121,7 +121,7 @@ public actor PickAPlaceService: SkillService {
     let candidateSource: any PlaceCandidateSource
     let maps: any PlaceSearching
     let ownerLimits: @Sendable () async -> ConstraintSet
-    let admissions: any RequestAdmissionLog
+    let ledger: any PickAPlaceLedger
     /// Whether `requestTimes` has been loaded from `admissions` this launch.
     var admissionsLoaded = false
     let clock: PickAPlaceClock
@@ -162,8 +162,8 @@ public actor PickAPlaceService: SkillService {
     ///   - ownerLimits: The owner's standing budget, diet, and place limits,
     ///     for requests from friends. The organizer's own limits come with
     ///     its `SkillIntent`.
-    ///   - admissions: When friends' requests were admitted, kept across
-    ///     launches (`UserDefaultsRequestAdmissionLog` in the app).
+    ///   - ledger: What must survive a relaunch (`UserDefaultsPickAPlaceLedger`
+    ///     in the app).
     public init(
         localPeer: PeerID,
         outbox: Outbox,
@@ -171,7 +171,7 @@ public actor PickAPlaceService: SkillService {
         candidates: any PlaceCandidateSource,
         maps: any PlaceSearching,
         ownerLimits: @escaping @Sendable () async -> ConstraintSet,
-        admissions: any RequestAdmissionLog,
+        ledger: any PickAPlaceLedger,
         clock: PickAPlaceClock = .system,
         configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
     ) {
@@ -181,7 +181,7 @@ public actor PickAPlaceService: SkillService {
         candidateSource = candidates
         self.maps = maps
         self.ownerLimits = ownerLimits
-        self.admissions = admissions
+        self.ledger = ledger
         self.clock = clock
         self.configuration = configuration
         (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
@@ -239,7 +239,11 @@ public actor PickAPlaceService: SkillService {
         } else if skill.version.isCompatible(with: descriptor.ref.version) {
             await loadAdmissions()
             // Loading suspended: another message may have opened it.
-            if invites[conversation] != nil { inviteReceived(envelope) } else if organized[conversation] == nil { newInvite(envelope) }
+            if invites[conversation] != nil {
+                inviteReceived(envelope)
+            } else if organized[conversation] == nil, admissionsLoaded {
+                newInvite(envelope)
+            }
         }
         // Another major version gets no reply: the organizer's phone leaves
         // this one out from its card, and a reply per fresh conversation
@@ -263,7 +267,8 @@ public actor PickAPlaceService: SkillService {
     /// request is admitted, and merges it with any admitted meanwhile.
     func loadAdmissions() async {
         guard !admissionsLoaded else { return }
-        let stored = await admissions.admissions(since: clock.now().addingTimeInterval(-3_600))
+        // An unreadable ledger admits nothing: the limit must not reset.
+        guard let stored = try? await ledger.admissions(since: clock.now().addingTimeInterval(-3_600)) else { return }
         guard !admissionsLoaded else { return }
         admissionsLoaded = true
         requestTimes.merge(stored) { current, loaded in Array(Set(current + loaded)).sorted() }

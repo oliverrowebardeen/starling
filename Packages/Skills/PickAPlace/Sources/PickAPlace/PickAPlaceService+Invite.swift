@@ -62,7 +62,7 @@ extension PickAPlaceService {
         invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender,
                                        chainedFrom: envelope.chainedFrom, candidates: candidates)
         spawnInviteDeadline(conversation)
-        spawn(conversation) { await $0.admissions.record(sender, at: now) }
+        spawn(conversation) { try? await $0.ledger.recordAdmission(sender, at: now) }
         spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
     }
 

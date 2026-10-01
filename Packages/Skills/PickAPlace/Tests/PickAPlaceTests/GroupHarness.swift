@@ -259,7 +259,7 @@ final class Phone: Sendable {
     let store = InMemoryPairedPeerStore()
     let staged = StagedCandidates()
     /// Shared by every service this phone runs, as the app's log would be.
-    let admissions = InMemoryRequestAdmissionLog()
+    let ledger = InMemoryPickAPlaceLedger()
     let coordinator = Coordinator()
     let consent: CoordinatorConsent
     let outbox: Outbox
@@ -285,11 +285,11 @@ final class Phone: Sendable {
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
         outbox = Outbox(transport: transport, policy: policy, consent: consent)
         card = try! AgentCard(model: model, capabilities: [], skills: skills)
-        let (peer, outbox, store, staged, admissions) = (key.peerID, outbox, store, staged, admissions)
+        let (peer, outbox, store, staged, ledger) = (key.peerID, outbox, store, staged, ledger)
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }
         makeService = {
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
-                              ownerLimits: readLimits, admissions: admissions, clock: .system, configuration: configuration)
+                              ownerLimits: readLimits, ledger: ledger, clock: .system, configuration: configuration)
         }
         current = Mutex(makeService())
     }
