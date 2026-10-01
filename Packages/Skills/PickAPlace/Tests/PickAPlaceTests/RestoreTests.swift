@@ -206,6 +206,31 @@ struct RestoreTests {
         #expect(await maya.coordinator.incoming.isEmpty)
     }
 
+    /// Issue #65 (lane F): a request whose admission cannot be written is
+    /// never answered, so a relaunch can never reset the limits.
+    @Test func aFailedAdmissionWriteCannotResetTheProbeLimitAfterRestart() async throws {
+        let failing = FailedAdmissionLedger()
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all), placeLedger: failing)
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all))
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        var conversations: [ConversationID] = []
+        for _ in 0..<5 {
+            let conversation = ConversationID()
+            conversations.append(conversation)
+            try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
+                                          conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite)
+            try await Task.sleep(for: .milliseconds(100))
+            await maya.restart()
+        }
+        #expect(await failing.attempts == 5)
+        #expect(try await failing.admissions(since: .distantPast).isEmpty)
+        let asked = Set(conversations)
+        #expect(await group.wire.sent(by: maya.id).allSatisfy { !asked.contains($0.conversation) })
+        #expect(await maya.coordinator.incoming.isEmpty)
+    }
+
     @Test func anUnreadableLedgerAdmitsNothing() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
@@ -322,5 +347,21 @@ struct RestoreTests {
             if reported.count == 2 { break }
         }
         #expect(Set(reported) == [otherVersion.id, askingOwner.id])
+    }
+}
+
+/// Lane F's fixture: a ledger whose admission writes always throw, while
+/// everything else works.
+actor FailedAdmissionLedger: PickAPlaceLedger {
+    let base = InMemoryPickAPlaceLedger()
+    private(set) var attempts = 0
+    func admissions(since date: Date) async throws -> [PeerID: [Date]] { try await base.admissions(since: date) }
+    func recordAdmission(_ peer: PeerID, at date: Date) async throws { attempts += 1; throw LedgerUnavailable() }
+    func pendingWithdrawals() async throws -> [PendingWithdrawal] { try await base.pendingWithdrawals() }
+    func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws { try await base.recordWithdrawal(withdrawal) }
+    func clearWithdrawal(_ conversation: ConversationID) async throws { try await base.clearWithdrawal(conversation) }
+    func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines? { try await base.deadlines(for: conversation) }
+    func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws {
+        try await base.recordDeadlines(deadlines, for: conversation)
     }
 }

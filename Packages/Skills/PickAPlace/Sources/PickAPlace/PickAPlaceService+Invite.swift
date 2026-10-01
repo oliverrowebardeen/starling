@@ -23,6 +23,9 @@ struct Invite {
     var acceptable: [PlaceChoice]?
     var facts: [PlaceChoice: PlaceFacts] = [:]
     var answering = false
+    /// Whether this request's admission is durably in the ledger. Nothing
+    /// is judged or answered before it is (issue #65).
+    var admitted = false
     var lastQuery: MessageID?
     var revision: UInt32 = 0
     var proposal: SkillProposal?
@@ -71,8 +74,20 @@ extension PickAPlaceService {
         invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender,
                                        chainedFrom: envelope.chainedFrom, candidates: candidates)
         spawnInviteDeadline(conversation)
-        spawn(conversation) { try? await $0.ledger.recordAdmission(sender, at: now) }
-        spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
+        // The admission is written, and awaited, before anything is judged
+        // or answered. If it cannot be written, the request is dropped
+        // without a word and its conversation retired: a limit that a
+        // relaunch could reset is no limit (issue #65).
+        spawn(conversation) { service in
+            do {
+                try await service.ledger.recordAdmission(sender, at: now)
+            } catch {
+                service.endInvite(conversation, event: nil, reply: nil)
+                return
+            }
+            service.invites[conversation]?.admitted = true
+            await service.judgeAndAnswer(conversation, queryID: envelope.id, query: query)
+        }
     }
 
     /// Ends a request the organizer stops answering. An honest organizer
@@ -147,7 +162,7 @@ extension PickAPlaceService {
     /// ordinary no (`noOverlap`) and the owner sees nothing: a limit set to
     /// Never looks like any other no (decision 5).
     func judgeAndAnswer(_ conversation: ConversationID, queryID: MessageID, query: Query) async {
-        guard let invite = invites[conversation], !invite.isFinished, !invite.answering else { return }
+        guard let invite = invites[conversation], !invite.isFinished, invite.admitted, !invite.answering else { return }
         let candidates = invite.candidates
         invites[conversation]?.answering = true
         invites[conversation]?.lastQuery = queryID

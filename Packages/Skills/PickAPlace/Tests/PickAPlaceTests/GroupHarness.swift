@@ -283,7 +283,7 @@ final class Phone: Sendable {
 
     init(
         _ name: String, hub: LoopbackHub, maps: FakeMaps, limits: ConstraintSet = .empty,
-        ownerLimits: (@Sendable () async -> ConstraintSet)? = nil,
+        ownerLimits: (@Sendable () async -> ConstraintSet)? = nil, placeLedger: (any PickAPlaceLedger)? = nil,
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent outcome: ConsentOutcome = .approved, gate: ConsentGate? = nil,
         skills: [SkillRef] = [PickAPlaceSkill.ref], model: ModelLocality = .onDevice, configuration: PickAPlaceConfiguration = fastConfiguration
     ) {
@@ -293,7 +293,8 @@ final class Phone: Sendable {
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
         outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: sends, ledger: conversations)
         card = try! AgentCard(model: model, capabilities: [], skills: skills)
-        let (peer, outbox, store, staged, ledger, conversations) = (key.peerID, outbox, store, staged, ledger, conversations)
+        let (peer, outbox, store, staged, conversations) = (key.peerID, outbox, store, staged, conversations)
+        let ledger: any PickAPlaceLedger = placeLedger ?? self.ledger
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }
         makeService = {
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,

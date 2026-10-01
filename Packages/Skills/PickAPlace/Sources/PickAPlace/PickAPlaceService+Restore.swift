@@ -96,6 +96,7 @@ extension PickAPlaceService {
         var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
                             candidates: [place])
         invite.announced = true
+        invite.admitted = true
         invite.acceptable = [place]
         invite.revision = proposal.revision
         invite.proposal = proposal
@@ -171,6 +172,7 @@ extension PickAPlaceService {
             var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
                                 candidates: [])
             invite.announced = true
+            invite.admitted = true
             invite.revision = interaction.proposalRevision ?? 0
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
@@ -184,6 +186,7 @@ extension PickAPlaceService {
             var invite = Invite(id: interaction.id, conversation: conversation, organizer: organizer, chainedFrom: interaction.friendChainHint,
                                 candidates: [place])
             invite.announced = true
+            invite.admitted = true
             // This phone already found the proposed place acceptable.
             invite.acceptable = [place]
             invite.revision = proposal.revision
