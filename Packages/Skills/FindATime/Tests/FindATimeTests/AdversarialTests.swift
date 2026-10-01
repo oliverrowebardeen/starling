@@ -249,8 +249,10 @@ struct AdversarialTests {
 
         // Push the ended conversation out of the service's memory.
         for i in 0...FindATimeService.maxTombstones {
-            try await mallory.send(query([T.slot(48 + Double(i % 20) * 0.5, 48.5 + Double(i % 20) * 0.5)]), to: target, conversation: ConversationID())
-            try await eventually("filler \(i) ended") { await target.service.invited.isEmpty }
+            let filler = ConversationID()
+            try await mallory.send(query([T.slot(48 + Double(i % 20) * 0.5, 48.5 + Double(i % 20) * 0.5)]), to: target, conversation: filler)
+            // Wait for this filler itself to end, so none overlaps the next.
+            try await eventually("filler \(i) ended") { (try? await target.conversations.isRetired(filler)) == true }
         }
         #expect(await target.service.finished[conversation] == nil)
 
