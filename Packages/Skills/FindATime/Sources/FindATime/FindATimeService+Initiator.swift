@@ -150,7 +150,12 @@ extension FindATimeService {
     private func querySent(_ id: ConversationID, to peer: PeerID, _ outcome: SendOutcome) {
         guard var value = initiating[id], value.phase == .collecting, value.answers[peer] == nil else { return }
         switch outcome {
-        case .sent, .failed:
+        case .sent:
+            if value.contacted.insert(peer).inserted {
+                initiating[id] = value
+                checkpoint(id)
+            }
+        case .failed:
             return
         case .declined, .denied:
             // The owner chose not to ask this friend, or the policy refused:
@@ -231,7 +236,7 @@ extension FindATimeService {
         }
         let slot = value.candidates[index]
         let members = value.invitees.filter { free($0, slot) }
-        let others = value.invitees.filter { !members.contains($0) && !value.excluded.contains($0) }
+        let others = value.invitees.filter { !members.contains($0) && value.contacted.contains($0) }
         sendNoPlan(about: MessageID(), to: others, in: id, chainedFrom: value.chainedFrom)
         propose(id, slot: slot, members: members)
     }
@@ -407,7 +412,7 @@ extension FindATimeService {
 
     private func tellEveryoneNoPlan(_ id: ConversationID) {
         guard let value = initiating[id] else { return }
-        let peers = value.invitees.filter { !value.excluded.contains($0) }
+        let peers = value.invitees.filter { value.contacted.contains($0) }
         sendNoPlan(about: MessageID(), to: peers, in: id, chainedFrom: value.chainedFrom)
     }
 

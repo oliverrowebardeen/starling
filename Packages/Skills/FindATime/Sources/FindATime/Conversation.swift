@@ -39,6 +39,10 @@ struct Initiating: Hashable, Sendable, Codable {
     /// Friends never asked: the owner declined their consent sheet or the
     /// policy refused. They are told nothing.
     var excluded: Set<PeerID> = []
+    /// Friends a query reached the link for. Only they are ever told
+    /// "no plan": a friend never asked learns nothing, not even that a
+    /// request existed.
+    var contacted: Set<PeerID> = []
     var answerDeadline: Timestamp?
     var draft: Draft?
     /// Envelopes of the current proposal sent to each friend, retries included.

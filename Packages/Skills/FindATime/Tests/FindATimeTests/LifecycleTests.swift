@@ -122,6 +122,27 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// A request that ends before any query left tells nobody anything.
+    @Test func friendsNeverAskedHearNothing() async throws {
+        let world = World()
+        let a = world.phone("Ana", use: .justAskMe)
+        let b = world.phone("Ben")
+        try await world.start()
+
+        let expiring = try await a.findATime(with: [b], expiresIn: 1)
+        _ = try await a.waitForQuestion(expiring)
+        world.clock.advance(hours: 2)
+        try await a.waitForState(expiring, .ended(.expired))
+
+        let withdrawn = try await a.findATime(with: [b])
+        _ = try await a.waitForQuestion(withdrawn)
+        await a.service.withdraw(withdrawn)
+        try await a.waitForState(withdrawn, .ended(.withdrawn))
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(world.envelopes.allSatisfy { $0.skill == nil })
+        await world.stop()
+    }
+
     @Test func noFriendsIsUnsupported() async throws {
         let world = World()
         let a = world.phone("Ana")
