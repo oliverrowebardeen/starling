@@ -64,6 +64,7 @@ final class DebugHarness {
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
+            sequences: try? FileSentSequenceStore.standard(),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,

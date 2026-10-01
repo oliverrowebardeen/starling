@@ -31,6 +31,7 @@ extension AppServices {
             inboxEvents: links.inboxEvents,
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
+            sequences: try? FileSentSequenceStore.standard(),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
