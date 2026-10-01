@@ -78,30 +78,32 @@ struct YouView<Developer: View>: View {
         }
     }
 
-    /// Topics a skill in this build can send, plus people, with Never.
-    private var topics: [PrivacyTopic] {
-        let used = app.services.registry.inBuild(settings.flags).reduce(into: Set<PrivacyTopic>([.people])) { $0.formUnion($1.topicsUsed) }
-        return PrivacyTopic.allCases.filter { $0.allowsNever && used.contains($0) }
-    }
-
+    /// Every topic but time and activity has the same control, and each
+    /// explains the choice it is set to (ADR 0019).
     private var privacy: some View {
         Section {
-            ForEach(topics, id: \.self) { topic in
-                HStack {
-                    Text(topic.label)
-                    Spacer()
+            ForEach(PrivacyCopy.topics, id: \.self) { topic in
+                let choice = settings.choice(for: topic)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(topic.label)
+                        Spacer()
+                    }
                     Picker(topic.label, selection: Binding(
-                        get: { settings.choice(for: topic) },
-                        set: { choice in Task { await settings.set(choice, for: topic) } }
+                        get: { choice },
+                        set: { next in Task { await settings.set(next, for: topic) } }
                     )) {
                         Text("Share").tag(SharingChoice.share)
                         Text("Ask me").tag(SharingChoice.askMe)
                         Text("Never").tag(SharingChoice.never)
                     }
                     .pickerStyle(.segmented)
-                    .fixedSize()
                     .labelsHidden()
+                    Text(!PrivacyCopy.isSentBySomeSkill(topic) && choice != .never ? PrivacyCopy.notUsedYet : PrivacyCopy.explanation(choice))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.vertical, 4)
             }
         } header: {
             HStack {
@@ -110,7 +112,7 @@ struct YouView<Developer: View>: View {
                 Text("Applies to every skill").textCase(nil)
             }
         } footer: {
-            Text("Time and activity are always shared as the overlap. Nothing can line up without them. Share sends without asking only to friends whose agent runs on their own phone; anyone else still gets a sheet first.")
+            Text(PrivacyCopy.overlapNote)
         }
     }
 
