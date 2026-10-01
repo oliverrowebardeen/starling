@@ -10,12 +10,20 @@ public struct SecureTransportConfiguration: Sendable {
     public var handshakeTimeout: Duration
     /// Handshake attempts per trigger (link up, `reconnect`, session rollover).
     public var handshakeAttempts: Int
+    /// Most peers this transport keeps idle state (replay caches) and
+    /// generations for. Only peers with a pinned key ever get state, so
+    /// this bounds memory even if many friends come and go.
+    public var maxTrackedPeers: Int
 
-    public init(maxMessagesPerSession: UInt64 = 1 << 20, handshakeTimeout: Duration = .seconds(5), handshakeAttempts: Int = 3) {
+    public init(
+        maxMessagesPerSession: UInt64 = 1 << 20, handshakeTimeout: Duration = .seconds(5),
+        handshakeAttempts: Int = 3, maxTrackedPeers: Int = 1_024
+    ) {
         precondition(maxMessagesPerSession > 1 && maxMessagesPerSession < .max, "session cap must leave the reserved nonce unused")
         self.maxMessagesPerSession = maxMessagesPerSession
         self.handshakeTimeout = handshakeTimeout
         self.handshakeAttempts = max(1, handshakeAttempts)
+        self.maxTrackedPeers = max(1, maxTrackedPeers)
     }
 }
 
@@ -60,10 +68,18 @@ public actor SecureTransport: Transport {
     /// Bumped whenever a peer's sessions are torn down (disconnect, unpair,
     /// link loss, rollover). A pin lookup that started under an older
     /// generation is stale and must not create or install a session.
-    private var generations: [PeerID: UInt64] = [:]
+    private var generations: GenerationTable
+    /// Peers whose link is up, as the wrapped transport reports them.
+    /// Unauthenticated; kept apart from `peers` so a claim alone creates no
+    /// per-peer state, and cleared when the link goes.
+    private var linkedPeers: Set<PeerID> = []
     private var sendTail: Task<Void, Never>?
     /// Frames dropped since start, for tests and diagnostics. No reasons are kept.
     private(set) var droppedFrames = 0
+    /// How many peers this transport keeps state for, for tests.
+    var trackedPeerCount: Int { peers.count }
+    /// How many per-peer generations this transport keeps, for tests.
+    var trackedGenerationCount: Int { generations.count }
 
     private struct Channel {
         let id: UInt64
@@ -85,7 +101,6 @@ public actor SecureTransport: Transport {
     }
 
     private struct PeerState {
-        var linkUp = false
         var announced = false
         var current: Channel?
         /// Receive only: the last confirmed session, kept while newer ones
@@ -126,7 +141,8 @@ public actor SecureTransport: Transport {
     ) {
         self.inner = inner
         self.identity = identity
-        pins = PinAuthority(store: pairedPeers)
+        pins = PinAuthority(store: pairedPeers, capacity: configuration.maxTrackedPeers)
+        generations = GenerationTable(capacity: configuration.maxTrackedPeers)
         self.configuration = configuration
         kind = inner.kind
         localPeer = identity.peerID
@@ -235,7 +251,10 @@ public actor SecureTransport: Transport {
     private func endSessions(with peer: PeerID) {
         tearDown(peer, announce: true)
         // Also when there was no state yet: a first handshake may be mid-lookup.
-        generations[peer, default: 0] += 1
+        generations.bump(peer)
+        // A revoked peer needs no state, not even its replay cache: it can no
+        // longer complete a handshake.
+        peers[peer] = nil
     }
 
     /// What this layer knows about one link: the `PeerID` the link claims,
@@ -246,7 +265,7 @@ public actor SecureTransport: Transport {
         let entry = peers[peer]
         return SecureLinkStatus(
             claimedPeer: peer,
-            linkUp: entry?.linkUp ?? false,
+            linkUp: linkedPeers.contains(peer),
             provenKey: entry?.current.flatMap { try? IdentityPublicKey(bytes: $0.session.remoteStatic.rawRepresentation) },
             handshakeInProgress: entry?.initiation != nil || entry?.pending.isEmpty == false || entry?.current?.confirmed == false,
             droppedFrames: entry?.droppedFrames ?? 0
@@ -261,15 +280,21 @@ public actor SecureTransport: Transport {
         case .peerAvailable(let peer):
             pairingContinuation.yield(event)
             guard peer != localPeer else { return }
-            peers[peer, default: PeerState()].linkUp = true
+            linkedPeers.insert(peer)
             if peers[peer]?.current == nil, peers[peer]?.initiation == nil {
                 await initiate(with: peer)
             }
         case .peerUnavailable(let peer):
             pairingContinuation.yield(event)
+            linkedPeers.remove(peer)
             tearDown(peer, announce: true)
-            // Keep the replay cache across link flaps; forget everything else.
-            peers[peer] = PeerState(answeredEphemerals: peers[peer]?.answeredEphemerals ?? [])
+            // Keep a pinned peer's replay cache across link flaps; forget
+            // everything else, and peers with nothing worth keeping entirely.
+            if let answered = peers[peer]?.answeredEphemerals, !answered.isEmpty {
+                peers[peer] = PeerState(answeredEphemerals: answered)
+            } else {
+                peers[peer] = nil
+            }
         case .received(let frame, let peer):
             guard let (type, body) = SecureWire.parse(frame) else { return drop(from: peer) }
             switch type {
@@ -325,6 +350,7 @@ public actor SecureTransport: Transport {
             entry.answeredEphemerals.append(ephemeral)
             if entry.answeredEphemerals.count > Self.maxRememberedEphemerals { entry.answeredEphemerals.removeFirst() }
             peers[peer] = entry
+            trimIdlePeers()
         } catch {
             return drop(from: peer)
         }
@@ -536,6 +562,7 @@ public actor SecureTransport: Transport {
         let id = nextHandshakeID
         let attemptsLeft = (attempts ?? configuration.handshakeAttempts) - 1
         peers[peer, default: PeerState()].initiation = Initiation(id: id, handshake: handshake, attemptsLeft: attemptsLeft)
+        trimIdlePeers()
         let timeout = configuration.handshakeTimeout
         timers[id] = Task { [weak self] in
             try? await Task.sleep(for: timeout)
@@ -603,13 +630,25 @@ public actor SecureTransport: Transport {
         let wasAnnounced = entry.announced
         entry.announced = false
         peers[peer] = entry
-        generations[peer, default: 0] += 1
+        generations.bump(peer)
         if wasAnnounced { continuation.yield(.peerUnavailable(peer)) }
+    }
+
+    /// Bounds idle per-peer state. Only peers with a pinned key get state,
+    /// but friends come and go: past `maxTrackedPeers`, forget idle peers
+    /// (no link, no session), which costs at most a replay cache.
+    private func trimIdlePeers() {
+        guard peers.count > configuration.maxTrackedPeers else { return }
+        let idle = peers.filter { !linkedPeers.contains($0.key) && $0.value.current == nil && $0.value.initiation == nil && $0.value.pending.isEmpty }
+        for (peer, _) in idle.prefix(peers.count - configuration.maxTrackedPeers) {
+            peers[peer] = nil
+            generations.bump(peer)
+        }
     }
 
     private func tearDown(_ peer: PeerID, announce: Bool) {
         guard var state = peers[peer] else { return }
-        generations[peer, default: 0] += 1
+        generations.bump(peer)
         if let initiation = state.initiation { timers.removeValue(forKey: initiation.id)?.cancel() }
         if let timer = state.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
         let wasAnnounced = state.announced
@@ -639,9 +678,9 @@ public actor SecureTransport: Transport {
     /// before an unpair can never start or answer a handshake after it.
     /// Callers create handshake state synchronously after this returns.
     private func pinnedKey(for peer: PeerID) async -> X25519PublicKey? {
-        let generation = generations[peer, default: 0]
+        let generation = generations.value(of: peer)
         guard let (paired, token) = await pins.pinned(peer),
-              state == .started, generations[peer, default: 0] == generation,
+              state == .started, generations.value(of: peer) == generation,
               pins.revocationToken(of: peer) == token, !pins.isRemoving(peer)
         else { return nil }
         return try? X25519PublicKey(rawRepresentation: paired.publicKey.bytes)

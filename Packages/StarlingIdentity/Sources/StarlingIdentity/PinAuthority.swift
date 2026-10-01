@@ -23,17 +23,20 @@ public final class PinAuthority: Sendable {
     public let store: any PairedPeerStore
 
     private struct State {
-        var tokens: [PeerID: UInt64] = [:]
+        var tokens: GenerationTable
         var removing: [PeerID: Int] = [:]
         var locked = false
         var waiters: [CheckedContinuation<Void, Never>] = []
         var observers: [@Sendable (PeerID) async -> Void] = []
     }
 
-    private let state = Mutex(State())
+    private let state: Mutex<State>
 
-    public init(store: any PairedPeerStore) {
+    /// - Parameter capacity: Most peers whose revocation tokens are kept;
+    ///   older ones are evicted safely (see `GenerationTable`).
+    public init(store: any PairedPeerStore, capacity: Int = 1_024) {
         self.store = store
+        state = Mutex(State(tokens: GenerationTable(capacity: capacity)))
     }
 
     // MARK: Revocation tokens
@@ -41,8 +44,11 @@ public final class PinAuthority: Sendable {
     /// Moves every time `peer` is revoked. A ceremony records it when it
     /// starts and commits only if it has not moved.
     public func revocationToken(of peer: PeerID) -> UInt64 {
-        state.withLock { $0.tokens[peer, default: 0] }
+        state.withLock { $0.tokens.value(of: peer) }
     }
+
+    /// How many revocation tokens are kept, for tests.
+    var trackedTokenCount: Int { state.withLock { $0.tokens.count } }
 
     /// Whether an unpair of `peer` is still removing its pin.
     public func isRemoving(_ peer: PeerID) -> Bool {
@@ -74,14 +80,14 @@ public final class PinAuthority: Sendable {
 
     /// The synchronous half of a revocation. Never awaits.
     func markRevoked(_ peer: PeerID) {
-        state.withLock { $0.tokens[peer, default: 0] += 1 }
+        state.withLock { $0.tokens.bump(peer) }
     }
 
     /// The synchronous half of an unpair: the revocation mark plus a removal
     /// in progress, so lookups refuse the pin from now on. Never awaits.
     func beginRemoval(_ peer: PeerID) {
         state.withLock {
-            $0.tokens[peer, default: 0] += 1
+            $0.tokens.bump(peer)
             $0.removing[peer, default: 0] += 1
         }
     }

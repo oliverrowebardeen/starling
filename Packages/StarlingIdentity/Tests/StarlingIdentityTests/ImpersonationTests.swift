@@ -215,6 +215,27 @@ import Testing
         #expect(await bob.events.received.isEmpty)
     }
 
+    /// Review 3 finding 3: an unpaired client connects with a fresh claimed
+    /// PeerID, sends something that is not a valid handshake, and disconnects,
+    /// over and over. None of it may leave state behind.
+    @Test func unauthenticatedIdentitiesLeaveNoState() async throws {
+        let link = RecordingTransport(localPeer: bobKey.peerID)
+        let secure = SecureTransport(wrapping: link, identity: bobKey, pairedPeers: InMemoryPairedPeerStore())
+        try await secure.start()
+        let visits = 1_000
+        for _ in 0..<visits {
+            let stranger = PeerID.random()
+            link.inject(.peerAvailable(stranger))
+            link.inject(.received(try SecureWire.frame(.handshake1, Data(count: SecureWire.handshakeLength)), from: stranger))
+            link.inject(.peerUnavailable(stranger))
+        }
+        try await eventually("bob processes every visit") { await secure.droppedFrames >= visits }
+        try await settle()
+        #expect(await secure.trackedPeerCount == 0)
+        #expect(await secure.trackedGenerationCount == 0)
+        #expect(await secure.status(of: PeerID.random()).linkUp == false)
+    }
+
     /// A paired friend who turns malicious is authenticated as herself, so an
     /// envelope claiming to be from Alice is caught by `Inbox`'s sender check.
     @Test func aPairedPeerCannotSpeakForAnother() async throws {
