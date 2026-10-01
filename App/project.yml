@@ -24,6 +24,9 @@ packages:
   # Lane G's deterministic policy, consent sheet model, and audit log.
   StarlingPolicy:
     path: ../Packages/StarlingPolicy
+  # Lane F's Down negotiation (DownNegotiator).
+  StarlingNegotiation:
+    path: ../Packages/StarlingNegotiation
   # Lane BR's status mark and palette (ADR 0172).
   StarlingDesign:
     path: ../Packages/StarlingDesign
@@ -80,6 +83,8 @@ targets:
         product: StarlingDesign
       - package: StarlingPolicy
         product: StarlingPolicy
+      - package: StarlingNegotiation
+        product: StarlingNegotiation
       - package: StarlingTransport
         product: StarlingTransport
       - package: StarlingTransport

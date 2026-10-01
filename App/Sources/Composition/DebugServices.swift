@@ -2,51 +2,72 @@
 // Debug builds only. StarlingFakes includes the insecure PSI stub and
 // scripted doubles, so nothing outside `#if DEBUG` may import it (ADR 0140).
 import Foundation
+import Observation
 import StarlingAgent
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
+import StarlingNegotiation
+import StarlingTransport
 
-/// The Debug composition: real model, real rules file, fakes for everything
-/// lanes E1, E2, and F have not delivered yet. The Developer screen drives
-/// the fakes to walk the whole journey on one phone or the Simulator.
+/// The Debug composition: the real model, rules file, lane G policy, and
+/// lane F's DownNegotiator, with fakes only where lanes have not delivered
+/// (ADR 0144). Until lane E1's secure channel exists, the owner's Down runs
+/// over an in-process Loopback hub against a simulated friend, so the whole
+/// Down journey (PSI, consent sheets, matching, notifications) runs on one
+/// phone or the Simulator.
 @MainActor
 final class DebugHarness {
     static let scriptedModelKey = "dev.scriptedModel"
 
-    let down = ScriptedDownService()
     let peers: InMemoryPairedPeerStore
     let usesScriptedModel: Bool
-    /// Stands in for the secure channel until lanes E1 and E2 merge: frames
-    /// injected here go through a real `Inbox` to the app's Inbox loop, and
-    /// sends from the Outbox demos are recorded, not delivered.
-    let transport = RecordingTransport()
+    let hub = LoopbackHub()
+    /// This phone on the Loopback hub. Its ID is derived from a key, like a
+    /// real Starling peer, so the simulated friend can pair with it.
+    let owner: PairedPeer
+    let transport: LoopbackTransport
     /// Created once: the transport's event stream has a single consumer.
     let inboxEvents: AsyncStream<InboxEvent>
+    let simFriend: SimulatedFriend
     /// Fixed per launch so a repeated demo send has an identical disclosure
     /// and the consent memory can be seen.
     let sampleStart: Date
     private var pairingCount = 0
 
     init(peers: [PairedPeer] = [], defaults: UserDefaults = .standard) {
-        self.peers = InMemoryPairedPeerStore(peers)
         usesScriptedModel = defaults.bool(forKey: Self.scriptedModelKey)
-        inboxEvents = Inbox(localPeer: transport.localPeer).events(from: transport)
+        owner = Self.randomPeer(nickname: "This phone")
+        transport = LoopbackTransport(localPeer: owner.id, hub: hub)
+        inboxEvents = Inbox(localPeer: owner.id).events(from: transport)
+        simFriend = SimulatedFriend(hub: hub, owner: owner, card: LiveServices.agentCard(locality: .onDevice))
+        self.peers = InMemoryPairedPeerStore([simFriend.peer] + peers)
         sampleStart = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 3600).rounded(.up) * 3600)
+        let simFriend = simFriend
+        Task { await simFriend.start() }
     }
 
     func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) -> AppServices {
-        let down = down
+        let agent: any AgentModel = usesScriptedModel ? Self.scriptedModel() : FoundationModelsAgent()
+        let peers = peers
+        let ownerID = owner.id
         return AppServices(
-            agent: usesScriptedModel ? Self.scriptedModel() : FoundationModelsAgent(),
+            agent: agent,
             rules: rules,
             peers: peers,
-            makeDownService: { _ in down },
+            makeDownService: { outbox in
+                // docs/requests/F.md, answers to lane H: the app's Outbox, and
+                // the insecure PSI stub until Nightjar.
+                DownNegotiator(localPeer: ownerID, outbox: outbox, pairedPeers: peers, model: agent, psi: InsecurePSIStub())
+            },
             makePairingSession: { await DebugHarness.scriptedPairing() },
             inboxEvents: inboxEvents,
             makePolicy: LiveServices.policy(peers: peers),
             auditLog: LiveServices.auditLog,
             transport: transport,
+            agentCard: LiveServices.agentCard(locality: agent.descriptor.locality),
+            downMatchingIsPrivate: InsecurePSIStub().descriptor.isPrivate,
+            describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
             notifier: notifier,
             localNetwork: BonjourLocalNetworkPrompter()
@@ -82,7 +103,7 @@ final class DebugHarness {
                 ]),
                 disclosure: [DisclosureRule(issue: .time, action: .allowOnDevicePeers)]
             )
-        })
+        }, onDecide: { _ in .accept })
     }
 
     // MARK: Simulation (Developer screen)
@@ -90,23 +111,6 @@ final class DebugHarness {
     func addSampleFriend() async {
         pairingCount += 1
         try? await peers.save(Self.randomPeer(nickname: ["Maya", "Sam", "Jordan", "Priya", "Alex"][(pairingCount - 1) % 5]))
-    }
-
-    func simulateChecking() async {
-        down.emit(.checking(friends: (try? await peers.all().count) ?? 0))
-    }
-
-    /// Emits a match with the first paired friend, as lane F will after both
-    /// agents accept.
-    func simulateMatch(bothDown: Bool) async -> Bool {
-        guard let friend = try? await peers.all().first else { return false }
-        let terms = (try? Self.sampleTerms()) ?? .empty
-        down.emit(.matched(DownMatch(peer: friend.id, terms: terms, bothDown: bothDown)))
-        return true
-    }
-
-    func simulateEnded(_ reason: DownEndReason) {
-        down.emit(.ended(reason))
     }
 
     /// Sends a sample proposal to the first friend through the app's Outbox:
@@ -119,7 +123,7 @@ final class DebugHarness {
         }
         do {
             try await outbox.send(.propose(proposal), to: friend.id, conversation: ConversationID())
-            return "Sent to \(friend.nickname) (recorded, not delivered)."
+            return "Sent to \(friend.nickname)."
         } catch {
             return SendFailureMessage.text(for: error) ?? "Failed: \(error)"
         }
@@ -138,27 +142,10 @@ final class DebugHarness {
         let outbox = Outbox(transport: transport, policy: DemoPolicy(first: asked, recheck: changed), consent: consent)
         do {
             try await outbox.send(.propose(proposal), to: friend.id, conversation: ConversationID())
-            return "Sent to \(friend.nickname) (recorded, not delivered)."
+            return "Sent to \(friend.nickname)."
         } catch {
             return SendFailureMessage.text(for: error) ?? "Failed: \(error)"
         }
-    }
-
-    /// Injects a proposal from the first friend as if it arrived over the
-    /// link, then reports how many Inbox events the Down service has seen.
-    func simulateInboundMessage() async -> String {
-        guard let friend = try? await peers.all().first else { return "Add a friend first." }
-        do {
-            let envelope = try Envelope(
-                conversation: ConversationID(), sender: friend.id, recipient: transport.localPeer, sequence: 0,
-                sentAt: Timestamp(Date()), body: .propose(try Proposal(round: 0, terms: Self.sampleTerms()))
-            )
-            transport.inject(.received(try Frame(EnvelopeCodec().encode(envelope)), from: friend.id))
-        } catch {
-            return "Couldn't build the message: \(error)"
-        }
-        try? await Task.sleep(for: .milliseconds(200))
-        return "The Down service has received \(await down.handled.count) Inbox events."
     }
 
     static func sampleTerms(start: Date = Date().addingTimeInterval(3600)) throws -> Terms {
@@ -175,6 +162,97 @@ final class DebugHarness {
             DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("food")])),
             DisclosedItem(category: .terms, issue: .budget, value: .amount(try MoneyAmount(minorUnits: budgetMinorUnits))),
         ])
+    }
+}
+
+/// A second phone in the same process: lane F's DownNegotiator on its own
+/// Loopback transport, paired with this phone. It approves its own consent
+/// and allows every send, because only this phone's side should exercise
+/// lane G's policy and the consent sheet.
+@MainActor
+@Observable
+final class SimulatedFriend {
+    let peer: PairedPeer
+    private(set) var state = "Not down"
+    private(set) var inRange = true
+    private let ownerID: PeerID
+    private let hub: LoopbackHub
+    private let transport: LoopbackTransport
+    private let outbox: Outbox
+    private let negotiator: DownNegotiator
+    private let card: AgentCard
+    private var started = false
+
+    init(hub: LoopbackHub, owner: PairedPeer, card: AgentCard) {
+        peer = DebugHarness.randomPeer(nickname: "Sim friend")
+        ownerID = owner.id
+        self.hub = hub
+        self.card = card
+        transport = LoopbackTransport(localPeer: peer.id, hub: hub)
+        outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved))
+        negotiator = DownNegotiator(
+            localPeer: peer.id,
+            outbox: outbox,
+            pairedPeers: InMemoryPairedPeerStore([owner]),
+            model: ScriptedAgentModel(onDecide: { _ in .accept }),
+            psi: InsecurePSIStub()
+        )
+    }
+
+    func start() async {
+        guard !started else { return }
+        started = true
+        let events = Inbox(localPeer: peer.id).events(from: transport)
+        let negotiator = negotiator
+        let outbox = outbox
+        let card = card
+        Task {
+            for await event in events {
+                if case .peerAvailable(let other) = event {
+                    Task { _ = try? await outbox.send(.hello(card), to: other, conversation: ConversationID()) }
+                }
+                await negotiator.handle(event)
+            }
+        }
+        Task { [weak self] in
+            for await event in negotiator.events { self?.show(event) }
+        }
+        try? await transport.start()
+    }
+
+    /// Free for the next eight hours, wants food or a boba run, up to $20.
+    func goDown(_ level: DownLevel) async {
+        let now = Date()
+        let start = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 1800).rounded(.up) * 1800)
+        let end = start.addingTimeInterval(8 * 3600)
+        do {
+            let rules = OwnerRules(constraints: try ConstraintSet([
+                .time: [try Constraint(.within([try TimeSlot(start: start, end: end)]))],
+                .activity: [try Constraint(.prefers(liked: [try Keyword("food"), try Keyword("boba run")], avoided: []))],
+                .budget: [try Constraint(.atMost(try MoneyAmount(minorUnits: 2000)))],
+            ]))
+            try await negotiator.setIntent(DownIntent(rules: rules, level: level, expiresAt: Timestamp(end)))
+            state = level == .down ? "Down: food or boba, up to $20, next 8 hours" : "Maybe: food or boba, up to $20, next 8 hours"
+        } catch {
+            state = "Couldn't go down: \(error)"
+        }
+    }
+
+    func withdraw() async {
+        await negotiator.clearIntent()
+    }
+
+    func setInRange(_ inRange: Bool) async {
+        if inRange { await hub.heal(peer.id, ownerID) } else { await hub.partition(peer.id, ownerID) }
+        self.inRange = inRange
+    }
+
+    private func show(_ event: DownEvent) {
+        switch event {
+        case .checking(let friends): state += " (checking \(friends))"
+        case .matched(let match): state = "Matched (\(match.bothDown ? "both down" : "a maybe"))"
+        case .ended(let reason): state = "Not down (\(reason.rawValue))"
+        }
     }
 }
 

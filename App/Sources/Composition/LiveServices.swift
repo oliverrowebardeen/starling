@@ -3,16 +3,18 @@ import Network
 import StarlingAgent
 import StarlingCore
 import StarlingFeatures
+import StarlingNegotiation
 import StarlingPolicy
 import StarlingWiFiAware
 import UserNotifications
 
 extension AppServices {
     /// Release builds: real implementations only, never StarlingFakes.
-    /// Down, pairing, and the friends list stay nil until lanes E1 and F
-    /// merge; their screens say they are not in this build. Lane G's policy
-    /// and audit log are real; there is no transport for the app's Outbox
-    /// until lane E1's secure channel lands.
+    /// Lane G's policy and audit log are real. Down stays out: lane F's
+    /// DownNegotiator needs a PSI provider and the only one, InsecurePSIStub,
+    /// lives in StarlingFakes, so Release shows "Down? isn't in this build
+    /// yet" until a private provider (Nightjar) exists. Pairing and friends
+    /// wait for lane E1, and so does a transport for the app's Outbox.
     static func release() -> AppServices {
         AppServices(
             agent: FoundationModelsAgent(),
@@ -22,6 +24,8 @@ extension AppServices {
             makePairingSession: nil,
             makePolicy: LiveServices.policy(peers: nil),
             auditLog: LiveServices.auditLog,
+            agentCard: LiveServices.agentCard(locality: .onDevice),
+            describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter()
@@ -41,6 +45,22 @@ enum LiveServices {
     /// paired friends only; without a store the policy asks.
     static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules) -> any PolicyEngine {
         { rules in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: false, pairedPeers: peers) }
+    }
+
+    /// This agent's card, sent in a hello to each peer that becomes
+    /// available. Down is the feature it offers; PSI is how Down matches.
+    static func agentCard(locality: ModelLocality) -> AgentCard {
+        // Cannot throw: one protocol version and two capabilities are within limits.
+        try! AgentCard(model: locality, capabilities: [.down, .psi])
+    }
+
+    /// Plain words for lane F's own setIntent errors (docs/requests/F.md).
+    static let describeDownError: @Sendable (any Error) -> String? = { error in
+        switch error as? DownError {
+        case .expired: "This Down? would already be over. Pick a later end time."
+        case .noAvailableTime: "Your rules leave no free half-hour before this ends. Change the times or pick a later end."
+        case nil: nil
+        }
     }
 
     /// The Wi-Fi Aware link, or nil where it cannot run (the Simulator,
@@ -140,3 +160,8 @@ struct BonjourLocalNetworkPrompter: LocalNetworkPrompter {
         continuation.finish()
     }
 }
+
+/// Lane F requires shutdown() when the app tears the service down.
+/// Retroactive because StarlingNegotiation does not depend on
+/// StarlingFeatures, so lane F can never add this conformance itself.
+extension DownNegotiator: @retroactive StoppableDownService {}
