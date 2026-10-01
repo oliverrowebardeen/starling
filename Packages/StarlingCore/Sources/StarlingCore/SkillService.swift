@@ -5,14 +5,6 @@ import Foundation
 // app's single Outbox and Inbox; the shared lifecycle coordinator owns the
 // `Interaction` records and applies the events a service reports.
 
-/// Who a request goes to, as the owner chose in New.
-public enum Audience: Hashable, Sendable, Codable {
-    case allFriends
-    /// The owner's own "close friends" list, kept on this phone.
-    case closeFriends
-    case picked([PeerID])
-}
-
 /// What the owner wants, structured: the chips Starling shows under
 /// "Starling understood", after the owner's edits.
 public struct SkillIntent: Hashable, Sendable {
