@@ -7,79 +7,76 @@ import StarlingAgent
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
+import StarlingIdentity
 import StarlingNegotiation
 import StarlingTransport
 
-/// The Debug composition: the real model, rules file, lane G policy, and
-/// lane F's DownNegotiator, with fakes only where lanes have not delivered
-/// (ADR 0144). Until lane E1's secure channel exists, the owner's Down runs
-/// over an in-process Loopback hub against a simulated friend, so the whole
-/// Down journey (PSI, consent sheets, matching, notifications) runs on one
-/// phone or the Simulator.
+/// The Debug composition: the same lane E1 stack as Release (Keychain
+/// identity, one PinAuthority, secure LocalP2P and Wi-Fi Aware links, real
+/// pairing), plus lane F's Down with the insecure PSI stub, plus a simulated
+/// friend on an in-process secure Loopback link so the whole Down journey
+/// runs on one phone or the Simulator (ADR 0144, ADR 0145). Fakes stay where
+/// no lane has delivered: the PSI stub, the scripted model, sample friends.
 @MainActor
 final class DebugHarness {
     static let scriptedModelKey = "dev.scriptedModel"
 
-    let peers: InMemoryPairedPeerStore
     let usesScriptedModel: Bool
     let hub = LoopbackHub()
-    /// This phone on the Loopback hub. Its ID is derived from a key, like a
-    /// real Starling peer, so the simulated friend can pair with it.
-    let owner: PairedPeer
-    let transport: LoopbackTransport
-    /// Created once: the transport's event stream has a single consumer.
-    let inboxEvents: AsyncStream<InboxEvent>
-    let simFriend: SimulatedFriend
+    /// Friends that exist only in this Debug session (the simulated friend,
+    /// sample friends). Never written to the Keychain.
+    let overlay = InMemoryPairedPeerStore()
+    /// Set once services() has loaded the identity.
+    private(set) var simFriend: SimulatedFriend?
+    private(set) var friends: (any PairedPeerStore)?
+    private(set) var appTransport: (any Transport)?
     /// Fixed per launch so a repeated demo send has an identical disclosure
     /// and the consent memory can be seen.
     let sampleStart: Date
     private var pairingCount = 0
 
-    init(peers: [PairedPeer] = [], defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard) {
         usesScriptedModel = defaults.bool(forKey: Self.scriptedModelKey)
-        owner = Self.randomPeer(nickname: "This phone")
-        transport = LoopbackTransport(localPeer: owner.id, hub: hub)
-        inboxEvents = Inbox(localPeer: owner.id).events(from: transport)
-        simFriend = SimulatedFriend(hub: hub, owner: owner, card: LiveServices.agentCard(locality: .onDevice))
-        self.peers = InMemoryPairedPeerStore([simFriend.peer] + peers)
         sampleStart = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 3600).rounded(.up) * 3600)
-        let simFriend = simFriend
-        Task { await simFriend.start() }
     }
 
-    /// The Debug app's services. Async because lane E1's identity loads
-    /// from the Keychain (next commit).
+    /// The Debug app's services: lane E1's identity from the Keychain, then
+    /// the same secure links as Release with the simulated friend's
+    /// Loopback link added.
     func services(rules: any RulesStore = LiveServices.rulesStore(), notifier: any MatchNotifier = UserNotificationsNotifier.shared) async throws -> AppServices {
-        previewServices(rules: rules, notifier: notifier)
-    }
-
-    /// Fakes and the in-process Loopback hub only, built synchronously for
-    /// SwiftUI previews.
-    func previewServices(rules: any RulesStore, notifier: any MatchNotifier) -> AppServices {
+        let identity = try await KeychainIdentityKeyStore().loadOrCreate()
         let agent: any AgentModel = usesScriptedModel ? Self.scriptedModel() : FoundationModelsAgent()
-        let peers = peers
-        let ownerID = owner.id
+        let card = LiveServices.agentCard(locality: agent.descriptor.locality)
+
+        let me = try PairedPeer(publicKey: identity.publicKey, nickname: "This phone", pairedAt: Timestamp(Date()))
+        let simFriend = SimulatedFriend(hub: hub, owner: me, card: card)
+        try await overlay.save(simFriend.peer)
+        let friends = OverlayPairedPeerStore(base: KeychainPairedPeerStore(), overlay: overlay)
+        let loopback = LoopbackTransport(localPeer: identity.peerID, hub: hub)
+        let links = SecureLinks.make(identity: identity, friends: friends, extraLinks: [("In-app sim", loopback)])
+        self.simFriend = simFriend
+        self.friends = friends
+        appTransport = links.transport
+        Task { await simFriend.start() }
+
         return AppServices(
             agent: agent,
             rules: rules,
-            peers: peers,
+            peers: friends,
             makeDownService: { outbox in
                 // docs/requests/F.md, answers to lane H: the app's Outbox, and
                 // the insecure PSI stub until Nightjar.
-                DownNegotiator(localPeer: ownerID, outbox: outbox, pairedPeers: peers, model: agent, psi: InsecurePSIStub())
+                DownNegotiator(localPeer: identity.peerID, outbox: outbox, pairedPeers: friends, model: agent, psi: InsecurePSIStub())
             },
-            pairing: scriptedPairing(),
-            // In-memory friends until the next commit wires lane E1 here.
-            unpair: { id in try await peers.remove(id) },
-            rename: { id, name in
-                guard let peer = try await peers.peer(for: id) else { return }
-                try await peers.save(try PairedPeer(publicKey: peer.publicKey, nickname: name, pairedAt: peer.pairedAt))
-            },
-            inboxEvents: inboxEvents,
-            makePolicy: LiveServices.policy(peers: peers),
+            pairing: links.pairingDirectory,
+            unpair: links.unpair,
+            rename: nil,
+            inboxEvents: links.inboxEvents,
+            makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
-            transport: transport,
-            agentCard: LiveServices.agentCard(locality: agent.descriptor.locality),
+            transport: links.transport,
+            afterStart: links.startPairing,
+            agentCard: card,
             downMatchingIsPrivate: InsecurePSIStub().descriptor.isPrivate,
             describeDownError: LiveServices.describeDownError,
             presentConsent: LiveServices.presentConsent,
@@ -88,19 +85,32 @@ final class DebugHarness {
         )
     }
 
-    /// Until the Debug harness runs lane E1's pairing (next commit): one
-    /// demo phone whose ceremony is scripted, saved to the in-memory friends.
-    func scriptedPairing() -> PairingDirectory {
-        let peers = peers
-        let demo = Self.randomPeer(nickname: "Demo phone")
-        return PairingDirectory(
-            localPeer: owner.id,
-            candidates: { [PairingCandidate(peer: demo.id, link: "Demo (scripted)")] },
-            pair: { _, nickname in
-                let code = String(format: "%03d %03d", Int.random(in: 0...999), Int.random(in: 0...999))
-                return ScriptedPairingSession(code: code, peer: try PairedPeer(publicKey: demo.publicKey, nickname: nickname, pairedAt: Timestamp(Date())))
-            },
-            paired: { peer in try? await peers.save(peer) }
+    /// Fakes only, built synchronously for SwiftUI previews: sample friends,
+    /// a recording transport, a scripted Down service and pairing ceremony.
+    static func previewServices(friends: [String]) -> AppServices {
+        let peers = InMemoryPairedPeerStore(friends.map { randomPeer(nickname: $0) })
+        let demo = randomPeer(nickname: "Demo phone")
+        let agent = scriptedModel()
+        return AppServices(
+            agent: agent,
+            rules: InMemoryRulesStore(),
+            peers: peers,
+            makeDownService: { _ in ScriptedDownService() },
+            pairing: PairingDirectory(
+                localPeer: .random(),
+                candidates: { [PairingCandidate(peer: demo.id, link: "Preview")] },
+                pair: { _, nickname in
+                    ScriptedPairingSession(code: "482 913", peer: try PairedPeer(publicKey: demo.publicKey, nickname: nickname, pairedAt: Timestamp(Date())))
+                },
+                paired: { peer in try? await peers.save(peer) }
+            ),
+            unpair: { id in try await peers.remove(id) },
+            makePolicy: LiveServices.policy(peers: peers),
+            transport: RecordingTransport(),
+            agentCard: LiveServices.agentCard(locality: .onDevice),
+            presentConsent: LiveServices.presentConsent,
+            notifier: PreviewSupport.SilentNotifier(),
+            localNetwork: PreviewSupport.SilentPrompter()
         )
     }
 
@@ -132,17 +142,18 @@ final class DebugHarness {
 
     // MARK: Simulation (Developer screen)
 
+    /// A friend that is never reachable, kept in the in-memory overlay.
     func addSampleFriend() async {
         pairingCount += 1
-        try? await peers.save(Self.randomPeer(nickname: ["Maya", "Sam", "Jordan", "Priya", "Alex"][(pairingCount - 1) % 5]))
+        try? await overlay.save(Self.randomPeer(nickname: ["Maya", "Sam", "Jordan", "Priya", "Alex"][(pairingCount - 1) % 5]))
     }
 
-    /// Sends a sample proposal to the first friend through the app's Outbox:
-    /// lane G's policy, the consent sheet, and the audit log, over the
-    /// recording transport. Returns what happened in plain words.
+    /// Sends a sample proposal to the simulated friend through the app's
+    /// Outbox: lane G's policy, the consent sheet, and the audit log, over
+    /// the secure Loopback link. Returns what happened in plain words.
     func sendSample(through outbox: Outbox?) async -> String {
         guard let outbox else { return "This build has no Outbox." }
-        guard let friend = try? await peers.all().first, let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart)) else {
+        guard let friend = simFriend?.peer, let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart)) else {
             return "Add a friend first."
         }
         do {
@@ -158,7 +169,7 @@ final class DebugHarness {
     /// message, so a real rule edit ends in a denial instead; this demo uses
     /// a stand-in policy whose re-check returns a different disclosure.
     func sendWithPolicyChangingDuringConsent(through consent: any ConsentProvider) async -> String {
-        guard let friend = try? await peers.all().first,
+        guard let transport = appTransport, let friend = simFriend?.peer,
               let asked = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 1800),
               let changed = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 2500),
               let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart))
@@ -189,10 +200,11 @@ final class DebugHarness {
     }
 }
 
-/// A second phone in the same process: lane F's DownNegotiator on its own
-/// Loopback transport, paired with this phone. It approves its own consent
-/// and allows every send, because only this phone's side should exercise
-/// lane G's policy and the consent sheet.
+/// A second phone in the same process, paired with this one: its own lane E1
+/// identity and PinAuthority, a SecureTransport over an in-process Loopback
+/// link, lane F's DownNegotiator, and the app's link layer for hellos. It
+/// approves its own consent and allows every send, because only this
+/// phone's side should exercise lane G's policy and the consent sheet.
 @MainActor
 @Observable
 final class SimulatedFriend {
@@ -201,26 +213,31 @@ final class SimulatedFriend {
     private(set) var inRange = true
     private let ownerID: PeerID
     private let hub: LoopbackHub
-    private let transport: LoopbackTransport
+    private let transport: SecureTransport
     private let outbox: Outbox
     private let negotiator: DownNegotiator
-    private let card: AgentCard
+    private let link: LinkTestModel
     private var started = false
 
     init(hub: LoopbackHub, owner: PairedPeer, card: AgentCard) {
-        peer = DebugHarness.randomPeer(nickname: "Sim friend")
+        let identity = IdentityKeyPair.generate()
+        peer = try! PairedPeer(publicKey: identity.publicKey, nickname: "Sim friend", pairedAt: Timestamp(Date()))
         ownerID = owner.id
         self.hub = hub
-        self.card = card
-        transport = LoopbackTransport(localPeer: peer.id, hub: hub)
+        let pinned = InMemoryPairedPeerStore([owner])
+        transport = SecureTransport(
+            wrapping: LoopbackTransport(localPeer: identity.peerID, hub: hub),
+            authority: PinAuthority(identity: identity, store: pinned)
+        )
         outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved))
         negotiator = DownNegotiator(
-            localPeer: peer.id,
+            localPeer: identity.peerID,
             outbox: outbox,
-            pairedPeers: InMemoryPairedPeerStore([owner]),
+            pairedPeers: pinned,
             model: ScriptedAgentModel(onDecide: { _ in .accept }),
             psi: InsecurePSIStub()
         )
+        link = LinkTestModel(outbox: outbox, card: card, name: { _ in nil })
     }
 
     func start() async {
@@ -228,13 +245,10 @@ final class SimulatedFriend {
         started = true
         let events = Inbox(localPeer: peer.id).events(from: transport)
         let negotiator = negotiator
-        let outbox = outbox
-        let card = card
+        let link = link
         Task {
             for await event in events {
-                if case .peerAvailable(let other) = event {
-                    Task { _ = try? await outbox.send(.hello(card), to: other, conversation: ConversationID()) }
-                }
+                await link.handle(event)
                 await negotiator.handle(event)
             }
         }
@@ -289,7 +303,7 @@ final class SimulatedFriend {
 @MainActor
 enum DownSelfTest {
     static func runIfRequested(app: AppModel, harness: DebugHarness) async {
-        guard UserDefaults.standard.bool(forKey: "starlingSelfTestDown"), let down = app.down else { return }
+        guard UserDefaults.standard.bool(forKey: "starlingSelfTestDown"), let down = app.down, let sim = harness.simFriend else { return }
         await app.start()
         let approver = Task {
             while !Task.isCancelled {
@@ -302,8 +316,8 @@ enum DownSelfTest {
         }
         defer { approver.cancel() }
 
-        await harness.simFriend.goDown(.down)
-        print("SELFTEST sim friend: \(harness.simFriend.state)")
+        await sim.goDown(.down)
+        print("SELFTEST sim friend: \(sim.state)")
         await down.editByHand()
         down.draft.add(.within, issue: .time)
         down.draft.add(.prefers, issue: .activity)
@@ -321,10 +335,42 @@ enum DownSelfTest {
         if let match = down.matches.first {
             print("SELFTEST MATCH with \(match.friendName): \(match.lines.map { "\($0.title)=\($0.detail ?? "")" }.joined(separator: "; ")); bothDown \(match.bothDown); status \(down.status)")
         } else {
-            print("SELFTEST NO MATCH after 60 s; status \(down.status); checking \(String(describing: down.active?.checkingFriends)); sim friend \(harness.simFriend.state)")
+            print("SELFTEST NO MATCH after 60 s; status \(down.status); checking \(String(describing: down.active?.checkingFriends)); sim friend \(sim.state)")
         }
         let audited = await LiveServices.auditLog.entries()
         print("SELFTEST audit: \(audited.map { $0.kind.rawValue }.joined(separator: ","))")
+    }
+}
+
+/// The Keychain friends plus friends that exist only in this Debug session
+/// (the simulated friend, sample friends), which are never written to the
+/// Keychain. Lane E1's authority commits real pairings to the Keychain part.
+actor OverlayPairedPeerStore: PairedPeerStore {
+    private let base: any PairedPeerStore
+    private let overlay: InMemoryPairedPeerStore
+
+    init(base: any PairedPeerStore, overlay: InMemoryPairedPeerStore) {
+        self.base = base
+        self.overlay = overlay
+    }
+
+    func all() async throws -> [PairedPeer] {
+        let session = try await overlay.all()
+        let ids = Set(session.map(\.id))
+        return (try await base.all()).filter { !ids.contains($0.id) } + session
+    }
+
+    func peer(for id: PeerID) async throws -> PairedPeer? {
+        if let peer = try await overlay.peer(for: id) { return peer }
+        return try await base.peer(for: id)
+    }
+
+    func save(_ peer: PairedPeer) async throws {
+        if try await overlay.peer(for: peer.id) != nil { try await overlay.save(peer) } else { try await base.save(peer) }
+    }
+
+    func remove(_ id: PeerID) async throws {
+        if try await overlay.peer(for: id) != nil { try await overlay.remove(id) } else { try await base.remove(id) }
     }
 }
 
@@ -349,12 +395,8 @@ actor DemoPolicy: PolicyEngine {
 /// Fakes-backed models for SwiftUI previews.
 @MainActor
 enum PreviewSupport {
-    static func app(friends: [String] = ["Maya", "Sam"], scriptedModel: Bool = true) -> AppModel {
-        let harness = DebugHarness(peers: friends.map { DebugHarness.randomPeer(nickname: $0) })
-        var services = harness.previewServices(rules: InMemoryRulesStore(), notifier: SilentNotifier())
-        services.agent = DebugHarness.scriptedModel()
-        services.localNetwork = SilentPrompter()
-        return AppModel(services: services)
+    static func app(friends: [String] = ["Maya", "Sam"]) -> AppModel {
+        AppModel(services: DebugHarness.previewServices(friends: friends))
     }
 
     struct SilentNotifier: MatchNotifier {

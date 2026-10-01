@@ -1,4 +1,5 @@
 import StarlingFeatures
+import StarlingIdentity
 import SwiftUI
 import UIKit
 
@@ -70,6 +71,10 @@ final class Bootstrap {
             #else
             state = .ready(AppModel(services: try await AppServices.release()))
             #endif
+        } catch let error as KeychainError where error.status == errSecMissingEntitlement {
+            // An unsigned build (for example a Simulator build with signing
+            // turned off) gets no Keychain access at all.
+            state = .failed("This build isn't signed, so it can't use the Keychain. Run it from Xcode with signing on (Sign to Run Locally in the Simulator).")
         } catch {
             state = .failed("Its keys in the Keychain couldn't be read. Unlock your iPhone and try again. (\(error))")
         }
