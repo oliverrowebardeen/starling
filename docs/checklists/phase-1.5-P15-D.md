@@ -4,7 +4,7 @@ Lane P15-D ships a package (`Packages/Skills/PickAPlace`), not screens. Run step
 
 ## On the Mac
 
-1. Run `Tools/test-all.sh Packages/Skills/PickAPlace`. Expect: `Test run with 77 tests in 10 suites passed`.
+1. Run `Tools/test-all.sh Packages/Skills/PickAPlace`. Expect: `Test run with 94 tests in 12 suites passed`.
 2. Run `STARLING_MAPKIT_TESTS=1 swift test --filter liveSearch` in `Packages/Skills/PickAPlace`. Expect: it passes and prints 1 to 8 coffee places near Union Square, San Francisco.
 
 ## Phones A and B (C where noted)
