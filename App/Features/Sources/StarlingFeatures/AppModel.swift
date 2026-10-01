@@ -231,7 +231,9 @@ public final class AppModel {
         self.outbox = outbox
         lifecycle = LifecycleCoordinator(
             registry: services.registry,
-            services: outbox.map(services.makeSkills) ?? [],
+            // A skill behind a flag that is off runs no service, so nothing a
+            // friend sends can reach it (Swap photos in Phase 1.5).
+            services: outbox.map { services.makeSkills($0).filter { services.flags.enabled.contains($0.descriptor.id) } } ?? [],
             store: services.interactions
         )
         relay.lifecycle = lifecycle
@@ -372,6 +374,7 @@ public final class AppModel {
         // holds, so their conversations read as unconfirmed (P15-E 4.1).
         await egress.recover()
         await refreshAudit()
+        await retryRetirements()
         startScheduler()
         if let ledger = services.ledger {
             do {
@@ -459,8 +462,13 @@ public final class AppModel {
     public func foreground() {
         lifecycle.tick()
         Task {
+            await retryRetirements()
             if let due = try? await scheduler?.due() { await handleScheduled(due) }
         }
+    }
+
+    private func retryRetirements() async {
+        for case let service as any RetriesRetirements in lifecycle.allServices { await service.retryRetirements() }
     }
 
     /// Runs lane E's PlanEndScheduler while the app is open (P15-E 4.5): an

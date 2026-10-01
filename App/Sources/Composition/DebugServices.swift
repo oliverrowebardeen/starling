@@ -57,15 +57,19 @@ final class DebugHarness {
         driver = DemoDriver(me: identity.peerID, services: skills)
         let ledger = LiveServices.ledger()
         let places = LiveServices.places()
+        let interactions = LiveServices.interactionStore()
 
         return AppServices(
             agent: agent,
             skillModel: Self.scriptedSkillModel(),
             registry: Self.registry,
             makeSkills: { outbox in
-                skills + [LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger)]
+                skills + [
+                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                ]
             },
-            interactions: LiveServices.interactionStore(),
+            interactions: interactions,
             settings: LiveServices.settingsStore(),
             rules: rules,
             peers: friends,

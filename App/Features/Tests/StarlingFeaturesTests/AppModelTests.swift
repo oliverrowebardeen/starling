@@ -54,6 +54,35 @@ import Testing
         #expect(app.lifecycle.skillsInBuild == [.downFor, .findATime])
     }
 
+    @Test func aSkillWhoseFlagIsOffRunsNoService() async {
+        let app = AppModel(services: Self.services(skills: [SampleSkills.downFor, SampleSkills.swapPhotos]))
+        #expect(app.lifecycle.skillsInBuild == [.downFor])
+    }
+
+    /// Stands in for Swap photos, which retries retirements its ledger missed.
+    actor RetryingService: SkillService, RetriesRetirements {
+        nonisolated let descriptor = SampleSkills.downFor
+        nonisolated let events = AsyncStream<SkillEvent> { _ in }
+        private(set) var retries = 0
+        func retryRetirements() async { retries += 1 }
+        func start(_ request: SkillRequest) async throws {}
+        func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws {}
+        func withdraw(_ interaction: InteractionID) async {}
+        func handle(_ event: InboxEvent) async {}
+        func restore(_ interactions: [Interaction]) async {}
+        func shutdown() async {}
+    }
+
+    @Test func launchRetriesRetirementsTheLedgerMissed() async {
+        let retrying = RetryingService()
+        var services = Self.services()
+        services.makeSkills = { _ in [retrying] }
+        let app = AppModel(services: services)
+        await app.start()
+        #expect(await retrying.retries == 1)
+        await app.shutdown()
+    }
+
     @Test func noSkillsWithoutAnOutbox() {
         var services = Self.services()
         services.transport = nil

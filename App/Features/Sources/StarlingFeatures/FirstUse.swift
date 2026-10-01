@@ -15,3 +15,10 @@ public protocol PlanNotifier: Sendable {
     func requestAuthorization() async -> Bool
     func post(_ notice: LifecycleNotice) async
 }
+
+/// A skill service that retries conversation retirements its ledger could
+/// not record (lane E's Swap photos). The app calls it at launch and when it
+/// comes to the foreground.
+public protocol RetriesRetirements: Sendable {
+    func retryRetirements() async
+}

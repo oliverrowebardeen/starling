@@ -26,13 +26,17 @@ extension AppServices {
         let ledger = LiveServices.ledger()
         let rules = LiveServices.rulesStore()
         let places = LiveServices.places()
+        let interactions = LiveServices.interactionStore()
         return AppServices(
             agent: FoundationModelsAgent(),
             registry: LiveServices.registry,
             makeSkills: { outbox in
-                [LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger)]
+                [
+                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                ]
             },
-            interactions: LiveServices.interactionStore(),
+            interactions: interactions,
             settings: LiveServices.settingsStore(),
             rules: rules,
             peers: links.friends,
@@ -142,6 +146,16 @@ enum LiveServices {
         )
     }
 
+    /// Lane E's Swap photos over the app's one Outbox and the same
+    /// conversation ledger it enforces (P15-E request 4.8). An offer is
+    /// checked against the plan saved on this phone. Runs only while its
+    /// flag is on (AppModel drops a flagged-off service).
+    static func swapPhotos(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, interactions: any InteractionStore) -> any SkillService {
+        SwapPhotosService(outbox: outbox, ledger: ledger, me: me, planLookup: { conversation in
+            try? await interactions.interaction(conversation: conversation)?.plan
+        })
+    }
+
     static func settingsStore() -> any OwnerSettingsStore {
         (try? FileOwnerSettingsStore.standard()) ?? InMemoryOwnerSettingsStore()
     }
@@ -169,6 +183,10 @@ enum LiveServices {
         )
     }
 }
+
+/// Swap photos keeps a retirement its ledger could not record and retries
+/// it; the app asks at launch and on foreground (P15-E request 4.8).
+extension SwapPhotosService: @retroactive RetriesRetirements {}
 
 /// Posts plan notifications and shows them while Starling is open.
 final class UserNotificationsNotifier: NSObject, PlanNotifier, UNUserNotificationCenterDelegate {

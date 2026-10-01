@@ -368,6 +368,10 @@ public final class LifecycleCoordinator {
         }
     }
 
+    /// Every registered service, for app-level upkeep such as retrying
+    /// retirements that failed.
+    public var allServices: [any SkillService] { Array(services.values) }
+
     /// Acts on one of lane E's after-plan-ends decisions (P15-E request
     /// 4.5). Checked against the stored link right before acting, in the
     /// same main-actor step, so a link the owner opted out of, or one that
