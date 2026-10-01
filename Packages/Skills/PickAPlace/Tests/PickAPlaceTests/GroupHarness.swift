@@ -262,6 +262,8 @@ final class Phone: Sendable {
     let ledger = InMemoryPickAPlaceLedger()
     let coordinator = Coordinator()
     let consent: CoordinatorConsent
+    /// Every send the Outbox made, with its context.
+    let sends = RecordingOutboxObserver()
     let outbox: Outbox
     let card: AgentCard
     private let current: Mutex<PickAPlaceService>
@@ -283,7 +285,7 @@ final class Phone: Sendable {
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
-        outbox = Outbox(transport: transport, policy: policy, consent: consent)
+        outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: sends)
         card = try! AgentCard(model: model, capabilities: [], skills: skills)
         let (peer, outbox, store, staged, ledger) = (key.peerID, outbox, store, staged, ledger)
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }

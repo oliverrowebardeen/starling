@@ -334,8 +334,8 @@ public actor PickAPlaceService: SkillService {
     /// says yes to exactly its terms (ADR 0019, amendment 10).
     @discardableResult
     func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?,
-              answering: Query? = nil, accepting: Proposal? = nil) async throws -> Envelope {
-        let interaction = organized[conversation]?.id ?? invites[conversation]?.id
+              answering: Query? = nil, accepting: Proposal? = nil, interaction named: InteractionID? = nil) async throws -> Envelope {
+        let interaction = named ?? organized[conversation]?.id ?? invites[conversation]?.id
         return try await outbox.send(body, to: peer, conversation: conversation, recipientCard: cards[peer],
                                      context: OutboundContext(answering: answering, interaction: interaction, accepting: accepting),
                                      skill: descriptor.ref, mode: descriptor.defaultSendMode, chainedFrom: chainedFrom)
@@ -343,8 +343,8 @@ public actor PickAPlaceService: SkillService {
 
     /// A send whose failure changes nothing, such as a goodbye.
     func trySend(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?,
-                 accepting: Proposal? = nil) async {
-        _ = try? await send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom, accepting: accepting)
+                 accepting: Proposal? = nil, interaction: InteractionID? = nil) async {
+        _ = try? await send(body, to: peer, conversation: conversation, chainedFrom: chainedFrom, accepting: accepting, interaction: interaction)
     }
 
     /// Runs work for one conversation on its own task, cancelled when the

@@ -53,9 +53,14 @@ public struct PendingWithdrawal: Codable, Hashable, Sendable {
     public let proposal: MessageID?
     public let chainedFrom: ConversationID?
     public let since: Date
+    /// The interaction the yes belonged to, named on every retry so the
+    /// consent sheet and the audit find it after a relaunch.
+    public let interaction: InteractionID?
 
-    public init(conversation: ConversationID, organizer: PeerID, proposal: MessageID?, chainedFrom: ConversationID?, since: Date) {
+    public init(conversation: ConversationID, organizer: PeerID, proposal: MessageID?, chainedFrom: ConversationID?, since: Date,
+                interaction: InteractionID?) {
         self.conversation = conversation
+        self.interaction = interaction
         self.organizer = organizer
         self.proposal = proposal
         self.chainedFrom = chainedFrom

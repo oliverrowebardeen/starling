@@ -163,6 +163,31 @@ struct WithdrawalTests {
         #expect(rejects.count < 12)
     }
 
+    /// Final review of PR #55, finding 3: retries after a relaunch still
+    /// name the interaction they belong to.
+    @Test func restoredRetriesNameTheirInteraction() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        let mayas = try #require(await maya.interaction(conversation)?.id)
+
+        await maya.transport.lose(.max) { $0.body.kind == .reject }
+        try await maya.pass(in: conversation)
+        #expect(await eventually { await maya.transport.lost.contains { $0.body.kind == .reject } })
+        await maya.restart()
+        await maya.transport.clearRules()
+        #expect(await eventually { await maya.service.pendingWithdrawals.isEmpty })
+
+        // The Outbox saw every retry, before and after the relaunch, name
+        // Maya's interaction.
+        let retries = await maya.sends.records.filter { $0.envelope.body.kind == .reject && $0.envelope.conversation == conversation }
+        #expect(retries.count >= 2)
+        #expect(retries.allSatisfy { $0.context.interaction == mayas })
+    }
+
     @Test func noRejectionEverNamesAPass() async throws {
         let (group, oliver, maya, jake) = try await threeFriends()
         defer { Task { await group.stop() } }

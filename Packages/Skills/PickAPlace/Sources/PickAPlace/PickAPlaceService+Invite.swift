@@ -436,7 +436,7 @@ extension PickAPlaceService {
 
     func startWithdrawal(_ invite: Invite) {
         let withdrawal = PendingWithdrawal(conversation: invite.conversation, organizer: invite.organizer, proposal: invite.proposeID,
-                                           chainedFrom: invite.chainedFrom, since: clock.now())
+                                           chainedFrom: invite.chainedFrom, since: clock.now(), interaction: invite.id)
         spawn(invite.conversation) { try? await $0.ledger.recordWithdrawal(withdrawal) }
         retryWithdrawal(withdrawal)
     }
@@ -462,7 +462,8 @@ extension PickAPlaceService {
                     return
                 }
                 let rejection = Rejection(proposal: withdrawal.proposal ?? MessageID(), reason: .noOverlap)
-                await service.trySend(.reject(rejection), to: withdrawal.organizer, conversation: conversation, chainedFrom: withdrawal.chainedFrom)
+                await service.trySend(.reject(rejection), to: withdrawal.organizer, conversation: conversation, chainedFrom: withdrawal.chainedFrom,
+                                      interaction: withdrawal.interaction)
                 guard let next = await service.pause(interval) else { return }
                 interval = next
             }
