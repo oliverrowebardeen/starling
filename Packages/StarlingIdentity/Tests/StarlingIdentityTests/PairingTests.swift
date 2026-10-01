@@ -435,7 +435,7 @@ extension Recorder where Element == PairingEvent {
         let heardBefore = await alice.events.received.count
         let notice = Gate()
         if suspension == .unpairRevocationNotice {
-            await alice.secure.observeRevocations { _ in await notice.wait() }
+            await alice.secure.observeRevocations { _, _ in await notice.wait() }
         }
 
         switch suspension {

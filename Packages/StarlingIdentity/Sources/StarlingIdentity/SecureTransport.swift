@@ -179,7 +179,7 @@ public actor SecureTransport: Transport {
         state = .started
         // Revocations that start at the authority (for example from another
         // component) end sessions here too.
-        authority.observeRevocations { [weak self] peer in await self?.endSessions(with: peer) }
+        authority.observeRevocations { [weak self] peer, epoch in await self?.revocationNotice(peer, epoch: epoch) }
         let events = inner.events
         eventLoop = Task { [weak self] in
             for await event in events {
@@ -245,14 +245,26 @@ public actor SecureTransport: Transport {
     /// `unpair(_:)` to unpair; this alone leaves the pin, so the next link-up
     /// starts a session again.
     public func disconnect(_ peer: PeerID) async {
-        authority.markRevoked(peer)
+        let epoch = authority.markRevoked(peer)
         endSessions(with: peer)
-        authority.notifyObservers(peer)
+        authority.notifyObservers(peer, epoch: epoch)
     }
 
-    /// Registers a handler run on every revocation of a peer.
-    public func observeRevocations(_ handler: @escaping @Sendable (PeerID) async -> Void) {
+    /// Registers a handler run on every revocation of a peer, with the epoch
+    /// the revocation produced.
+    public func observeRevocations(_ handler: @escaping @Sendable (PeerID, UInt64) async -> Void) {
         authority.observeRevocations(handler)
+    }
+
+    /// A revocation notice from the authority, for liveness: removes the
+    /// sessions and handshakes the revocation made dead, which are exactly
+    /// those stamped with an older epoch than the one it produced. It can
+    /// arrive late, after a reconnect has begun under the new epoch, so it
+    /// leaves newer sessions, handshakes, and in-flight lookups alone (it
+    /// does not move this transport's generation). Correctness never
+    /// depended on it: the epoch checks already reject everything older.
+    func revocationNotice(_ peer: PeerID, epoch: UInt64) {
+        purge(peer) { $0 < epoch }
     }
 
     /// Ends every session and handshake with `peer` and voids pin lookups in
@@ -762,19 +774,24 @@ public actor SecureTransport: Transport {
     /// is dead, on this transport as on every other, and is removed on first
     /// touch. Synchronous: called before any frame is sealed or accepted.
     private func purgeStale(_ peer: PeerID) {
-        guard var entry = peers[peer] else { return }
         let epoch = authority.epoch(of: peer)
+        purge(peer) { $0 != epoch }
+    }
+
+    /// Removes every session and handshake with `peer` whose epoch `isDead`.
+    private func purge(_ peer: PeerID, isDead: (UInt64) -> Bool) {
+        guard var entry = peers[peer] else { return }
         var lostCurrent = false
-        if let current = entry.current, current.epoch != epoch {
+        if let current = entry.current, isDead(current.epoch) {
             entry.current = nil
             lostCurrent = true
             if let timer = entry.confirmTimer { timers.removeValue(forKey: timer)?.cancel() }
             entry.confirmTimer = nil
         }
-        if let lastConfirmed = entry.lastConfirmed, lastConfirmed.epoch != epoch { entry.lastConfirmed = nil }
-        entry.superseded.removeAll { $0.epoch != epoch }
-        entry.pending.removeAll { $0.epoch != epoch }
-        if let initiation = entry.initiation, initiation.epoch != epoch {
+        if let lastConfirmed = entry.lastConfirmed, isDead(lastConfirmed.epoch) { entry.lastConfirmed = nil }
+        entry.superseded.removeAll { isDead($0.epoch) }
+        entry.pending.removeAll { isDead($0.epoch) }
+        if let initiation = entry.initiation, isDead(initiation.epoch) {
             timers.removeValue(forKey: initiation.id)?.cancel()
             entry.initiation = nil
         }

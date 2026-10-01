@@ -93,6 +93,10 @@ Noise revision 34 facts this design relies on:
 
     **Notifications are never awaited** (issue #32, after the sixth review). Each observer is notified in its own task, after the delete in an unpair, and the same way for `disconnect`, `revoke`, and commit rollback. A pairing service's reaction includes a network send (the ceremony's cancel notice), which can stall. So the only thing an unpair awaits is Keychain I/O under the pin lock: it finishes, and the pin is gone, even while every send is stalled.
 
+    **Notices carry their epoch** (focused review of #33). Because notices run later, one can arrive after newer work has begun: a reconnect's lookup, a handshake, a session, or a new ceremony, all under the new epoch. So every notice carries the epoch its revocation produced, and observers clean up only what is older:
+    - A transport removes only sessions and handshakes stamped with an older epoch, and does not move its generation, so a newer lookup survives.
+    - A pairing service cancels a ceremony only if it started under an older epoch.
+
     **The commit decision is one section** (fifth review). After its save, a commit compares the epoch and, if unchanged, ends (`committing -= 1`) in the same section. If the epoch moved, the commit stays in progress (lookups refused) until its rollback ends it.
 
     **Invariant.** For every peer `p` and every transport sharing the authority:
