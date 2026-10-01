@@ -27,7 +27,7 @@ public enum Scenario: String, CaseIterable, Sendable {
         case .stale: "Old messages are dropped at a fixed-clock age boundary"
         case .futureDated: "Future messages are dropped without poisoning replay state"
         case .senderMismatch: "Mallory relays Alice's envelope over her own link"
-        case .impersonation: "Mallory forges Alice's envelope and link identity (Phase 0 gap)"
+        case .impersonation: "The secure channel drops Mallory's forged Alice envelope and link identity"
         case .garbage: "Mallory sends bytes that are not an envelope"
         }
     }
@@ -38,15 +38,29 @@ public struct ScenarioOutcome: Sendable {
     public let transcript: [LogEntry]
     /// Envelopes the target (Bob, or every agent for the mesh) accepted.
     public let accepted: [Envelope]
-    /// Frames the target dropped.
+    /// Frames the target's Inbox dropped, after any secure channel.
     public let dropped: [InboxDrop]
+    /// Additional frames rejected by the secure channel during the attack.
+    public let secureDroppedFrames: Int
+    /// Peer whose key the target's secure channel still proves after the attack.
+    public let provenPeer: PeerID?
+
+    init(transcript: [LogEntry], accepted: [Envelope], dropped: [InboxDrop],
+         secureDroppedFrames: Int = 0, provenPeer: PeerID? = nil) {
+        self.transcript = transcript
+        self.accepted = accepted
+        self.dropped = dropped
+        self.secureDroppedFrames = secureDroppedFrames
+        self.provenPeer = provenPeer
+    }
 }
 
 public enum ScenarioRunner {
     static let now = Date(timeIntervalSince1970: 1_790_967_600)
 
     public static func run(_ scenario: Scenario, agents: Int = 3) async throws -> ScenarioOutcome {
-        let simulation = Simulation(seed: 42, now: { now })
+        let simulation = Simulation(seed: 42, now: { now },
+                                    security: scenario == .impersonation ? .secureChannel : .none)
         do {
             let result = try await run(scenario, simulation: simulation, agents: agents)
             await simulation.stop()
@@ -126,7 +140,7 @@ public enum ScenarioRunner {
         let alice = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob")
         try await simulation.waitForMesh()
-        let helloCount = await bob.received.count
+        let droppedBefore = await bob.secureTransport?.status(of: alice.id).droppedFrames ?? 0
 
         let forged = try Envelope(
             conversation: ConversationID(), sender: alice.id, recipient: bob.id,
@@ -134,12 +148,26 @@ public enum ScenarioRunner {
             body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner))
         )
         try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: alice.id, to: bob.id)
-        try await Simulation.eventually("bob processes the forgery") {
-            let received = await bob.received.count
-            let dropped = await bob.dropped.count
-            return received > helloCount || dropped > 0
+        try await Simulation.eventually("bob's secure channel drops the forgery") {
+            let dropped = await bob.secureTransport?.status(of: alice.id).droppedFrames ?? 0
+            return dropped > droppedBefore
         }
-        return try await outcome(simulation, target: bob)
+
+        // Positive control: the real Alice can still send on the same session.
+        // Reuse the forged conversation and sequence so accepting the forgery
+        // would also poison Inbox replay state and block this genuine message.
+        let terms = try Terms([.activity: .keywords([try Keyword("boba")])])
+        let genuine = try await alice.send(.propose(try Proposal(round: 0, terms: terms)),
+                                           to: bob.id, conversation: forged.conversation)
+        try await Simulation.eventually("bob receives Alice's genuine proposal") {
+            await bob.received.contains { $0.id == genuine.id }
+        }
+        let status = await bob.secureTransport?.status(of: alice.id)
+        return ScenarioOutcome(
+            transcript: await simulation.transcript(), accepted: await bob.received, dropped: await bob.dropped,
+            secureDroppedFrames: (status?.droppedFrames ?? 0) - droppedBefore,
+            provenPeer: status?.provenKey?.peerID
+        )
     }
 
     static func garbage(_ simulation: Simulation) async throws -> ScenarioOutcome {

@@ -56,14 +56,15 @@ import Testing
         #expect(outcome.accepted.allSatisfy { $0.body.kind == .hello })
     }
 
-    /// Phase 0 has no authentication, so a peer that forges both the envelope
-    /// sender and the link identity is accepted. The Phase 1 secure channel
-    /// (ADR 0003) must fix this; when it does, this known issue stops
-    /// reproducing and the test fails until the marker is removed.
-    @Test func impersonationIsAKnownPhase0Gap() async throws {
+    /// Regression: https://github.com/oliverrowebardeen/starling-ios/issues/8
+    @Test func impersonationIsDroppedBeforeTheInbox() async throws {
         let outcome = try await ScenarioRunner.run(.impersonation)
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/8") {
-            #expect(outcome.accepted.allSatisfy { $0.body.kind == .hello })
-        }
+        #expect(!outcome.accepted.contains { $0.body.kind == .reject })
+        #expect(outcome.dropped.isEmpty)
+        #expect(outcome.secureDroppedFrames == 1)
+        #expect(outcome.accepted.count == 2)
+        let genuine = try #require(outcome.accepted.first { $0.body.kind == .propose })
+        #expect(genuine.sequence == 0)
+        #expect(outcome.provenPeer == genuine.sender)
     }
 }

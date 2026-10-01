@@ -18,23 +18,31 @@ Reproductions live in `Tools/Simulator/Tests/ScenarioTests/PSIAbuseTests.swift`.
 The tests now assert the typed errors directly, without `withKnownIssue`
 markers. Cardinality replies above the peer bound, including `Int.max`, now
 expect `PSIError.peerSetTooLarge`. The Answer fixture supplies its `.activity`
-issue for the v1.1 initializer. Markers for #8 and #9 remain unchanged.
+issue for the v1.1 initializer. The later #8 and #9 updates are recorded below.
 
-## E1 and Orchestrator: secure simulator wiring
+## Secure impersonation regression for issue #8
 
 [Issue #8](https://github.com/oliverrowebardeen/starling-ios/issues/8) tracks the
-existing impersonation gap. `SimulatorKit.SimulatedAgent` currently constructs
-a bare `LoopbackTransport`. Merging E1 alone cannot make that scenario secure.
+bare-link impersonation gap. PR #34, merged as `ebeef76`, exposes
+`Simulation(security: .secureChannel)` over E1's SecureTransport, with independent
+identity keys and fixture pins for each pair.
 
-When E1 lands, either expose secure transport construction in `SimulatorKit`
-or direct lane I to add a test-only secure stack using E1's public API. Keep the
-raw-link case as a labeled negative control, and make the Phase 1 impersonation
-acceptance test exercise the actual secure channel. Lane I cannot edit
-`Tools/Simulator/Sources/` under its ownership rules.
+The `impersonation` scenario now uses secure mode, and its test has no known-issue
+marker. It checks one additional secure-channel drop, no forged rejection in
+Bob's accepted envelopes, and no Inbox drop. A genuine proposal from Alice then
+uses the forged conversation's sequence zero and must arrive, with Alice's key
+still proven. This checks that rejecting the forgery neither loses the live
+session nor poisons Inbox replay state. Assertions do not assume seeded IDs.
+
+Removing the marker first reproduced the original bare-link acceptance failure.
+E1 merged in `24b37e9`, and this follow-up is rebased onto main at `ebeef76`,
+with all merged Phase 1 scenarios and model tests retained. The fixed scenario
+clock is preserved alongside secure mode. No SimulatorKit or Identity source
+was edited, and #9's opt-in markers are unchanged.
 
 ## Completed: F and G integration
 
-Rebased onto `84461c5`, which includes F, G, E2, and C2. The new
+The F/G pass used `84461c5`, which includes F, G, E2, and C2. The
 `Tools/Simulator/Tests/DownIntegrationTests/` target exercises the public
 `DownNegotiator` and `DeterministicPolicyEngine` through Inbox and Outbox over
 Loopback, with the real audit observer. Its 15 tests include 22 parameterized

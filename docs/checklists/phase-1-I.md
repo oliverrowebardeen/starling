@@ -5,7 +5,7 @@ merged E1, F, G, and H app. Use synthetic availability and budgets.
 
 1. Mac: run `Tools/test-all.sh Tools/Simulator`. Expect: all packages passed,
    10,000 seeded mutations completed, all 15 real Down/policy integration tests
-   passed, and only the issue-linked known failures.
+   passed, and no known issues in the ordinary run.
 2. Phones A and B: pair and compare the displayed code before confirming.
    Expect: both appear as paired friends. Phone C, unpaired: start Down nearby.
    Expect: neither paired phone negotiates or notifies for C.
@@ -23,3 +23,6 @@ merged E1, F, G, and H app. Use synthetic availability and budgets.
    issues, and rates, error counts, and complete trial data appear in the JSON
    file. Compare with the committed post-C2 Mac report; do not treat Mac
    measurements as phone model results.
+7. Mac: run `swift test --package-path Tools/Simulator --filter impersonationIsDroppedBeforeTheInbox`.
+   Expect: a normal passing test with one secure-channel drop, no forged
+   rejection or Inbox drop, and Alice's genuine proposal accepted afterward.
