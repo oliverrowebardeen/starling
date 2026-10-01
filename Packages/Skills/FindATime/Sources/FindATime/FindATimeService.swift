@@ -44,6 +44,12 @@ public actor FindATimeService: SkillService {
     var cards: [PeerID: AgentCard] = [:]
     private var tickers: [ConversationID: Task<Void, Never>] = [:]
     private var effects: [UUID: Task<Void, Never>] = [:]
+    /// Each conversation's work in flight (sends, calendar reads), so
+    /// ending or withdrawing it cancels a send still waiting on a consent
+    /// sheet or the policy recheck: Outbox checks cancellation before the
+    /// transport, so nothing of it leaves afterwards.
+    private var effectsOf: [ConversationID: Set<UUID>] = [:]
+    private var conversationOfEffect: [UUID: ConversationID] = [:]
     private let checkpointQueue: AsyncStream<CheckpointOp>.Continuation
     private let checkpointTask: Task<Void, Never>
     private var isShutDown = false
@@ -234,16 +240,35 @@ public actor FindATimeService: SkillService {
     }
 
     /// Runs side-effect work (sends, calendar reads) off the state machine.
-    func spawn(_ work: @escaping @Sendable () async -> Void) {
+    /// Work for a conversation is cancelled when the conversation ends;
+    /// work for none (the final "no plan") is not.
+    func spawn(for conversation: ConversationID?, _ work: @escaping @Sendable () async -> Void) {
         guard !isShutDown else { return }
         let key = UUID()
+        if let conversation {
+            effectsOf[conversation, default: []].insert(key)
+            conversationOfEffect[key] = conversation
+        }
         effects[key] = Task {
             await work()
             self.effectFinished(key)
         }
     }
 
-    private func effectFinished(_ key: UUID) { effects[key] = nil }
+    private func effectFinished(_ key: UUID) {
+        effects[key] = nil
+        if let conversation = conversationOfEffect.removeValue(forKey: key) {
+            effectsOf[conversation]?.remove(key)
+            if effectsOf[conversation]?.isEmpty == true { effectsOf[conversation] = nil }
+        }
+    }
+
+    private func cancelWork(of conversation: ConversationID) {
+        for key in effectsOf.removeValue(forKey: conversation) ?? [] {
+            effects.removeValue(forKey: key)?.cancel()
+            conversationOfEffect[key] = nil
+        }
+    }
 
     func register(_ conversation: ConversationID, interaction: InteractionID) {
         conversationOf[interaction] = conversation
@@ -258,6 +283,7 @@ public actor FindATimeService: SkillService {
         invited[conversation] = nil
         attempts[conversation] = nil
         tickers.removeValue(forKey: conversation)?.cancel()
+        cancelWork(of: conversation)
         if let interaction {
             conversationOf[interaction] = nil
             checkpointQueue.yield(.remove(interaction))
@@ -317,7 +343,8 @@ public actor FindATimeService: SkillService {
     /// "No plan", which is all a friend learns from any ending (ADR 0221).
     func sendNoPlan(_ reason: Rejection.Reason = .noOverlap, about message: MessageID, to peers: [PeerID], in conversation: ConversationID, chainedFrom: ConversationID?) {
         guard !peers.isEmpty else { return }
-        spawn {
+        // Not tied to the conversation: it is what is sent as it ends.
+        spawn(for: nil) {
             for peer in peers {
                 _ = await self.send(.reject(Rejection(proposal: message, reason: reason)), to: peer, conversation: conversation, chainedFrom: chainedFrom)
             }

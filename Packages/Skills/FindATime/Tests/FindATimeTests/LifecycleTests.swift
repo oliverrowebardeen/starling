@@ -165,6 +165,46 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// Withdrawing cancels a send suspended on a consent sheet: approving
+    /// the sheet afterwards sends nothing.
+    @Test func withdrawingWhileASheetIsOpenSendsNothing() async throws {
+        let world = World()
+        let sheet = HeldConsent()
+        let a = world.phone("Ana", policy: alwaysAsk, consent: sheet)
+        let b = world.phone("Ben")
+        try await world.start()
+
+        let started = try await a.findATime(with: [b])
+        try await eventually("the sheet is open") { await sheet.asked == 1 }
+        await a.service.withdraw(started)
+        await sheet.answerAll(.approved)
+        try await a.waitForState(started, .ended(.withdrawn))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(world.envelopes.allSatisfy { $0.skill == nil })
+        #expect(await b.coordinator.all().isEmpty)
+        await world.stop()
+    }
+
+    /// The same on the answering side: a friend who withdraws while the
+    /// sheet for their answer is open never sends the answer.
+    @Test func anInviteeWithdrawingWhileASheetIsOpenSendsNoAnswer() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let sheet = HeldConsent()
+        let b = world.phone("Ben", policy: alwaysAsk, consent: sheet)
+        try await world.start()
+
+        try await a.findATime(with: [b])
+        try await eventually("Ben's sheet is open") { await sheet.asked == 1 }
+        let asked = await b.coordinator.invitee()!.id
+        await b.service.withdraw(asked)
+        await sheet.answerAll(.approved)
+        try await b.waitForState(asked, .ended(.withdrawn))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!world.envelopes.contains { $0.sender == b.id && $0.body.kind == .answer })
+        await world.stop()
+    }
+
     @Test func noFriendsIsUnsupported() async throws {
         let world = World()
         let a = world.phone("Ana")

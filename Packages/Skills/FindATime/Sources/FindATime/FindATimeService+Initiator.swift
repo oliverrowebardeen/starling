@@ -46,7 +46,7 @@ extension FindATimeService {
         checkpoint(id)
 
         let availability = availability
-        spawn {
+        spawn(for: id) {
             let resolution = await availability.resolve(grid)
             await self.ownTimesResolved(id, resolution, grid: grid)
         }
@@ -142,7 +142,7 @@ extension FindATimeService {
         let targets = peers.filter { value.answers[$0] == nil && countAttempt(id, $0) }
         guard !targets.isEmpty else { return }
         let chainedFrom = value.chainedFrom
-        spawn {
+        spawn(for: id) {
             for peer in targets {
                 let outcome = await self.send(.query(query), to: peer, conversation: id, chainedFrom: chainedFrom)
                 await self.querySent(id, to: peer, outcome)
@@ -286,7 +286,7 @@ extension FindATimeService {
         guard let proposal = try? Proposal(round: UInt16(revision - 1), terms: draft.terms, expiresAt: value.confirmDeadline) else { return }
         if announce { for peer in targets { _ = countAttempt(id, peer) } }
         let chainedFrom = value.chainedFrom
-        spawn {
+        spawn(for: id) {
             var refusal: SendOutcome?
             for peer in targets {
                 let outcome = await self.send(.propose(proposal), to: peer, conversation: id, chainedFrom: chainedFrom)
@@ -349,7 +349,7 @@ extension FindATimeService {
         case .planned:
             // Our confirmation was lost: send it again.
             let chainedFrom = value.chainedFrom
-            spawn {
+            spawn(for: id) {
                 _ = await self.send(.accept(Acceptance(proposal: acceptance.proposal, terms: draft.terms)), to: peer, conversation: id, chainedFrom: chainedFrom)
             }
         default:
@@ -375,7 +375,7 @@ extension FindATimeService {
         checkpoint(id)
         let ids = value.accepted
         let chainedFrom = value.chainedFrom
-        spawn {
+        spawn(for: id) {
             var declined = false
             for peer in draft.members {
                 guard let message = ids[peer] else { continue }

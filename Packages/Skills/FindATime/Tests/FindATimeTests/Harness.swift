@@ -79,6 +79,8 @@ actor Coordinator {
         guard let conversation else { return nil }
         for _ in 0..<200 {
             if var interaction = try? await store.interaction(conversation: conversation) {
+                // An ended interaction takes no consent events; stop at once.
+                if interaction.state.isFinal { return nil }
                 let request = opening ? interaction.consentWatermark + 1 : (interaction.pendingConsents.max() ?? 0)
                 if (try? interaction.apply(event(request), at: Timestamp(Date()))) != nil {
                     try? await store.save(interaction)
@@ -88,7 +90,6 @@ actor Coordinator {
             }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        rejected.append(.lifecycle(InteractionID(), event(0)))
         return nil
     }
 
@@ -127,6 +128,31 @@ actor LossyTransport: Transport {
         try await base.send(frame, to: peer)
     }
 }
+
+/// An owner who leaves the consent sheet open until the test answers it.
+actor HeldConsent: ConsentProvider {
+    private var waiting: [CheckedContinuation<ConsentOutcome, Never>] = []
+    private(set) var asked = 0
+
+    func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        asked += 1
+        return await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func answerAll(_ outcome: ConsentOutcome) {
+        for continuation in waiting { continuation.resume(returning: outcome) }
+        waiting = []
+    }
+}
+
+/// A policy that asks for consent on every skill message.
+let alwaysAsk = FixedPolicyEngine(decide: { message in
+    guard message.envelope.skill != nil else { return .allow }
+    return .needsConsent(Disclosure(
+        recipient: message.envelope.recipient, recipientModel: nil, items: [],
+        conversation: message.envelope.conversation, skill: message.envelope.skill
+    ))
+})
 
 /// The app's consent provider around a scripted owner.
 struct LifecycleConsent: ConsentProvider {

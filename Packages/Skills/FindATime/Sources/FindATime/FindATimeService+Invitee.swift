@@ -55,7 +55,7 @@ extension FindATimeService {
     func resolveInvitation(_ id: ConversationID) {
         guard let candidates = invited[id]?.candidates else { return }
         let availability = availability
-        spawn {
+        spawn(for: id) {
             let resolution = await availability.resolve(candidates)
             await self.invitationResolved(id, resolution)
         }
@@ -147,7 +147,7 @@ extension FindATimeService {
         else { return }
         let asker = value.asker
         let chainedFrom = value.chainedFrom
-        spawn {
+        spawn(for: id) {
             let outcome = await self.send(.answer(answer), to: asker, conversation: id, chainedFrom: chainedFrom)
             await self.answerSent(id, outcome)
         }
@@ -216,7 +216,7 @@ extension FindATimeService {
         let acceptance = Acceptance(proposal: offer.latest, terms: offer.terms)
         let asker = value.asker
         let chainedFrom = value.chainedFrom
-        spawn {
+        spawn(for: id) {
             let outcome = await self.send(.accept(acceptance), to: asker, conversation: id, chainedFrom: chainedFrom)
             await self.acceptanceSent(id, outcome)
         }
