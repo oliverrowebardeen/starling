@@ -517,6 +517,48 @@ import Testing
         try await alice.waitForMessages(4)
     }
 
+    /// Review 4 finding 3: the same sequence as above, but Alice calls
+    /// reconnect after the budget is spent and before Bob has sent anything.
+    /// With no current session that used to skip the budget, start S4, and
+    /// evict S1 when S4 timed out. The attempt must be refused until
+    /// authenticated progress or a link reset, and Bob must still be heard.
+    @Test func aReconnectCannotEvictASessionThePeerMayStillUse() async throws {
+        let hub = LoopbackHub()
+        let wire = await recordDeliveries(hub)
+        let configuration = SecureTransportConfiguration(handshakeTimeout: .milliseconds(100), handshakeAttempts: 3)
+        let alice = try await Node.make("alice", hub: hub, identity: aliceKey, pins: [bobKey], faulty: true, configuration: configuration)
+        let bob = try await Node.make("bob", hub: hub, identity: bobKey, pins: [aliceKey], faulty: true, configuration: configuration)
+        try await alice.secure.start()
+        try await bob.secure.start()
+        try await alice.waitForPeer(bob.id)
+        try await bob.waitForPeer(alice.id)
+        try await eventually("S0 confirmed") {
+            let aliceBusy = await alice.secure.status(of: bob.id).handshakeInProgress
+            let bobBusy = await bob.secure.status(of: alice.id).handshakeInProgress
+            return !aliceBusy && !bobBusy
+        }
+
+        let aliceLink = try #require(alice.link as? FaultyLink)
+        let bobLink = try #require(bob.link as? FaultyLink)
+        await bobLink.drop(nextTransportFrames: .max, controlOnly: true)
+        await aliceLink.drop(nextTransportFrames: .max, controlOnly: true, afterPassing: 1 + configuration.handshakeAttempts)
+        let dials = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count
+        await alice.secure.reconnect(bob.id)
+        try await eventually("alice spends her restart budget") {
+            let status = await alice.secure.status(of: bob.id)
+            let dialled = await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count - dials
+            return dialled == 1 + SecureTransport.maxUnconfirmedRestarts && status.provenKey == nil && !status.handshakeInProgress
+        }
+
+        await alice.secure.reconnect(bob.id)
+        // Long enough for a fourth attempt to start and time out completely.
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(await wire.frames(from: alice.id, to: bob.id, type: .handshake1).count - dials == 1 + SecureTransport.maxUnconfirmedRestarts,
+                "no attempt may start while it could evict a session the peer may use")
+        for index in 0..<3 { try await bob.secure.send(Frame(Data("bob \(index)".utf8)), to: alice.id) }
+        try await alice.waitForMessages(3)
+    }
+
     /// Review 2 finding 3: every confirm (or every acknowledgement) is lost,
     /// so no rolled-over session is ever confirmed, and Alice keeps sending,
     /// so each session soon hits the cap. Replacing an unconfirmed session

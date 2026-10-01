@@ -223,8 +223,7 @@ public actor SecureTransport: Transport {
     /// pairing. The current session, if any, keeps working until it succeeds.
     public func reconnect(_ peer: PeerID) async {
         guard state == .started else { return }
-        if let current = peers[peer]?.current, !current.confirmed,
-           !spendRestart(peer, replacingUnconfirmed: true) { return }
+        guard admitHandshake(peer) else { return }
         await initiate(with: peer)
     }
 
@@ -290,7 +289,7 @@ public actor SecureTransport: Transport {
             pairingContinuation.yield(event)
             guard peer != localPeer else { return }
             linkedPeers.insert(peer)
-            if peers[peer]?.current == nil, peers[peer]?.initiation == nil {
+            if peers[peer]?.current == nil, peers[peer]?.initiation == nil, admitHandshake(peer) {
                 await initiate(with: peer)
             }
         case .peerUnavailable(let peer):
@@ -426,7 +425,7 @@ public actor SecureTransport: Transport {
             return
         }
         rollOver(peer)
-        if spendRestart(peer, replacingUnconfirmed: true) { await initiate(with: peer) }
+        if admitHandshake(peer) { await initiate(with: peer) }
     }
 
     /// Sends a confirm or acknowledgement under the current session. Best
@@ -473,6 +472,8 @@ public actor SecureTransport: Transport {
                     channel.confirmed = true
                     entry.lastConfirmed = channel
                     entry.superseded.removeSubrange(...index)
+                    // Authenticated progress refills the restart budget.
+                    entry.unconfirmedRestarts = 0
                     (plaintext, channelUsed) = (opened, channel)
                     break
                 }
@@ -536,9 +537,8 @@ public actor SecureTransport: Transport {
         guard nonce < configuration.maxMessagesPerSession else {
             // We may not send on it again, but the peer may still send on it
             // until our new session reaches it: rollOver keeps it for receiving.
-            let unconfirmed = !channel.confirmed
             rollOver(peer)
-            if spendRestart(peer, replacingUnconfirmed: unconfirmed) {
+            if admitHandshake(peer) {
                 Task { await self.initiate(with: peer) }
             }
             throw TransportError.peerUnreachable(peer)
@@ -607,16 +607,25 @@ public actor SecureTransport: Transport {
         continuation.yield(.peerAvailable(peer))
     }
 
-    /// Whether a new handshake may replace the current session. Replacing an
-    /// unconfirmed one (confirm timeout, nonce cap, reconnect) spends from a
-    /// budget of `maxUnconfirmedRestarts`, refilled only when a session is
-    /// confirmed or the link comes back. So a link that loses every confirm
-    /// or acknowledgement ends in silence, not in endless handshakes.
-    private func spendRestart(_ peer: PeerID, replacingUnconfirmed: Bool) -> Bool {
-        guard replacingUnconfirmed else { return true }
-        let restarts = (peers[peer]?.unconfirmedRestarts ?? 0) + 1
+    /// The one gate every new handshake passes, whatever starts it (link-up,
+    /// `reconnect`, the nonce cap, a confirm timeout), including when no
+    /// session is current (ADR 0100 decision 5).
+    ///
+    /// While unconfirmed sessions are retained (a current one, or superseded
+    /// ones), a new attempt is admitted only if it spends from the restart
+    /// budget and its later retirement could not evict a retained session
+    /// the peer may still use. Otherwise it waits for authenticated progress
+    /// (which refills the budget) or a link reset (which clears everything).
+    private func admitHandshake(_ peer: PeerID) -> Bool {
+        guard let entry = peers[peer] else { return true }
+        let unconfirmedCurrent = entry.current.map { !$0.confirmed } ?? false
+        guard unconfirmedCurrent || !entry.superseded.isEmpty else { return true }
+        let retained = entry.superseded.count + (unconfirmedCurrent ? 1 : 0)
+        guard retained + 1 <= Self.maxSupersededPerPeer else { return false }
+        let restarts = entry.unconfirmedRestarts + 1
+        guard restarts <= Self.maxUnconfirmedRestarts else { return false }
         peers[peer]?.unconfirmedRestarts = restarts
-        return restarts <= Self.maxUnconfirmedRestarts
+        return true
     }
 
     /// Moves the current session aside for receiving only, before a newer
