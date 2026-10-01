@@ -174,6 +174,9 @@ public final class AppModel {
     public private(set) var notificationsAllowed: Bool?
     /// Lane E's recorder of what each send disclosed (the Outbox's observer).
     public let egress: EgressRecorder
+    /// This launch's sends not yet durably recorded, read live by every
+    /// audit surface.
+    public let pendingEgress = PendingEgress()
     /// Conversations whose egress log may be missing a send, from the
     /// recorder, and whether its journal could not be read at launch. Plan
     /// detail then claims nothing stayed on the phone there.
@@ -220,7 +223,7 @@ public final class AppModel {
         // Lane E's recorder writes "What left your phone" through the
         // lifecycle coordinator, which does not exist yet; the relay is
         // pointed at it right after (P15-E request 4.1).
-        let relay = EgressRelay()
+        let relay = EgressRelay(pending: pendingEgress)
         let egress = EgressRecorder(sink: relay, journal: services.egressJournal)
         self.egress = egress
         let outbox: Outbox? = if let policy, let transport = services.transport {
@@ -230,7 +233,7 @@ public final class AppModel {
                 // (ADR 0240); the owner's topics still decide everything else.
                 policy: ChainedFromPolicy(wrapping: policy, store: services.interactions),
                 consent: consent,
-                observer: FanOutObserver([egress] + (services.auditLog.map { [$0] } ?? [])),
+                observer: FanOutObserver([egress, PendingEgressObserver(pending: pendingEgress)] + (services.auditLog.map { [$0] } ?? [])),
                 sequences: services.sequences,
                 ledger: services.ledger
             )
@@ -560,7 +563,7 @@ public final class AppModel {
     public func planDetail(_ root: Interaction) -> PlanDetail {
         syncNames()
         return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes,
-                          unconfirmed: unconfirmedConversations, auditUnknown: egressJournalUnreadable || !egressRecovered)
+                          unconfirmed: unconfirmedConversations.union(pendingEgress.conversations), auditUnknown: egressJournalUnreadable || !egressRecovered)
     }
 
     /// "Keep it going" after a plan: lane E's rows (P15-E request 4.4),
@@ -583,10 +586,18 @@ public final class AppModel {
 @MainActor
 private final class EgressRelay: EgressSink {
     weak var lifecycle: LifecycleCoordinator?
+    let pending: PendingEgress
 
+    init(pending: PendingEgress) { self.pending = pending }
+
+    /// Clears the send from `pending` only once its record is durably on
+    /// its interaction, or there is no interaction to record it on. A write
+    /// that throws leaves it pending.
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
         guard let lifecycle else { return false }
-        return try await lifecycle.appendEgress(record, conversation: conversation)
+        let found = try await lifecycle.appendEgress(record, conversation: conversation)
+        if let message = record.message { pending.recorded(message) }
+        return found
     }
 }
 

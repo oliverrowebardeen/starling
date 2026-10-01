@@ -114,3 +114,77 @@ final class Box<Value> {
     var value: Value
     init(_ value: Value) { self.value = value }
 }
+
+/// Takes every frame, then, once told to, throws after taking it, as a link
+/// that delivered but lost the acknowledgement would.
+actor DeliverThenThrowTransport: Transport {
+    nonisolated let kind = TransportKind.loopback
+    nonisolated let localPeer = PeerID.random()
+    nonisolated let events = AsyncStream<TransportEvent> { _ in }
+    private(set) var delivered: [Frame] = []
+    private var throwAfterDelivery = false
+
+    func failAfterDelivery() { throwAfterDelivery = true }
+    func start() async throws {}
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        delivered.append(frame)
+        if throwAfterDelivery { throw TransportError.peerUnreachable(peer) }
+    }
+    func stop() async {}
+}
+
+/// Focused review of PR #73: audit completeness is live, not a snapshot.
+@MainActor
+@Suite struct LiveAuditTests {
+    let me = PeerID.random()
+    let maya = PeerID.random()
+
+    @Test func aSendTheTransportTookAndThenFailedKeepsTheAuditIncomplete() async throws {
+        var plan = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Fixtures.noon))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try plan.apply(event, at: Timestamp(Fixtures.noon))
+        }
+        let start = Date().addingTimeInterval(24 * 3600)
+        plan.record(.plan(try Plan(origin: plan.conversation, attendees: Attendees([me, maya]), activity: Keyword("boba"),
+                                   time: TimeSlot(start: start, end: start.addingTimeInterval(3600)))))
+        let transport = DeliverThenThrowTransport()
+        var services = AppModelTests.services()
+        services.interactions = InMemoryInteractionStore([plan])
+        services.transport = transport
+        // A policy that can say what each send discloses: the activity.
+        services.makePolicy = { _, _ in
+            FixedPolicyEngine(.allow, explain: { message in
+                Disclosure(recipient: message.envelope.recipient, recipientModel: nil,
+                           items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try! Keyword("boba")]))],
+                           conversation: message.envelope.conversation, skill: message.envelope.skill)
+            })
+        }
+        let app = AppModel(services: services)
+        await app.start()
+        let outbox = try #require(app.outbox)
+        func detail() throws -> PlanDetail { app.planDetail(try #require(app.lifecycle.interaction(plan.id))) }
+        #expect(try detail().auditIsComplete)
+
+        // A send that lands is recorded, and the audit is complete again.
+        try await outbox.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya, conversation: plan.conversation)
+        await eventually { (try? detail().auditIsComplete) == true && app.lifecycle.interaction(plan.id)?.egress.count == 1 }
+        #expect(try detail().auditIsComplete)
+        #expect(app.lifecycle.interaction(plan.id)?.egress.count == 1)
+        #expect(app.pendingEgress.messages.isEmpty)
+
+        // The link took the frame and then failed: no didSend, no record.
+        await transport.failAfterDelivery()
+        await #expect(throws: (any Error).self) {
+            try await outbox.send(.propose(try Proposal(round: 1, terms: .empty)), to: maya, conversation: plan.conversation)
+        }
+        #expect(await transport.delivered.count == 2)
+        // No refresh needed: the audit reads the live pending sends.
+        #expect(try !detail().auditIsComplete)
+        #expect(try detail().kept.isEmpty)
+        await app.refreshAudit()
+        #expect(try !detail().auditIsComplete)
+        #expect(try detail().kept.isEmpty)
+        await app.shutdown()
+    }
+}
