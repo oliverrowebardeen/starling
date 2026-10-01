@@ -56,7 +56,9 @@ struct BrokenStore: InteractionStore {
         try await outbox.send(Self.placeOffer(), to: Fixtures.maya, conversation: plan.conversation, skill: plan.skill, mode: .askQuietly)
         // Nor is a conversation this phone has no record of.
         try await outbox.send(Self.placeOffer(), to: Fixtures.maya, conversation: ConversationID())
-        #expect(await base.evaluated.count == 2)
+        // Both reached the wrapped policy (Outbox asks it again just before
+        // sending, ADR 0021 amendment 12, so count envelopes, not calls).
+        #expect(Set(await base.evaluated.map(\.envelope.id)).count == 2)
     }
 
     @Test func theWrappedPolicyStillDecides() async throws {

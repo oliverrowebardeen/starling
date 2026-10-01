@@ -39,8 +39,10 @@ actor GatedLedger: ConversationLedger {
         let request = Fixtures.request()
         try await phone.service.start(request)
         try await phone.service.answer(request.interaction, with: .reply(question: 1, .count(2)))
+        // One per friend; Outbox asks the policy again just before sending
+        // (ADR 0021 amendment 12), so count envelopes, not calls.
         let offers = await policy.evaluated
-        #expect(offers.count == 2)
+        #expect(Set(offers.map(\.envelope.id)).count == 2)
         #expect(offers.allSatisfy { $0.envelope.mode == .invite && $0.context.interaction == request.interaction })
 
         // A friend's acceptance names the friend's own interaction.
