@@ -7,16 +7,20 @@ import StarlingCore
 public enum PickAPlaceSkill {
     public static let ref = SkillRef(.pickAPlace, SkillVersion(1, 0))
 
-    /// Starts from `SampleSkills.pickAPlace`, with two changes (ADR 0230):
-    /// - People is used and required, because the agreed roster travels as
+    /// Starts from `SampleSkills.pickAPlace`, with these changes (ADR 0230):
+    /// - Place is the only required topic: organizing sends venue options
+    ///   (ADR 0019, decision 7).
+    /// - People is used, because the agreed roster travels as
     ///   `IssueValue.peers` so every phone builds the same plan (ADR 0012).
+    /// - Location is used, only on this phone, to search near the owner.
     /// - Time and activity are used, because a chained pick carries the
     ///   plan's time and activity in the proposal, so a friend who joined
     ///   through Find a time builds the same plan.
     /// - It also produces `Attendees`: the people who said yes, which can be
     ///   fewer than the proposal named.
-    /// Budget and diet stay in `topicsUsed` only because the intent reads
-    /// them; their values never leave the phone.
+    /// Budget, diet, and location are used locally: their values never
+    /// leave the phone, so Never on them never blocks the skill. It sends
+    /// only as an invite (ADR 0020).
     public static let descriptor = try! SkillDescriptor(
         ref: ref,
         wording: SkillWording(
@@ -28,8 +32,8 @@ public enum PickAPlaceSkill {
             declineNote: "If you pass, they just won't see it."
         ),
         buildingBlock: .privateAggregation,
-        topicsUsed: [.place, .budget, .diet, .people, .time, .activity],
-        topicsRequired: [.place, .people],
+        topicsUsed: [.place, .location, .budget, .diet, .people, .time, .activity],
+        topicsRequired: [.place],
         permissions: [.locationWhenInUse],
         accepts: [.plan, .timeSlot],
         produces: [.placeChoice, .attendees],
@@ -38,7 +42,6 @@ public enum PickAPlaceSkill {
             IntentSlot(.budget, required: false, hint: "the most they want to spend each"),
             IntentSlot(.diet, required: false, hint: "what they need or can't eat, such as vegetarian or no pork"),
         ]),
-        // Friends see the request as a card (ADR 0020).
         sendModes: [.invite]
     )
 

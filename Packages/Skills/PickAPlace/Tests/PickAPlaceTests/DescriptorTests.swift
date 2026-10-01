@@ -25,17 +25,18 @@ struct DescriptorTests {
         #expect(descriptor.permissions == [.locationWhenInUse])
     }
 
-    @Test func requiresPlaceAndPeople() throws {
-        #expect(descriptor.topicsRequired == [.place, .people])
+    @Test func requiresOnlyPlace() throws {
+        // ADR 0019, decision 7: organizing sends venue options, so place is
+        // required; budget, diet, and location are used on the phone only.
+        #expect(descriptor.topicsRequired == [.place])
+        #expect(descriptor.topicsUsed.isSuperset(of: [.place, .location, .budget, .diet, .people]))
         var privacy = PrivacySettings()
         try privacy.set(.never, for: .place)
         #expect(descriptor.blockingTopics(in: privacy) == [.place])
         try privacy.set(.share, for: .place)
-        try privacy.set(.never, for: .budget)
-        try privacy.set(.never, for: .diet)
-        // Budget and diet never leave the phone, so Never on them does not
-        // block the skill.
+        for topic in [PrivacyTopic.budget, .diet, .location, .people] { try privacy.set(.never, for: topic) }
         #expect(descriptor.blockingTopics(in: privacy).isEmpty)
+        #expect(descriptor.blockingTopics(in: .defaults).isEmpty)
     }
 
     @Test func sendsOnlyAsAnInvite() {
