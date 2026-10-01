@@ -13,6 +13,9 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0007](0007-ci-on-the-xcode-27-runner.md) | CI on the GitHub `xcode-27` runner | Accepted |
 | [0008](0008-repo-name-and-visibility.md) | Repo name `starling-ios`, private for now | Accepted |
 | [0009](0009-task-level-agent-model-interface.md) | Task-level `AgentModel` interface | Accepted |
+| [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Proposed |
+| [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Proposed |
+| [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |
 | [0110](0110-wifi-aware-transport-tcp-with-symmetric-roles.md) | Wi-Fi Aware transport over TCP, with symmetric roles | Proposed |
 | [0111](0111-wifi-aware-services-entitlement-and-pairing.md) | Wi-Fi Aware services, entitlement, and pairing views | Proposed |
 | [0120](0120-down-negotiation-protocol.md) | Down? negotiation protocol | Proposed |
@@ -23,6 +26,7 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0141](0141-mandatory-rules-review-and-intent-merge.md) | Mandatory review of interpreted rules, and merging rules into Down intents | Proposed |
 | [0142](0142-consent-notification-and-permission-ux.md) | Consent sheet, match notifications, and permission prompts | Proposed |
 | [0143](0143-wifi-aware-link-test-before-the-secure-channel.md) | Wi-Fi Aware in the app before the secure channel | Proposed |
+| [0144](0144-down-wiring-and-the-simulated-friend.md) | Wiring lane F's Down, and a simulated friend until the secure channel | Proposed |
 | [0150](0150-adversarial-test-method.md) | Reproducible adversarial tests and paired injection measurements | Accepted |
 | [0151](0151-down-policy-integration-tests.md) | Exercise Down and policy together over Loopback | Accepted |
 | [0160](0160-measure-model-quality-with-labeled-sets.md) | Measure model quality with labeled sets, a held-out set, and Evaluations | Proposed |
