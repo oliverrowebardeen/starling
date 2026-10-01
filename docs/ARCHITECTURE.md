@@ -64,7 +64,7 @@ Rules that hold everywhere:
 | Codec | `EnvelopeCodec`, `CodecError` | Sorted-key JSON, 56 KiB max envelope, 60 KiB max frame. |
 | Transport | `Transport`, `TransportEvent`, `Frame`, `TransportKind`, `TransportError` | `events` has one consumer (normally `Inbox`). |
 | Model | `AgentModel` (`interpret`, `match`, `decide`), `ModelDescriptor`, `ModelResult`, `TokenUsage`, `NegotiationContext`, `NegotiationMove` | Context size read at runtime (ADR 0002). |
-| Policy | `PolicyEngine`, `ConsentProvider`, `OutboundMessage`, `PolicyDecision`, `Disclosure`, `DisclosedItem`, `PolicyViolation` | |
+| Policy | `PolicyEngine`, `ConsentProvider`, `OutboundMessage`, `PolicyDecision`, `Disclosure`, `DisclosedItem`, `PolicyViolation` | v2: `Disclosure` carries the conversation and skill, so consent memory stays inside one interaction. |
 | Availability | `AvailabilitySource`, `AvailabilityQuery`, `AvailabilityAnswer`, `OwnerQuestion` | Calendar and non-calendar sources both yield `[TimeSlot]`. |
 | PSI | `PSIProvider`, `PSISession`, `PSIConfiguration`, `PSIElement`, `PSIResult`, `PSIStep` | `maxPeerSetSize` is mandatory (brief 3.9). |
 | Choke points | `Outbox`, `Inbox`, `InboxEvent`, `InboxDrop`, `OutboxObserver` (v1.1), `OutboundContext` (v1.1) | `Outbox.send(_:to:conversation:recipientCard:context:)`. Context is local only: the policy sees it, the wire never does. PSI senders must pass `context.psi`. After consent, Outbox re-evaluates the policy and honors cancellation. |
@@ -74,10 +74,10 @@ Rules that hold everywhere:
 | Down (v1) | `DownService`, `DownIntent`, `DownLevel`, `DownMatch`, `DownEvent` | Section 7. Replaced by the Down for… skill when lane B lands, then removed. |
 | Skills (v2) | `SkillID`, `SkillVersion`, `SkillRef`, `SkillDescriptor`, `SkillWording`, `IntentSchema`, `IntentSlot`, `BuildingBlock`, `SystemPermission`, `ArtifactKind`, `ChainTrigger`, `SkillExposure` | Data only. ADR 0010. |
 | Registry (v2) | `SkillRegistry`, `SkillFlags`, `SkillSettings`, `SkillAvailability` | `SkillFlags.phase1_5`: Down for…, Find a time, Pick a place. |
-| Runtime (v2) | `SkillService`, `SkillRequest`, `SkillIntent`, `Audience`, `SkillQuestion`, `OwnerAnswer`, `SkillProposal`, `SkillEvent` | Generalizes `DownService`. One coordinator consumes the events. |
+| Runtime (v2) | `SkillService`, `SkillRequest`, `SkillIntent`, `Audience`, `SkillQuestion`, `OwnerAnswer`, `SkillProposal`, `SkillEvent` | Generalizes `DownService`. One coordinator consumes the events. Proposals and questions carry a revision; answers name it. |
 | Skill model (v2) | `SkillModel` (`route`, `intent`, `proposalText`), `ParsedIntent`, `ProposalFacts` | ADR 0016. |
-| Lifecycle (v2) | `Interaction`, `InteractionID`, `InteractionState`, `InteractionEvent`, `InvalidTransition`, `LifecycleStep`, `HomeSection`, `EndReason`, `StateChange`, `ChainLink`, `EgressRecord`, `InteractionStore` | ADR 0011. Transitions are a pure function; final states accept nothing. |
-| Artifacts (v2) | `Plan`, `PlanID`, `PlaceChoice`, `PlaceName`, `Coordinate`, `Attendees`, `Artifact`, `IssueValue.places` | ADR 0012. |
+| Lifecycle (v2) | `Interaction`, `InteractionID`, `InteractionState`, `ConsentResume`, `InteractionEvent`, `InvalidTransition`, `StaleProposal`, `LifecycleStep`, `HomeSection`, `EndReason`, `StateChange`, `ChainLink`, `EgressRecord`, `InteractionStore` | ADR 0011. Transitions are a pure function; final states accept nothing; consent suspends and resumes the interrupted step; stale proposal revisions are rejected. |
+| Artifacts (v2) | `Plan`, `PlanID`, `PlaceChoice`, `PlaceName`, `Coordinate`, `Attendees`, `Artifact`, `IssueValue.places`, `IssueValue.peers` | ADR 0012. The roster travels under the people topic. |
 | Privacy (v2) | `PrivacyTopic`, `SharingChoice`, `PrivacySettings`, `IssueKey.people`, `.photos`, `.interests` | ADR 0014. Expands into `DisclosureRule`s. |
 | Cards and envelopes (v2) | `AgentCard.skills`, `AgentCard.support(for:)`, `SkillSupport`, `Envelope.skill`, `Envelope.chainedFrom` | Envelope version 1; version 0 still decodes. |
 | Fakes | `ScriptedAgentModel`, `FixedPolicyEngine`, `ScriptedConsentProvider`, `StaticAvailabilitySource`, `RecordingTransport`, `InsecurePSIStub`, `InMemoryPairedPeerStore`, `ScriptedPairingSession`, `ScriptedDownService`; v2: `SampleSkills`, `ScriptedSkillModel`, `ScriptedSkillService`, `InMemoryInteractionStore` | `StarlingFakes` product. The PSI stub reveals the initiator's set and says so. |

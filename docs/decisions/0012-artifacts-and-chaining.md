@@ -41,6 +41,12 @@ Rule 7 of ARCHITECTURE.md says no free text crosses the wire. Agreeing on a venu
    - Lane F's red team tests this.
 7. **Timeline and audit.** `Collection<Interaction>.chain(from:)` returns the root and every link in start order, for "How this came together". Each link's egress log feeds "What left your phone".
 
+### Amendment after the review of PR #45 (2026-09-30)
+
+8. **The roster travels too.** `IssueValue.peers` (1 to 16 distinct `PeerID`s, under `IssueKey.people`) carries the agreed roster, so in a plan A starts with B and C, everyone builds the same `Plan.attendees` and can check that every member supports a chained skill.
+   - The people topic governs it, and its Ask me default puts "who else is in this" on the consent sheet.
+   - Prompts and the policy layer see only a count.
+
 ## Consequences
 
 - The chaining lane builds suggestions, triggers, and the timeline from Core types, with no skill-specific code.
