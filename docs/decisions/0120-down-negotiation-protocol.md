@@ -38,8 +38,8 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 
 ### Step 3: agree
 
-13. The initiator proposes round 0: the first contiguous block of shared slots, capped at 2 hours; the first liked activity the peer accepted; the answered budget.
-14. The receiver of any offer checks it in code, including against the clock: an offer whose start minute has passed is rejected as expired, and neither side sends or honors an accept of such a plan. A compliant offer is accepted, or countered with an alternative when a soft preference is unmet (ADR 0121). A non-compliant offer gets a counter repaired in code: budget down to the cap, avoided activities dropped, the time shortened from its end. If nothing can be repaired, or `maxRounds` (default 4) is reached, it gets a `reject`.
+13. The initiator proposes round 0: the first contiguous block of shared slots that have not started by the time the plan is chosen (PSI and consent can take a while), capped at 2 hours; the first liked activity the peer accepted; the answered budget.
+14. The receiver of any offer checks it in code, including against the clock: an offer whose start minute has passed is rejected as expired. No offer or accept of such a plan is sent (retries included) or honored. An accept still waiting on consent when its plan's start minute ends is cancelled. The offerer checks the time again after its confirmation is sent and does not notify if the plan has started meanwhile. A compliant offer is accepted, or countered with an alternative when a soft preference is unmet (ADR 0121). A non-compliant offer gets a counter repaired in code: budget down to the cap, avoided activities dropped, the time shortened from its end. If nothing can be repaired, or `maxRounds` (default 4) is reached, it gets a `reject`.
 
 ### Step 4: match before notify
 
@@ -50,10 +50,10 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 
 ### Retries and silence
 
-19. Every step that expects a reply is resent every `retryInterval` (default 5 s) up to `maxAttempts` (default 6) times, and every wait is bounded the same way. A timeout ends the conversation without an event.
-20. A retry arrives in a new envelope, so duplicates are recognized by content (PSI step and payload, query, offer round and terms, accept terms) and answered from a reply cache. After a conversation ends, its cache is replayed only if it ended **matched** under the intent that is still current, which is the lost-confirmation case. After any other ending (withdrawn, expired, refused, rejected, timed out, failed) a late retry gets nothing, so a withdrawal cannot be undone by a replayed accept and a declined consent sheet is not raised again.
+19. Every step that expects a reply is resent every `retryInterval` (default 5 s) up to `maxAttempts` (default 6) times, and every wait is bounded the same way. A timeout ends the conversation without an event. Deadlines run outside the friend's work queue, so a stalled model call or an unanswered consent sheet cannot hold one back: when a step's deadline passes, the conversation ends and the work it was waiting on is cancelled. A send waiting on consent is therefore bounded by the current step's deadline, which is also how long the peer keeps waiting.
+20. A retry arrives in a new envelope, so duplicates are recognized by content (PSI step and payload, query, offer round and terms, accept terms) and answered from a reply cache. A retried offer's new envelope is recorded as the same offer before the cached accept is replayed against it, so the confirmation that answers the replay is honored. After a conversation ends, its cache is replayed only if it ended **matched** under the intent that is still current, which is the lost-confirmation case. After any other ending (withdrawn, expired, refused, rejected, timed out, failed) a late retry gets nothing, so a withdrawal cannot be undone by a replayed accept and a declined consent sheet is not raised again.
 21. Rejections, timeouts, withdrawn or expired intents, policy refusals, and malformed or oversized input all end without an event on either phone. Clearing an intent sends nothing to friends.
-22. Ending a conversation, or the whole intent, cancels its sends still inside the Outbox (for example waiting on the owner's consent). The Outbox checks cancellation after consent and before the transport, so nothing from a withdrawn intent leaves, whenever the owner answers the sheet.
+22. Ending a conversation, or the whole intent, cancels its sends still inside the Outbox (for example waiting on the owner's consent) and its model calls, and stops the rest of any batch. The Outbox checks cancellation after consent and before the transport, so nothing from a withdrawn intent leaves, whenever the owner answers the sheet.
 
 ## Consequences
 

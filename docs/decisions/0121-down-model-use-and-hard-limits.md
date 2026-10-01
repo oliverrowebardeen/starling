@@ -19,6 +19,7 @@
 4. **Offers the peer sends that break a limit are never shown to the model.** Code repairs them (budget to the cap, avoided activities dropped, time shortened from its end) or rejects them.
 5. **A final gate before every `Outbox.send`** re-checks each outbound value against the owner's limits: plans in `propose`, `counter`, and `accept`, and values in `query` and `answer`. An answer is checked against the issue it names (`Answer.issue`, Core v1.1). A plan must also have the Down shape (exactly one time slot; optional non-empty activity; optional budget amount) and fall inside the intent's own free slots. A refusal ends the conversation silently and increments a diagnostic counter, which the tests require to stay at zero.
 6. **A failing model never blocks a match.** `match` errors fall back to exact matching, and `decide` errors fall back to accepting.
+7. **A stalled model never outlives its step.** Each model call runs in its own cancellable task. When the step's deadline passes, or the intent is withdrawn, the call is cancelled and the conversation ends; the friend's later work is not held up (ADR 0120, item 19).
 
 Budget per match: at most one `match` call (the responder answers each issue once, so extra queries from a peer buy nothing), plus at most one `decide` call per round in the rare case of item 3. In the common case that is one call, about 1 to 3 s on a Mac.
 
