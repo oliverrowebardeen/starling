@@ -208,13 +208,18 @@ public final class LifecycleCoordinator {
     /// events without waiting on a stream.
     func handle(_ event: SkillEvent, from skill: SkillDescriptor) async {
         switch event {
-        case .incoming(let id, let conversation, let peer, _):
-            // `chainedFrom` is a hint only (ADR 0012 decision 6): it never
-            // creates a ChainLink, starts a skill, or asks for a permission.
+        case .incoming(let id, let conversation, let peer, let chainedFrom):
             guard interaction(id) == nil, interaction(conversation: conversation) == nil else {
                 return drop(event, id, skill.id, .duplicateIncoming)
             }
-            let invitee = Interaction(id: id, conversation: conversation, skill: skill.ref, role: .invitee, participants: [peer], createdAt: Timestamp(now()))
+            var invitee = Interaction(id: id, conversation: conversation, skill: skill.ref, role: .invitee, participants: [peer], createdAt: Timestamp(now()))
+            // `chainedFrom` is a hint for the timeline only (ADR 0012
+            // decision 6, P15-E request 4.3): kept only when it names a plan
+            // on this phone the sender was in, and never a ChainLink, a
+            // start, a permission, or a schedule.
+            if let parent = IncomingChain.timelineParent(chainedFrom: chainedFrom, sender: peer, interactions: interactions) {
+                try? invitee.setFriendChainHint(parent)
+            }
             insert(invitee)
         case .lifecycle(let id, let lifecycle):
             guard let current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }

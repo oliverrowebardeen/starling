@@ -139,6 +139,32 @@ actor FailingSkillService: SkillService {
         #expect(await down.started.isEmpty)
     }
 
+    /// P15-E request 4.3: a friend's chainedFrom groups their request under
+    /// a plan they were in, and nothing else.
+    @Test func aFriendsChainHintIsKeptOnlyForAPlanTheyWereIn() async throws {
+        var plan = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        for event: InteractionEvent in [.started, .proposalReady(try proposal(1)), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try plan.apply(event, at: Timestamp(clock.now))
+        }
+        let lifecycle = coordinator(store: InMemoryInteractionStore([plan]))
+        await lifecycle.start()
+
+        let fromMaya = InteractionID()
+        await lifecycle.handle(.incoming(fromMaya, conversation: ConversationID(), from: maya, chainedFrom: plan.conversation), from: SampleSkills.findATime)
+        #expect(lifecycle.interaction(fromMaya)?.friendChainHint == plan.conversation)
+        #expect(lifecycle.interaction(fromMaya)?.chain == nil)
+
+        let stranger = PeerID.random()
+        let fromStranger = InteractionID()
+        await lifecycle.handle(.incoming(fromStranger, conversation: ConversationID(), from: stranger, chainedFrom: plan.conversation), from: SampleSkills.findATime)
+        #expect(lifecycle.interaction(fromStranger)?.friendChainHint == nil, "not in that plan")
+
+        let unknown = InteractionID()
+        await lifecycle.handle(.incoming(unknown, conversation: ConversationID(), from: maya, chainedFrom: ConversationID()), from: SampleSkills.findATime)
+        #expect(lifecycle.interaction(unknown)?.friendChainHint == nil, "no such plan")
+        #expect(await time.started.isEmpty)
+    }
+
     @Test func aRepeatedIncomingIsDropped() async throws {
         let lifecycle = coordinator()
         await lifecycle.start()
