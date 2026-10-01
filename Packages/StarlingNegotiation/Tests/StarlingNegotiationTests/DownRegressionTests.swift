@@ -365,6 +365,35 @@ import Testing
         await consent.answerAll(.declined)
         await world.stop()
     }
+
+    /// P2: a delayed duplicate offer must not get a cached accept for a
+    /// plan that has started since.
+    @Test func aDuplicateOfferAfterTheStartGetsNoReplayedAccept() async throws {
+        let time = MovableClock()
+        // Slow retries keep Ben's conversation open while the test acts.
+        let slow = DownConfiguration(retryInterval: .milliseconds(500), maxAttempts: 5)
+        let world = DownWorld(["ben"], clock: time.clock, configuration: slow)
+        let mallory = RawPeer(hub: world.hub)
+        try await world.start()
+        try await mallory.start()
+        let ben = world["ben"]
+        try await eventually("ben sees mallory") { await ben.negotiator.isReachable(mallory.id) }
+        try await ben.want(time: [T.slot(19, 22)])
+        try await ben.store.save(PairedPeer(publicKey: mallory.key, nickname: "mallory", pairedAt: Timestamp(T.now)))
+
+        let conversation = try await DownAdversarialTests().openRun(from: mallory, to: ben)
+        _ = try await mallory.next(.psi)
+        let offer = MessageBody.propose(try Proposal(round: 0, terms: try T.plan(time: T.slot(19, 20))))
+        try await mallory.send(offer, to: ben.id, in: conversation)
+        _ = try await mallory.next(.accept)
+
+        time.set(T.at(19).addingTimeInterval(60))
+        try await mallory.send(offer, to: ben.id, in: conversation)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await world.wire.sent(by: ben.id).filter { $0.body.kind == .accept }.count == 1)
+        await mallory.stop()
+        await world.stop()
+    }
 }
 
 import Synchronization

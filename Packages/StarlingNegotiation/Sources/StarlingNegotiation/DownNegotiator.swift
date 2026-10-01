@@ -420,10 +420,11 @@ public actor DownNegotiator: DownService {
             return .ended
         }
         // An offer or acceptance is only worth sending while its plan is
-        // still ahead (ADR 0120, item 14). This also stops retries of one.
-        let planStart = profile.flatMap { _ in Self.planStart(of: body) }
+        // still ahead (ADR 0120, item 14). This also stops retries of one,
+        // and replays: the start comes from the body, not the profile.
+        let planStart = Self.planStart(of: body)
         if let planStart, !Self.isAhead(planStart, now: clock.now()) {
-            end(id, .timedOut)
+            if profile != nil { end(id, .timedOut) }
             return .ended
         }
         // Every PSI step tells the policy what it discloses (Core v1.1); a
