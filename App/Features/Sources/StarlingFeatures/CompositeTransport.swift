@@ -6,7 +6,8 @@ import StarlingCore
 ///
 /// A peer is announced when the first link reports it and lost only when no
 /// link has it. A send goes to a link where the peer is available, most
-/// recently announced first, and fails over to the next if one refuses.
+/// recently announced first, and fails over to the next if one refuses,
+/// but never once the send is cancelled.
 /// Every link must share this device's `localPeer`.
 public actor CompositeTransport: Transport {
     /// The first link's kind. Nothing in StarlingKit decides on the kind;
@@ -57,9 +58,14 @@ public actor CompositeTransport: Transport {
         guard !candidates.isEmpty else { throw TransportError.peerUnreachable(peer) }
         var lastError: (any Error)?
         for index in candidates {
+            // A withdrawn send must never go out on another link: stop as
+            // soon as the send is cancelled (review of PR #51).
+            try Task.checkCancellation()
             do {
                 try await links[index].send(frame, to: peer)
                 return
+            } catch let cancelled as CancellationError {
+                throw cancelled
             } catch {
                 lastError = error
             }

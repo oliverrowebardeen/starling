@@ -72,6 +72,45 @@ import Testing
         #expect(await local.sent.count == 1)
     }
 
+    /// Review of PR #51: a cancelled send never fails over to another link.
+    @Test func aLinkThatReportsCancellationDoesNotFailOver() async throws {
+        let gated = GatedLink(localPeer: me, failure: CancellationError())
+        let local = RecordingTransport(localPeer: me, kind: .localP2P)
+        let composite = CompositeTransport(links: [local, gated])
+        var events = composite.events.makeAsyncIterator()
+        try await composite.start()
+        local.inject(.peerAvailable(friend))
+        _ = await next(&events)
+        gated.inject(.peerAvailable(friend))
+        try await Task.sleep(for: .milliseconds(20))
+        await gated.open()
+
+        await #expect(throws: CancellationError.self) { try await composite.send(try Frame(Data([7])), to: friend) }
+        #expect(await local.sent.isEmpty)
+    }
+
+    /// A send cancelled while the first link is still trying stops there,
+    /// even when that link then fails with an ordinary error.
+    @Test func aSendCancelledMidwayDoesNotTryTheNextLink() async throws {
+        let gated = GatedLink(localPeer: me, failure: TransportError.peerUnreachable(friend))
+        let local = RecordingTransport(localPeer: me, kind: .localP2P)
+        let composite = CompositeTransport(links: [local, gated])
+        var events = composite.events.makeAsyncIterator()
+        try await composite.start()
+        local.inject(.peerAvailable(friend))
+        _ = await next(&events)
+        gated.inject(.peerAvailable(friend))
+        try await Task.sleep(for: .milliseconds(20))
+
+        let friend = friend
+        let sending = Task { try await composite.send(try Frame(Data([7])), to: friend) }
+        for _ in 0..<2000 where await gated.attempts == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        sending.cancel()
+        await gated.open()
+        await #expect(throws: CancellationError.self) { try await sending.value }
+        #expect(await local.sent.isEmpty)
+    }
+
     @Test func anUnreachablePeerThrows() async throws {
         let (local, aware) = links()
         let composite = CompositeTransport(links: [local, aware])
@@ -91,5 +130,40 @@ import Testing
         await composite.stop()
         #expect(await local.isStarted == false)
         #expect(await aware.isStarted == false)
+    }
+}
+
+/// A link whose sends wait until the test opens it, then fail with `failure`.
+actor GatedLink: Transport {
+    nonisolated let kind = TransportKind.wifiAware
+    nonisolated let localPeer: PeerID
+    nonisolated let events: AsyncStream<TransportEvent>
+    private let continuation: AsyncStream<TransportEvent>.Continuation
+    private let failure: any Error
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var attempts = 0
+
+    init(localPeer: PeerID, failure: any Error) {
+        self.localPeer = localPeer
+        self.failure = failure
+        (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
+    }
+
+    nonisolated func inject(_ event: TransportEvent) { continuation.yield(event) }
+
+    func open() {
+        isOpen = true
+        waiting.forEach { $0.resume() }
+        waiting = []
+    }
+
+    func start() async throws {}
+    func stop() async { continuation.finish() }
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        attempts += 1
+        if !isOpen { await withCheckedContinuation { waiting.append($0) } }
+        throw failure
     }
 }
