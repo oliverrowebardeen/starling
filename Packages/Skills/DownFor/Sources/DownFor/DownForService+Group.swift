@@ -7,45 +7,36 @@ import StarlingNegotiation
 // everyone said "I'm in" (ADR 0210).
 
 extension DownForService {
-    /// Proposes once no run of the request is still finding time or waiting
-    /// for answers, from the answers of every friend who shares time.
+    /// The starter's schedule, fixed so that when a friend hears from it
+    /// never depends on any other friend (review finding 2): gather until
+    /// `gatherWindow` after taking the request on, then check, with every
+    /// ready member at once and exactly once, who may share a plan; then
+    /// propose when `vetWindow` ends, with whoever answered. A friend still
+    /// finding time or answering when the gathering ends is left out.
     ///
-    /// Two rules keep a lower starter's group first (ADR 0210): no proposal
-    /// while this request is still answering another starter's run, and
-    /// none in the quiet period after the request began, which gives a
-    /// lower starter's retries time to arrive.
+    /// Not while this request is itself answering a lower starter's run:
+    /// that group comes first (ADR 0210 decision 5).
     func considerProposing(_ id: InteractionID) {
         guard let request = requests[id], request.invitation == nil, request.engagement == .hub, request.group == nil,
-              request.mirror.state == .negotiating
+              request.vetting == nil, request.mirror.state == .negotiating
         else { return }
         let all = runs.values.filter { $0.request == id }
-        guard !all.contains(where: { $0.phase == .psi || $0.phase == .details || $0.phase == .vetting }) else { return }
+        guard !all.contains(where: { $0.role == .member && ($0.phase == .psi || $0.phase == .details) }) else { return }
         let mine = all.filter { $0.role == .hub }
-        if mine.contains(where: { $0.phase == .ready }) {
-            let quiet = configuration.retryInterval * 2
-            let waited = ContinuousClock.now - request.since
-            guard waited >= quiet else {
-                guard request.quiet == nil else { return }
-                requests[id]?.quiet = Task { [weak self] in
-                    try? await Task.sleep(for: quiet - waited)
-                    await self?.quietPassed(id)
-                }
-                return
-            }
-        }
         let ready = mine.filter { $0.phase == .ready }
         guard !ready.isEmpty else { return checkSettled(id) }
-        // Before anyone is named to anyone, ask each member which of the
-        // others it could share a plan with its own request includes.
-        if startVetting(ready) { return }
-        guard let plan = plan(for: ready.map(\.key.peer), in: id) else {
-            for run in ready {
-                enqueue(.notify(run.notice, .noOverlap), for: run.key.peer)
-                end(run.key, .excluded, react: false)
+        let waited = ContinuousClock.now - request.since
+        guard waited >= configuration.gatherWindow else {
+            guard request.quiet == nil else { return }
+            let rest = configuration.gatherWindow - waited
+            requests[id]?.quiet = Task { [weak self] in
+                try? await Task.sleep(for: rest)
+                await self?.quietPassed(id)
             }
-            return checkSettled(id)
+            return
         }
-        propose(plan.terms, to: plan.members, in: id)
+        for run in mine where run.phase == .psi || run.phase == .details { end(run.key, .withdrawn, react: false) }
+        startVetting(ready, in: id)
     }
 
     private func quietPassed(_ id: InteractionID) {
@@ -53,30 +44,49 @@ extension DownForService {
         considerProposing(id)
     }
 
-    /// How many times the starter may ask one member about the others.
-    static let maxVettingRounds = 2
+    /// How many times the starter asks one member about the others: once.
+    static let maxVettingRounds = 1
 
-    /// Starts the audience check for every ready member that could share a
-    /// plan with another ready member it was not yet asked about: the same
-    /// half-hour and an activity both accept. Returns whether any started.
-    /// Only those friends are in the question, so a member hears of no one
-    /// it could not be grouped with.
-    private func startVetting(_ ready: [Run]) -> Bool {
-        guard ready.count >= 2 else { return false }
-        var started = false
-        for run in ready where run.vetCount < Self.maxVettingRounds {
+    /// Asks every ready member, once, which of the others it could share a
+    /// plan with its own request includes: those with the same half-hour
+    /// and an activity both accept. A member with nobody to ask about gets
+    /// the same check, padded, so the check itself says nothing.
+    private func startVetting(_ ready: [Run], in id: InteractionID) {
+        for run in ready {
             let others = ready.filter { other in
                 other.key.peer != run.key.peer && !Set(other.overlap ?? []).isDisjoint(with: run.overlap ?? [])
                     && !Set(other.activityAnswer ?? []).isDisjoint(with: run.activityAnswer ?? [])
             }.map(\.key.peer)
-            let new = Set(others).subtracting(run.vettedAgainst)
-            guard !new.isEmpty else { continue }
             runs[run.key]?.phase = .vetting
             runs[run.key]?.vetCount += 1
             enqueue(.act(run.key, .vet(others.sorted())), for: run.key.peer)
-            started = true
         }
-        return started
+        let window = configuration.vetWindow
+        requests[id]?.vetting = Task { [weak self] in
+            try? await Task.sleep(for: window)
+            await self?.vettingEnded(id)
+        }
+    }
+
+    /// The check's window is over: propose to whoever answered it.
+    private func vettingEnded(_ id: InteractionID) {
+        guard let request = requests[id], request.group == nil, request.mirror.state == .negotiating else { return }
+        let mine = runs.values.filter { $0.request == id && $0.role == .hub }
+        let vetted = mine.filter { $0.phase == .ready && $0.vetCount > 0 }
+        for run in mine where !(run.phase == .ready && run.vetCount > 0) { end(run.key, .withdrawn, react: false) }
+        guard let plan = plan(for: vetted.map(\.key.peer), in: id) else {
+            for run in vetted {
+                enqueue(.notify(run.notice, .noOverlap), for: run.key.peer)
+                end(run.key, .excluded, react: false)
+            }
+            // Gather again from now: friends who join later get a fresh,
+            // equally fixed schedule.
+            requests[id]?.vetting = nil
+            requests[id]?.since = ContinuousClock.now
+            return checkSettled(id)
+        }
+        requests[id]?.vetting = nil
+        propose(plan.terms, to: plan.members, in: id)
     }
 
     /// The group plan from these friends' answers, or nil.

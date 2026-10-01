@@ -55,7 +55,7 @@ public actor DownForService: SkillService {
     }
 
     struct Request: Sendable {
-        let record: DownForRequestRecord
+        var record: DownForRequestRecord
         let profile: DownForProfile
         /// A local copy of the lifecycle, so the service only reports events
         /// the state machine accepts.
@@ -73,6 +73,9 @@ public actor DownForService: SkillService {
         /// before the starter proposes.
         var since = ContinuousClock.now
         var quiet: Task<Void, Never>?
+        /// The audience check is running; the proposal follows at the end
+        /// of its window.
+        var vetting: Task<Void, Never>?
 
         var id: InteractionID { record.interaction }
         var conversation: ConversationID { record.conversation }
@@ -95,9 +98,16 @@ public actor DownForService: SkillService {
     /// taken for a new request. Bounded; the oldest are forgotten first.
     var endedConversations: Set<ConversationID> = []
     var endedOrder: [ConversationID] = []
+    /// Member runs that ended after their card showed. Anything the
+    /// starter sends in them gets nothing, so a pass, a withdrawal, and a
+    /// card nobody answered look the same (review finding 1). Bounded.
+    var retired: Set<RunKey> = []
+    var retiredOrder: [RunKey] = []
     var cards: [PeerID: AgentCard] = [:]
 
     var workers: [PeerID: (queue: AsyncStream<Work>.Continuation, task: Task<Void, Never>)] = [:]
+    /// Saves of request records, one after another so they land in order.
+    var lastSave: Task<Void, Never>?
     var queued: [PeerID: Int] = [:]
     var timers: [RunKey: Task<Void, Never>] = [:]
     var pendingWork: [UUID: PendingWork] = [:]
@@ -300,7 +310,10 @@ public actor DownForService: SkillService {
                     continue
                 }
                 let profile = DownForProfile(rules: record.rules, inputs: record.inputs, expiresAt: record.expiresAt.date, timeZone: timeZone)
-                requests[interaction.id] = Request(record: record, profile: profile, mirror: interaction)
+                var restored = Request(record: record, profile: profile, mirror: interaction)
+                // Runs already spent stay spent.
+                restored.runs = record.runDebits ?? [:]
+                requests[interaction.id] = restored
                 armExpiry(interaction.id)
                 for peer in record.participants { enqueue(.start(interaction.id), for: peer) }
             case .done, .ended:
@@ -378,6 +391,23 @@ public actor DownForService: SkillService {
         continuation.yield(.produced(id, artifact))
     }
 
+    /// Changes a request's PSI run count with `friend` and saves it with the
+    /// request record, so the run cap survives a restart.
+    func debitRun(_ id: InteractionID, _ friend: PeerID, by change: Int) {
+        guard var request = requests[id] else { return }
+        request.runs[friend] = max(0, request.runs[friend, default: 0] + change)
+        request.record.runDebits = request.runs
+        requests[id] = request
+        guard request.mirror.role == .initiator else { return }
+        let record = request.record
+        let store = store
+        let previous = lastSave
+        lastSave = Task {
+            await previous?.value
+            try? await store.save(record)
+        }
+    }
+
     static let maxEndedConversations = 1_024
 
     func markEnded(_ conversation: ConversationID) {
@@ -395,6 +425,7 @@ public actor DownForService: SkillService {
         if !keepingRecord { markEnded(request.conversation) }
         request.timer?.cancel()
         request.quiet?.cancel()
+        request.vetting?.cancel()
         request.group?.window?.cancel()
         for key in runs.keys where runs[key]?.request == id { end(key, .withdrawn) }
         cancelWork { $0.request == id }

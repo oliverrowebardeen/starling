@@ -15,6 +15,9 @@ public struct DownForRequestRecord: Hashable, Sendable, Codable {
     public let participants: [PeerID]
     public let inputs: [Artifact]
     public let chainedFrom: ConversationID?
+    /// PSI runs debited per friend, kept with the record so a restart does
+    /// not refill a friend's run budget. Nil in a record from before it.
+    public internal(set) var runDebits: [PeerID: Int]?
 
     /// The record of an invitee's card: the friend's invitation, which
     /// lasts until the plan it names starts. The invitee's rules are not

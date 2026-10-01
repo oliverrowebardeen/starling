@@ -38,7 +38,7 @@ extension DownForService {
         else { return }
         let key = RunKey(conversation: request.conversation, peer: peer)
         runs[key] = Run(invitation: key, request: id, role: .hub, chainedFrom: request.record.chainedFrom, terms: terms)
-        requests[id]?.runs[peer, default: 0] += 1
+        debitRun(id, peer, by: 1)
         // Resent with backoff until the friend answers or the window passes.
         await transmit([.propose(proposal)], in: key, awaitingReply: true, attemptLimit: .max, backsOff: true)
     }

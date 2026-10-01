@@ -36,6 +36,13 @@ public struct DownForConfiguration: Hashable, Sendable {
     public var maxBackoff: Duration
     /// Finished conversations remembered so a late retry gets the same reply.
     public var maxFinishedRuns: Int
+    /// How long a starter gathers friends, from taking the request on,
+    /// before it checks who may share a plan. Fixed, so when a friend hears
+    /// from the starter never depends on other friends (review finding 2).
+    public var gatherWindow: Duration
+    /// How long the check of who may share a plan runs before the starter
+    /// proposes, again fixed.
+    public var vetWindow: Duration
 
     public init(
         retryInterval: Duration = .seconds(5),
@@ -44,7 +51,9 @@ public struct DownForConfiguration: Hashable, Sendable {
         maxRunsPerPeer: Int = 3,
         ownerWindow: Duration = .seconds(15 * 60),
         maxBackoff: Duration = .seconds(60),
-        maxFinishedRuns: Int = 64
+        maxFinishedRuns: Int = 64,
+        gatherWindow: Duration = .seconds(30),
+        vetWindow: Duration = .seconds(15)
     ) {
         precondition(maxAttempts > 0 && maxPlanMinutes >= 30 && maxRunsPerPeer > 0 && ownerWindow > .zero && maxBackoff >= retryInterval)
         self.retryInterval = retryInterval
@@ -54,6 +63,8 @@ public struct DownForConfiguration: Hashable, Sendable {
         self.ownerWindow = ownerWindow
         self.maxBackoff = maxBackoff
         self.maxFinishedRuns = maxFinishedRuns
+        self.gatherWindow = gatherWindow
+        self.vetWindow = vetWindow
     }
 }
 

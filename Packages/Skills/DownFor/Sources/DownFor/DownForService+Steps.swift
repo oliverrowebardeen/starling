@@ -30,13 +30,13 @@ extension DownForService {
         let key = RunKey(conversation: request.conversation, peer: peer)
         let run = Run(key: key, request: id, role: .hub, chainedFrom: request.record.chainedFrom, psiSessionID: UUID(), psi: session, tokens: tokens, provider: psi.descriptor)
         runs[key] = run
-        requests[id]?.runs[peer, default: 0] += 1
+        debitRun(id, peer, by: 1)
         guard let frame = try? PSIFrame(session: run.psiSessionID, step: 0, payload: payload) else { return end(key, .failed) }
         await transmit([.psi(frame)], in: key, awaitingReply: true)
     }
 
     private func canStart(_ id: InteractionID, with peer: PeerID) -> Bool {
-        guard let request = requests[id], request.isGathering, request.engagement == .hub, request.group == nil,
+        guard let request = requests[id], request.isGathering, request.engagement == .hub, request.group == nil, request.vetting == nil,
               request.record.participants.contains(peer), !request.settled.contains(peer), !request.unsupported.contains(peer),
               reachable.contains(peer), request.runs[peer, default: 0] < configuration.maxRunsPerPeer
         else { return false }
@@ -53,7 +53,12 @@ extension DownForService {
         let peer = envelope.sender
         guard frame.step == 0 else { return }
         let candidates = requests.values
-            .filter { $0.isGathering && $0.group == nil && $0.record.participants.contains(peer) && !$0.settled.contains(peer) && !$0.unsupported.contains(peer) }
+            // Only a quiet request answers a quiet ask: one sent as an
+            // invitation is not up for matching (review finding 3).
+            .filter {
+                $0.record.mode == .askQuietly && $0.isGathering && $0.group == nil && $0.vetting == nil
+                    && $0.record.participants.contains(peer) && !$0.settled.contains(peer) && !$0.unsupported.contains(peer)
+            }
             .sorted { $0.mirror.createdAt < $1.mirror.createdAt }
         for request in candidates {
             if localPeer < peer {
@@ -70,7 +75,7 @@ extension DownForService {
             let refundable = runs.values.filter { $0.request == request.id && $0.key.peer == peer && $0.isUnansweredStart }.count
             guard request.runs[peer, default: 0] - refundable < configuration.maxRunsPerPeer else { continue }
             for key in runs.keys where runs[key]?.request == request.id && key.peer == peer {
-                if runs[key]?.isUnansweredStart == true { requests[request.id]?.runs[peer, default: 1] -= 1 }
+                if runs[key]?.isUnansweredStart == true { debitRun(request.id, peer, by: -1) }
                 end(key, .yielded, react: false)
             }
             let tokens = request.profile.tokens(now: clock.now())
@@ -81,7 +86,7 @@ extension DownForService {
             var run = Run(key: key, request: request.id, role: .member, chainedFrom: envelope.chainedFrom, psiSessionID: frame.session, psi: session, tokens: tokens, provider: psi.descriptor)
             run.lastInbound = envelope.id
             runs[key] = run
-            requests[request.id]?.runs[peer, default: 0] += 1
+            debitRun(request.id, peer, by: 1)
             // The reply may wait on consent; bound it like any other step.
             beginStep(key, attemptLimit: configuration.maxAttempts)
             await handlePSI(frame, in: key)
@@ -97,10 +102,23 @@ extension DownForService {
         // A conversation keeps the mode it began with: a quiet ask never
         // becomes a card, and an invitation never turns quiet.
         if let mode = runs[key]?.mode ?? finished[key]?.mode, envelope.mode != mode { return }
+        guard !retired.contains(key) else { return }
         if let run = runs[key] {
             runs[key]?.lastInbound = envelope.id
             // The starter is still there: a member's wait starts over.
             if run.role == .member, run.phase == .proposed || run.phase == .accepted { refreshDeadline(key) }
+            // A card waiting on its owner sends nothing at all until the
+            // owner says I'm in: no cached reply, no check, no refusal. A
+            // pass then looks exactly like a card nobody has answered yet,
+            // whatever the starter sends to probe (review finding 1).
+            if run.role == .member, run.phase == .proposed {
+                switch envelope.body {
+                case .propose(let proposal): handleProposal(proposal, envelope: envelope, in: key)
+                case .reject: end(key, .rejected)
+                default: break
+                }
+                return
+            }
             if let signature, let reply = run.replies[signature] {
                 if case .offer = signature, case .propose(let proposal) = envelope.body {
                     runs[key]?.proposalEnvelopes.append(envelope.id)
@@ -330,8 +348,9 @@ extension DownForService {
         guard roster.allSatisfy(allowed.contains),
               request.profile.permits(terms, me: localPeer, hub: key.peer, member: localPeer, now: clock.now()) else {
             // Not a plan this owner can be in: no card, and the starter
-            // carries on without us. It reads as an ordinary no.
-            enqueue(.notify(run.notice, .noOverlap), for: key.peer)
+            // carries on without us. It reads as an ordinary no, and while
+            // a card waits on its owner it says nothing at all.
+            if run.phase != .proposed { enqueue(.notify(run.notice, .noOverlap), for: key.peer) }
             return end(key, .rejected)
         }
         if run.terms == terms {
@@ -430,14 +449,17 @@ extension DownForService {
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)
         case .vet(let others):
             guard run.role == .hub, run.phase == .vetting else { return }
+            // Padded to a fixed size, and sent even with nobody in it, so a
+            // member cannot tell from it whether anyone else is up for it.
             let tokens = FriendTokens(others, size: FriendTokens.starterSetSize)
             guard let session = try? psi.makeSession(role: .initiator, localSet: tokens.elements, configuration: FriendTokens.starterConfiguration()),
-                  case .send(let payload)? = try? await session.start(), runs[key]?.phase == .vetting,
-                  let people = try? IssueValue.peers(others).validated()
+                  case .send(let payload)? = try? await session.start(), runs[key]?.phase == .vetting
             else { return end(key, .failed) }
             let id = UUID()
+            var inputs: [IssueKey: IssueValue] = [:]
+            if let people = try? IssueValue.peers(others).validated() { inputs[.people] = people }
             runs[key]?.vetting = (id, session, tokens)
-            runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: [.people: people]), interaction: run.request)
+            runs[key]?.vetContext = OutboundContext(psi: OutboundContext.PSIInputs(provider: psi.descriptor, inputs: inputs), interaction: run.request)
             guard let frame = try? PSIFrame(session: id, step: 0, payload: payload) else { return end(key, .failed) }
             await transmit([.psi(frame)], in: key, awaitingReply: true)
         case .confirm:
@@ -457,7 +479,7 @@ extension DownForService {
     /// starter's candidates this request includes. Only for the starter
     /// this request is committed to, and at most twice per run.
     private func answerVetting(_ frame: PSIFrame, envelope: Envelope, in key: RunKey) async {
-        guard let run = runs[key], frame.step == 0, run.phase == .details || run.phase == .proposed,
+        guard let run = runs[key], frame.step == 0, run.phase == .details,
               run.vetCount < Self.maxVettingRounds, let request = requests[run.request], request.engagement == .member(key)
         else { return }
         runs[key]?.vetCount += 1
@@ -490,6 +512,7 @@ extension DownForService {
         runs[key]?.outstanding = []
         runs[key]?.timerToken += 1
         timers.removeValue(forKey: key)?.cancel()
-        considerProposing(run.request)
+        // The proposal waits for the end of the check's window, not for
+        // the last reply (review finding 2).
     }
 }

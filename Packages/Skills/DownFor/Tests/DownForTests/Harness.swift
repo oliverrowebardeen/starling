@@ -8,10 +8,11 @@ import Testing
 
 /// Retries every 20 ms and gives up on an automatic step after 2 s, so a
 /// loaded machine (six lanes share this Mac) does not time out healthy
-/// flows. A
+/// flows. A starter gathers for 400 ms and checks rosters for 300 ms; a
 /// proposal waits 2 s for people.
 let fastConfiguration = DownForConfiguration(
-    retryInterval: .milliseconds(20), maxAttempts: 100, ownerWindow: .seconds(2), maxBackoff: .milliseconds(200)
+    retryInterval: .milliseconds(20), maxAttempts: 100, ownerWindow: .seconds(2), maxBackoff: .milliseconds(200),
+    gatherWindow: .milliseconds(400), vetWindow: .milliseconds(300)
 )
 
 /// Wall time pinned to `T.now`; timers are real, except sleeps of ten
