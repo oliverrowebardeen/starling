@@ -45,10 +45,14 @@ public struct InteractionWords: Sendable {
     /// invitee interaction before anyone knows the interest is mutual.
     /// Showing it would tell the owner a friend asked, which is the one
     /// thing mutual reveal promises not to do (brief 2.6). It stays hidden
-    /// until a proposal exists, and forever if none ever does.
+    /// until there is something for the owner to answer: a proposal (a
+    /// quiet ask that turned out mutual), or a question (an Invite, which
+    /// the friend's agent shows directly, ADR 0020). If neither ever comes,
+    /// it stays hidden for good.
     public func isVisible(_ interaction: Interaction) -> Bool {
         guard let skill = registry.descriptor(for: interaction.skill.id) else { return interaction.role == .initiator }
-        if skill.buildingBlock == .mutualReveal, interaction.role == .invitee, interaction.proposal == nil { return false }
+        if skill.buildingBlock == .mutualReveal, interaction.role == .invitee,
+           interaction.proposal == nil, interaction.questionWatermark == 0 { return false }
         return true
     }
 

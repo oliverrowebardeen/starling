@@ -72,6 +72,10 @@ import Testing
 
         let mutual = try make(SampleSkills.downFor, .invitee, with: [maya], [.proposalReady(try bobaProposal())])
         #expect(words.isVisible(mutual))
+        // An Invite (ADR 0020) reaches the owner as a question at once.
+        let invite = SkillQuestion(revision: 1, issue: .activity, candidates: .keywords([try Keyword("boba")]), asker: maya)
+        let invited = try make(SampleSkills.downFor, .invitee, with: [maya], [.ownerNeeded(invite)])
+        #expect(words.isVisible(invited))
         // Other skills' requests show at once: Priya asked when you're free.
         let question = SkillQuestion(revision: 1, issue: .time, candidates: .slots([]), asker: priya)
         let asked = try make(SampleSkills.findATime, .invitee, with: [priya], [.ownerNeeded(question)])
