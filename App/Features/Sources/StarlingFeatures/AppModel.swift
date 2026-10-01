@@ -379,7 +379,7 @@ public final class AppModel {
         guard !(friends?.friends.contains { $0.id == friend } ?? false) else { return }
         cards.forget(friend)
         notes.unlink(friend)
-        await settings.setClose(friend, false)
+        await settings.forget(friend)
     }
 
     /// A fresh ceremony model, or nil if pairing is not in this build.

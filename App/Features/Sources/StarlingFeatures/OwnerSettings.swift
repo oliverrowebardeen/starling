@@ -13,8 +13,9 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
     /// Skills told to ask the owner instead of using their permission
     /// ("Just ask me" for Find a time, typing a place for Pick a place).
     public var askInstead: Set<SkillID> = []
-    /// The owner's own close friends list, for New's Ask picker.
-    public var closeFriends: Set<PeerID> = []
+    /// Close friends, saved groups, and per-friend rules (ADR 0020), for
+    /// `Audience.resolve`. Kept on this phone only.
+    public var audience = AudienceBook.empty
     /// Refuse to negotiate with agents whose model does not run on their
     /// own phone (You, "Your agent").
     public var onlyOnDeviceAgents = false
@@ -53,7 +54,9 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case privacy, turnedOff, askInstead, closeFriends, onlyOnDeviceAgents, localNetworkAsked, notificationsOffered, permissionsExplained
+        case privacy, turnedOff, askInstead, audience, onlyOnDeviceAgents, localNetworkAsked, notificationsOffered, permissionsExplained
+        /// Before Core v2.1 close friends were stored on their own.
+        case closeFriends
     }
 
     /// Every key is optional on decode, so a later build can add one.
@@ -62,11 +65,24 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
         privacy = try c.decodeIfPresent(PrivacySettings.self, forKey: .privacy) ?? .defaults
         turnedOff = try c.decodeIfPresent(Set<SkillID>.self, forKey: .turnedOff) ?? []
         askInstead = try c.decodeIfPresent(Set<SkillID>.self, forKey: .askInstead) ?? []
-        closeFriends = try c.decodeIfPresent(Set<PeerID>.self, forKey: .closeFriends) ?? []
+        audience = try c.decodeIfPresent(AudienceBook.self, forKey: .audience)
+            ?? AudienceBook(closeFriends: c.decodeIfPresent(Set<PeerID>.self, forKey: .closeFriends) ?? [])
         onlyOnDeviceAgents = try c.decodeIfPresent(Bool.self, forKey: .onlyOnDeviceAgents) ?? false
         localNetworkAsked = try c.decodeIfPresent(Bool.self, forKey: .localNetworkAsked) ?? false
         notificationsOffered = try c.decodeIfPresent(Bool.self, forKey: .notificationsOffered) ?? false
         permissionsExplained = try c.decodeIfPresent(Set<SystemPermission>.self, forKey: .permissionsExplained) ?? []
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(privacy, forKey: .privacy)
+        try c.encode(turnedOff, forKey: .turnedOff)
+        try c.encode(askInstead, forKey: .askInstead)
+        try c.encode(audience, forKey: .audience)
+        try c.encode(onlyOnDeviceAgents, forKey: .onlyOnDeviceAgents)
+        try c.encode(localNetworkAsked, forKey: .localNetworkAsked)
+        try c.encode(notificationsOffered, forKey: .notificationsOffered)
+        try c.encode(permissionsExplained, forKey: .permissionsExplained)
     }
 }
 
@@ -173,10 +189,44 @@ public final class SettingsModel {
         await update { if askInstead { $0.askInstead.insert(skill) } else { $0.askInstead.remove(skill) } }
     }
 
-    public func isClose(_ friend: PeerID) -> Bool { settings.closeFriends.contains(friend) }
+    public var audienceBook: AudienceBook { settings.audience }
+
+    public func isClose(_ friend: PeerID) -> Bool { settings.audience.closeFriends.contains(friend) }
 
     public func setClose(_ friend: PeerID, _ close: Bool) async {
-        await update { if close { $0.closeFriends.insert(friend) } else { $0.closeFriends.remove(friend) } }
+        await update { if close { $0.audience.closeFriends.insert(friend) } else { $0.audience.closeFriends.remove(friend) } }
+    }
+
+    /// The owner's saved groups, by name.
+    public var groups: [FriendGroup] {
+        settings.audience.groups.values.sorted { ($0.name.lowercased(), $0.id.description) < ($1.name.lowercased(), $1.id.description) }
+    }
+
+    /// Adds or replaces a group (matched by ID).
+    public func saveGroup(_ group: FriendGroup) async {
+        await update { $0.audience.groups[group.id] = group }
+    }
+
+    public func deleteGroup(_ id: GroupID) async {
+        await update { $0.audience.groups[id] = nil }
+    }
+
+    public func rule(for friend: PeerID) -> FriendRule? { settings.audience.rules[friend] }
+
+    /// Sets or clears a friend's standing rule. At most one per friend.
+    public func setRule(_ rule: FriendRule?, for friend: PeerID) async {
+        await update { $0.audience.rules[friend] = rule }
+    }
+
+    /// Forgets an unpaired friend in every list and rule.
+    public func forget(_ friend: PeerID) async {
+        await update { settings in
+            settings.audience.closeFriends.remove(friend)
+            settings.audience.rules[friend] = nil
+            for (id, group) in settings.audience.groups where group.members.contains(friend) {
+                settings.audience.groups[id] = try FriendGroup(id: id, name: group.name, members: group.members.subtracting([friend]))
+            }
+        }
     }
 
     public func setOnlyOnDeviceAgents(_ on: Bool) async {

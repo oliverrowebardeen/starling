@@ -59,10 +59,40 @@ import Testing
         let file = JSONFile(url: FileManager.default.temporaryDirectory.appending(path: "starling-settings-\(UUID().uuidString).json"))
         var settings = OwnerSettings()
         try settings.privacy.set(.never, for: .diet)
-        settings.closeFriends = [.random()]
+        settings.audience = AudienceBook(closeFriends: [.random()], groups: [try FriendGroup(name: "Climbing", members: [.random()])], rules: [.random(): .quietOnly])
         settings.turnedOff = [.findATime]
         try await FileOwnerSettingsStore(file: file).save(settings)
         #expect(try await FileOwnerSettingsStore(file: file).load() == settings)
+    }
+
+    /// Before Core v2.1 close friends were stored on their own.
+    @Test func aPhaseOneCloseFriendsListMovesIntoTheAudienceBook() throws {
+        let maya = PeerID.random()
+        let json = #"{"closeFriends":["\#(maya.hex)"]}"#
+        let decoded = try JSONDecoder().decode(OwnerSettings.self, from: Data(json.utf8))
+        #expect(decoded.audience.closeFriends == [maya])
+    }
+
+    @Test func groupsAndRulesAreKeptAndUnpairingForgetsAFriend() async throws {
+        let store = InMemoryOwnerSettingsStore()
+        let model = SettingsModel(store: store, flags: .phase1_5)
+        await model.load()
+        let maya = PeerID.random(), jake = PeerID.random()
+        let climbing = try FriendGroup(name: "Climbing", members: [maya, jake])
+        await model.saveGroup(climbing)
+        await model.setRule(.quietOnly, for: maya)
+        await model.setClose(maya, true)
+        #expect(model.groups.map(\.name) == ["Climbing"])
+        #expect(model.rule(for: maya) == .quietOnly)
+
+        await model.forget(maya)
+        #expect(model.groups.first?.members == [jake])
+        #expect(model.rule(for: maya) == nil)
+        #expect(!model.isClose(maya))
+        #expect(await store.saved?.audience == model.audienceBook)
+
+        await model.deleteGroup(climbing.id)
+        #expect(model.groups.isEmpty)
     }
 
     @Test func anOlderFileWithFewerKeysStillLoads() throws {
