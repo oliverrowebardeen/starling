@@ -57,9 +57,13 @@ struct RestoreTests {
         defer { Task { await group.stop() } }
         let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
         #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(await oliver.reaches(.proposed, in: conversation))
         try await oliver.accept(in: conversation)
         await maya.transport.lose(.max) { $0.body.kind == .accept }
         try await maya.accept(in: conversation)
+        // Both yeses are in each store before the apps quit.
+        #expect(await oliver.reaches(.confirmed, in: conversation))
+        #expect(await maya.reaches(.confirmed, in: conversation))
         await oliver.restart()
         await maya.restart()
         await maya.transport.clearRules()
