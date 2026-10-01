@@ -22,6 +22,9 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0140](0140-app-composition-and-release-without-fakes.md) | App composition, and Release builds without StarlingFakes | Proposed |
 | [0141](0141-mandatory-rules-review-and-intent-merge.md) | Mandatory review of interpreted rules, and merging rules into Down intents | Proposed |
 | [0142](0142-consent-notification-and-permission-ux.md) | Consent sheet, match notifications, and permission prompts | Proposed |
+| [0143](0143-wifi-aware-link-test-before-the-secure-channel.md) | Wi-Fi Aware in the app before the secure channel | Proposed |
+| [0150](0150-adversarial-test-method.md) | Reproducible adversarial tests and paired injection measurements | Accepted |
+| [0151](0151-down-policy-integration-tests.md) | Exercise Down and policy together over Loopback | Accepted |
 | [0160](0160-measure-model-quality-with-labeled-sets.md) | Measure model quality with labeled sets, a held-out set, and Evaluations | Proposed |
 | [0161](0161-ground-interpretation-in-the-owners-words.md) | Ground interpreted rules in the owner's words | Proposed |
 | [0162](0162-runtime-schemas-for-match-and-decide.md) | Build match and decide schemas at runtime, and enforce limits in them | Proposed |
