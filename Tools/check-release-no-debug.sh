@@ -22,8 +22,11 @@ for name in DeveloperView DebugHarness DemoDriver LifecycleSelfTest DebugPermiss
     exit 1
   fi
 done
+# Capture once: with pipefail, `strings | grep -q` can report a match as a
+# failure when grep exits early and strings gets SIGPIPE.
+text_in_binary="$(strings "$binary")"
 for text in "This is a test build" "doesn't hide free times" "scripted services"; do
-  if strings "$binary" | grep -qF "$text"; then
+  if grep -qF "$text" <<<"$text_in_binary"; then
     echo "Release contains the notice \"$text\" (ADR 0015)."
     exit 1
   fi
