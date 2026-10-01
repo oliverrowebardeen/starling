@@ -102,7 +102,8 @@ extension DownForService {
         // A conversation keeps the mode it began with: a quiet ask never
         // becomes a card, and an invitation never turns quiet.
         if let mode = runs[key]?.mode ?? finished[key]?.mode, envelope.mode != mode { return }
-        guard !retired.contains(key) else { return }
+        // Nothing in a retired conversation is answered or opened (ADR 0021).
+        guard await !isRetired(envelope.conversation) else { return }
         if let run = runs[key] {
             runs[key]?.lastInbound = envelope.id
             // The starter is still there: a member's wait starts over.

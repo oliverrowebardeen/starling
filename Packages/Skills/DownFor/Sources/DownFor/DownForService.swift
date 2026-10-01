@@ -28,6 +28,7 @@ public actor DownForService: SkillService {
     let model: any AgentModel
     let psi: any PSIProvider
     let store: any DownForRequestStore
+    let ledger: any ConversationLedger
     let pairedPeers: (any PairedPeerStore)?
     let clock: SkillClock
     let timeZone: TimeZone
@@ -94,15 +95,11 @@ public actor DownForService: SkillService {
     var finished: [RunKey: Finished] = [:]
     var finishedOrder: [RunKey] = []
     var reachable: Set<PeerID> = []
-    /// Conversations of requests that ended, so a late retry in one is never
-    /// taken for a new request. Bounded; the oldest are forgotten first.
-    var endedConversations: Set<ConversationID> = []
-    var endedOrder: [ConversationID] = []
-    /// Member runs that ended after their card showed. Anything the
-    /// starter sends in them gets nothing, so a pass, a withdrawal, and a
-    /// card nobody answered look the same (review finding 1). Bounded.
-    var retired: Set<RunKey> = []
-    var retiredOrder: [RunKey] = []
+    /// Conversations being retired whose ledger write has not finished, so
+    /// nothing slips in between. One that failed to write stays here, so
+    /// the check fails closed for the rest of the session.
+    var retiring: Set<ConversationID> = []
+    var lastRetire: Task<Void, Never>?
     var cards: [PeerID: AgentCard] = [:]
 
     var workers: [PeerID: (queue: AsyncStream<Work>.Continuation, task: Task<Void, Never>)] = [:]
@@ -142,6 +139,9 @@ public actor DownForService: SkillService {
     ///   - outbox: The app's Outbox. Every send names its interaction in
     ///     `OutboundContext.interaction`, so the coordinator's consent
     ///     provider knows which interaction a sheet suspends (amendment 15).
+    ///   - ledger: The phone's `ConversationLedger` (ADR 0021), the same one
+    ///     the Outbox enforces: retired conversations open nothing and get
+    ///     nothing, and endings retire through `Outbox.retire(_:)`.
     ///   - model: Used for one job: matching a starter's activities against
     ///     the owner's (ADR 0121).
     ///   - pairedPeers: When given, an invitation is shown only from a
@@ -152,6 +152,7 @@ public actor DownForService: SkillService {
         outbox: Outbox,
         model: any AgentModel,
         psi: any PSIProvider,
+        ledger: any ConversationLedger,
         store: any DownForRequestStore = InMemoryDownForRequestStore(),
         pairedPeers: (any PairedPeerStore)? = nil,
         clock: SkillClock = .system,
@@ -163,6 +164,7 @@ public actor DownForService: SkillService {
         self.model = model
         self.psi = psi
         self.store = store
+        self.ledger = ledger
         self.pairedPeers = pairedPeers
         self.clock = clock
         self.timeZone = timeZone
@@ -220,7 +222,7 @@ public actor DownForService: SkillService {
 
         guard requests[request.interaction] != nil else { return }
         if state.unsupported.count == participants.count {
-            report(request.interaction, .unsupported)
+            endRequest(request.interaction, with: .unsupported)
             return
         }
         armExpiry(request.interaction)
@@ -273,11 +275,10 @@ public actor DownForService: SkillService {
             if case .hello(let card) = envelope.body {
                 learn(card, from: envelope.sender)
             } else if let skill = envelope.skill, skill.id == DownFor.ref.id, skill.version.isCompatible(with: DownFor.ref.version),
-                      let mode = envelope.mode, descriptor.sendModes.contains(mode),
-                      !endedConversations.contains(envelope.conversation) {
+                      let mode = envelope.mode, descriptor.sendModes.contains(mode) {
                 // A mode the skill does not offer is ignored like any unknown
-                // request (ADR 0020 decision 5), and so is a late retry for a
-                // conversation that already ended (ADR 0011, amendment 15).
+                // request (ADR 0020 decision 5). A retired conversation is
+                // checked on the friend's queue (ADR 0021).
                 enqueue(.message(envelope), for: envelope.sender)
             }
         case .dropped:
@@ -292,7 +293,7 @@ public actor DownForService: SkillService {
     public func restore(_ interactions: [Interaction]) async {
         let now = clock.now()
         for interaction in interactions where interaction.skill.id == DownFor.ref.id && interaction.state.isFinal {
-            markEnded(interaction.conversation)
+            retire(interaction.conversation)
         }
         for interaction in interactions where interaction.skill.id == DownFor.ref.id && requests[interaction.id] == nil {
             switch interaction.state {
@@ -306,7 +307,7 @@ public actor DownForService: SkillService {
                 // out. Start fresh ones under the same conversation.
                 guard let record = try? await store.record(for: interaction.id), record.expiresAt.date > now else {
                     requests[interaction.id] = Self.orphan(interaction, timeZone: timeZone)
-                    report(interaction.id, .failed)
+                    endRequest(interaction.id, with: .failed)
                     continue
                 }
                 let profile = DownForProfile(rules: record.rules, inputs: record.inputs, expiresAt: record.expiresAt.date, timeZone: timeZone)
@@ -322,7 +323,7 @@ public actor DownForService: SkillService {
                 // A consent sheet, a card, or a group in flight cannot be
                 // rebuilt: the sheet is gone, and so is the starter's group.
                 requests[interaction.id] = Self.orphan(interaction, timeZone: timeZone)
-                report(interaction.id, .failed)
+                endRequest(interaction.id, with: .failed)
             }
         }
     }
@@ -344,9 +345,38 @@ public actor DownForService: SkillService {
 
     /// Applies `event` to the local copy and, if the state machine accepts
     /// it, reports it. Returns false (and reports nothing) otherwise. A
-    /// final state ends the request's runs.
+    /// final event goes through `endRequest`.
     @discardableResult
     func report(_ id: InteractionID, _ event: InteractionEvent) -> Bool {
+        guard var request = requests[id] else { return false }
+        var mirror = request.mirror
+        do {
+            try mirror.apply(event, at: Timestamp(clock.now()))
+        } catch {
+            diagnostics.refusedEvents += 1
+            return false
+        }
+        if mirror.state.isFinal { return endRequest(id, with: event) }
+        request.mirror = mirror
+        requests[id] = request
+        continuation.yield(.lifecycle(id, event))
+        return true
+    }
+
+    /// Ends a request with a final `event`. Its runs, timers, and sends
+    /// stop at once, and the local copy takes the final state, so nothing
+    /// can start it again. Its conversations are then retired through
+    /// `Outbox.retire(_:)`, and only once that is durable is `event`
+    /// reported (ADR 0021, lane E's review): a crash in between can never
+    /// leave an ended interaction whose conversation is still open. If
+    /// retiring fails, the request is reported as failed instead of the
+    /// clean ending, and its conversations stay refused here.
+    ///
+    /// Nothing is sent to friends: a pass, a withdrawal, an expiry, or a
+    /// group that fell apart all look like someone who stopped answering
+    /// (review of PR #56, finding 4).
+    @discardableResult
+    func endRequest(_ id: InteractionID, with event: InteractionEvent) -> Bool {
         guard var request = requests[id] else { return false }
         do {
             try request.mirror.apply(event, at: Timestamp(clock.now()))
@@ -354,27 +384,42 @@ public actor DownForService: SkillService {
             diagnostics.refusedEvents += 1
             return false
         }
+        guard request.mirror.state.isFinal else { return report(id, event) }
+        // Its own conversation (for an invitee, the invitation), and the
+        // starter's conversation of a card it showed.
+        var conversations = [request.conversation]
+        if case .member(let key) = request.engagement, request.mirror.proposal != nil, key.conversation != request.conversation {
+            conversations.append(key.conversation)
+        }
         requests[id] = request
-        continuation.yield(.lifecycle(id, event))
-        if request.mirror.state.isFinal { discard(id) }
+        discard(id)
+        retiring.formUnion(conversations)
+        let outbox = outbox
+        Task { [weak self] in
+            var retired = true
+            for conversation in conversations {
+                do { try await outbox.retire(conversation) } catch { retired = false }
+            }
+            await self?.publishEnding(id, retired ? event : .failed, conversations: retired ? conversations : [])
+        }
         return true
     }
 
-    /// Reports a final `event`. Nothing is sent: a pass, a withdrawal, an
-    /// expiry, or a group that fell apart all look to friends like someone
-    /// who stopped answering, with the same content and timing, so nobody
-    /// can tell a pass from not taking part (review of PR #56, finding 4).
-    @discardableResult
-    func endRequest(_ id: InteractionID, with event: InteractionEvent) -> Bool {
-        report(id, event)
+    /// Reports an ending once its retirement is settled. `conversations`
+    /// are the ones now durably retired, which need no local refusal.
+    private func publishEnding(_ id: InteractionID, _ event: InteractionEvent, conversations: [ConversationID]) {
+        retiring.subtract(conversations)
+        continuation.yield(.lifecycle(id, event))
     }
 
     /// Ends the request without reporting: the coordinator applies `event`
-    /// itself, as it does for a declined consent sheet.
+    /// itself, as it does for a declined consent sheet. Its conversation is
+    /// still retired.
     func endQuietly(_ id: InteractionID, _ event: InteractionEvent) {
-        guard requests[id] != nil else { return }
+        guard let request = requests[id] else { return }
         try? requests[id]?.mirror.apply(event, at: Timestamp(clock.now()))
         discard(id)
+        retire(request.conversation)
     }
 
     /// The policy refused a send for the current step: the owner's privacy
@@ -382,8 +427,7 @@ public actor DownForService: SkillService {
     /// amendment 14). A planned request keeps its plan.
     func blockedByPrivacy(_ id: InteractionID) {
         guard let state = requests[id]?.mirror.state, state != .planned else { return }
-        report(id, .blockedByPrivacy)
-        discard(id)
+        endRequest(id, with: .blockedByPrivacy)
     }
 
     func produce(_ id: InteractionID, _ artifact: Artifact) {
@@ -408,21 +452,41 @@ public actor DownForService: SkillService {
         }
     }
 
-    static let maxEndedConversations = 1_024
+    /// Ends `conversation` for good through `Outbox.retire(_:)` (ADR 0021):
+    /// the ledger records it and its sends still in flight are cancelled.
+    /// In order, one after another.
+    func retire(_ conversation: ConversationID) {
+        guard retiring.insert(conversation).inserted else { return }
+        let outbox = outbox
+        let previous = lastRetire
+        lastRetire = Task { [weak self] in
+            await previous?.value
+            do {
+                try await outbox.retire(conversation)
+                await self?.retired(conversation)
+            } catch {
+                // Not recorded: keep refusing it here, fail closed.
+            }
+        }
+    }
 
-    func markEnded(_ conversation: ConversationID) {
-        guard endedConversations.insert(conversation).inserted else { return }
-        endedOrder.append(conversation)
-        while endedOrder.count > Self.maxEndedConversations { endedConversations.remove(endedOrder.removeFirst()) }
+    private func retired(_ conversation: ConversationID) { retiring.remove(conversation) }
+
+    /// Whether anything in `conversation` may still be answered or opened.
+    /// A ledger that cannot say counts as retired.
+    func isRetired(_ conversation: ConversationID) async -> Bool {
+        if retiring.contains(conversation) { return true }
+        return (try? await ledger.isRetired(conversation)) ?? true
     }
 
     /// Forgets a request that reached a final state, ending its runs
     /// silently. A planned request stays until its plan ends.
     func discard(_ id: InteractionID, keepingRecord: Bool = false) {
         guard let request = requests.removeValue(forKey: id) else { return }
-        // Its own conversation (for an invitee, the invitation's) is over. A
-        // group it only answered is not: that starter may ask again.
-        if !keepingRecord { markEnded(request.conversation) }
+        // Retiring is the caller's: `endRequest` before it reports an
+        // ending, the plan's cleanup, or nobody for a shutdown. A group it
+        // only answered stays open, since that starter may ask again,
+        // unless its card had shown (`end`).
         request.timer?.cancel()
         request.quiet?.cancel()
         request.vetting?.cancel()
@@ -485,8 +549,16 @@ public actor DownForService: SkillService {
         requests[id]?.timer?.cancel()
         requests[id]?.timer = Task { [weak self, clock] in
             do { try await clock.sleep(.milliseconds(Int64(max(0, delay) * 1000))) } catch { return }
-            await self?.discard(id)
+            await self?.forgetPlan(id)
         }
+    }
+
+    /// The plan is over: its conversation is retired and the request is
+    /// forgotten. The coordinator reports the plan's end itself.
+    private func forgetPlan(_ id: InteractionID) {
+        guard let request = requests[id] else { return }
+        discard(id)
+        retire(request.conversation)
     }
 
     // MARK: - Helpers

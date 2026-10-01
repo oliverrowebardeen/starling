@@ -322,15 +322,6 @@ extension DownForService {
         }
     }
 
-    static let maxRetiredRuns = 1_024
-
-    /// Stops answering anything in a member run whose card already showed.
-    func retire(_ key: RunKey) {
-        guard retired.insert(key).inserted else { return }
-        retiredOrder.append(key)
-        while retiredOrder.count > Self.maxRetiredRuns { retired.remove(retiredOrder.removeFirst()) }
-    }
-
     // MARK: - Ending runs
 
     /// Ends a run without telling anyone. With `react`, the request then
@@ -339,7 +330,10 @@ extension DownForService {
     func end(_ key: RunKey, _ outcome: RunOutcome, react: Bool = true) {
         guard let run = runs.removeValue(forKey: key) else { return }
         timers.removeValue(forKey: key)?.cancel()
-        if run.role == .member, run.phase == .proposed || run.phase == .accepted, outcome != .matched { retire(key) }
+        // A member run whose card showed answers nothing more in that
+        // conversation, so a pass, a withdrawal, and a card nobody answered
+        // look the same (final-round review, finding 1).
+        if run.role == .member, run.phase == .proposed || run.phase == .accepted, outcome != .matched { retire(key.conversation) }
         cancelWork { $0.run == key }
         diagnostics.outcomes[outcome, default: 0] += 1
         if outcome == .matched {

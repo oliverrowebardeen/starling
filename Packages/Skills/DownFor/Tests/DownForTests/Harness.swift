@@ -157,20 +157,24 @@ final class Phone: Sendable {
     let service: DownForService
     let lifecycle = Lifecycle()
     let store: any DownForRequestStore
+    /// The phone's ledger, shared by its Outbox and service, and kept
+    /// across a simulated restart like the app's persisted one.
+    let ledger: InMemoryConversationLedger
     private let tasks: Mutex<[Task<Void, Never>]> = Mutex([])
 
     init(
         name: String, id: PeerID, hub: LoopbackHub, model: any AgentModel, policy: any PolicyEngine, consent: any ConsentProvider,
         psi: any PSIProvider, clock: SkillClock, configuration: DownForConfiguration, store: any DownForRequestStore = InMemoryDownForRequestStore(),
-        pairedPeers: (any PairedPeerStore)? = nil
+        pairedPeers: (any PairedPeerStore)? = nil, ledger: InMemoryConversationLedger = InMemoryConversationLedger()
     ) {
         self.name = name
         self.id = id
         self.store = store
+        self.ledger = ledger
         transport = LoopbackTransport(localPeer: id, hub: hub)
-        let outbox = Outbox(transport: transport, policy: policy, consent: CoordinatorConsent(owner: consent, lifecycle: lifecycle))
+        let outbox = Outbox(transport: transport, policy: policy, consent: CoordinatorConsent(owner: consent, lifecycle: lifecycle), ledger: ledger)
         service = DownForService(
-            localPeer: id, outbox: outbox, model: model, psi: psi, store: store, pairedPeers: pairedPeers,
+            localPeer: id, outbox: outbox, model: model, psi: psi, ledger: ledger, store: store, pairedPeers: pairedPeers,
             clock: clock, timeZone: T.utc, configuration: configuration
         )
     }

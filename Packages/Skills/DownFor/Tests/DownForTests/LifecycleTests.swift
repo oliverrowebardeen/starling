@@ -174,7 +174,7 @@ import Testing
         // The app restarts: a new service on the same Outbox setup and store.
         let restarted = Phone(
             name: "A2", id: a.id, hub: world.hub, model: ScriptedAgentModel(), policy: FixedPolicyEngine(.allow),
-            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration, store: store
+            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration, store: store, ledger: a.ledger
         )
         await a.stop()
         await restarted.lifecycle.create(saved)

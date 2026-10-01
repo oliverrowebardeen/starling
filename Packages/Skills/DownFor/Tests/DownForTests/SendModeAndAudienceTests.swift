@@ -245,7 +245,7 @@ import Testing
         // resending the invitation, which must not open a second card.
         let restarted = Phone(
             name: "B2", id: b.id, hub: world.hub, model: ScriptedAgentModel(), policy: FixedPolicyEngine(.allow),
-            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration
+            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration, ledger: b.ledger
         )
         await b.stop()
         try await restarted.start()

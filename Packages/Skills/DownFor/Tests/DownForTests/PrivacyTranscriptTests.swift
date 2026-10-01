@@ -129,7 +129,7 @@ import Testing
         // B restarts; its request resumes from the store.
         let restarted = Phone(
             name: "B2", id: b.id, hub: world.hub, model: ScriptedAgentModel(), policy: FixedPolicyEngine(.allow),
-            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration, store: store
+            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration, store: store, ledger: b.ledger
         )
         await b.stop()
         await restarted.lifecycle.create(saved)

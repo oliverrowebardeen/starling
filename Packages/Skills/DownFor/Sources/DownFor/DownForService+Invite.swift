@@ -108,7 +108,7 @@ extension DownForService {
         else { return }
         if let pairedPeers { guard (try? await pairedPeers.peer(for: key.peer)) ?? nil != nil else { return } }
         // A second copy may have arrived while the store was asked.
-        guard runs[key] == nil, finished[key] == nil, !endedConversations.contains(key.conversation) else { return }
+        guard runs[key] == nil, finished[key] == nil, await !isRetired(key.conversation) else { return }
 
         let id = InteractionID()
         let record = DownForRequestRecord(invitation: id, conversation: key.conversation, from: key.peer, until: Timestamp(slot.end), chainedFrom: envelope.chainedFrom)

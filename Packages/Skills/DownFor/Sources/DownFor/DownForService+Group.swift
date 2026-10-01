@@ -287,7 +287,7 @@ extension DownForService {
         let participants = Set(request.record.participants)
         guard participants.isSubset(of: request.settled.union(request.unsupported)) else { return }
         if participants.isSubset(of: request.unsupported) {
-            report(id, .unsupported)
+            endRequest(id, with: .unsupported)
         } else {
             endRequest(id, with: .noAgreement)
         }
