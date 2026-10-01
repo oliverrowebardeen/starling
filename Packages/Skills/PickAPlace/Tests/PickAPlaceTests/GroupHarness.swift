@@ -38,6 +38,7 @@ actor LossyTransport: Transport {
     init(_ base: LoopbackTransport) { self.base = base }
 
     func lose(_ count: Int, where matches: @escaping @Sendable (Envelope) -> Bool) { rules.append((count, matches)) }
+    func clearRules() { rules = [] }
 
     func start() async throws { try await base.start() }
     func stop() async { await base.stop() }
@@ -165,9 +166,13 @@ final class Phone: Sendable {
     let coordinator = Coordinator()
     let consent: CoordinatorConsent
     let outbox: Outbox
-    let service: PickAPlaceService
     let card: AgentCard
+    private let current: Mutex<PickAPlaceService>
+    private let makeService: @Sendable () -> PickAPlaceService
     private let tasks = Mutex<[Task<Void, Never>]>([])
+
+    /// The service now running; `restart()` replaces it.
+    var service: PickAPlaceService { current.withLock { $0 } }
 
     var id: PeerID { key.peerID }
 
@@ -182,23 +187,36 @@ final class Phone: Sendable {
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome)
         outbox = Outbox(transport: transport, policy: policy, consent: consent)
         card = try! AgentCard(model: .onDevice, capabilities: [], skills: skills)
-        service = PickAPlaceService(
-            localPeer: key.peerID, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
-            ownerLimits: { limits }, clock: .system, configuration: configuration
-        )
+        let (peer, outbox, store, staged) = (key.peerID, outbox, store, staged)
+        makeService = {
+            PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
+                              ownerLimits: { limits }, clock: .system, configuration: configuration)
+        }
+        current = Mutex(makeService())
     }
 
     func start() async throws {
         let inbox = Inbox(localPeer: id)
         let inboxEvents = inbox.events(from: transport)
-        // The app sees only the protocol.
-        let service: any SkillService = service
+        let service = service
         let coordinator = coordinator
         tasks.withLock {
-            $0.append(Task { for await event in inboxEvents { await service.handle(event) } })
+            // The app sees only the protocol.
+            $0.append(Task { [self] in for await event in inboxEvents { await (self.service as any SkillService).handle(event) } })
             $0.append(Task { for await event in service.events { await coordinator.apply(event) } })
         }
         try await transport.start()
+    }
+
+    /// The app quits and launches again: a new service, restored from the
+    /// coordinator's store before it handles anything.
+    func restart() async {
+        await service.shutdown()
+        let fresh = makeService()
+        let coordinator = coordinator
+        tasks.withLock { $0.append(Task { for await event in fresh.events { await coordinator.apply(event) } }) }
+        await fresh.restore(Array(await coordinator.interactions.values))
+        current.withLock { $0 = fresh }
     }
 
     func stop() async {
