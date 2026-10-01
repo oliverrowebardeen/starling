@@ -80,6 +80,30 @@ struct PrivacyTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    @Test func aFriendTheOnDeviceRuleExcludesIsLeftOut() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        // Oliver allows only on-device agents; Jake's card says his model
+        // runs in the cloud. Only the sends to Jake are refused.
+        let onlyOnDevice = DeterministicPolicyEngine(
+            ownerRules: OwnerRules(constraints: .empty, disclosure: try PrivacySettings([.place: .share, .people: .share]).disclosureRules),
+            onlyOnDeviceAgents: true
+        )
+        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: onlyOnDevice)
+        let maya = Phone("Maya", hub: hub, maps: maps)
+        let jake = Phone("Jake", hub: hub, maps: maps, model: .thirdPartyCloud(provider: "acme"))
+        let group = try await Group([oliver, maya, jake], hub: hub)
+        defer { Task { await group.stop() } }
+
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(await oliver.interaction(conversation)?.proposal?.participants == [oliver.id, maya.id])
+        for phone in [oliver, maya] { try await phone.accept(in: conversation) }
+        #expect(await oliver.reaches(.planned, in: conversation))
+        #expect(await group.wire.sent(to: jake.id).isEmpty)
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func sharingWithOnDeviceFriendsNeedsNoSheet() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)

@@ -131,7 +131,7 @@ extension PickAPlaceService {
                 let query = try Query(issue: .place, candidates: .places(organizer.ranking))
                 try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
             } catch {
-                guard organizerCanRetry(conversation, after: error, step: .asking) else { return }
+                guard organizerCanRetry(conversation, after: error, step: .asking, friend: friend) else { return }
             }
             guard let next = await pause(interval) else { return }
             interval = next
@@ -253,7 +253,7 @@ extension PickAPlaceService {
                                           conversation: conversation, chainedFrom: organizer.chainedFrom)
                 organized[conversation]?.lastProposeID[friend] = sent.id
             } catch {
-                guard organizerCanRetry(conversation, after: error, step: .proposing(proposal.revision)) else { return }
+                guard organizerCanRetry(conversation, after: error, step: .proposing(proposal.revision), friend: friend) else { return }
             }
             guard let next = await pause(interval) else { return }
             interval = next
@@ -369,9 +369,27 @@ extension PickAPlaceService {
     /// What a failed send means for the whole request. Returns whether to
     /// keep retrying. A send made for a step the request has left is
     /// dropped, whatever its result (ADR 0011, amendment 14).
-    func organizerCanRetry(_ conversation: ConversationID, after error: any Error, step: Organizer.Step) -> Bool {
-        guard let organizer = organized[conversation], !organizer.isFinished, organizer.step == step else { return false }
+    func organizerCanRetry(_ conversation: ConversationID, after error: any Error, step: Organizer.Step, friend: PeerID) -> Bool {
+        guard var organizer = organized[conversation], !organizer.isFinished, organizer.step == step else { return false }
         switch error {
+        case OutboxError.denied(let violation) where violation.issue == nil:
+            // A rule about this recipient, not a topic: only on-device
+            // agents and this friend's card says otherwise, or the paired
+            // store could not vouch for them. Leave this friend out.
+            switch organizer.phase {
+            case .asking:
+                organizer.out.insert(friend)
+                organized[conversation] = organizer
+                if organizer.waitingOn.isEmpty { decide(conversation) }
+            case .proposing:
+                organizer.accepted.remove(friend)
+                organizer.passed.insert(friend)
+                organized[conversation] = organizer
+                tryFinalize(conversation)
+            case .settled, .ended:
+                break
+            }
+            return false
         case OutboxError.denied:
             // A topic set to Never, at any live step.
             endOrganizer(conversation, event: .blockedByPrivacy, reason: .declinedByOwner)

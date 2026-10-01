@@ -213,14 +213,14 @@ final class Phone: Sendable {
     init(
         _ name: String, hub: LoopbackHub, maps: FakeMaps, limits: ConstraintSet = .empty,
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent outcome: ConsentOutcome = .approved, gate: ConsentGate? = nil,
-        skills: [SkillRef] = [PickAPlaceSkill.ref], configuration: PickAPlaceConfiguration = fastConfiguration
+        skills: [SkillRef] = [PickAPlaceSkill.ref], model: ModelLocality = .onDevice, configuration: PickAPlaceConfiguration = fastConfiguration
     ) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
         outbox = Outbox(transport: transport, policy: policy, consent: consent)
-        card = try! AgentCard(model: .onDevice, capabilities: [], skills: skills)
+        card = try! AgentCard(model: model, capabilities: [], skills: skills)
         let (peer, outbox, store, staged) = (key.peerID, outbox, store, staged)
         makeService = {
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
