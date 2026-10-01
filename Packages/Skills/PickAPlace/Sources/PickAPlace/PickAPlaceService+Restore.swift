@@ -16,6 +16,8 @@ import StarlingCore
 
 extension PickAPlaceService {
     public func restore(_ interactions: [Interaction]) async {
+        // The hourly limit per friend survives the restart.
+        await loadAdmissions()
         for interaction in interactions where interaction.skill.id == descriptor.id {
             switch interaction.state {
             case .drafting, .planned, .done, .ended: continue

@@ -47,10 +47,13 @@ extension PickAPlaceService {
             requestTimes[envelope.sender] = recent
             return
         }
-        requestTimes[envelope.sender] = recent + [clock.now()]
+        let now = clock.now()
+        requestTimes[envelope.sender] = recent + [now]
         let conversation = envelope.conversation
+        let sender = envelope.sender
         invites[conversation] = Invite(id: InteractionID(), conversation: conversation, organizer: envelope.sender, chainedFrom: envelope.chainedFrom)
         spawnInviteDeadline(conversation)
+        spawn(conversation) { await $0.admissions.record(sender, at: now) }
         spawn(conversation) { await $0.judgeAndAnswer(conversation, query: envelope.id, candidates: candidates) }
     }
 

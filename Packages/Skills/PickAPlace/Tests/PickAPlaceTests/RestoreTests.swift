@@ -114,6 +114,44 @@ struct RestoreTests {
         #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .reject })
     }
 
+    @Test func theHourlyLimitSurvivesARestart() async throws {
+        let hub = LoopbackHub()
+        let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))
+        let mallory = Phone("Mallory", hub: hub, maps: FakeMaps(Venues.all))
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        let skill = PickAPlaceSkill.ref
+        func probe() async throws {
+            let conversation = ConversationID()
+            try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
+                                          conversation: conversation, skill: skill)
+            try await Task.sleep(for: .milliseconds(40))
+            try await mallory.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: maya.id,
+                                          conversation: conversation, skill: skill)
+        }
+        for _ in 0..<fastConfiguration.maxNewRequestsPerFriendPerHour { try await probe() }
+        try await Task.sleep(for: .milliseconds(100))
+        await maya.restart()
+        for _ in 0..<3 { try await probe() }
+        try await Task.sleep(for: .milliseconds(200))
+        let lists = await group.wire.sent(by: maya.id).filter { $0.body.kind == .answer }
+        #expect(Set(lists.map(\.conversation)).count == fastConfiguration.maxNewRequestsPerFriendPerHour)
+    }
+
+    @Test func theAppsAdmissionLogKeepsTheLastHour() async throws {
+        let suite = "starling.tests.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let peer = PeerID.random()
+        let now = Date()
+        let log = UserDefaultsRequestAdmissionLog(suiteName: suite)
+        await log.record(peer, at: now.addingTimeInterval(-4_000))
+        await log.record(peer, at: now.addingTimeInterval(-60))
+        await log.record(peer, at: now)
+        // A new instance reads what the old one wrote, as after a relaunch.
+        let reloaded = await UserDefaultsRequestAdmissionLog(suiteName: suite).admissions(since: now.addingTimeInterval(-3_600))
+        #expect(reloaded[peer]?.count == 2)
+    }
+
     @Test func anOrganizerStillAskingIsReportedFailed() async throws {
         let (group, oliver, maya) = try await oliverAndMaya()
         defer { Task { await group.stop() } }
@@ -128,7 +166,8 @@ struct RestoreTests {
     @Test func otherVersionsAndUnknownStepsAreReportedFailed() async throws {
         let service = PickAPlaceService(
             localPeer: .random(), outbox: Outbox(transport: RecordingTransport(), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved)),
-            pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty }
+            pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty },
+            admissions: InMemoryRequestAdmissionLog()
         )
         let now = Timestamp(Date())
         let otherVersion = Interaction(skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), role: .invitee, participants: [.random()], createdAt: now)
