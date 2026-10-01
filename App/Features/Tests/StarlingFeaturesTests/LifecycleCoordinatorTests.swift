@@ -77,6 +77,27 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.isLoaded)
     }
 
+    /// Amendment 15: a sheet does not survive the app. Requests still open
+    /// at launch close with consentCancelled before restore, so the service
+    /// sees the step it was in, not a suspension nobody can answer.
+    @Test func sheetsLeftOpenAtLaunchAreCancelledBeforeRestore() async throws {
+        var item = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        try item.apply(.started, at: Timestamp(clock.now))
+        try item.apply(.consentNeeded(request: 1), at: Timestamp(clock.now))
+        try item.apply(.consentNeeded(request: 2), at: Timestamp(clock.now))
+        let store = InMemoryInteractionStore([item])
+        let lifecycle = coordinator(store: store)
+        await lifecycle.start()
+
+        let restored = try #require(await down.restored.first)
+        #expect(restored.state == .negotiating)
+        #expect(restored.pendingConsents.isEmpty)
+        #expect(restored.consentWatermark == 2, "the closed IDs are never reused")
+        #expect(lifecycle.dropped.isEmpty)
+        await lifecycle.flush()
+        #expect(try await store.interaction(item.id)?.state == .negotiating)
+    }
+
     /// Amendment 15: plans end at launch, not only when the owner returns.
     @Test func plansThatEndedWhileClosedEndAtLaunch() async throws {
         var planned = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya, jake], createdAt: Timestamp(clock.now))
@@ -369,7 +390,7 @@ actor FailingSkillService: SkillService {
     @Test func anEndDuringASuspensionAppliesAtOnce() async throws {
         let lifecycle = coordinator()
         var finished: [ConversationID] = []
-        lifecycle.onFinished = { finished.append($0) }
+        lifecycle.onFinished = { _, conversation in finished.append(conversation) }
         let sent = request(to: [maya])
         let id = try await lifecycle.start(sent, settings: Self.settings)
         let request = try #require(lifecycle.consentRequested(conversation: sent.conversation))

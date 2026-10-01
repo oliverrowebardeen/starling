@@ -197,7 +197,7 @@ public final class AppModel {
         recorder.lifecycle = lifecycle
         consent.tracker = lifecycle
         let consent = consent
-        lifecycle.onFinished = { conversation in consent.invalidate(conversation: conversation) }
+        lifecycle.onFinished = { interaction, conversation in consent.invalidate(interaction: interaction, conversation: conversation) }
 
         let names = NameBox()
         words = InteractionWords(registry: services.registry, localPeer: localPeer, formatter: services.formatter, names: { names.value })

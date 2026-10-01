@@ -74,7 +74,7 @@ import Testing
         let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down], store: InMemoryInteractionStore())
         let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([maya]))
         consent.tracker = lifecycle
-        lifecycle.onFinished = { consent.invalidate(conversation: $0) }
+        lifecycle.onFinished = { consent.invalidate(interaction: $0, conversation: $1) }
         let request = try await started(lifecycle)
         let sent = try disclosure(request.conversation)
         let ask = Task { await consent.requestConsent(for: sent) }
@@ -106,6 +106,51 @@ import Testing
         consent.answer(.approved, to: consent.current!.id)
         #expect(await ask.value == .declined)
         #expect(await consent.requestConsent(for: sent) == .declined)
+    }
+
+    /// Amendment 15: a send cancelled while its sheet is up dismisses the
+    /// sheet and resumes the step with consentCancelled, not a pass.
+    @Test func aCancelledSendDismissesItsSheetAndResumesTheStep() async throws {
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down], store: InMemoryInteractionStore())
+        let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([maya]))
+        consent.tracker = lifecycle
+        let request = try await started(lifecycle)
+        let sent = try disclosure(request.conversation)
+        let ask = Task { await consent.requestConsent(for: sent) }
+        await eventually { consent.current != nil }
+        #expect(lifecycle.interaction(request.interaction)?.state == .awaitingConsent(resume: .negotiating))
+
+        ask.cancel()
+        #expect(await ask.value == .declined)
+        await eventually { consent.current == nil }
+        #expect(consent.current == nil)
+        let after = try #require(lifecycle.interaction(request.interaction))
+        #expect(after.state == .negotiating)
+        #expect(after.pendingConsents.isEmpty)
+        #expect(lifecycle.dropped.isEmpty)
+    }
+
+    /// Core v2.1: the interaction the service named wins over the
+    /// conversation, which a group member shares with the starter.
+    @Test func theNamedInteractionIsTheOneSuspended() async throws {
+        let conversation = ConversationID()
+        var starter = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
+        try starter.apply(.started, at: Timestamp(Date()))
+        let member = Interaction(conversation: conversation, skill: SampleSkills.downFor.ref, role: .invitee, participants: [maya.id], createdAt: Timestamp(Date()))
+        let other = Interaction(conversation: conversation, skill: SampleSkills.downFor.ref, role: .invitee, participants: [maya.id], createdAt: Timestamp(Date().addingTimeInterval(-1)))
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down], store: InMemoryInteractionStore([starter, other, member]))
+        let consent = ConsentCoordinator(peers: InMemoryPairedPeerStore([maya]))
+        consent.tracker = lifecycle
+        await lifecycle.start()
+
+        let sent = Disclosure(recipient: maya.id, recipientModel: .onDevice, items: [], conversation: conversation, skill: SampleSkills.downFor.ref, interaction: member.id)
+        let ask = Task { await consent.requestConsent(for: sent) }
+        await eventually { consent.current != nil }
+        #expect(lifecycle.interaction(member.id)?.state == .awaitingConsent(resume: .negotiating))
+        #expect(lifecycle.interaction(other.id)?.state == .negotiating)
+        consent.answer(.approved, to: consent.current!.id)
+        #expect(await ask.value == .approved)
+        #expect(lifecycle.interaction(member.id)?.state == .negotiating)
     }
 
     /// Issue #46: one row per person, two friends with one nickname told
