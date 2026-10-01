@@ -203,9 +203,9 @@ public actor PickAPlaceService: SkillService {
     public func withdraw(_ interaction: InteractionID) async {
         guard let conversation = conversationOf[interaction] else { return }
         if organized[conversation] != nil {
-            endOrganizer(conversation, event: .withdrawn, reason: .declinedByOwner)
+            endOrganizer(conversation, event: .withdrawn, reason: .noOverlap)
         } else if invites[conversation] != nil {
-            endInvite(conversation, event: .withdrawn, reply: .declinedByOwner)
+            leave(conversation, event: .withdrawn)
         }
     }
 

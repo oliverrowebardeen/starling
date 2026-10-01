@@ -312,7 +312,7 @@ extension PickAPlaceService {
             tryFinalize(conversation)
         case .pass:
             // After a yes, passing takes the yes back: withdrawing.
-            endOrganizer(conversation, event: organizer.ownerAccepted ? .withdrawn : .ownerPassed, reason: .declinedByOwner)
+            endOrganizer(conversation, event: organizer.ownerAccepted ? .withdrawn : .ownerPassed, reason: .noOverlap)
         case .reply:
             throw PickAPlaceError.notWaitingForYou
         }
@@ -322,8 +322,10 @@ extension PickAPlaceService {
 
     func tryFinalize(_ conversation: ConversationID) {
         guard let organizer = organized[conversation], organizer.phase == .proposing, organizer.ownerAccepted else { return }
-        guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.passed.contains($0) || organizer.timedOut.contains($0) })
-        else { return }
+        // Only yeses settle a friend early. A pass, like silence, waits for
+        // the confirm deadline, so nobody can tell the two apart by when the
+        // plan is confirmed (ADR 0017; ADR 0020, decision 9).
+        guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.timedOut.contains($0) }) else { return }
         finalize(conversation)
     }
 
@@ -332,13 +334,13 @@ extension PickAPlaceService {
     /// The owner's yes, now or later, confirms with whoever said yes.
     func confirmWindowClosed(_ conversation: ConversationID) {
         guard var organizer = organized[conversation], organizer.phase == .proposing else { return }
-        let silent = organizer.invited.filter {
-            !organizer.accepted.contains($0) && !organizer.passed.contains($0) && !organizer.timedOut.contains($0)
-        }
-        organizer.timedOut.formUnion(silent)
+        let unsettled = organizer.invited.filter { !organizer.accepted.contains($0) && !organizer.timedOut.contains($0) }
+        organizer.timedOut.formUnion(unsettled)
         organized[conversation] = organizer
         let chainedFrom = organizer.chainedFrom
-        for friend in silent where !organizer.excluded.contains(friend) {
+        // Those still waiting hear the request expired; a friend who passed
+        // or was excluded hears nothing more.
+        for friend in unsettled where !organizer.excluded.contains(friend) && !organizer.passed.contains(friend) {
             let lastHeard = organizer.lastHeard[friend]
             spawn(conversation) { service in
                 await service.trySend(.reject(Rejection(proposal: lastHeard ?? MessageID(), reason: .expired)), to: friend,
@@ -447,12 +449,12 @@ extension PickAPlaceService {
             return false
         case OutboxError.denied:
             // A topic set to Never, at any live step.
-            endOrganizer(conversation, event: .blockedByPrivacy, reason: .declinedByOwner)
+            endOrganizer(conversation, event: .blockedByPrivacy, reason: .noOverlap)
             return false
         case OutboxError.consentDeclined:
             // Passing on the consent sheet passes on the request; the
             // coordinator applies the pass, so the service adds nothing.
-            endOrganizer(conversation, event: nil, reason: .declinedByOwner)
+            endOrganizer(conversation, event: nil, reason: .noOverlap)
             return false
         case is CancellationError:
             return false

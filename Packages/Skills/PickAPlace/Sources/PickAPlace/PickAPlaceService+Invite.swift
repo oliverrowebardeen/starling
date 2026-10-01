@@ -277,11 +277,13 @@ extension PickAPlaceService {
                 // Withdrawn or ended while the send waited; nothing left.
                 return
             case OutboxError.consentDeclined?:
-                // The coordinator applies the pass.
-                endInvite(conversation, event: nil, reply: .declinedByOwner)
+                // The coordinator applies the pass; like any pass, nothing
+                // is sent.
+                endInvite(conversation, event: nil, reply: nil)
                 return
             case OutboxError.denied?:
-                endInvite(conversation, event: .blockedByPrivacy, reply: .declinedByOwner)
+                // No yes left the phone, so this looks like a pass.
+                endInvite(conversation, event: .blockedByPrivacy, reply: nil)
                 return
             case let error?:
                 // Unreachable for now: the owner can tap again.
@@ -294,8 +296,7 @@ extension PickAPlaceService {
         case .pass:
             // After a yes, passing takes the yes back: the state machine
             // calls that withdrawing.
-            let event: InteractionEvent = invite.accepted || invite.accepting ? .withdrawn : .ownerPassed
-            endInvite(conversation, event: event, reply: .declinedByOwner)
+            leave(conversation, event: invite.accepted || invite.accepting ? .withdrawn : .ownerPassed)
         case .reply:
             throw PickAPlaceError.notWaitingForYou
         }
@@ -345,6 +346,20 @@ extension PickAPlaceService {
     }
 
     // MARK: - Ending
+
+    /// The owner passes or withdraws. What the organizer hears never says
+    /// which (ADR 0017: "If you pass, they just won't see it"):
+    /// - before any proposal, an ordinary no, so the organizer chooses
+    ///   without this phone;
+    /// - after a yes, an ordinary no that takes the yes back;
+    /// - a pass on a card without a yes sends nothing, so it looks exactly
+    ///   like silence and resolves at the organizer's confirm deadline
+    ///   (ADR 0020, decision 9).
+    func leave(_ conversation: ConversationID, event: InteractionEvent) {
+        guard let invite = invites[conversation], !invite.isFinished else { return }
+        let tell = invite.proposal == nil || invite.accepted || invite.accepting
+        endInvite(conversation, event: event, reply: tell ? .noOverlap : nil)
+    }
 
     /// Ends this phone's part. `reply` is sent only for the owner's own
     /// explicit choices, never for a private limit.

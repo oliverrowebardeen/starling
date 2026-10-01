@@ -110,25 +110,32 @@ struct GroupFlowTests {
         #expect(Set(asked) == [.places([Venues.teaLab.choice, Venues.bobaGuys.choice])])
     }
 
-    @Test func aFriendWhoPassesIsLeftOutAndThePlanGoesAhead() async throws {
-        let (group, oliver, maya, jake) = try await threeFriends()
+    /// ADR 0017 and ADR 0020 decision 9: a pass looks exactly like
+    /// silence. Jake sends nothing when he passes, nobody hears a reason,
+    /// and the plan is confirmed at the deadline in both cases.
+    @Test(arguments: [true, false])
+    func aPassLooksExactlyLikeSilence(jakePasses: Bool) async throws {
+        let quick = PickAPlaceConfiguration(retryInterval: .milliseconds(20), maxRetryInterval: .milliseconds(80),
+                                            answerWindow: .seconds(3), confirmWindow: .milliseconds(600))
+        let (group, oliver, maya, jake) = try await threeFriends(configuration: quick)
         defer { Task { await group.stop() } }
         let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
-        #expect(await jake.reaches(.proposed, in: conversation))
-        #expect(await maya.reaches(.proposed, in: conversation))
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        let proposed = Date()
+        let jakeSentBefore = await group.wire.sent(by: jake.id).count
 
-        try await jake.pass(in: conversation)
+        if jakePasses { try await jake.pass(in: conversation) }
         try await maya.accept(in: conversation)
         try await oliver.accept(in: conversation)
 
-        #expect(await oliver.reaches(.planned, in: conversation))
-        #expect(await maya.reaches(.planned, in: conversation))
-        #expect(await jake.state(in: conversation) == .ended(.declined))
-        #expect(await jake.agreedPlace(in: conversation) == nil)
-        // Oliver and Maya both record who is actually coming.
-        for phone in [oliver, maya] {
-            #expect(await eventually { await phone.attendees(in: conversation) == [oliver.id, maya.id] }, "\(phone.name)")
-        }
+        #expect(await maya.reaches(.planned, in: conversation, within: 3))
+        #expect(Date().timeIntervalSince(proposed) >= 0.55)
+        #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, maya.id] })
+        #expect(await maya.interaction(conversation)?.artifacts.contains(.attendees(try Attendees([oliver.id, maya.id]))) == true)
+        // Jake's phone sent nothing after the card arrived.
+        #expect(await group.wire.sent(by: jake.id).count == jakeSentBefore)
+        if jakePasses { #expect(await jake.state(in: conversation) == .ended(.declined)) }
+        #expect(await group.wire.envelopes.allSatisfy { $0.body.rejection?.reason != .declinedByOwner })
         #expect(await group.lifecyclesWereLegal())
     }
 
