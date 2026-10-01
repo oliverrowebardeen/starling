@@ -81,16 +81,24 @@ import Testing
     @Test func openingPlanTakesTheFirstOverlapBlockCappedInLength() throws {
         let me = try profile(liked: ["food", "boba"], maxBudget: 15)
         let overlap = [T.slot(20, 20.5), T.slot(20.5, 21), T.slot(21, 21.5), T.slot(21.5, 22), T.slot(22, 22.5), T.slot(19, 19.5)]
-        let plan = me.openingPlan(overlap: overlap.shuffled(), activities: ["boba"].map(T.keyword), budget: T.usd(12), maxMinutes: 120)
+        let plan = me.openingPlan(overlap: overlap.shuffled(), activities: ["boba"].map(T.keyword), budget: T.usd(12), maxMinutes: 120, now: T.now)
         // 19:00 to 19:30 is the first block on its own.
         #expect(plan == (try T.plan(time: T.slot(19, 19.5), activity: ["boba"], budget: 12)))
-        let later = me.openingPlan(overlap: Array(overlap.dropLast()), activities: nil, budget: nil, maxMinutes: 120)
+        let later = me.openingPlan(overlap: Array(overlap.dropLast()), activities: nil, budget: nil, maxMinutes: 120, now: T.now)
         #expect(later == (try T.plan(time: T.slot(20, 22))))
+    }
+
+    @Test func openingPlanSkipsSharedSlotsThatHaveStarted() throws {
+        let me = try profile()
+        let overlap = [T.slot(19, 19.5), T.slot(19.5, 20), T.slot(20, 20.5)]
+        let plan = me.openingPlan(overlap: overlap, activities: nil, budget: nil, maxMinutes: 120, now: T.at(19).addingTimeInterval(60))
+        #expect(plan == (try T.plan(time: T.slot(19.5, 20.5))))
+        #expect(me.openingPlan(overlap: overlap, activities: nil, budget: nil, maxMinutes: 120, now: T.at(20.25)) == nil)
     }
 
     @Test func noSharedActivityMeansNoPlan() throws {
         let me = try profile(liked: ["food"])
-        #expect(me.openingPlan(overlap: [T.slot(19, 19.5)], activities: [], budget: nil, maxMinutes: 120) == nil)
+        #expect(me.openingPlan(overlap: [T.slot(19, 19.5)], activities: [], budget: nil, maxMinutes: 120, now: T.now) == nil)
     }
 
     @Test func aCompliantOfferIsAcceptable() throws {

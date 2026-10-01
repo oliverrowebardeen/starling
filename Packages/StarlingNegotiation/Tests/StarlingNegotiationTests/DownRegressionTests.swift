@@ -231,6 +231,26 @@ import Testing
         try await eventually(timeout: .seconds(2), "a fresh run matched") { await matchCounts(starter, answerer) == [1, 1] }
         await world.stop()
     }
+
+    /// P2: consent (or PSI) delays can carry the exchange past the earliest
+    /// shared slot; the opening offer must start no earlier than now.
+    @Test func theOpeningOfferSkipsASlotThatStartedDuringTheExchange() async throws {
+        let time = MovableClock()
+        let consent = GatedConsentProvider()
+        let world = DownWorld(["ana", "ben"], policy: consentForEverything([.query]), consent: consent, clock: time.clock)
+        let (starter, answerer) = Self.roles(world)
+        try await world.start()
+        try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
+        try await answerer.want(time: [T.slot(19, 22)], liked: ["food"])
+        try await eventually("the activity query waits for consent") { await consent.pending == 1 }
+
+        time.set(T.at(19).addingTimeInterval(60))
+        await consent.answerAll(.approved)
+        try await eventually("both matched") { await matchCounts(starter, answerer) == [1, 1] }
+        #expect(await starter.log.matches.first?.terms[.time] == .slots([T.slot(19.5, 21.5)]))
+        await consent.answerAll(.declined)
+        await world.stop()
+    }
 }
 
 import Synchronization

@@ -126,7 +126,9 @@ struct DownProfile: Sendable {
     ///   - activities: The peer's acceptable subset of our liked activities,
     ///     or nil if we did not ask. Empty means no shared activity: no plan.
     ///   - budget: The peer's answer to our budget query, if any.
-    func openingPlan(overlap: [TimeSlot], activities: [Keyword]?, budget: MoneyAmount?, maxMinutes: Int64) -> Terms? {
+    ///   - now: Shared slots that have started by now are skipped: PSI and
+    ///     consent can take long enough for the earliest one to pass.
+    func openingPlan(overlap: [TimeSlot], activities: [Keyword]?, budget: MoneyAmount?, maxMinutes: Int64, now: Date) -> Terms? {
         var values: [IssueKey: IssueValue] = [:]
         if let activities {
             let shared = Set(activities)
@@ -136,7 +138,7 @@ struct DownProfile: Sendable {
         if let budget {
             values[.budget] = .amount(budgetAnswer(for: budget) ?? budget)
         }
-        for block in Self.merge(overlap) {
+        for block in Self.merge(Self.ahead(overlap, now: now)) {
             let capped = min(block.endMinute, block.startMinute + maxMinutes)
             if let plan = fitTime(start: block.startMinute, end: capped, values: values) { return plan }
         }
@@ -164,7 +166,7 @@ struct DownProfile: Sendable {
             return .acceptable(alternatives: [alternative])
         }
         guard canCounter else { return .reject(.tooManyRounds) }
-        return repair(offer, overlap: overlap).map(Assessment.repair) ?? .reject(.noOverlap)
+        return repair(offer, overlap: overlap.map { Self.ahead($0, now: now) }).map(Assessment.repair) ?? .reject(.noOverlap)
     }
 
     private func repair(_ offer: Terms, overlap: [TimeSlot]?) -> Terms? {
@@ -240,6 +242,12 @@ struct DownProfile: Sendable {
     }
 
     // MARK: - Helpers
+
+    /// The slots that have not started by `now` (same minute rule as `hasNotStarted`).
+    static func ahead(_ slots: [TimeSlot], now: Date) -> [TimeSlot] {
+        let minute = Int64((now.timeIntervalSince1970 / 60).rounded(.down))
+        return slots.filter { $0.startMinute >= minute }
+    }
 
     /// Sorts slots and joins touching or overlapping ones.
     static func merge(_ slots: [TimeSlot]) -> [TimeSlot] {

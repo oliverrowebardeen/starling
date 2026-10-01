@@ -175,7 +175,8 @@ extension DownNegotiator {
             overlap: overlap,
             activities: conversation.askedActivity ? (conversation.activityAnswer ?? []) : nil,
             budget: conversation.budgetAnswer,
-            maxMinutes: configuration.maxPlanMinutes
+            maxMinutes: configuration.maxPlanMinutes,
+            now: clock.now()
         ) else { return end(id, .noOverlap) }
         await makeOffer(plan, round: 0, inReplyTo: nil, in: id)
     }
