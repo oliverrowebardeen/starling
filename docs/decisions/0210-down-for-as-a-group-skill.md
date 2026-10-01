@@ -64,6 +64,12 @@ Two facts shape the design:
 24. **Exclusion is undetectable** (ADR 0020 decision 9). A quiet ask from someone outside the participants of your own matching request gets what a friend who is not down gets: nothing, ever. A test compares the two.
 25. **Only a quiet request answers a quiet ask** (final-round finding 3). A request sent as an invitation, and an invitee's card, are never selected or engaged by a quiet ask.
 
+### The conversation ledger (ADR 0021)
+
+26. **Retired conversations come from the phone's `ConversationLedger`,** the same one the Outbox enforces; the service keeps no tombstones of its own. Before answering or opening anything, an invitation included, it checks `isRetired` on the friend's queue, and a ledger that cannot say counts as retired.
+27. **An ending is reported only after its retirement is durable** (lane E's review). Ending a request stops its runs at once and gives the local lifecycle copy the final state, then awaits `Outbox.retire` on the request's own conversation (an invitee's is the invitation) and, if a card had shown, the starter's. Only then is the ending reported. If retiring fails, the request is reported as failed and its conversations stay refused for the session. A plan's cleanup retires its conversation too. A group a request only answered, without a card, is not retired, since that starter may ask again.
+28. **A starter's run begun again is answered.** A restarted starter resumes in the same conversation with a new PSI session. A member run that has not shown a card treats a first step with a new session as that, and answers it within the run cap. The audience check uses its own PSI steps, 100 and 101, so the two are never confused.
+
 ## Consequences
 
 - One request, one card in Ask quietly: a member sees the starter's plan on its own "Down for boba" row, not on a second interaction. A member's sends travel in the starter's conversation and name the member's interaction in `OutboundContext` (decision 15). An invitation is a separate invitee card.
