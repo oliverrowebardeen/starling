@@ -317,6 +317,36 @@ struct AdversarialTests {
         #expect(body.acceptable == .places([Venues.bobaGuys.choice]))
     }
 
+    /// Issue #63 (lane F): an answer must name a query the organizer
+    /// actually sent that friend.
+    @Test func anAnswerMustNameAQueryTheOrganizerActuallySent() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
+        let group = try await Group([oliver, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+        // Mallory's phone sends nothing itself; Mallory answers by hand.
+        await mallory.transport.lose(.max) { _ in true }
+        let request = try await oliver.organize([Venues.bobaGuys], with: [mallory])
+        #expect(await eventually { await group.wire.sent(to: mallory.id).contains { $0.body.kind == .query } })
+        let queryID = try #require(await group.wire.sent(to: mallory.id).first { $0.body.kind == .query }?.id)
+
+        func answer(naming query: MessageID, sequence: UInt64) throws -> Frame {
+            let body = MessageBody.answer(try Answer(query: query, issue: .place, status: .answered, acceptable: .places([Venues.bobaGuys.choice])))
+            return try Frame(EnvelopeCodec().encode(Envelope(conversation: request.conversation, sender: mallory.id, recipient: oliver.id,
+                                                             sequence: sequence, sentAt: Timestamp(Date()), body: body, skill: skill, mode: .invite)))
+        }
+        // An answer naming a query Oliver never sent changes nothing.
+        try await hub.inject(answer(naming: MessageID(), sequence: 100), claimedSender: mallory.id, to: oliver.id)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await oliver.interaction(request.conversation)?.proposal == nil)
+
+        // The genuine answer is the control.
+        try await hub.inject(answer(naming: queryID, sequence: 101), claimedSender: mallory.id, to: oliver.id)
+        #expect(await oliver.reaches(.proposed, in: request.conversation))
+    }
+
     @Test func answersAboutPlacesNotAskedAreIgnored() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
