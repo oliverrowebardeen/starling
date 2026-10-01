@@ -61,6 +61,15 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
 14. **A policy denial ends any live step except planned** (review of PR #51). Any step that sends can be denied, for example an invitee's acceptance after the owner set the topic to Never, so `blockedByPrivacy` ends drafting, negotiating, awaiting the owner, proposed, confirmed, and awaiting consent. A plan already agreed stands: a denied send after it does not call the plan off.
     - Like `failed` and `noAgreement`, `blockedByPrivacy` names no revision, so Core cannot tell which send it belongs to. The service can: it reports a denial, or a failure, only for a send made for the interaction's current step, and drops the result of a send whose step was superseded (for example a denied acceptance of proposal 1 arriving after proposal 2 replaced it). Lane F tests this per skill.
 
+### Amendment for Core v2.1 (2026-10-01): who reports what, and restarts
+
+15. **The coordinator owns consent, plan ends, and restarts** (requests from lanes A, C, and D; reviews of PRs #53 to #55).
+    - **Consent events come from the coordinator only.** The app's `ConsentProvider` applies `consentNeeded` when `Outbox` asks it, `consentGiven` on approval, and the owner's pass on a decline. A skill service never emits consent events. Each service still learns the outcome from `Outbox.send`, and reports `blockedByPrivacy` per amendment 14.
+    - **`consentCancelled(request:)`** closes a request nobody answered and nothing was sent for, and resumes the step when it was the last open request. The coordinator applies it when a send is cancelled while its sheet is up, and at launch for every request still pending, before `restore(_:)`. Applying `consentGiven` instead would record an approval the owner never gave.
+    - **Progress during a consent suspension is kept, not dropped.** While an interaction is awaiting consent, the coordinator queues `ownerNeeded`, `proposalReady`, and `everyoneConfirmed` in order and applies them once the step resumes. A final event (an end, or `noAgreement`) is applied at once, and it ends the pending requests with it.
+    - **`planEnded` comes from the coordinator.** It applies `planEnded` to every planned interaction whose `Plan.endsAt` has passed, at launch and while running. A service never emits it, so a plan ends once, the same way for every skill.
+    - **`restore(_:)` also gets recently ended interactions.** The coordinator passes every live interaction of the skill and every one that ended in the last 24 hours, so a service can ignore a late retry for a conversation that has already ended instead of opening it again.
+
 ## Consequences
 
 - Home, the proposal card, It's a plan, and the plan timeline render any skill, including future ones, from `Interaction` and `SkillDescriptor` alone.
