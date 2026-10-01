@@ -243,7 +243,13 @@ public actor PickAPlaceService: SkillService {
             cards[envelope.sender] = card
             return
         }
-        guard let skill = envelope.skill else { return }
+        // Another major version fails closed on every envelope, not only
+        // when a conversation opens: one already open at a compatible
+        // version takes nothing from it either (issue #64). It gets no
+        // reply: the organizer leaves such a friend out from its card, and
+        // a reply per fresh conversation would let a friend make this phone
+        // send without limit.
+        guard let skill = envelope.skill, skill.version.isCompatible(with: descriptor.ref.version) else { return }
 
         let conversation = envelope.conversation
         // Any rejection from the organizer acknowledges a withdrawal: it
@@ -259,7 +265,7 @@ public actor PickAPlaceService: SkillService {
             // Taken back, waiting for the organizer to hear it: nothing
             // reopens it.
             return
-        } else if skill.version.isCompatible(with: descriptor.ref.version) {
+        } else {
             // A retired conversation is never opened again; a ledger that
             // cannot say opens nothing (ADR 0021).
             guard let retired = try? await conversations.isRetired(conversation), !retired else { return }
@@ -271,9 +277,6 @@ public actor PickAPlaceService: SkillService {
                 newInvite(envelope)
             }
         }
-        // Another major version gets no reply: the organizer's phone leaves
-        // this one out from its card, and a reply per fresh conversation
-        // would let a friend make this phone send without limit.
     }
 
     /// Ends `conversation` for good (ADR 0021) and only then says how it

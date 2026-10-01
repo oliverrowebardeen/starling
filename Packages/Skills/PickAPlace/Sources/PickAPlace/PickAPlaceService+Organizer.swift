@@ -34,6 +34,9 @@ struct Organizer {
     var excluded: Set<PeerID> = []
     var proposal: SkillProposal?
     var lastProposeID: [PeerID: MessageID] = [:]
+    /// The queries sent to each friend, most recent last and bounded. A
+    /// list counts only when it names one of them (issue #63).
+    var queryIDs: [PeerID: [MessageID]] = [:]
     /// The proposals sent to each friend, most recent last and bounded. A
     /// yes counts only when it names one of them.
     var proposeIDs: [PeerID: [MessageID]] = [:]
@@ -169,7 +172,11 @@ extension PickAPlaceService {
               !organizer.excluded.contains(friend) {
             do {
                 let query = try Query(issue: .place, candidates: .places(organizer.ranking))
-                try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
+                let sent = try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
+                organized[conversation]?.queryIDs[friend, default: []].append(sent.id)
+                if let count = organized[conversation]?.queryIDs[friend]?.count, count > Self.maxRememberedProposals {
+                    organized[conversation]?.queryIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
+                }
             } catch {
                 guard organizerCanRetry(conversation, after: error, step: .asking, friend: friend) else { return }
             }
@@ -186,7 +193,11 @@ extension PickAPlaceService {
 
         switch (organizer.phase, envelope.body) {
         case (.asking, .answer(let answer)):
-            guard organizer.waitingOn.contains(sender), answer.issue == .place else { return }
+            // Only an answer to a query this organizer sent that friend, in
+            // this conversation and step, counts (issue #63).
+            guard organizer.waitingOn.contains(sender), answer.issue == .place,
+                  organizer.queryIDs[sender]?.contains(answer.query) == true
+            else { return }
             switch answer.status {
             case .answered:
                 guard case .places(let list)? = answer.acceptable else { organizer.out.insert(sender); break }
