@@ -144,6 +144,11 @@ final class CoordinatorConsent: ConsentProvider {
 
     func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
         asked.withLock { $0.append(disclosure) }
+        // A friend's request reaches the sheet right after `.incoming` is
+        // emitted, possibly before the coordinator has applied it: wait for
+        // the interaction, as lane A's sheet must.
+        let coordinator = coordinator
+        _ = await eventually(1) { await coordinator.interaction(conversation: disclosure.conversation ?? ConversationID()) != nil }
         let request = await coordinator.consentRequested(for: disclosure.conversation)
         if outcome == .approved, let request { await coordinator.consentApproved(request, conversation: disclosure.conversation) }
         return outcome
