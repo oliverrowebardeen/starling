@@ -161,4 +161,47 @@ final class TestClock: Sendable {
         #expect(clock.slept == [.seconds(210 * 60)])
         #expect(clock.now == Fixtures.tonight.end)
     }
+
+    @Test func anOptOutWhileSettingsLoadIsNotStarted() async throws {
+        let (plan, waiting) = try optedIn()
+        let store = InMemoryInteractionStore([plan, waiting])
+        let gate = Gate()
+        let swapOn = self.swapOn
+        let afterTheEnd = self.afterTheEnd
+        let scheduler = PlanEndScheduler(schedule: schedule, store: store, settings: { await gate.pass(); return swapOn },
+                                         cards: { Fixtures.cards() }, now: { afterTheEnd })
+        let checking = Task { try await scheduler.due() }
+        await gate.arrived()
+        // The owner switches "Swap photos after" off while settings load.
+        try await store.remove(try planner.optOut(waiting, tap: OwnerTap(at: Timestamp(afterTheEnd))))
+        await gate.open()
+        #expect(try await checking.value.isEmpty)
+    }
+
+    @Test func theCoordinatorClaimsALinkRightBeforeStartingIt() async throws {
+        let (plan, waiting) = try optedIn()
+        let store = InMemoryInteractionStore([plan, waiting])
+        let swapOn = self.swapOn
+        let scheduler = PlanEndScheduler(schedule: schedule, store: store, settings: { swapOn }, cards: { Fixtures.cards() },
+                                         now: { [afterTheEnd] in afterTheEnd })
+        let handed = try #require(try await scheduler.due().first)
+        #expect(try await scheduler.claim(handed) == waiting)
+        #expect(handed.isCurrent(waiting))
+
+        // Opted out after the hand-over: the claim refuses it.
+        try await store.remove(waiting.id)
+        #expect(try await scheduler.claim(handed) == nil)
+        #expect(!handed.isCurrent(nil))
+
+        // Already started (a second hand-over, or another path): refused too.
+        var started = waiting
+        try started.apply(.started, at: Timestamp(afterTheEnd))
+        try await store.save(started)
+        #expect(try await scheduler.claim(handed) == nil)
+        #expect(!handed.isCurrent(started))
+
+        // A different link that happens to wait under the same plan is not this one.
+        let other = Interaction(skill: waiting.skill, role: .initiator, participants: waiting.participants, createdAt: waiting.createdAt, chain: waiting.chain)
+        #expect(!handed.isCurrent(other))
+    }
 }

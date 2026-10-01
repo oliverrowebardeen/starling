@@ -30,6 +30,25 @@ public enum ScheduledChain: Hashable, Sendable {
     /// privacy) so it ends in history with a reason instead of waiting
     /// forever.
     case cancel(Interaction, InteractionEvent)
+
+    /// The waiting link this decision is about, as it was when decided.
+    public var link: Interaction {
+        switch self {
+        case .start(let due): due.link
+        case .cancel(let link, _): link
+        }
+    }
+
+    /// Whether `current`, the link as stored right now, is still the waiting
+    /// link this decision was made for. The coordinator calls this inside the
+    /// same serialized write that applies `.started` (or the cancel event),
+    /// immediately before applying it. A link the owner opted out of (gone),
+    /// or that already started, is never acted on from a stale hand-over.
+    public func isCurrent(_ current: Interaction?) -> Bool {
+        guard let current else { return false }
+        return current.id == link.id && current.chain == link.chain && current.skill == link.skill
+            && ChainPlanner.isWaitingForPlanEnd(current)
+    }
 }
 
 /// Decides which waiting links start. Pure: the scheduler and tests drive it
@@ -115,17 +134,26 @@ public actor PlanEndScheduler {
     }
 
     /// What is due now that has not been handed over yet. Call at launch and
-    /// when the app comes to the foreground.
+    /// when the app comes to the foreground. Settings and cards are read
+    /// first and the store last, with no suspension after it, so an opt-out
+    /// made while settings or cards were loading is not missed. The coordinator
+    /// still confirms each one with `claim` (or `ScheduledChain.isCurrent`)
+    /// right before acting, because the owner can opt out after this returns.
     public func due() async throws -> [ScheduledChain] {
+        let settings = await settings()
+        let cards = await cards()
         let all = try await store.all()
-        let results = schedule.check(at: now(), interactions: all, settings: await settings(), cards: await cards())
-        return results.filter { result in
-            let id = switch result {
-            case .start(let due): due.link.id
-            case .cancel(let link, _): link.id
-            }
-            return handedOver.insert(id).inserted
-        }
+        return schedule.check(at: now(), interactions: all, settings: settings, cards: cards)
+            .filter { handedOver.insert($0.link.id).inserted }
+    }
+
+    /// The link as stored now, if `scheduled` still applies to it; nil if the
+    /// owner opted out or it already started. For a coordinator whose store
+    /// writes are not already serialized with this read, prefer
+    /// `ScheduledChain.isCurrent` inside its own write.
+    public func claim(_ scheduled: ScheduledChain) async throws -> Interaction? {
+        let current = try await store.interaction(scheduled.link.id)
+        return scheduled.isCurrent(current) ? current : nil
     }
 
     /// Checks, hands over, then sleeps until the next plan end or `maxNap`,
