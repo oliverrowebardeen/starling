@@ -32,6 +32,8 @@ From 22:53Z, hosted CI did not start jobs, so every merge went through the local
 
 Until CI runs again, nothing merges on a red check alone. Before each merge, the Orchestrator runs `Tools/local-gate.sh <branch>`. It merges the branch into the current `origin/main` in a throwaway worktree, then runs both CI jobs in the same order. The host is macOS 26.7 with Xcode 27.0 (27A266a), the same Xcode that CI pins. The PR gets a comment that names the commits tested and the result. Branch protection is not available on this private repo's plan, so nothing enforces the gate. It holds because the Orchestrator does the merging.
 
+CI ran again from about 00:42Z on 2026-10-01. Main's first run after that, at 84461c5, passed both jobs, including the Release no-fakes step. CI on the pull request is the merge gate again. `Tools/local-gate.sh` stays in the repo for the next outage, and for checking a branch against a newer main than its last CI run.
+
 ## Sources
 
 - Runner images and labels: https://github.com/actions/runner-images
