@@ -296,6 +296,8 @@ public actor DownNegotiator: DownService {
             profile: profile, psiSessionID: frame.session, psi: session, provider: psi.descriptor
         )
         register(conversation)
+        // The reply may wait on consent; bound it like any other step.
+        beginStep(conversation.id, attemptLimit: configuration.maxAttempts)
         await handlePSI(frame, in: conversation.id)
     }
 
@@ -377,18 +379,26 @@ public actor DownNegotiator: DownService {
         attemptLimit: Int? = nil, keepDeadline: Bool = false
     ) async {
         guard let conversation = conversations[id] else { return }
+        // The deadline starts before the first send, so it also bounds a
+        // send that waits on the owner's consent.
+        if !keepDeadline { beginStep(id, attemptLimit: attemptLimit ?? configuration.maxAttempts) }
         for body in bodies {
             // Stop the batch as soon as the conversation or its intent ends.
             guard await send(body, to: conversation.peer, in: id, profile: conversation.profile) != .ended, isLive(id) else { return }
         }
+        guard var current = conversations[id] else { return }
+        current.outstanding = awaitingReply ? bodies : []
+        conversations[id] = current
+    }
+
+    /// Starts a step's deadline: `attemptLimit` ticks from now. Nothing is
+    /// resent until the step's bodies have gone out once.
+    func beginStep(_ id: ConversationID, attemptLimit: Int) {
         guard var conversation = conversations[id] else { return }
-        conversation.outstanding = awaitingReply ? bodies : []
-        if !keepDeadline {
-            conversation.attempts = 1
-            conversation.attemptLimit = attemptLimit ?? configuration.maxAttempts
-        }
+        conversation.outstanding = []
+        conversation.attempts = 1
+        conversation.attemptLimit = attemptLimit
         conversations[id] = conversation
-        guard !keepDeadline else { return }
         armTimer(id)
     }
 

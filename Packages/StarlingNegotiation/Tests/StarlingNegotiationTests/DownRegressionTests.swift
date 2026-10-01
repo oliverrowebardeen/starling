@@ -299,6 +299,46 @@ import Testing
         #expect(await matchCounts(offerer, acceptor) == [0, 0])
         await world.stop()
     }
+
+    // MARK: - Third review (0b6099f)
+
+    enum FirstSend: CaseIterable { case asStarter, asResponder }
+
+    /// P2: the first send of a run (PSI request or reply) waiting on an
+    /// unanswered consent sheet is bounded by the step's deadline too.
+    @Test(arguments: FirstSend.allCases)
+    func aFirstPSISendWaitingOnConsentEndsOnTheDeadline(_ role: FirstSend) async throws {
+        let gate = ConsentForOneSender()
+        let consent = GatedConsentProvider()
+        let world = DownWorld(["ben"], policy: gate.policy(.psi), consent: consent)
+        let mallory = RawPeer(hub: world.hub)
+        try await world.start()
+        try await mallory.start()
+        let ben = world["ben"]
+        gate.choose(ben.id)
+        try await eventually("ben sees mallory") { await ben.negotiator.isReachable(mallory.id) }
+        let friend = try PairedPeer(publicKey: mallory.key, nickname: "mallory", pairedAt: Timestamp(T.now))
+        switch role {
+        case .asStarter:
+            try await ben.store.save(friend)
+            try await ben.want(time: [T.slot(19, 22)])
+        case .asResponder:
+            try await ben.want(time: [T.slot(19, 22)])
+            try await ben.store.save(friend)
+            _ = try await DownAdversarialTests().openRun(from: mallory, to: ben)
+        }
+        try await eventually("ben's first PSI send waits for consent") { await consent.pending == 1 }
+
+        // 5 ticks of 20 ms; the sheet stays unanswered throughout.
+        try await eventually(timeout: .seconds(2), "the run timed out") { await ben.negotiator.conversations.isEmpty }
+        #expect(await ben.negotiator.diagnostics.outcomes[.timedOut] == 1)
+        #expect(await consent.pending == 1)
+        await consent.answerAll(.approved)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await world.wire.sent(by: ben.id).isEmpty)
+        await mallory.stop()
+        await world.stop()
+    }
 }
 
 import Synchronization
