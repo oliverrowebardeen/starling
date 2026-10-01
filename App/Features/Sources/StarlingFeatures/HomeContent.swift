@@ -1,3 +1,4 @@
+import FindATime
 import Foundation
 import PickAPlace
 import StarlingCore
@@ -195,11 +196,13 @@ public struct InteractionWords: Sendable {
     /// boba." and "Boba Guys at 8:30 PM?". Skills ship their own template
     /// fallback (ADR 0016); this one covers any skill in the shell.
     public func template(_ facts: ProposalFacts) -> (headline: String, detail: String?) {
+        // Lane C's own sentence already says when (P15-C request 2): "You
+        // and Priya are free Thursday, October 8 at 4:00 PM for stats."
+        if facts.skill.id == .findATime { return (FindATimeTemplate.sentence(facts, locale: formatter.locale), nil) }
         let people = PermissionExplanation.names(["You"] + facts.friendNames)
         let together = facts.friendNames.count == 1 ? "both" : "all"
         let headline: String = switch facts.skill.id {
         case .downFor: facts.activity.map { "\(people) are \(together) down for \($0.value)" } ?? "\(people) are \(together) up for it"
-        case .findATime: "A time that works for \(people)"
         case .pickAPlace: "A place for \(people)"
         default: "\(registry.descriptor(for: facts.skill.id)?.wording.name ?? "A plan") with \(people)"
         }

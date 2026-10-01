@@ -1,3 +1,4 @@
+import FindATime
 import Foundation
 import PickAPlace
 import StarlingCore
@@ -209,5 +210,27 @@ import Testing
         await eventually { texts.text(for: item, words: words)?.headline == "A spot with Maya" }
         #expect(await seen.values.allSatisfy { $0.place == nil })
         #expect(await !seen.values.isEmpty)
+    }
+}
+
+@MainActor
+@Suite struct TimeProposalTextTests {
+    /// P15-C request 2: without the model, a Find a time card says lane C's
+    /// sentence, which carries the time, so no separate time line.
+    @Test func aTimeCardUsesLaneCsSentence() throws {
+        let me = PeerID.random(), maya = PeerID.random()
+        let words = InteractionWords(registry: try SkillRegistry([FindATimeSkill.descriptor]), localPeer: me,
+                                     formatter: ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US")), names: { [maya: "Maya"] })
+        var item = Interaction(skill: FindATimeSkill.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Fixtures.noon))
+        let slot = try TimeSlot(start: Fixtures.noon, end: Fixtures.noon.addingTimeInterval(3600))
+        try item.apply(.started, at: item.createdAt)
+        try item.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, maya],
+                                                    terms: try Terms([.time: .slots([slot]), .activity: .keywords([try Keyword("stats")])]))), at: item.createdAt)
+
+        let text = try #require(ProposalTexts(model: nil).text(for: item, words: words))
+        #expect(plain(text.headline).hasPrefix("You and Maya are free "))
+        #expect(plain(text.headline).contains("2:13 PM"))
+        #expect(text.headline.hasSuffix(" for stats."))
+        #expect(text.detail == nil)
     }
 }
