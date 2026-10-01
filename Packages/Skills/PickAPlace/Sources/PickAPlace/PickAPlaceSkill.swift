@@ -37,4 +37,34 @@ public enum PickAPlaceSkill {
             IntentSlot(.diet, required: false, hint: "what they need or can't eat, such as vegetarian or no pork"),
         ])
     )
+
+    /// `NSLocationWhenInUseUsageDescription`. Lane A puts it in the app's
+    /// Info.plist (ADR 0013, decision 6).
+    public static let locationPurpose =
+        "Starling uses your location only while it finds places near you. Your location stays on your iPhone; friends see only the places you suggest."
+
+    /// Starling's own sheet before the system alert: one Continue button
+    /// (ADR 0013). Shown the first time the owner asks for nearby places.
+    public static let locationSheet = PermissionSheet(
+        title: "Find places near you",
+        reads: "Where you are, only while it looks for places",
+        staysOnPhone: "Your location",
+        friendsSee: "Only the places you suggest",
+        continueAction: "Continue",
+        deniedNote: "No problem. Type a place or an area instead."
+    )
+}
+
+/// The words on Starling's pre-permission sheet, for the shared component.
+public struct PermissionSheet: Hashable, Sendable {
+    public let title: String
+    /// "Your agent reads"
+    public let reads: String
+    /// "Never leaves your phone"
+    public let staysOnPhone: String
+    /// "Your friends see"
+    public let friendsSee: String
+    public let continueAction: String
+    /// Shown right after the owner chooses Don't Allow.
+    public let deniedNote: String
 }
