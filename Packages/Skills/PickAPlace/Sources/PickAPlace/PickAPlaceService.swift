@@ -134,6 +134,10 @@ public actor PickAPlaceService: SkillService {
     /// Ended invites and organizers, oldest first, for pruning.
     var endedInvites: [ConversationID] = []
     var endedOrganizers: [ConversationID] = []
+    /// Conversations that ended before this launch, oldest first, bounded.
+    /// A message for one opens nothing.
+    var endedConversations: Set<ConversationID> = []
+    var endedConversationOrder: [ConversationID] = []
     /// When each friend started requests on this phone, within the last hour.
     var requestTimes: [PeerID: [Date]] = [:]
     /// Cancels the work, sends included, still running for a conversation.
@@ -225,6 +229,8 @@ public actor PickAPlaceService: SkillService {
             organizerReceived(envelope)
         } else if invites[conversation] != nil {
             inviteReceived(envelope)
+        } else if endedConversations.contains(conversation) {
+            return
         } else if skill.version.isCompatible(with: descriptor.ref.version) {
             await loadAdmissions()
             // Loading suspended: another message may have opened it.
@@ -234,6 +240,19 @@ public actor PickAPlaceService: SkillService {
         // this one out from its card, and a reply per fresh conversation
         // would let a friend make this phone send without limit.
     }
+
+    /// Remembers a conversation that ended, so it is never opened again.
+    func markEnded(_ conversation: ConversationID) {
+        guard endedConversations.insert(conversation).inserted else { return }
+        endedConversationOrder.append(conversation)
+        while endedConversationOrder.count > Self.maxEndedMarkers {
+            endedConversations.remove(endedConversationOrder.removeFirst())
+        }
+    }
+
+    /// Ended conversations remembered from before this launch: a day of
+    /// requests, with room to spare.
+    static let maxEndedMarkers = 512
 
     /// Reads the admission log once per launch, before the first new
     /// request is admitted, and merges it with any admitted meanwhile.

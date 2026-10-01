@@ -114,6 +114,28 @@ struct RestoreTests {
         #expect(await !group.wire.sent(by: maya.id).contains { $0.body.kind == .reject })
     }
 
+    @Test func aWithdrawnRequestStaysClosedAfterARestart() async throws {
+        let (group, oliver, maya) = try await oliverAndMaya()
+        defer { Task { await group.stop() } }
+        // Maya's list and her goodbye are both lost, so Oliver keeps asking.
+        await maya.transport.lose(.max) { $0.body.kind == .answer || $0.body.kind == .reject }
+        let conversation = try await oliver.organize(Venues.all, with: [maya]).conversation
+        #expect(await maya.reaches(.negotiating, in: conversation))
+        let id = try #require(await maya.interaction(conversation)?.id)
+        await maya.service.withdraw(id)
+        #expect(await maya.reaches(.ended(.withdrawn), in: conversation))
+
+        await maya.restart()
+        await maya.transport.clearRules()
+        try await Task.sleep(for: .milliseconds(300))
+        // Oliver's queries kept coming; Maya's phone sent nothing and
+        // opened nothing.
+        #expect(await group.wire.sent(to: maya.id).filter { $0.body.kind == .query }.count > 2)
+        #expect(await group.wire.sent(by: maya.id).isEmpty)
+        #expect(await maya.coordinator.incoming.count == 1)
+        #expect(await maya.state(in: conversation) == .ended(.withdrawn))
+    }
+
     @Test func theHourlyLimitSurvivesARestart() async throws {
         let hub = LoopbackHub()
         let maya = Phone("Maya", hub: hub, maps: FakeMaps(Venues.all))

@@ -12,7 +12,12 @@ import StarlingCore
 // - An organizer still collecting lists cannot resume (its candidates and
 //   friends' lists are gone), so it is reported as failed.
 // - Anything else, or a skill on another major version, is reported failed.
-// Drafting, planned, and finished interactions need nothing.
+// - Planned and ended interactions (the coordinator passes those that ended
+//   in the last 24 hours, ADR 0011 amendment 15) leave a marker, so a late
+//   query for one is ignored instead of opening it again and sending the
+//   owner's list without a tap. A planned organizer is rebuilt as settled,
+//   so it can still repeat its confirmation.
+// Drafting needs nothing.
 
 extension PickAPlaceService {
     public func restore(_ interactions: [Interaction]) async {
@@ -20,7 +25,11 @@ extension PickAPlaceService {
         await loadAdmissions()
         for interaction in interactions where interaction.skill.id == descriptor.id {
             switch interaction.state {
-            case .drafting, .planned, .done, .ended: continue
+            case .drafting: continue
+            case .planned, .done, .ended:
+                markEnded(interaction.conversation)
+                if interaction.role == .initiator, interaction.state == .planned { resumeSettled(interaction) }
+                continue
             default: break
             }
             let conversation = interaction.conversation
@@ -29,6 +38,30 @@ extension PickAPlaceService {
                 && (interaction.role == .initiator ? resumeOrganizer(interaction) : resumeInvite(interaction))
             if !resumed { emit(interaction.id, .failed) }
         }
+    }
+
+    /// A settled organizer that can repeat its confirmation, from the stored
+    /// proposal and the attendees it produced.
+    private func resumeSettled(_ interaction: Interaction) {
+        let conversation = interaction.conversation
+        guard organized[conversation] == nil, let proposal = interaction.proposal, let (place, roster) = Self.parts(of: proposal),
+              roster.first == localPeer,
+              let attendees = interaction.artifacts.lazy.compactMap({ if case .attendees(let people) = $0 { people.peers } else { nil } }).first
+        else { return }
+        var values = proposal.terms.values
+        values[.people] = .peers(attendees)
+        var organizer = Organizer(
+            id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
+            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan, time: nil, activity: nil
+        )
+        organizer.phase = .settled
+        organizer.proposal = proposal
+        organizer.ownerAccepted = true
+        organizer.accepted = Set(attendees.filter { $0 != localPeer })
+        organizer.finalTerms = try? Terms(values)
+        organized[conversation] = organizer
+        conversationOf[interaction.id] = conversation
+        rememberOrganizer(conversation)
     }
 
     /// The live step under any open consent sheet. The sheet itself did not
