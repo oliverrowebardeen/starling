@@ -3,6 +3,7 @@ import StarlingCore
 import StarlingFakes
 @testable import StarlingIdentity
 import StarlingTransport
+import Synchronization
 import Testing
 
 struct TimedOut: Error, CustomStringConvertible {
@@ -161,6 +162,14 @@ actor GatedPairedPeerStore: PairedPeerStore {
         if armed { await withCheckedContinuation { waiting.append($0) } }
         return snapshot
     }
+}
+
+/// A flag set from synchronous test hooks.
+final class Flag: Sendable {
+    private let value = Mutex(false)
+    var isSet: Bool { value.withLock { $0 } }
+    /// Sets the flag; returns whether this call was the one that set it.
+    func set() -> Bool { value.withLock { was in defer { was = true }; return !was } }
 }
 
 /// A one-shot gate a test can hold async work at.

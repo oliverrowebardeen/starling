@@ -646,6 +646,65 @@ extension Recorder where Element == PairingEvent {
         withExtendedLifetime([alicePairing, bobPairing]) {}
     }
 
+    /// Both links connected and quiet (every session confirmed), so the next
+    /// epoch read for Bob on Alice's authority comes from the test's frame.
+    func quietOverTwoLinks() async throws -> TwoLinks {
+        let links = try await connectedOverTwoLinks()
+        try await eventually("every session confirmed") {
+            for (node, peer) in [(links.aliceLocal, bobKey.peerID), (links.aliceAware, bobKey.peerID),
+                                 (links.bobLocal, aliceKey.peerID), (links.bobAware, aliceKey.peerID)] {
+                if await node.secure.status(of: peer).handshakeInProgress { return false }
+            }
+            return true
+        }
+        try await settle()
+        return links
+    }
+
+    /// Arms Alice's authority so that the first epoch read for `peer` from
+    /// now on is immediately followed by a revocation, as if another
+    /// transport disconnected the peer at exactly that moment.
+    func revokeAtNextEpochRead(_ authority: PinAuthority, _ peer: PeerID) -> Flag {
+        let fired = Flag()
+        authority.onCheckpoint { checkpoint in
+            guard checkpoint == .epochRead(peer), fired.set() else { return }
+            authority.markRevoked(peer)
+        }
+        return fired
+    }
+
+    /// Review 5 finding 2, receive: the Wi-Fi Aware transport checks Bob's
+    /// epoch for an incoming frame, then the LocalP2P transport revokes Bob.
+    /// The frame must not be delivered: revocation has begun.
+    @Test func aFrameIsNotDeliveredAfterAnotherTransportRevokes() async throws {
+        let links = try await quietOverTwoLinks()
+        let (alice, bob) = (aliceKey.peerID, bobKey.peerID)
+        let heard = await links.aliceAware.events.received.count
+        let fired = revokeAtNextEpochRead(links.aliceLocal.authority, bob)
+        try await links.bobAware.secure.send(Frame(Data("after revocation".utf8)), to: alice)
+        try await eventually("the revocation fires") { fired.isSet }
+        try await settle()
+        links.aliceLocal.authority.onCheckpoint(nil)
+        #expect(await links.aliceAware.events.received.count == heard)
+    }
+
+    /// Review 5 finding 2, send: the same race on the sending side. The
+    /// frame must not be sealed under the revoked session.
+    @Test func aFrameIsNotSentAfterAnotherTransportRevokes() async throws {
+        let links = try await quietOverTwoLinks()
+        let (alice, bob) = (aliceKey.peerID, bobKey.peerID)
+        let heard = await links.bobAware.events.received.count
+        let fired = revokeAtNextEpochRead(links.aliceLocal.authority, bob)
+        await #expect(throws: TransportError.peerUnreachable(bob)) {
+            try await links.aliceAware.secure.send(Frame(Data("after revocation".utf8)), to: bob)
+        }
+        links.aliceLocal.authority.onCheckpoint(nil)
+        #expect(fired.isSet)
+        try await settle()
+        #expect(await links.bobAware.events.received.count == heard)
+        _ = alice
+    }
+
     /// A re-pair running over the Wi-Fi Aware transport cannot restore a pin
     /// that an unpair through the LocalP2P transport removed.
     @Test func aCommitOnAnotherTransportCannotRestoreTheUnpairedPin() async throws {

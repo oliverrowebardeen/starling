@@ -497,20 +497,29 @@ public actor SecureTransport: Transport {
         guard let plaintext, let channelUsed, let first = plaintext.first,
               let kind = SecureWire.PayloadKind(rawValue: first)
         else { return drop(from: peer) }
-        peers[peer] = entry
-        announce(peer)
-        switch kind {
-        case .confirm:
-            // Acknowledge every confirm on a session we answered, including a
-            // retry whose earlier acknowledgement was lost.
-            guard !channelUsed.initiator, channelUsed.id == entry.current?.id else { return }
-            Task { await self.sendControl(.confirmAck, to: peer) }
-        case .confirmAck:
-            return
-        case .data:
+        var delivery: Frame?
+        if kind == .data {
             let payload = Data(plaintext.dropFirst())
             guard payload.count <= ProtocolLimits.maxEnvelopeBytes, let frame = try? Frame(payload) else { return drop(from: peer) }
-            continuation.yield(.received(frame, from: peer))
+            delivery = frame
+        }
+        // The final epoch check, the receive-state commit, and publishing
+        // happen in one section under the authority, so no revocation on any
+        // transport can begin between them (ADR 0100 decision 11).
+        let published = try? authority.ifCurrent(peer, epoch: channelUsed.epoch) { () -> Bool in
+            peers[peer] = entry
+            announceUnchecked(peer)
+            if let delivery { continuation.yield(.received(delivery, from: peer)) }
+            return true
+        }
+        guard published == true else {
+            purgeStale(peer)
+            return drop(from: peer)
+        }
+        // Acknowledge every confirm on a session we answered, including a
+        // retry whose earlier acknowledgement was lost.
+        if kind == .confirm, !channelUsed.initiator, channelUsed.id == entry.current?.id {
+            Task { await self.sendControl(.confirmAck, to: peer) }
         }
     }
 
@@ -546,9 +555,19 @@ public actor SecureTransport: Transport {
         var plaintext = Data(capacity: payload.count + 1)
         plaintext.append(kind.rawValue)
         plaintext.append(payload)
-        let ciphertext = try channel.session.send.encrypt(ad: Data(), plaintext: plaintext)
-        peers[peer]?.current = channel
-        return try SecureWire.transportFrame(nonce: nonce, ciphertext: ciphertext)
+        // The epoch check, taking the nonce, and sealing happen in one section
+        // under the authority, so nothing is sealed under a session that a
+        // revocation on any transport has already ended (ADR 0100 decision 11).
+        let sealed = try authority.ifCurrent(peer, epoch: channel.epoch) { () throws -> Frame in
+            let ciphertext = try channel.session.send.encrypt(ad: Data(), plaintext: plaintext)
+            peers[peer]?.current = channel
+            return try SecureWire.transportFrame(nonce: nonce, ciphertext: ciphertext)
+        }
+        guard let sealed else {
+            purgeStale(peer)
+            throw TransportError.peerUnreachable(peer)
+        }
+        return sealed
     }
 
     fileprivate func sendPairing(_ frame: Frame, to peer: PeerID) async throws {
@@ -601,7 +620,16 @@ public actor SecureTransport: Transport {
 
     // MARK: Helpers
 
+    /// Announces `peer` if its current session is still in the peer's
+    /// epoch, atomically with that check.
     private func announce(_ peer: PeerID) {
+        guard let current = peers[peer]?.current else { return }
+        _ = try? authority.ifCurrent(peer, epoch: current.epoch) { announceUnchecked(peer) }
+    }
+
+    /// Announces without checking the epoch: only inside an `ifCurrent`
+    /// section that has checked it.
+    private func announceUnchecked(_ peer: PeerID) {
         guard peers[peer]?.current != nil, peers[peer]?.announced == false else { return }
         peers[peer]?.announced = true
         continuation.yield(.peerAvailable(peer))

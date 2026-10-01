@@ -92,6 +92,18 @@ public final class PinAuthority: Sendable {
         return epoch
     }
 
+    /// Runs `body` only if `peer`'s epoch is still `epoch`, inside the state
+    /// mutex, so no revocation on any transport can begin between the check
+    /// and `body` (ADR 0100 decision 11). Returns nil, without running
+    /// `body`, if the epoch moved. `body` must be short and synchronous and
+    /// must not call back into the authority, which would deadlock.
+    func ifCurrent<T: Sendable>(_ peer: PeerID, epoch: UInt64, _ body: () throws -> T) throws -> T? {
+        try state.withLock { state throws -> T? in
+            guard state.epochs.value(of: peer) == epoch else { return nil }
+            return try body()
+        }
+    }
+
     /// Whether lookups for `peer` are refused: an unpair or a commit is in
     /// progress, or a failed delete left it quarantined.
     public func isBlocked(_ peer: PeerID) -> Bool {
