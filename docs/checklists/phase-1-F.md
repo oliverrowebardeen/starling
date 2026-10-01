@@ -4,7 +4,7 @@ Lane F ships a library (`StarlingNegotiation.DownNegotiator`), not a screen. Run
 
 ## On the Mac (no phone)
 
-1. Run `Tools/test-all.sh Packages/StarlingNegotiation`. Expect: `Test run with 69 tests in 6 suites passed`.
+1. Run `Tools/test-all.sh Packages/StarlingNegotiation`. Expect: `Test run with 73 tests in 6 suites passed`.
 
 ## Two paired phones, A and B, both in the app and on the same network
 
