@@ -59,4 +59,23 @@ import Testing
         #expect(!query.isAnsweredYesOrNo(by: other))
         #expect(query.isAnsweredYesOrNo(by: declined))
     }
+
+    /// Lane D's request 12: with Place set to Never, a friend could say yes
+    /// on a list but not accept the plan that came of it.
+    @Test(arguments: [DisclosureRule.Action.never, .askEachTime])
+    func acceptingExactlyWhatTheFriendProposedIsAYes(action: DisclosureRule.Action) async throws {
+        let engine = Fixtures.engine(action: action)
+        let offered = try Proposal(round: 0, terms: Fixtures.terms)
+        let yes = MessageBody.accept(Acceptance(proposal: Fixtures.queryID, terms: offered.terms))
+        let accepted = try Fixtures.outbound(yes, context: OutboundContext(accepting: offered))
+        #expect(await engine.evaluate(accepted) == .allow)
+
+        // Without the proposal, or with terms the friend never proposed, the
+        // acceptance is judged by its topics as before.
+        #expect(await engine.evaluate(try Fixtures.outbound(yes)) != .allow)
+        let changed = try Terms([.activity: .keywords([Self.coffee])])
+        let other = try Fixtures.outbound(.accept(Acceptance(proposal: Fixtures.queryID, terms: changed)),
+                                          context: OutboundContext(accepting: offered))
+        #expect(await engine.evaluate(other) != .allow)
+    }
 }

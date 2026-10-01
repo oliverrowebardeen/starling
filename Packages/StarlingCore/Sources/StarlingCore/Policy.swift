@@ -26,14 +26,27 @@ public struct OutboundContext: Hashable, Sendable {
     /// sends in the starter's conversation, so the conversation alone does
     /// not identify it (lane B). Every skill service sets it on every send.
     public let interaction: InteractionID?
+    /// The friend's proposal an `.accept` says yes to, as the service
+    /// received it. An acceptance of exactly its terms only says yes, so the
+    /// policy treats it like a yes/no answer (ADR 0019, amendment 10).
+    public let accepting: Proposal?
 
-    public init(psi: PSIInputs? = nil, answering: Query? = nil, interaction: InteractionID? = nil) {
+    public init(psi: PSIInputs? = nil, answering: Query? = nil, interaction: InteractionID? = nil, accepting: Proposal? = nil) {
         self.psi = psi
         self.answering = answering
         self.interaction = interaction
+        self.accepting = accepting
     }
 
     public static let empty = OutboundContext()
+}
+
+extension Proposal {
+    /// Whether `acceptance` says yes to exactly these terms. It then repeats
+    /// only what the friend proposed and carries no value of the owner's.
+    public func isAcceptedAsOffered(by acceptance: Acceptance) -> Bool {
+        acceptance.terms == terms
+    }
 }
 
 extension Query {

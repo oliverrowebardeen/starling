@@ -90,13 +90,14 @@ public struct DeterministicPolicyEngine: PolicyEngine {
             // egress if a future context validation adds a different error.
             return .deny(PolicyViolation(rule: "disclosure.unavailable"))
         }
-        // A yes or no to the friend's own candidates carries no value of the
-        // owner's, so the topic's choice does not apply to it (ADR 0019).
-        // The query comes from trusted local context, never from the peer.
-        let yesOrNo: Bool = if case .answer(let answer) = message.envelope.body, let query = message.context.answering {
-            query.isAnsweredYesOrNo(by: answer)
-        } else {
-            false
+        // A yes or no to the friend's own candidates, or a yes to exactly the
+        // terms they proposed, carries no value of the owner's, so the
+        // topic's choice does not apply to it (ADR 0019). The query or
+        // proposal comes from trusted local context, never from the peer.
+        let yesOrNo: Bool = switch message.envelope.body {
+        case .answer(let answer): message.context.answering?.isAnsweredYesOrNo(by: answer) ?? false
+        case .accept(let acceptance): message.context.accepting?.isAcceptedAsOffered(by: acceptance) ?? false
+        default: false
         }
         for item in disclosure.items where !yesOrNo {
             if let issue = item.issue, rules[issue] == .never {

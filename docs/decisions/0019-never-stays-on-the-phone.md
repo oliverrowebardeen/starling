@@ -75,6 +75,10 @@ The protocol already has the yes/no answer: `query` asks "which of these candida
    - Never: "Stays on this phone. Your agent uses it to say yes or no to a friend's options, so friends can learn whether an option works for you."
 9. **Calendar details have no Share use yet.** Find a time sends only free and busy times, as the time overlap. In Phase 1.5 no skill sends calendar details, so You shows that topic's Share and Ask me as "Not used by any skill yet" until a skill does.
 
+### Amendment (2026-10-01, lane P15-D's request 12)
+
+10. **Accepting exactly what a friend proposed is a yes.** An `accept` whose terms equal the proposal it accepts repeats only what the friend sent, so it is treated like a yes/no answer (decision 4). The service passes that proposal in `OutboundContext.accepting`. Without this, a friend with Place set to Never could say which venues work but could not accept the plan that came of it. An acceptance with any other terms is judged by its topics as before.
+
 ## Consequences
 
 - Budget, diet, and location rarely block anything. Pick a place and Find a time keep working with them set to Never, judging candidates on the phone.
