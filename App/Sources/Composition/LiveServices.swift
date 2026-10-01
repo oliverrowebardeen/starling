@@ -3,12 +3,15 @@ import Network
 import StarlingAgent
 import StarlingCore
 import StarlingFeatures
+import StarlingPolicy
 import UserNotifications
 
 extension AppServices {
     /// Release builds: real implementations only, never StarlingFakes.
-    /// Down, pairing, and the friends list stay nil until lanes E1, E2, and F
-    /// merge; their screens say they are not in this build.
+    /// Down, pairing, and the friends list stay nil until lanes E1 and F
+    /// merge; their screens say they are not in this build. Lane G's policy
+    /// and audit log are real; there is no transport for the app's Outbox
+    /// until lane E1's secure channel lands.
     static func release() -> AppServices {
         AppServices(
             agent: FoundationModelsAgent(),
@@ -16,6 +19,9 @@ extension AppServices {
             peers: nil,
             makeDownService: nil,
             makePairingSession: nil,
+            makePolicy: LiveServices.policy(peers: nil),
+            auditLog: LiveServices.auditLog,
+            presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter()
         )
@@ -25,6 +31,31 @@ extension AppServices {
 enum LiveServices {
     static func rulesStore() -> any RulesStore {
         (try? FileRulesStore.standard()) ?? InMemoryRulesStore()
+    }
+
+    /// Lane G's engine for one snapshot of the owner's rules (StarlingPolicy
+    /// README). `onlyOnDeviceAgents` stays off until the app has a setting
+    /// for it, so cloud agents get a consent sheet on every message instead
+    /// of a refusal. `peers` lets "share with on-device agents" apply to
+    /// paired friends only; without a store the policy asks.
+    static func policy(peers: (any PairedPeerStore)?) -> @Sendable (OwnerRules) -> any PolicyEngine {
+        { rules in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: false, pairedPeers: peers) }
+    }
+
+    /// The local record of what left the phone. In memory only, latest 1,000
+    /// sends; it forgets on relaunch (StarlingPolicy README, "Audit semantics").
+    /// The initializer throws only for a capacity below 1.
+    static let auditLog: InMemoryAuditLog = try! InMemoryAuditLog()
+
+    /// The consent sheet's content comes from lane G's `ConsentSheetModel`,
+    /// so the sheet says exactly what the policy computed would be sent.
+    static let presentConsent: @Sendable (Disclosure) -> ConsentPresentation = { disclosure in
+        let model = ConsentSheetModel(disclosure: disclosure)
+        return ConsentPresentation(
+            rows: model.rows.map { DisplayLine(title: $0.title, detail: $0.detail) },
+            recipientModel: model.recipientModelDescription,
+            notices: [model.localityNotice, model.psiNotice, model.protocolNotice].compactMap(\.self)
+        )
     }
 }
 

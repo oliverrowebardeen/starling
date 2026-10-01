@@ -44,6 +44,10 @@ final class DebugHarness {
             makeDownService: { _ in down },
             makePairingSession: { await DebugHarness.scriptedPairing() },
             inboxEvents: inboxEvents,
+            makePolicy: LiveServices.policy(peers: peers),
+            auditLog: LiveServices.auditLog,
+            transport: transport,
+            presentConsent: LiveServices.presentConsent,
             notifier: notifier,
             localNetwork: BonjourLocalNetworkPrompter()
         )
@@ -105,21 +109,33 @@ final class DebugHarness {
         down.emit(.ended(reason))
     }
 
-    /// Sends a sample proposal to the first friend through a real `Outbox`
-    /// whose policy asks for consent, the way lane F's sends will once lanes
-    /// F and G merge. With `rulesChangeDuringConsent`, the policy's answer
-    /// changes while the sheet is open, which Outbox refuses (Core v1.1).
-    /// Returns what happened in plain words.
-    func sendSample(through consent: any ConsentProvider, rulesChangeDuringConsent: Bool) async -> String {
+    /// Sends a sample proposal to the first friend through the app's Outbox:
+    /// lane G's policy, the consent sheet, and the audit log, over the
+    /// recording transport. Returns what happened in plain words.
+    func sendSample(through outbox: Outbox?) async -> String {
+        guard let outbox else { return "This build has no Outbox." }
+        guard let friend = try? await peers.all().first, let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart)) else {
+            return "Add a friend first."
+        }
+        do {
+            try await outbox.send(.propose(proposal), to: friend.id, conversation: ConversationID())
+            return "Sent to \(friend.nickname) (recorded, not delivered)."
+        } catch {
+            return SendFailureMessage.text(for: error) ?? "Failed: \(error)"
+        }
+    }
+
+    /// Core v1.1's refusal when the policy's answer changes while the owner
+    /// decides. Lane G's policy computes the same disclosure from the same
+    /// message, so a real rule edit ends in a denial instead; this demo uses
+    /// a stand-in policy whose re-check returns a different disclosure.
+    func sendWithPolicyChangingDuringConsent(through consent: any ConsentProvider) async -> String {
         guard let friend = try? await peers.all().first,
-              // The change demo starts from its own disclosure so an approval
-              // remembered from the plain demo does not skip its sheet.
-              let asked = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: rulesChangeDuringConsent ? 1800 : 1500),
+              let asked = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 1800),
               let changed = try? Self.sampleDisclosure(to: friend.id, start: sampleStart, budgetMinorUnits: 2500),
-              let proposal = try? Proposal(round: 0, terms: Self.sampleTerms())
+              let proposal = try? Proposal(round: 0, terms: Self.sampleTerms(start: sampleStart))
         else { return "Add a friend first." }
-        let policy = DemoPolicy(first: asked, recheck: rulesChangeDuringConsent ? changed : asked)
-        let outbox = Outbox(transport: transport, policy: policy, consent: consent)
+        let outbox = Outbox(transport: transport, policy: DemoPolicy(first: asked, recheck: changed), consent: consent)
         do {
             try await outbox.send(.propose(proposal), to: friend.id, conversation: ConversationID())
             return "Sent to \(friend.nickname) (recorded, not delivered)."
@@ -145,9 +161,8 @@ final class DebugHarness {
         return "The Down service has received \(await down.handled.count) Inbox events."
     }
 
-    static func sampleTerms() throws -> Terms {
-        let start = Date().addingTimeInterval(3600)
-        return try Terms([
+    static func sampleTerms(start: Date = Date().addingTimeInterval(3600)) throws -> Terms {
+        try Terms([
             .time: .slots([try TimeSlot(start: start, end: start.addingTimeInterval(2 * 3600))]),
             .activity: .keywords([try Keyword("boba run")]),
             .budget: .amount(try MoneyAmount(minorUnits: 1200)),

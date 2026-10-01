@@ -81,6 +81,9 @@ public final class DownModel {
     /// it as a floor the intent can tighten but not loosen (ADR 0141).
     public private(set) var standingSharing: [DisclosureRule] = []
     public private(set) var status = DownStatus.idle
+    /// The reviewed rules of the intent that is out (not merged with the
+    /// saved rules), or nil when no intent is out.
+    public private(set) var activeIntentRules: OwnerRules?
 
     private let service: any DownService
     private let interpreter: RulesInterpreter
@@ -89,10 +92,10 @@ public final class DownModel {
     private let notifier: any MatchNotifier
     private let timeZone: TimeZone
     private let now: @Sendable () -> Date
-    /// Called whenever the intent starts, is withdrawn, or ends, before the
-    /// service hears about it. The app clears remembered consent here so an
-    /// approval never carries over to another intent (ADR 0142).
-    private let intentChanged: @MainActor () -> Void
+    /// Called whenever the intent starts, is withdrawn, or ends, after
+    /// `activeIntentRules` changes and before the service hears about it. The
+    /// app clears remembered consent and updates the policy here (ADR 0142).
+    public var intentChanged: @MainActor () async -> Void
     private let noMatchHold: Duration
     public let formatter: ValueFormatter
     private var listener: Task<Void, Never>?
@@ -109,7 +112,7 @@ public final class DownModel {
         formatter: ValueFormatter = ValueFormatter(),
         timeZone: TimeZone = .current,
         now: @escaping @Sendable () -> Date = { Date() },
-        intentChanged: @escaping @MainActor () -> Void = {},
+        intentChanged: @escaping @MainActor () async -> Void = {},
         noMatchHold: Duration = .seconds(3)
     ) {
         self.intentChanged = intentChanged
@@ -237,7 +240,8 @@ public final class DownModel {
                 return
             }
             let expiresAt = duration.expiry(from: now(), timeZone: timeZone)
-            intentChanged()
+            activeIntentRules = intentRules
+            await intentChanged()
             // The service may report checking, a match, or an end before
             // setIntent returns, so the new intent's state exists first and
             // events update it as they arrive (phase stays .starting).
@@ -255,6 +259,10 @@ public final class DownModel {
             guard phase == .starting else { return }
             active = nil
             setStatus(.idle)
+            if activeIntentRules != nil {
+                activeIntentRules = nil
+                await intentChanged()
+            }
             notice = SendFailureMessage.text(for: error) ?? "Starling couldn't start checking. Try again."
             phase = .reviewing
         }
@@ -263,7 +271,8 @@ public final class DownModel {
     /// Friends learn nothing beyond "no match".
     public func withdraw() async {
         guard phase == .active else { return }
-        intentChanged()
+        activeIntentRules = nil
+        await intentChanged()
         await service.clearIntent()
         // The owner's own choice, not a "no match": straight back to idle.
         setStatus(.idle)
@@ -287,7 +296,8 @@ public final class DownModel {
             await notifier.post(MatchNotice(match: match, friendName: name, formatter: formatter))
         case .ended(let reason):
             guard phase == .active || phase == .starting else { return }
-            intentChanged()
+            activeIntentRules = nil
+            await intentChanged()
             // After a match the intent simply ends; without one, the mark
             // shows "no match" briefly. Either way nothing names a friend.
             if status == .match {

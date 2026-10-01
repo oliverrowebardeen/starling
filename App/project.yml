@@ -21,6 +21,9 @@ packages:
   # Lane H's view models and presentation logic, tested with `swift test`.
   StarlingFeatures:
     path: Features
+  # Lane G's deterministic policy, consent sheet model, and audit log.
+  StarlingPolicy:
+    path: ../Packages/StarlingPolicy
   # Lane BR's status mark and palette (ADR 0172).
   StarlingDesign:
     path: ../Packages/StarlingDesign
@@ -68,6 +71,8 @@ targets:
         product: StarlingFeatures
       - package: StarlingDesign
         product: StarlingDesign
+      - package: StarlingPolicy
+        product: StarlingPolicy
       - package: StarlingTransport
         product: StarlingTransport
       - package: StarlingTransport

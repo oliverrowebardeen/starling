@@ -19,11 +19,18 @@ public struct AppServices: Sendable {
     /// secure channel). `AppModel` is its single consumer and routes every
     /// event to the features; nil until a transport is in the build.
     public var inboxEvents: AsyncStream<InboxEvent>?
+    /// Builds lane G's policy engine for a snapshot of the owner's rules.
+    /// `AppModel` wraps it in a `RulesPolicy` that follows rule changes.
+    public var makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)?
+    /// Lane G's audit log, installed as the Outbox observer.
+    public var auditLog: (any OutboxObserver)?
+    /// The link the app's `Outbox` sends on. Nil until a transport the app
+    /// may send owner data over is in the build (lane E1's secure channel).
+    public var transport: (any Transport)?
+    /// Lane G's consent sheet content for a disclosure.
+    public var presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)?
     public var notifier: any MatchNotifier
     public var localNetwork: any LocalNetworkPrompter
-    /// Whether the PSI provider behind Down hides the owner's set. False
-    /// while `InsecurePSIStub` is in use; the consent sheet says so.
-    public var psiIsPrivate: Bool
     public var timeZone: TimeZone
     public var formatter: ValueFormatter
 
@@ -34,9 +41,12 @@ public struct AppServices: Sendable {
         makeDownService: (@Sendable (any ConsentProvider) -> any DownService)?,
         makePairingSession: PairingSessionFactory?,
         inboxEvents: AsyncStream<InboxEvent>? = nil,
+        makePolicy: (@Sendable (OwnerRules) -> any PolicyEngine)? = nil,
+        auditLog: (any OutboxObserver)? = nil,
+        transport: (any Transport)? = nil,
+        presentConsent: (@Sendable (Disclosure) -> ConsentPresentation)? = nil,
         notifier: any MatchNotifier,
         localNetwork: any LocalNetworkPrompter,
-        psiIsPrivate: Bool = false,
         timeZone: TimeZone = .current,
         formatter: ValueFormatter = ValueFormatter()
     ) {
@@ -46,9 +56,12 @@ public struct AppServices: Sendable {
         self.makeDownService = makeDownService
         self.makePairingSession = makePairingSession
         self.inboxEvents = inboxEvents
+        self.makePolicy = makePolicy
+        self.auditLog = auditLog
+        self.transport = transport
+        self.presentConsent = presentConsent
         self.notifier = notifier
         self.localNetwork = localNetwork
-        self.psiIsPrivate = psiIsPrivate
         self.timeZone = timeZone
         self.formatter = formatter
     }
@@ -64,13 +77,24 @@ public final class AppModel {
     /// Nil until a `DownService` and a paired-peer store are in the build.
     public let down: DownModel?
     public let friends: FriendsModel?
+    /// The policy every app send is judged by, following the owner's rules.
+    public let policy: RulesPolicy?
+    /// The app's one `Outbox`: lane G's policy, the consent sheet, and the
+    /// audit log. Nil until a transport is in the build.
+    public let outbox: Outbox?
     private let downService: (any DownService)?
     private var inboxLoop: Task<Void, Never>?
     private var started = false
 
     public init(services: AppServices) {
         self.services = services
-        consent = ConsentCoordinator(peers: services.peers, formatter: services.formatter)
+        consent = ConsentCoordinator(peers: services.peers, formatter: services.formatter, present: services.presentConsent)
+        policy = services.makePolicy.map(RulesPolicy.init(make:))
+        if let policy, let transport = services.transport {
+            outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: services.auditLog)
+        } else {
+            outbox = nil
+        }
         rulesEditor = RulesEditorModel(
             interpreter: RulesInterpreter(agent: services.agent, issues: RulesInterpreter.standingIssues, timeZone: services.timeZone),
             store: services.rules,
@@ -87,23 +111,45 @@ public final class AppModel {
                 peers: peers,
                 notifier: services.notifier,
                 formatter: services.formatter,
-                timeZone: services.timeZone,
-                intentChanged: { consent.forgetApprovals() }
+                timeZone: services.timeZone
             )
         } else {
             downService = nil
             down = nil
         }
         friends = services.peers.map(FriendsModel.init(store:))
+        rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
+        down?.intentChanged = { [weak self] in
+            guard let self else { return }
+            consent.forgetApprovals()
+            await refreshPolicy()
+        }
+    }
+
+    /// The rules sends are judged by: the saved rules, merged with the
+    /// active Down intent's rules when one is out (most restrictive sharing
+    /// wins, ADR 0141).
+    public var effectiveRules: OwnerRules {
+        let standing = rulesEditor.saved?.rules ?? .empty
+        guard let intent = down?.activeIntentRules else { return standing }
+        // A merge DownModel already accepted cannot fail; if it somehow did,
+        // the standing rules alone are the safer fallback.
+        return (try? RulesMerge.intent(intent, standing: standing)) ?? standing
+    }
+
+    func refreshPolicy() async {
+        await policy?.update(effectiveRules)
     }
 
     /// Called once at launch.
     public func start() async {
         guard !started else { return }
         started = true
+        // Rules first: the policy denies every send until it has them.
+        await rulesEditor.load()
+        await refreshPolicy()
         down?.listen()
         routeInbox()
-        await rulesEditor.load()
         await friends?.load()
     }
 

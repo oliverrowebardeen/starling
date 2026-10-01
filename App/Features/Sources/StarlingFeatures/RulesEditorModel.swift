@@ -26,6 +26,9 @@ public final class RulesEditorModel {
     /// The words the current draft's model rows came from.
     public private(set) var interpretedFrom: String?
 
+    /// Called after the rules are saved, for example to update the policy.
+    public var onSaved: @MainActor () async -> Void = {}
+
     private let interpreter: RulesInterpreter
     private let store: any RulesStore
     private let now: @Sendable () -> Date
@@ -106,6 +109,7 @@ public final class RulesEditorModel {
             interpretedFrom = nil
             notice = nil
             phase = .saved
+            await onSaved()
             return true
         } catch is RulesDraftError {
             notice = "Fix the rows marked in red before saving."

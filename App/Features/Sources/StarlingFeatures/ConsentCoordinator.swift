@@ -16,6 +16,32 @@ import StarlingCore
 /// again. Declines, timeouts, and cancellations are never remembered.
 /// `forgetApprovals()` clears the memory; the app calls it whenever the
 /// Down intent changes, so an approval never outlives its intent.
+/// What the consent sheet shows for a disclosure. The app builds it from
+/// lane G's `ConsentSheetModel`; `standard` is the fallback for tests and
+/// previews.
+public struct ConsentPresentation: Hashable, Sendable {
+    public let rows: [DisplayLine]
+    /// Where the recipient's agent says its model runs, or nil if unknown.
+    public let recipientModel: String?
+    /// Plain statements the owner should see with the rows (locality is
+    /// self-declared, PSI privacy, protocol metadata).
+    public let notices: [String]
+
+    public init(rows: [DisplayLine], recipientModel: String?, notices: [String]) {
+        self.rows = rows
+        self.recipientModel = recipientModel
+        self.notices = notices
+    }
+
+    public static func standard(_ disclosure: Disclosure, formatter: ValueFormatter) -> ConsentPresentation {
+        ConsentPresentation(
+            rows: disclosure.items.map(formatter.disclosedItem),
+            recipientModel: disclosure.recipientModel.map(formatter.locality),
+            notices: ["Starling can't check where their model runs."]
+        )
+    }
+}
+
 @MainActor
 @Observable
 public final class ConsentCoordinator: ConsentProvider {
@@ -26,6 +52,7 @@ public final class ConsentCoordinator: ConsentProvider {
         /// The recipient agent's claimed model location, or nil if unknown.
         public let recipientModel: String?
         public let items: [DisplayLine]
+        public let notices: [String]
         public let disclosure: Disclosure
     }
 
@@ -40,7 +67,7 @@ public final class ConsentCoordinator: ConsentProvider {
     /// When each remembered disclosure was approved.
     private var approvals: [Disclosure: Date] = [:]
     private let peers: (any PairedPeerStore)?
-    private let formatter: ValueFormatter
+    private let present: @Sendable (Disclosure) -> ConsentPresentation
     private let timeout: Duration
     private let approvalMemory: Duration
     private let now: @Sendable () -> Date
@@ -50,10 +77,11 @@ public final class ConsentCoordinator: ConsentProvider {
         formatter: ValueFormatter = ValueFormatter(),
         timeout: Duration = .seconds(120),
         approvalMemory: Duration = .seconds(600),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        present: (@Sendable (Disclosure) -> ConsentPresentation)? = nil
     ) {
         self.peers = peers
-        self.formatter = formatter
+        self.present = present ?? { ConsentPresentation.standard($0, formatter: formatter) }
         self.timeout = timeout
         self.approvalMemory = approvalMemory
         self.now = now
@@ -72,11 +100,13 @@ public final class ConsentCoordinator: ConsentProvider {
         } else {
             name = "Someone you haven't paired with"
         }
+        let presentation = present(disclosure)
         let request = Request(
             id: UUID(),
             recipientName: name,
-            recipientModel: disclosure.recipientModel.map(formatter.locality),
-            items: disclosure.items.map(formatter.disclosedItem),
+            recipientModel: presentation.recipientModel,
+            items: presentation.rows,
+            notices: presentation.notices,
             disclosure: disclosure
         )
         let id = request.id
