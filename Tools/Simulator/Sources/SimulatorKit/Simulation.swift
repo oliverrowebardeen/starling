@@ -94,12 +94,16 @@ public actor Simulation {
         let identity = IdentityKeyPair.generate()
         let pairedAt = Timestamp(now())
         let store = InMemoryPairedPeerStore()
-        for (peer, other) in publicKeys {
+        // Register before the first await. An agent added concurrently then
+        // either sees this one (and pins both ways itself) or was registered
+        // first and is in `others`, so every two agents end up pinned.
+        let others = publicKeys
+        pinStores[identity.peerID] = store
+        publicKeys[identity.peerID] = (name, identity.publicKey)
+        for (peer, other) in others {
             try await store.save(PairedPeer(publicKey: other.key, nickname: other.name, pairedAt: pairedAt))
             try await pinStores[peer]?.save(PairedPeer(publicKey: identity.publicKey, nickname: name, pairedAt: pairedAt))
         }
-        pinStores[identity.peerID] = store
-        publicKeys[identity.peerID] = (name, identity.publicKey)
         let link = LoopbackTransport(localPeer: identity.peerID, hub: hub)
         return SecureTransport(wrapping: link, authority: PinAuthority(identity: identity, store: store))
     }

@@ -22,6 +22,23 @@ import Testing
         await simulation.stop()
     }
 
+    /// Agents added at the same time must still all pin each other.
+    @Test func concurrentlyAddedSecureAgentsStillFormAMesh() async throws {
+        let simulation = Simulation(security: .secureChannel)
+        try await simulation.addAgent("first")
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for name in ["b", "c", "d", "e"] {
+                group.addTask { try await simulation.addAgent(name) }
+            }
+            try await group.waitForAll()
+        }
+        try await simulation.waitForMesh()
+        for agent in await simulation.agents {
+            #expect(await agent.peerCards.count == 4)
+        }
+        await simulation.stop()
+    }
+
     @Test func aForgedFrameClaimingAFriendNeverReachesTheInbox() async throws {
         let simulation = Simulation(security: .secureChannel)
         let alice = try await simulation.addAgent("alice")
