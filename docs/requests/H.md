@@ -59,7 +59,7 @@ So after the system pairs two phones over Wi-Fi Aware, the app cannot offer "pai
 
 **Also, for the record:** E1's API gives one `SecureTransport` per link (LocalP2P and Wi-Fi Aware), while the app's `Outbox` and `Inbox` take one transport. Lane H will add a composite `Transport` in `App/Features` that merges both links' events and sends to whichever link has the peer. No request; noted so E1 and the Orchestrator see the shape.
 
-**Status:** still open after E1 merged. Lane H works around it (ADR 0145): a `LinkWatcher` wraps each raw link before its `SecureTransport`, passes events through, and records the peers the link reports; the pairing screen lists those that are not pinned. An API from E1 or E2 would let the app drop the wrapper.
+**Status:** lane E1 answered that the mapping from a picked device to its `PeerID` should come from lane E2, which is adding it. Until then lane H works around it (ADR 0145): a `LinkWatcher` wraps each raw link before its `SecureTransport`, passes events through, and records the peers the link reports; the pairing screen lists those that are not pinned. An API from E1 or E2 would let the app drop the wrapper.
 
 ## 6. Renaming a friend through the PinAuthority (lane E1, via the Orchestrator)
 
@@ -67,4 +67,4 @@ So after the system pairs two phones over Wi-Fi Aware, the app cannot offer "pai
 
 **Why:** E1 asks the app never to write the paired-peer store directly. A rename is a store write (`save` of the same key with a new nickname), and if it raced an unpair it could put a removed pin back.
 
-**Meanwhile:** rename is off in builds wired to E1 (the Friends list does not offer it). Nicknames are set at pairing.
+**Status:** lane E1 agreed and is writing `PinAuthority.rename` (docs/requests/E1.md, answers to lane H). Meanwhile Debug builds offer rename by writing the store directly; Release does not offer it. Nicknames are set at pairing in both.

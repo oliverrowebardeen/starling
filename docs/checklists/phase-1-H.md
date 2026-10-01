@@ -17,7 +17,7 @@ Build: Debug, from `xcodegen generate --spec App/project.yml`, signed, on one iP
 
 ## Friends and pairing
 
-8. Friends tab. Expect: "Sim friend" with a green dot within 5 seconds (its secure session is up). Tap a friend. Expect: nothing happens (renaming is off until lane E1 offers it).
+8. Friends tab. Expect: "Sim friend" with a green dot within 5 seconds (its secure session is up). Tap Sim friend, rename to "Sim F", Save. Expect: the name changes (Debug only; Release does not offer rename until lane E1's rename lands).
 9. Tap +. Expect: the pairing sheet. On a Wi-Fi Aware iPhone, "Let a friend find this phone" and "Find a friend's phone"; elsewhere, a note that this iPhone can't pair over Wi-Fi Aware. Below: "Phones nearby", "This phone is" followed by 8 characters, a name field, and Pair disabled. With one phone, expect "Looking for nearby phones..." and nothing to pick. Close.
 10. Developer > Fakes: tap "Add a sample friend". Friends tab: swipe left on it, Unpair, confirm. Expect: it disappears.
 
