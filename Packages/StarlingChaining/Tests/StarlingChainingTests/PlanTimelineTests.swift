@@ -85,6 +85,19 @@ import Testing
         #expect(listed.count == Set(logged.compactMap(\.value)).count)
     }
 
+    @Test func locationAndCalendarDetailsAreTopicsOfTheirOwn() throws {
+        // Find a time sent only free times; its calendar details stayed.
+        var times = Interaction(skill: SampleSkills.findATime.ref, role: .invitee, participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 0))
+        times.record(Self.record(1, to: Fixtures.maya, [(.time, .slots([Fixtures.tonight]))]))
+        // Pick a place sent how far away you are (ADR 0019: location, not place).
+        var place = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 5))
+        place.record(Self.record(6, to: Fixtures.maya, [(.location, .count(2))]))
+        let whatLeft = WhatLeftYourPhone(interactions: [times, place], registry: registry)
+        #expect(whatLeft.shared.map(\.topic) == [.time, .location])
+        #expect(whatLeft.kept == [.topic(.activity), .topic(.place), .topic(.budget), .topic(.diet), .topic(.people), .topic(.calendarDetails),
+                                  .permission(.calendarFullAccess), .permission(.locationWhenInUse)])
+    }
+
     @Test func aPrivateCheckAndTheAgentCardShowWithoutValues() throws {
         var plan = try Fixtures.plannedDownFor()
         plan.record(Self.record(1, to: Fixtures.maya, [(.time, nil)], category: .psi))
