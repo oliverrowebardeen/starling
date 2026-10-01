@@ -156,4 +156,30 @@ extension Phone {
         _ = await answering.result
         #expect(await phone.transport.sent.isEmpty)
     }
+
+    @Test func withdrawingCancelsEveryAcceptanceInFlightNotOnlyTheLatest() async throws {
+        let policy = GatedRecheckPolicy()
+        let phone = Phone(policy: policy, consent: ScriptedConsentProvider(.approved))
+        let conversation = ConversationID()
+        await phone.service.handle(.message(try Fixtures.offer(count: 5, conversation: conversation)))
+        var iterator = phone.service.events.makeAsyncIterator()
+        guard case .incoming(let id, _, _, _) = await iterator.next() else {
+            Issue.record("expected an incoming interaction")
+            return
+        }
+        // Accept offer 1; its send waits in the policy re-check.
+        let service = phone.service
+        let first = Task { try await service.answer(id, with: .accept(proposal: 1)) }
+        await policy.gate.arrived(1)
+        // A newer offer replaces the card; accept it too, and it waits as well.
+        await phone.service.handle(.message(try Fixtures.offer(count: 2, conversation: conversation)))
+        let second = Task { try await service.answer(id, with: .accept(proposal: 2)) }
+        await policy.gate.arrived(2)
+        await phone.service.withdraw(id)
+        await policy.gate.open()
+        _ = await first.result
+        _ = await second.result
+        // Neither acceptance leaves.
+        #expect(await phone.transport.sent.isEmpty)
+    }
 }

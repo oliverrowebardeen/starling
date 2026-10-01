@@ -69,8 +69,10 @@ public actor SwapPhotosService: SkillService {
 
     private var sessions: [InteractionID: Session] = [:]
     private var byConversation: [ConversationID: InteractionID] = [:]
-    /// Sends still on their way out, per interaction.
-    private var inFlight: [InteractionID: Task<Void, any Error>] = [:]
+    /// Every send still on its way out, per interaction. A newer offer can
+    /// arrive while an acceptance of the older one is waiting, so there can
+    /// be more than one.
+    private var inFlight: [InteractionID: [UUID: Task<Void, any Error>]] = [:]
     /// Conversations that ended on this phone. A late or retried envelope
     /// for one is ignored, never reopened as a new card (ADR 0011
     /// amendment 15).
@@ -164,8 +166,12 @@ public actor SwapPhotosService: SkillService {
                                       skill: skill, mode: .invite, chainedFrom: session.chainedFrom)
             }
         }
-        inFlight[interaction] = task
-        defer { if inFlight[interaction] == task { inFlight[interaction] = nil } }
+        let key = UUID()
+        inFlight[interaction, default: [:]][key] = task
+        defer {
+            inFlight[interaction]?[key] = nil
+            if inFlight[interaction]?.isEmpty == true { inFlight[interaction] = nil }
+        }
         do {
             try await task.value
             return sessions[interaction]?.stepID == step
@@ -188,9 +194,8 @@ public actor SwapPhotosService: SkillService {
         forget(interaction)
     }
 
-    /// Cancels any send still in flight, so nothing more leaves for it.
+    /// Cancels every send still in flight, so nothing more leaves for it.
     public func withdraw(_ interaction: InteractionID) async {
-        inFlight.removeValue(forKey: interaction)?.cancel()
         forget(interaction)
     }
 
@@ -291,7 +296,7 @@ public actor SwapPhotosService: SkillService {
     }
 
     public func shutdown() async {
-        for task in inFlight.values { task.cancel() }
+        for tasks in inFlight.values { for task in tasks.values { task.cancel() } }
         inFlight = [:]
         continuation.finish()
     }
@@ -302,9 +307,11 @@ public actor SwapPhotosService: SkillService {
         continuation.yield(.lifecycle(interaction, event))
     }
 
-    /// Ends the session here. Its conversation stays closed, so a friend's
-    /// retried offer after a pass never shows the card again.
+    /// Ends the session here: cancels every send still in flight for it, and
+    /// keeps its conversation closed, so a friend's retried offer after a
+    /// pass never shows the card again.
     private func forget(_ interaction: InteractionID) {
+        if let tasks = inFlight.removeValue(forKey: interaction) { for task in tasks.values { task.cancel() } }
         guard let conversation = sessions.removeValue(forKey: interaction)?.conversation else { return }
         byConversation[conversation] = nil
         closed.insert(conversation)
