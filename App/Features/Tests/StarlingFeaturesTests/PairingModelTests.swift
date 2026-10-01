@@ -192,3 +192,31 @@ import Testing
         #expect(model.friends.first?.nickname == "Maya")
     }
 }
+
+/// A store whose remove fails while reads keep working.
+actor FailingRemoveStore: PairedPeerStore {
+    struct Failure: Error {}
+    private let inner: InMemoryPairedPeerStore
+    init(_ peers: [PairedPeer]) { inner = InMemoryPairedPeerStore(peers) }
+    func all() async throws -> [PairedPeer] { try await inner.all() }
+    func peer(for id: PeerID) async throws -> PairedPeer? { try await inner.peer(for: id) }
+    func save(_ peer: PairedPeer) async throws { try await inner.save(peer) }
+    func remove(_ id: PeerID) async throws { throw Failure() }
+}
+
+/// Re-review finding 3 on PR #15: a failed unpair must stay visible, or the
+/// owner believes a still-trusted friend is gone.
+@MainActor
+@Suite struct UnpairFailureTests {
+    @Test func aFailedUnpairStaysOnScreenAfterTheListRefreshes() async {
+        let maya = Fixtures.peer("Maya")
+        let model = FriendsModel(store: FailingRemoveStore([maya]))
+        await model.load()
+
+        await model.remove(maya.id)
+
+        #expect(model.friends.map(\.id) == [maya.id], "still paired")
+        #expect(model.notice?.contains("Maya") == true)
+        #expect(model.notice?.contains("still paired") == true)
+    }
+}

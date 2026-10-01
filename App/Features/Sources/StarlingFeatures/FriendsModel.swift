@@ -43,12 +43,16 @@ public final class FriendsModel {
     }
 
     /// Forgets the friend's pinned key. Pairing again needs both people together.
+    /// A failure stays on screen after the list refreshes: the friend is
+    /// still trusted, and the owner must not think otherwise.
     public func remove(_ id: PeerID) async {
+        let name = friends.first { $0.id == id }?.nickname ?? "This friend"
         do {
             try await store.remove(id)
+            await load()
         } catch {
-            notice = "Couldn't remove. Try again."
+            await load()
+            notice = "Couldn't unpair \(name). They are still paired. Try again."
         }
-        await load()
     }
 }
