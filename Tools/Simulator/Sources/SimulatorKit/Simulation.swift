@@ -34,8 +34,7 @@ public actor Simulation {
         let card = try AgentCard(model: model, capabilities: [.down])
         let agent = SimulatedAgent(
             name: name,
-            id: PeerID.random(using: &generator),
-            hub: hub,
+            transport: LoopbackTransport(localPeer: PeerID.random(using: &generator), hub: hub),
             card: card,
             behavior: behavior,
             policy: policy,

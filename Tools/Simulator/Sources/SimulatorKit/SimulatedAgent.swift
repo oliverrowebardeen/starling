@@ -64,7 +64,7 @@ public actor SimulatedAgent {
     public nonisolated let card: AgentCard
     public nonisolated var id: PeerID { transport.localPeer }
 
-    nonisolated let transport: LoopbackTransport
+    nonisolated let transport: any Transport
     private let outbox: Outbox
     private let inbox: Inbox
     private let behavior: any AgentBehavior
@@ -75,8 +75,7 @@ public actor SimulatedAgent {
 
     init(
         name: String,
-        id: PeerID,
-        hub: LoopbackHub,
+        transport: any Transport,
         card: AgentCard,
         behavior: any AgentBehavior,
         policy: any PolicyEngine,
@@ -86,9 +85,9 @@ public actor SimulatedAgent {
         self.name = name
         self.card = card
         self.behavior = behavior
-        transport = LoopbackTransport(localPeer: id, hub: hub)
+        self.transport = transport
         outbox = Outbox(transport: transport, policy: policy, consent: consent, now: now)
-        inbox = Inbox(localPeer: id, now: now)
+        inbox = Inbox(localPeer: transport.localPeer, now: now)
     }
 
     public var received: [Envelope] {
