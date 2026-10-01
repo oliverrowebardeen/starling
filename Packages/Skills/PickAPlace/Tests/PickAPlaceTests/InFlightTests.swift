@@ -277,6 +277,42 @@ struct OwnerTapTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// An older proposal whose limits check is still running must not
+    /// replace a newer card the owner has already accepted.
+    @Test func anOlderProposalResumingLateIsDropped() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let reads = Mutex(0)
+        // The first check is the list; the second, for the first proposal,
+        // takes 300 ms; later ones are quick.
+        let slowSecondRead: @Sendable () async -> ConstraintSet = {
+            let read = reads.withLock { $0 += 1; return $0 }
+            if read == 2 { try? await Task.sleep(for: .milliseconds(300)) }
+            return .empty
+        }
+        let maya = Phone("Maya", hub: hub, maps: maps, ownerLimits: slowSecondRead)
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
+        let group = try await Group([maya, mallory], hub: hub)
+        defer { Task { await group.stop() } }
+
+        let conversation = ConversationID()
+        try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice, Venues.teaLab.choice]))),
+                                      to: maya.id, conversation: conversation, skill: skill)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+        let older = try Terms([.place: .places([Venues.teaLab.choice]), .people: .peers([mallory.id, maya.id])])
+        let newer = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: older)), to: maya.id, conversation: conversation, skill: skill)
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: newer)), to: maya.id, conversation: conversation, skill: skill)
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(await maya.state(in: conversation) == .confirmed)
+        #expect(await maya.interaction(conversation)?.proposal?.terms == newer)
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aNewProposalWhileTheYesIsOnItsWayIsIgnored() async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)

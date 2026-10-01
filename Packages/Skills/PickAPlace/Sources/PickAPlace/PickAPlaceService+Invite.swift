@@ -24,6 +24,10 @@ struct Invite {
     var accepted = false
     /// The owner's yes is on its way, possibly waiting on a consent sheet.
     var accepting = false
+    /// Rises with each proposal that differs from the current card, when it
+    /// arrives and before any await, so an older proposal whose checks
+    /// resume late can never replace a newer one.
+    var proposalGeneration: UInt64 = 0
     var finished = false
 
     var isFinished: Bool { finished }
@@ -70,7 +74,15 @@ extension PickAPlaceService {
             guard query.issue == .place, case .places(let candidates) = query.candidates else { return }
             spawn(conversation) { await $0.judgeAndAnswer(conversation, query: envelope.id, candidates: candidates) }
         case .propose(let proposal):
-            spawn(conversation) { await $0.received(proposal, id: envelope.id, in: conversation) }
+            if let current = invite.proposal, current.terms == proposal.terms {
+                // A retry. If the owner already said yes, say it again.
+                invites[conversation]?.proposeID = envelope.id
+                if invite.accepted { spawnAcceptance(conversation) }
+                return
+            }
+            invites[conversation]?.proposalGeneration += 1
+            let generation = invite.proposalGeneration + 1
+            spawn(conversation) { await $0.received(proposal, id: envelope.id, in: conversation, generation: generation) }
         case .accept(let acceptance):
             confirmed(acceptance, in: conversation)
         case .reject(let rejection):
@@ -144,20 +156,21 @@ extension PickAPlaceService {
 
     // MARK: - Proposals
 
-    func received(_ proposal: Proposal, id: MessageID, in conversation: ConversationID) async {
+    /// Whether a proposal's checks may still change the card: the request is
+    /// open, no send is on its way, and no newer proposal has arrived.
+    func isCurrent(_ conversation: ConversationID, generation: UInt64) -> Bool {
+        guard let invite = invites[conversation] else { return false }
+        return !invite.isFinished && !invite.answering && !invite.accepting && invite.proposalGeneration == generation
+    }
+
+    func received(_ proposal: Proposal, id: MessageID, in conversation: ConversationID, generation: UInt64) async {
         // While this phone's list or yes is on its way, possibly waiting on
         // a consent sheet, the card cannot change under the owner: a newer
         // proposal is ignored, and the organizer sends it again.
-        guard let invite = invites[conversation], !invite.isFinished, !invite.answering, !invite.accepting, let acceptable = invite.acceptable,
+        guard isCurrent(conversation, generation: generation), let invite = invites[conversation], let acceptable = invite.acceptable,
               let place = validPlace(in: proposal.terms, acceptable: acceptable, organizer: invite.organizer),
               case .peers(let roster)? = proposal.terms[.people]
         else { return }
-        if let current = invite.proposal, current.terms == proposal.terms {
-            // A retry. If the owner already said yes, say it again.
-            invites[conversation]?.proposeID = id
-            if invite.accepted { spawnAcceptance(conversation) }
-            return
-        }
         // The owner's limits are checked again before the card is shown:
         // they may have changed since the list was sent (rule 6). After a
         // restart the facts are gone, so they are looked up again rather
@@ -165,10 +178,13 @@ extension PickAPlaceService {
         var facts = invite.facts[place]
         if facts == nil {
             facts = (try? await maps.facts(for: place)) ?? .unknown
+            guard isCurrent(conversation, generation: generation) else { return }
             invites[conversation]?.facts[place] = facts
         }
         let limits = await ownerLimits()
-        guard let invite = invites[conversation], !invite.isFinished, !invite.answering, !invite.accepting,
+        // Checked after every await, the limit failure included: a newer
+        // proposal decides now.
+        guard isCurrent(conversation, generation: generation), let invite = invites[conversation],
               invite.proposal?.terms != proposal.terms
         else { return }
         guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
