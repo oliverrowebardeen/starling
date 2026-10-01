@@ -176,3 +176,100 @@ import Testing
         #expect(request.disclosure.contains(DisclosureRule(issue: .budget, action: .never)))
     }
 }
+
+/// A settings store whose saves can be held or made to fail.
+actor GatedSettingsStore: OwnerSettingsStore {
+    struct Failure: Error {}
+    private(set) var saved: OwnerSettings?
+    private var blocked = false
+    private var failing = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    var waiting: Int { held.count }
+
+    init(_ saved: OwnerSettings? = nil) { self.saved = saved }
+
+    func block() { blocked = true }
+    func release() {
+        blocked = false
+        held.forEach { $0.resume() }
+        held = []
+    }
+    func failSaves(_ fail: Bool = true) { failing = fail }
+
+    func load() async throws -> OwnerSettings? { saved }
+    func save(_ settings: OwnerSettings) async throws {
+        if blocked { await withCheckedContinuation { held.append($0) } }
+        if failing { throw Failure() }
+        saved = settings
+    }
+    func keepCopyAside() async throws {}
+}
+
+/// Final review of PR #54, finding 2: an audience edit is confirmed only
+/// once it is saved, and a failed one changes nothing, now or after a
+/// relaunch.
+@MainActor
+@Suite struct AudienceEditDurabilityTests {
+    let maya = PeerID.random()
+    let jake = PeerID.random()
+
+    @Test func aFailedExclusionChangesNothingAndJakeIsStillAsked() async throws {
+        let store = GatedSettingsStore()
+        let model = SettingsModel(store: store, flags: .phase1_5)
+        await model.load()
+        await store.failSaves()
+
+        #expect(await !model.setRule(.neverInclude, for: jake))
+        #expect(model.rule(for: jake) == nil)
+        #expect(model.audienceError != nil)
+
+        let relaunched = SettingsModel(store: store, flags: .phase1_5)
+        await relaunched.load()
+        #expect(relaunched.rule(for: jake) == nil)
+        let asked = Audience.allFriends.resolve(mode: .invite, friends: [maya, jake], book: relaunched.audienceBook, canRun: { _ in true })
+        #expect(asked == [maya, jake], "the owner was told it failed, and nothing pretends otherwise")
+
+        await store.failSaves(false)
+        #expect(await model.setRule(.neverInclude, for: jake))
+        #expect(model.audienceError == nil)
+        let reloaded = SettingsModel(store: store, flags: .phase1_5)
+        await reloaded.load()
+        #expect(Audience.allFriends.resolve(mode: .invite, friends: [maya, jake], book: reloaded.audienceBook, canRun: { _ in true }) == [maya])
+    }
+
+    @Test func aFailedGroupEditKeepsTheSavedMembers() async throws {
+        let store = GatedSettingsStore()
+        let model = SettingsModel(store: store, flags: .phase1_5)
+        await model.load()
+        let group = try FriendGroup(name: "Climbing", members: [maya, jake])
+        #expect(await model.saveGroup(group))
+        await store.failSaves()
+        #expect(await !model.saveGroup(try FriendGroup(id: group.id, name: "Climbing", members: [maya])))
+        #expect(model.groups.first?.members == [maya, jake])
+    }
+
+    /// An edit is not shown until its save is done.
+    @Test func anEditShowsOnlyAfterItsSaveIsDurable() async throws {
+        let store = GatedSettingsStore()
+        let model = SettingsModel(store: store, flags: .phase1_5)
+        await model.load()
+        await store.block()
+        let editing = Task { await model.setRule(.neverInclude, for: jake) }
+        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(model.rule(for: jake) == nil)
+        await store.release()
+        #expect(await editing.value)
+        #expect(model.rule(for: jake) == .neverInclude)
+    }
+
+    @Test func aFailedLooseningGoesBackAndAFailedTighteningStays() async throws {
+        let store = GatedSettingsStore()
+        let model = SettingsModel(store: store, flags: .phase1_5)
+        await model.load()
+        await store.failSaves()
+        await model.set(.share, for: .budget)
+        #expect(model.choice(for: .budget) == .never, "loosening that did not save is not made")
+        await model.set(.never, for: .place)
+        #expect(model.choice(for: .place) == .never, "tightening applies until the app closes")
+    }
+}

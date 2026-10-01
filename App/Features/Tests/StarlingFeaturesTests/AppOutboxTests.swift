@@ -88,6 +88,42 @@ import Testing
         #expect(rules.disclosure == setup.app.settings.settings.privacy.disclosureRules)
     }
 
+    /// Final review of PR #54, finding 1: a restrictive change governs
+    /// sends while its write is still in flight; a loosening waits for it.
+    @Test func aRestrictiveChangeGovernsSendsBeforeItsWriteFinishes() async throws {
+        var start = OwnerSettings()
+        try start.privacy.set(.share, for: .place)
+        let store = GatedSettingsStore(start)
+        let factory = EngineFactory()
+        let transport = RecordingTransport()
+        let maya = Fixtures.peer("Maya")
+        let app = AppModel(services: AppServices(
+            registry: SampleSkills.registry, interactions: InMemoryInteractionStore(), settings: store,
+            rules: InMemoryRulesStore(), peers: InMemoryPairedPeerStore([maya]),
+            makePolicy: { rules, _ in factory.make(rules) }, transport: transport,
+            notifier: RecordingNotifier(), localNetwork: CountingPrompter()
+        ))
+        await app.start()
+        let policy = try #require(app.policy)
+        let message = try PolicyFailClosedTests.message(to: maya.id)
+        guard case .needsConsent = await policy.evaluate(message) else { Issue.record("expected Share to apply"); return }
+
+        await store.block()
+        let tightening = Task { await app.settings.set(.never, for: .place) }
+        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(await policy.evaluate(message) == .deny(PolicyViolation(rule: "never", issue: .place)), "Never applies before the write returns")
+        await store.release()
+        await tightening.value
+
+        await store.block()
+        let loosening = Task { await app.settings.set(.share, for: .place) }
+        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(await policy.evaluate(message) == .deny(PolicyViolation(rule: "never", issue: .place)), "a loosening waits for its save")
+        await store.release()
+        await loosening.value
+        guard case .needsConsent = await policy.evaluate(message) else { Issue.record("expected Share after the save"); return }
+    }
+
     @Test func theOnDeviceOnlyChoiceReachesThePolicy() async throws {
         let setup = Setup()
         await setup.app.start()

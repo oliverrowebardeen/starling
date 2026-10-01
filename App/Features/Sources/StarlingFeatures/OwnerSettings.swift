@@ -73,6 +73,30 @@ public struct OwnerSettings: Hashable, Sendable, Codable {
         permissionsExplained = try c.decodeIfPresent(Set<SystemPermission>.self, forKey: .permissionsExplained) ?? []
     }
 
+    /// What may leave the phone while a change is being saved: for each
+    /// topic the stricter of `a` and `b`, and on-device only if either says
+    /// so. Everything else comes from `b`.
+    public static func strictest(_ a: OwnerSettings, _ b: OwnerSettings) -> OwnerSettings {
+        var result = b
+        for topic in PrivacyTopic.allCases {
+            let choices = [a.privacy.choice(for: topic), b.privacy.choice(for: topic)]
+            let order: [SharingChoice] = [.never, .askMe, .share]
+            let strictest = choices.min { order.firstIndex(of: $0)! < order.firstIndex(of: $1)! }!
+            try? result.privacy.set(strictest, for: topic)
+        }
+        result.onlyOnDeviceAgents = a.onlyOnDeviceAgents || b.onlyOnDeviceAgents
+        return result
+    }
+
+    /// Whether `next` lets anything out that `previous` did not.
+    static func loosens(_ previous: OwnerSettings, to next: OwnerSettings) -> Bool {
+        let interim = strictest(previous, next)
+        // Compare the choice in effect for each topic: stored choices and
+        // defaults are the same thing to the policy.
+        let looserTopic = PrivacyTopic.allCases.contains { interim.privacy.choice(for: $0) != next.privacy.choice(for: $0) }
+        return looserTopic || interim.onlyOnDeviceAgents != next.onlyOnDeviceAgents
+    }
+
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(privacy, forKey: .privacy)
@@ -141,6 +165,15 @@ public final class SettingsModel {
 
     public let flags: SkillFlags
     public var onChange: @MainActor () async -> Void = {}
+    /// Called before a change is shown or saved, with what may leave the
+    /// phone until the save is done: the stricter of the old and new
+    /// settings. The app installs the policy for it, so a restrictive change
+    /// governs sends at once (final review of PR #54, finding 1).
+    public var beforeSave: @MainActor (_ interim: OwnerSettings) async -> Void = { _ in }
+    /// Why the last audience edit (a rule, a group, close friends) did not
+    /// save, for the editors to show. Nil once one saves.
+    public private(set) var audienceError: String?
+    private var isUpdating = false
 
     private let store: any OwnerSettingsStore
 
@@ -194,8 +227,9 @@ public final class SettingsModel {
 
     public func isClose(_ friend: PeerID) -> Bool { settings.audience.closeFriends.contains(friend) }
 
-    public func setClose(_ friend: PeerID, _ close: Bool) async {
-        await update { if close { $0.audience.closeFriends.insert(friend) } else { $0.audience.closeFriends.remove(friend) } }
+    @discardableResult
+    public func setClose(_ friend: PeerID, _ close: Bool) async -> Bool {
+        await update(confirmFirst: true) { if close { $0.audience.closeFriends.insert(friend) } else { $0.audience.closeFriends.remove(friend) } }
     }
 
     /// The owner's saved groups, by name.
@@ -204,24 +238,29 @@ public final class SettingsModel {
     }
 
     /// Adds or replaces a group (matched by ID).
-    public func saveGroup(_ group: FriendGroup) async {
-        await update { $0.audience.groups[group.id] = group }
+    /// Adds or replaces a group. Returns whether it was saved.
+    @discardableResult
+    public func saveGroup(_ group: FriendGroup) async -> Bool {
+        await update(confirmFirst: true) { $0.audience.groups[group.id] = group }
     }
 
-    public func deleteGroup(_ id: GroupID) async {
-        await update { $0.audience.groups[id] = nil }
+    @discardableResult
+    public func deleteGroup(_ id: GroupID) async -> Bool {
+        await update(confirmFirst: true) { $0.audience.groups[id] = nil }
     }
 
     public func rule(for friend: PeerID) -> FriendRule? { settings.audience.rules[friend] }
 
     /// Sets or clears a friend's standing rule. At most one per friend.
-    public func setRule(_ rule: FriendRule?, for friend: PeerID) async {
-        await update { $0.audience.rules[friend] = rule }
+    @discardableResult
+    public func setRule(_ rule: FriendRule?, for friend: PeerID) async -> Bool {
+        await update(confirmFirst: true) { $0.audience.rules[friend] = rule }
     }
 
     /// Forgets an unpaired friend in every list and rule.
-    public func forget(_ friend: PeerID) async {
-        await update { settings in
+    @discardableResult
+    public func forget(_ friend: PeerID) async -> Bool {
+        await update(confirmFirst: true) { settings in
             settings.audience.closeFriends.remove(friend)
             settings.audience.rules[friend] = nil
             for (id, group) in settings.audience.groups where group.members.contains(friend) {
@@ -258,23 +297,62 @@ public final class SettingsModel {
         await onChange()
     }
 
-    /// Applies a change, saves it, then tells the app. A change that throws
-    /// (Never on time or activity) is ignored. While the saved file is
-    /// unreadable, changes stay in memory and nothing is written.
-    private func update(_ change: (inout OwnerSettings) throws -> Void) async {
+    /// Applies one change. Changes run one at a time, so none is computed
+    /// from settings another is still saving.
+    ///
+    /// - `confirmFirst` (audience edits): saved first and shown only once
+    ///   the save is durable. A failure changes nothing and sets
+    ///   `audienceError` (final review of PR #54, finding 2).
+    /// - Otherwise: `beforeSave` installs the stricter of the old and new
+    ///   settings, the change is shown, then saved. A loosening that fails
+    ///   to save goes back; a tightening stays in effect in memory.
+    ///
+    /// While the saved file is unreadable, changes stay in memory and
+    /// nothing is written. A change that throws (Never on time or activity)
+    /// is ignored. Returns whether the change took effect.
+    @discardableResult
+    private func update(confirmFirst: Bool = false, _ change: (inout OwnerSettings) throws -> Void) async -> Bool {
+        while isUpdating { try? await Task.sleep(for: .milliseconds(5)) }
+        isUpdating = true
+        defer { isUpdating = false }
         var next = settings
-        do { try change(&next) } catch { return }
-        guard next != settings else { return }
-        settings = next
-        if !loadFailed {
+        do { try change(&next) } catch { return false }
+        guard next != settings else { return true }
+        let previous = settings
+        if loadFailed {
+            settings = next
+            await onChange()
+            return true
+        }
+        if confirmFirst {
             do {
                 try await store.save(next)
-                notice = nil
             } catch {
-                notice = "Your settings couldn't be saved. They'll go back if Starling closes."
+                audienceError = "That couldn't be saved, so nothing changed. Try again."
+                return false
+            }
+            audienceError = nil
+            settings = next
+            await onChange()
+            return true
+        }
+        await beforeSave(OwnerSettings.strictest(previous, next))
+        settings = next
+        var saved = true
+        do {
+            try await store.save(next)
+            notice = nil
+        } catch {
+            saved = false
+            if OwnerSettings.loosens(previous, to: next) {
+                settings = previous
+                notice = "That change couldn't be saved, so it wasn't made. Try again."
+            } else {
+                notice = "That change couldn't be saved. It applies until Starling closes."
             }
         }
         await onChange()
+        return saved || !OwnerSettings.loosens(previous, to: next)
     }
 }
 

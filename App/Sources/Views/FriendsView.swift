@@ -127,7 +127,12 @@ struct FriendDetailView: View {
                         Text("Only ask quietly").tag(FriendRule?.some(.quietOnly))
                     }
                 } footer: {
-                    Text(Self.ruleNote(app.settings.rule(for: id)))
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let error = app.settings.audienceError {
+                            Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        }
+                        Text(Self.ruleNote(app.settings.rule(for: id)))
+                    }
                 }
 
                 Section {
@@ -283,12 +288,17 @@ struct GroupEditor: View {
                     }
                 }
             }
+            if let error = app.settings.audienceError {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+            }
             if let id {
                 Section {
                     Button("Delete group", role: .destructive) {
                         Task {
-                            await app.settings.deleteGroup(id)
-                            dismiss()
+                            // Close only once the change is saved.
+                            if await app.settings.deleteGroup(id) { dismiss() }
                         }
                     }
                 }
@@ -300,8 +310,9 @@ struct GroupEditor: View {
                 Button("Save") {
                     Task {
                         guard let group = try? FriendGroup(id: id ?? GroupID(), name: name, members: members) else { return }
-                        await app.settings.saveGroup(group)
-                        dismiss()
+                        // Close only once the group is saved; a failure
+                        // shows above and keeps the edit on screen.
+                        if await app.settings.saveGroup(group) { dismiss() }
                     }
                 }
                 .disabled((try? FriendGroup(name: name, members: members)) == nil)

@@ -220,6 +220,7 @@ public final class AppModel {
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
 
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
+        settings.beforeSave = { [weak self] interim in await self?.refreshPolicy(using: interim) }
         settings.onChange = { [weak self] in
             guard let self else { return }
             await refreshPolicy()
@@ -259,6 +260,12 @@ public final class AppModel {
     }
 
     func refreshPolicy() async {
+        await refreshPolicy(using: settings.settings)
+    }
+
+    /// Installs the policy for `owner`, which during a settings write is the
+    /// stricter of the old and new settings.
+    func refreshPolicy(using owner: OwnerSettings) async {
         guard let policy else { return }
         // Unreadable saved rules may hold limits the app cannot see, and
         // unreadable settings may hold a Never. Leave the policy denying
@@ -270,7 +277,7 @@ public final class AppModel {
             await policy.block()
             return
         }
-        await policy.update(standingRules, onlyOnDeviceAgents: settings.settings.onlyOnDeviceAgents)
+        await policy.update(StandingRules.standing(saved: rulesEditor.saved?.rules, privacy: owner.privacy), onlyOnDeviceAgents: owner.onlyOnDeviceAgents)
     }
 
     private func refreshCard() {
