@@ -55,6 +55,14 @@ public actor FindATimeService: SkillService {
     private let checkpointTask: Task<Void, Never>
     private var isShutDown = false
     private var pending: Set<SendKey> = []
+    /// Replies that name an envelope not yet recorded because its send has
+    /// not returned (Outbox may still be awaiting its observer after the
+    /// friend has already answered, issue #105). Held only while such a send
+    /// to that friend is in flight, at most `maxEarlyReplies` per friend,
+    /// and checked against the record once the send returns. Never counted
+    /// without naming something actually sent (#68).
+    private var earlyReplies: [ConversationID: [PeerID: [Envelope]]] = [:]
+    static let maxEarlyReplies = 4
     private var checkpointsClosed = false
 
     struct Tombstone: Hashable, Sendable {
@@ -296,6 +304,41 @@ public actor FindATimeService: SkillService {
         startTicker(conversation)
     }
 
+    /// Whether a send of `step` ("query", or any proposal round when nil)
+    /// to `peer` in `conversation` is still in flight.
+    func sendInFlight(_ conversation: ConversationID, to peer: PeerID, step: String?) -> Bool {
+        pending.contains { key in
+            key.conversation == conversation && key.peer == peer && (step.map { key.step == $0 } ?? key.step.hasPrefix("propose "))
+        }
+    }
+
+    /// Holds a reply until the send it may name returns. Returns false if no
+    /// such send is in flight, so the caller ignores it as before.
+    func holdEarly(_ envelope: Envelope, step: String?) -> Bool {
+        guard sendInFlight(envelope.conversation, to: envelope.sender, step: step) else { return false }
+        var held = earlyReplies[envelope.conversation, default: [:]][envelope.sender, default: []]
+        held.append(envelope)
+        earlyReplies[envelope.conversation, default: [:]][envelope.sender] = Array(held.suffix(Self.maxEarlyReplies))
+        ignore("reply held until its send returns")
+        return true
+    }
+
+    /// Checks the replies held for `peer` again, now that a send's envelope
+    /// is recorded. Each counts only if it names something recorded.
+    func recheckEarly(_ conversation: ConversationID, from peer: PeerID) {
+        guard let held = earlyReplies[conversation]?.removeValue(forKey: peer), !held.isEmpty else { return }
+        for envelope in held {
+            switch envelope.body {
+            case .answer(let answer): receiveAnswer(envelope, answer)
+            case .accept(let acceptance): receiveAcceptance(envelope, acceptance)
+            case .reject(let rejection): receiveInitiatorRejection(envelope, rejection)
+            default: break
+            }
+        }
+    }
+
+    func dropEarly(_ conversation: ConversationID) { earlyReplies[conversation] = nil }
+
     /// Ends a conversation on this phone: its work stops at once, and once
     /// its last "no plan" has left, it is retired for good through Outbox
     /// (ADR 0021). Nothing is sent in it, and nothing is opened for it, again.
@@ -328,6 +371,7 @@ public actor FindATimeService: SkillService {
         tickers.removeValue(forKey: conversation)?.cancel()
         cancelWork(of: conversation)
         if let interaction { conversationOf[interaction] = nil }
+        dropEarly(conversation)
         remember(conversation, asker: asker, interaction: interaction)
         retire(conversation, interaction: interaction, asker: asker, report: report)
     }
@@ -462,7 +506,14 @@ public actor FindATimeService: SkillService {
         }
     }
 
-    func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?) async -> SendOutcome {
+    /// What a successful send records before anything else runs: the
+    /// envelope a friend's reply must name (#68, #105).
+    enum Record: Sendable {
+        case query
+        case proposal(revision: UInt32)
+    }
+
+    func send(_ body: MessageBody, to peer: PeerID, conversation: ConversationID, chainedFrom: ConversationID?, record: Record? = nil) async -> SendOutcome {
         let key = SendKey(body, to: peer, in: conversation)
         if let key {
             // Reported like a lost send: the next retry tries again.
@@ -485,6 +536,14 @@ public actor FindATimeService: SkillService {
                 skill: FindATimeSkill.ref, mode: .invite, chainedFrom: chainedFrom
             )
             diagnostics.sends += 1
+            // Record it here, on this actor, before returning and while the
+            // send still counts as in flight: a reply already held can then
+            // be matched, and no retry slips in between (issue #105).
+            switch record {
+            case .query?: recordQuery(conversation, to: peer, envelope.id)
+            case .proposal(let revision)?: recordProposal(conversation, revision: revision, to: peer, envelope.id)
+            case nil: break
+            }
             return .sent(envelope)
         } catch OutboxError.consentDeclined {
             return .declined

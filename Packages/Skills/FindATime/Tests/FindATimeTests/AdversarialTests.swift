@@ -342,4 +342,74 @@ struct AdversarialTests {
         #expect(proposal.plan?.time == offered[0])
         await world.stop()
     }
+
+    /// Issue #105 (found in Pick a place, checked here): a friend's answer
+    /// can arrive before Outbox returns the query's envelope, while Outbox
+    /// awaits its audit observer. It still counts, once the query is
+    /// recorded, and needs no second query.
+    @Test func anAnswerBeforeTheQuerySendReturnsStillCounts() async throws {
+        let world = World()
+        let audit = HoldingObserver { $0.body.kind == .query }
+        let a = world.phone("Ana", observer: audit)
+        let b = world.phone("Ben")
+        try await world.start()
+
+        let started = try await a.findATime(with: [b])
+        try await eventually("Ben's answer arrived") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .answer } }
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await audit.held == 1)
+        #expect(await a.coordinator.interaction(started)?.proposal == nil)
+
+        await audit.release()
+        _ = try await a.waitForProposal()
+        let queries = world.envelopes.filter { $0.sender == a.id && $0.body.kind == .query }
+        let diagnostics = await a.service.diagnostics
+        #expect(queries.count == 1, "\(queries.map { "\($0.sequence)" }) \(diagnostics)")
+        #expect(await a.service.diagnostics.ignored["answer to a query never sent", default: 0] == 0)
+        await world.stop()
+    }
+
+    /// The same for an acceptance arriving before Outbox returns the
+    /// proposal's envelope. Ben sends it once, so a dropped one is lost.
+    @Test func anAcceptanceBeforeTheProposalSendReturnsStillCounts() async throws {
+        let world = World()
+        let audit = HoldingObserver { $0.body.kind == .propose }
+        let a = world.phone("Ana", observer: audit)
+        var once = fastConfiguration
+        once.maxAttempts = 1
+        let b = world.phone("Ben", configuration: once)
+        try await world.start()
+
+        let started = try await a.findATime(with: [b])
+        let (bCard, _) = try await b.waitForProposal()
+        try await b.accept(bCard)
+        try await eventually("Ben's acceptance arrived") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept } }
+        try await Task.sleep(for: .milliseconds(60))
+        await audit.release()
+
+        try await a.waitForState(started, .proposed)
+        try await a.accept(started)
+        try await a.waitForState(started, .planned)
+        try await b.waitForState(bCard, .planned)
+        #expect(world.envelopes.filter { $0.sender == b.id && $0.body.kind == .accept }.count == 1)
+        await world.stop()
+    }
+
+    /// Holding is only for a send still in flight: with none, a reply naming
+    /// an unknown envelope is ignored at once, as before (#68).
+    @Test func withNoSendInFlightAnUnknownReplyIsStillIgnored() async throws {
+        let world = World()
+        let a = world.phone("Ana")
+        let mallory = world.phone("Mallory", calendar: FakeCalendarStore(status: .denied))
+        try await world.start()
+        try await a.findATime(with: [mallory])
+        try await eventually("Ana's query") { world.envelopes.contains { $0.sender == a.id && $0.body.kind == .query } }
+        let sent = world.envelopes.first { $0.sender == a.id && $0.body.kind == .query }!
+        guard case .query(let query) = sent.body, case .slots(let offered) = query.candidates else { return }
+        try await eventually("the query send returned") { await a.service.initiating[sent.conversation]?.queryIDs[mallory.id] != nil }
+        let forged = try Answer(query: MessageID(), issue: .time, status: .answered, acceptable: .slots([offered[0]]))
+        try await mallory.send(.answer(forged), to: a, conversation: sent.conversation, answering: query)
+        try await eventually("ignored") { await a.service.diagnostics.ignored["answer to a query never sent", default: 0] == 1 }
+        await world.stop()
+    }
 }

@@ -281,6 +281,30 @@ actor ControlledLedger: ConversationLedger {
     }
 }
 
+/// An Outbox observer that holds `didSend` for chosen envelopes until the
+/// test releases them: the send has left, but Outbox has not returned to
+/// the service yet, as with a slow audit journal (issue #105).
+actor HoldingObserver: OutboxObserver {
+    private let holds: @Sendable (Envelope) -> Bool
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private(set) var held = 0
+
+    init(_ holds: @escaping @Sendable (Envelope) -> Bool) { self.holds = holds }
+
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {
+        guard !released, holds(envelope) else { return }
+        held += 1
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        released = true
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+}
+
 /// The app's consent provider around a scripted owner.
 struct LifecycleConsent: ConsentProvider {
     let owner: any ConsentProvider
@@ -315,6 +339,7 @@ final class Phone: Sendable {
     /// wrapper around it.
     let ledger: any ConversationLedger
     let configuration: FindATimeConfiguration
+    let observer: (any OutboxObserver)?
     let clock: TestClock
     let standing: ConstraintSet
     private let state: Mutex<(service: FindATimeService?, outbox: Outbox?, coordinator: Coordinator, tasks: [Task<Void, Never>])>
@@ -328,7 +353,7 @@ final class Phone: Sendable {
          policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
          standing: ConstraintSet = .empty, policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil,
          ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil,
-         configuration: FindATimeConfiguration = fastConfiguration, clock: TestClock) {
+         configuration: FindATimeConfiguration = fastConfiguration, observer: (any OutboxObserver)? = nil, clock: TestClock) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
@@ -337,6 +362,7 @@ final class Phone: Sendable {
         self.policy = policyWithFriends?(peers) ?? policy
         self.ledger = ledger?(conversations) ?? conversations
         self.configuration = configuration
+        self.observer = observer
         self.consent = consent
         self.clock = clock
         self.standing = standing
@@ -347,7 +373,7 @@ final class Phone: Sendable {
     /// to simulate an app restart.
     func makeService(configuration: FindATimeConfiguration = fastConfiguration) {
         let outbox = Outbox(transport: transport, policy: policy, consent: LifecycleConsent(owner: consent, coordinator: coordinator),
-                            sequences: sequences, ledger: ledger)
+                            observer: observer, sequences: sequences, ledger: ledger)
         let availability = OwnerAvailability.standard(calendar: calendar, use: { self.use.withLock { $0 } })
         let service = FindATimeService(
             localPeer: id, outbox: outbox, conversations: ledger, pairedPeers: peers, availability: availability, checkpoints: checkpoints,
@@ -507,11 +533,12 @@ final class World: Sendable {
         standing: ConstraintSet = .empty,
         policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil,
         ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil,
-        configuration: FindATimeConfiguration = fastConfiguration
+        configuration: FindATimeConfiguration = fastConfiguration,
+        observer: (any OutboxObserver)? = nil
     ) -> Phone {
         let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent,
                           standing: standing, policyWithFriends: policyWithFriends, ledger: ledger,
-                          configuration: configuration, clock: clock)
+                          configuration: configuration, observer: observer, clock: clock)
         phones.withLock { $0.append(phone) }
         return phone
     }
