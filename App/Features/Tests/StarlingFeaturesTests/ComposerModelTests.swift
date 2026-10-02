@@ -120,7 +120,8 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.skillChip == "Down for boba")
         // Fixtures.noon is 14:13 UTC; six hours later is 20:13, and the
         // slot runs past 11 PM, so "after".
-        #expect(h.model.chips.map(plain) == ["Boba", "Tonight after 8:13 PM", "Ask quietly", "Open for 3 hrs"])
+        // The activity is on the skill's chip only, never repeated.
+        #expect(h.model.chips.map(plain) == ["Tonight after 8:13 PM", "Ask quietly", "Open for 3 hrs"])
         h.model.expiry = .tonight
         #expect(h.model.expiryChip == "Open until tonight")
         h.model.expiry = .hours(3)
@@ -289,6 +290,61 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         h.permissions.proceed()
         _ = try #require(await sending.value)
         #expect(await h.time.started.first?.intent.expiresAt == Timestamp(h.clock.now.addingTimeInterval(day)))
+    }
+
+    /// Oliver's device test (2026-10-02): every chip is applied and
+    /// tappable; optional ones can be removed, required ones only edited.
+    @Test func everyChipIsEditableAndOnlyOptionalOnesRemovable() async throws {
+        let h = try await ComposerHarness()
+        h.model.text = "boba tonight"
+        await h.model.understand()
+        let items = h.model.chipItems
+        #expect(items.map(\.part) == [.skill, .issue(.time), .mode, .expiry])
+        #expect(items[0].editor == .words(.activity, "boba"))
+        #expect(!items[0].isRemovable)
+        #expect(items[1].isRemovable)
+        guard case .time(let slot?) = items[1].editor else { Issue.record("time chip edits a window"); return }
+        #expect(items[2].editor == .mode && !items[2].isRemovable)
+        #expect(items[3].editor == .expiry && !items[3].isRemovable)
+        #expect(items.filter { $0.text.localizedCaseInsensitiveContains("boba") }.count == 1)
+
+        // The activity, in the owner's words, edited in place.
+        #expect(h.model.setWords("movie night", for: .activity))
+        #expect(h.model.skillChip == "Down for movie night")
+        // Required: edited, never emptied.
+        #expect(!h.model.setWords("  ", for: .activity))
+        #expect(h.model.skillChip == "Down for movie night")
+        #expect(!h.model.remove(.issue(.activity)))
+
+        // The time, edited in place, then removed.
+        let later = try TimeSlot(start: slot.start.addingTimeInterval(3600), end: slot.end.addingTimeInterval(3600))
+        #expect(h.model.setTime(later))
+        #expect(h.model.chipItems.first { $0.part == .issue(.time) }?.editor == .time(later))
+        #expect(h.model.remove(.issue(.time)))
+        #expect(!h.model.chipItems.contains { $0.part == .issue(.time) })
+
+        // Who: a narrowed audience removes back to all friends.
+        h.model.toggle(h.maya.id)
+        #expect(h.model.chipItems.contains { $0.part == .audience && $0.isRemovable })
+        #expect(h.model.remove(.audience))
+        #expect(h.model.audience == .allFriends)
+        #expect(!h.model.chipItems.contains { $0.part == .audience })
+        #expect(!h.model.remove(.mode) && !h.model.remove(.expiry) && !h.model.remove(.skill))
+    }
+
+    /// Find a time's range is required: it can be edited but not removed,
+    /// and its activity is an ordinary, removable chip.
+    @Test func findATimesRangeIsRequired() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time tonight for boba"
+        await h.model.understand()
+        let items = h.model.chipItems
+        #expect(items.first?.part == .skill && items.first?.editor == ComposeChip.Editor.none)
+        #expect(items.first { $0.part == .issue(.time) }?.isRemovable == false)
+        #expect(items.first { $0.part == .issue(.activity) }?.isRemovable == true)
+        #expect(!h.model.remove(.issue(.time)))
+        #expect(h.model.remove(.issue(.activity)))
+        #expect(!items.contains { $0.part == .mode })
     }
 
     @Test func sendingStartsTheSkillWithTopicsAsSharingAndClearsTheDraft() async throws {

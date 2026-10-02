@@ -333,22 +333,24 @@ public final class ComposerModel {
 
     /// The chips under "Starling understood", without the skill's own chip.
     public var chips: [String] {
-        var chips = chipFormatter.chips(for: constraints)
-        if let descriptor, descriptor.sendModes.count > 1 { chips.append(Self.modeLabel(sendMode)) }
+        chipItems.filter { $0.part != .skill }.map(\.text)
+    }
+
+    /// Who the request goes to, when not all friends: "With Maya", "Close
+    /// friends", a group's name, "Not Leo".
+    var audienceText: String? {
         switch audience {
         case .pick where !picked.isEmpty:
-            chips.append("With " + PermissionExplanation.names(audienceFriends.filter(\.isIncluded).map(\.name)))
+            "With " + PermissionExplanation.names(audienceFriends.filter(\.isIncluded).map(\.name))
         case .closeFriends:
-            chips.append("Close friends")
+            "Close friends"
         case .group(let id):
-            if let group = settings.audienceBook.groups[id] { chips.append(group.name) }
+            settings.audienceBook.groups[id]?.name
         case .everyoneExcept where !excepted.isEmpty:
-            chips.append("Not " + PermissionExplanation.names(audienceFriends.filter { excepted.contains($0.id) }.map(\.name)))
+            "Not " + PermissionExplanation.names(audienceFriends.filter { excepted.contains($0.id) }.map(\.name))
         default:
-            break
+            nil
         }
-        if descriptor?.intent.asksForExpiry ?? true { chips.append(expiryChip) }
-        return chips
     }
 
     /// "Down for boba", never "Down for…" alone once there is an activity

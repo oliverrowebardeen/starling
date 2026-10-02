@@ -23,11 +23,15 @@ public struct ChipFormatter: Sendable {
     /// One chip per rule, in issue order: activity and time first, as the
     /// mockup reads.
     public func chips(for constraints: ConstraintSet) -> [String] {
+        orderedIssues(constraints).flatMap { issue in constraints.constraints[issue]!.flatMap { chips(for: $0.rule, issue: issue) } }
+    }
+
+    /// The issues in chip order: what, when, where, then the rest.
+    public func orderedIssues(_ constraints: ConstraintSet) -> [IssueKey] {
         let order: [IssueKey] = [.activity, .time, .place, .budget, .diet, .partySize]
-        let issues = constraints.constraints.keys.sorted { a, b in
+        return constraints.constraints.keys.sorted { a, b in
             (order.firstIndex(of: a) ?? order.count, a) < (order.firstIndex(of: b) ?? order.count, b)
         }
-        return issues.flatMap { issue in constraints.constraints[issue]!.flatMap { chips(for: $0.rule, issue: issue) } }
     }
 
     public func chips(for rule: Constraint.Rule, issue: IssueKey) -> [String] {
