@@ -1,0 +1,106 @@
+import Foundation
+@testable import DownFor
+import StarlingCore
+import StarlingFakes
+import StarlingNegotiation
+import Testing
+
+@Suite struct ProfileTests {
+    let me = PeerID.random()
+    let hub = PeerID.random()
+
+    func profile(liked: [String] = ["boba"], avoided: [String] = [], budget: Int64? = 15) throws -> DownForProfile {
+        DownForProfile(rules: try T.rules(time: [T.slot(19, 22)], liked: liked, avoided: avoided, maxBudget: budget), inputs: [], expiresAt: T.at(24), timeZone: T.utc)
+    }
+
+    func plan(time: TimeSlot = T.slot(20, 21), activity: [String] = ["boba"], budget: Int64? = nil, roster: [PeerID]? = nil, extra: [IssueKey: IssueValue] = [:]) throws -> Terms {
+        var values: [IssueKey: IssueValue] = [.time: .slots([time]), .activity: .keywords(activity.map(T.keyword))]
+        if let roster { values[.people] = .peers(roster) }
+        if let budget { values[.budget] = .amount(T.usd(budget)) }
+        for (key, value) in extra { values[key] = value }
+        return try Terms(values)
+    }
+
+    @Test func permitsAPlanInsideEveryLimit() throws {
+        let profile = try profile()
+        // A pair: the roster is the two ends, from either side.
+        #expect(profile.permits(try plan(budget: 12), me: me, hub: hub, member: me, now: T.now))
+        #expect(profile.permits(try plan(budget: 12), me: hub, hub: hub, member: me, now: T.now))
+        // A group carries its roster, starter first.
+        let other = PeerID.random()
+        #expect(profile.permits(try plan(roster: [hub, me, other]), me: me, hub: hub, member: me, now: T.now))
+    }
+
+    @Test func refusesPlansOutsideTheLimitsOrTheShape() throws {
+        let profile = try profile(avoided: ["sushi"])
+        let refused: [Terms] = [
+            try plan(time: T.slot(22, 23)),                                   // outside available time
+            try plan(budget: 20),                                             // over budget
+            try plan(activity: ["sushi"]),                                    // avoided
+            try plan(roster: [me, hub, PeerID.random()]),                     // starter not first
+            try plan(roster: [hub, PeerID.random(), PeerID.random()]),        // we are not in it
+            try plan(roster: [hub, me]),                                      // a pair never sends its roster
+            try plan(extra: [.place: .keywords([T.keyword("nearby")])]),      // not a Down for... issue
+            try Terms([.time: .slots([T.slot(20, 21)]), .people: .peers([hub, me])]), // no activity
+        ]
+        for terms in refused { #expect(!profile.permits(terms, me: me, hub: hub, member: me, now: T.now), "\(terms)") }
+        // A plan that has started is refused too.
+        #expect(!profile.permits(try plan(), me: me, hub: hub, member: me, now: T.at(20.1)))
+    }
+
+    @Test func aChainedTimeSlotNarrowsTheRequest() throws {
+        let narrowed = DownForProfile(
+            rules: try T.rules(time: [T.slot(19, 23)], liked: ["boba"]), inputs: [.timeSlot(T.slot(21, 22))], expiresAt: T.at(24), timeZone: T.utc
+        )
+        #expect(narrowed.tokens(now: T.now).slots == [T.slot(21, 21.5), T.slot(21.5, 22)])
+    }
+
+    @Test func answersKeepOnlyWhatCodeAllows() throws {
+        let profile = try profile(liked: ["food"], avoided: ["sushi"])
+        let candidates = ["boba run", "sushi", "movie"].map(T.keyword)
+        // The model claims every pair, the avoided one included.
+        let matches = candidates.map { KeywordMatch(wanted: T.keyword("food"), offered: $0, strength: .satisfies) }
+            + [KeywordMatch(wanted: T.keyword("invented"), offered: T.keyword("movie"), strength: .equivalent)]
+        // A subset of the starter's own candidates: a yes or no on each.
+        #expect(profile.acceptableActivities(candidates: candidates, matches: matches) == ["boba run", "movie"].map(T.keyword))
+    }
+}
+
+@Suite struct PairPlannerTests {
+    func answers(_ slots: [TimeSlot], _ activities: [String]) -> CandidateAnswers {
+        CandidateAnswers(overlap: slots, activities: activities.map(T.keyword))
+    }
+
+    func halfHours(_ from: Double, _ to: Double) -> [TimeSlot] {
+        stride(from: from, to: to, by: 0.5).map { T.slot($0, $0 + 0.5) }
+    }
+
+    @Test func picksTheStartersFirstChoiceAtTheEarliestSharedTime() throws {
+        let terms = try #require(PairPlanner.plan(
+            liked: ["boba", "tacos"].map(T.keyword), answers: answers(halfHours(19, 23), ["tacos", "boba"]), maxMinutes: 120, now: T.now
+        ))
+        #expect(terms[.activity] == .keywords([T.keyword("boba")]))
+        // Grown from the first shared half-hour, up to two hours.
+        #expect(terms[.time] == .slots([T.slot(19, 21)]))
+        // A pair: no roster on the wire, and budget never leaves (ADR 0019).
+        #expect(terms[.people] == nil && terms[.budget] == nil)
+    }
+
+    @Test func theTimeStopsWhereTheSharedTimeDoes() throws {
+        let terms = try #require(PairPlanner.plan(
+            liked: [T.keyword("boba")], answers: answers(halfHours(19, 20) + halfHours(21, 22), ["boba"]), maxMinutes: 120, now: T.now
+        ))
+        #expect(terms[.time] == .slots([T.slot(19, 20)]))
+    }
+
+    @Test func noSharedActivityMeansNoPlan() {
+        #expect(PairPlanner.plan(liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), []), maxMinutes: 120, now: T.now) == nil)
+    }
+
+    @Test func slotsThatHaveStartedAreSkipped() throws {
+        let terms = try #require(PairPlanner.plan(
+            liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), ["boba"]), maxMinutes: 120, now: T.at(19.6)
+        ))
+        #expect(terms[.time] == .slots([T.slot(20, 21)]))
+    }
+}

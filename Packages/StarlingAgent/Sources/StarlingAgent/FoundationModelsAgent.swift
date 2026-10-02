@@ -106,7 +106,7 @@ public struct FoundationModelsAgent: AgentModel {
     }
 
     /// Generation against a schema built at runtime (DynamicSchemas.swift).
-    private func generate(
+    func generate(
         _ schema: GenerationSchema,
         instructions: String,
         prompt: String

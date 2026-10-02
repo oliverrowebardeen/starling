@@ -24,7 +24,12 @@ let package = Package(
             name: "StarlingAgentBench",
             dependencies: ["StarlingAgent", .product(name: "StarlingCore", package: "StarlingCore")]
         ),
-        .executableTarget(name: "agent-bench", dependencies: ["StarlingAgent", "StarlingAgentBench"]),
+        // SampleSkills stands in for the skill packages' descriptors, which
+        // StarlingAgent must not depend on. The bench library itself stays
+        // free of fakes, since the app's Debug bench links it.
+        .executableTarget(name: "agent-bench", dependencies: [
+            "StarlingAgent", "StarlingAgentBench", .product(name: "StarlingFakes", package: "StarlingCore"),
+        ]),
         .testTarget(
             name: "StarlingAgentTests",
             dependencies: [

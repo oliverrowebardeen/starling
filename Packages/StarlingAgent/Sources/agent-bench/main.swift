@@ -1,19 +1,23 @@
 import Foundation
 import StarlingAgent
 import StarlingAgentBench
+import StarlingFakes
 
 // Runs the model bench with the on-device model on this Mac.
 // Usage: swift run agent-bench [--repetitions N] [--json path]
 //        swift run agent-bench --interpretation [--held-out] [--json path]
 //        swift run agent-bench --matching [--json path]
-// The other forms score the labeled interpretation set (or the held-out
-// set) or the labeled match set instead.
+//        swift run agent-bench --routing [--held-out] [--json path]
+//        swift run agent-bench --chips [--held-out] [--json path]
+// The other forms score a labeled set (or its held-out set) instead.
 
 var repetitions = 1
 var jsonPath: String?
 var interpretation = false
 var heldOut = false
 var matching = false
+var routing = false
+var chips = false
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty {
     let flag = arguments.removeFirst()
@@ -23,10 +27,37 @@ while !arguments.isEmpty {
     case "--interpretation": interpretation = true
     case "--held-out": heldOut = true
     case "--matching": matching = true
+    case "--routing": routing = true
+    case "--chips": chips = true
     default:
-        print("usage: agent-bench [--repetitions N] [--json path] | agent-bench --interpretation [--held-out] [--json path] | agent-bench --matching [--json path]")
+        print("usage: agent-bench [--repetitions N] [--json path] | agent-bench --interpretation|--routing|--chips [--held-out] [--json path] | agent-bench --matching [--json path]")
         exit(1)
     }
+}
+
+if routing {
+    let agent = FoundationModelsAgent()
+    let labels = heldOut ? RoutingSet.heldOut : RoutingSet.labels
+    let skills = [SampleSkills.downFor, SampleSkills.findATime, SampleSkills.pickAPlace]
+    FileHandle.standardError.write(Data("Routing \(labels.count) utterances on \(agent.descriptor.identifier)...\n".utf8))
+    let report = await RoutingEval(model: agent, skills: skills, labels: labels).run { result in
+        FileHandle.standardError.write(Data("  \(result.isCorrect ? "ok  " : "miss") \(result.label.text) -> \(result.actual ?? result.error ?? "")\n".utf8))
+    }
+    print(report.markdown(title: heldOut ? "Routing accuracy, held-out set" : "Routing accuracy"))
+    if let jsonPath { try report.json().write(to: URL(fileURLWithPath: jsonPath)) }
+    exit(0)
+}
+
+if chips {
+    let agent = FoundationModelsAgent(timeZone: InterpretationSet.timeZone)
+    let labels = heldOut ? ChipSet.heldOut : ChipSet.labels
+    FileHandle.standardError.write(Data("Reading chips for \(labels.count) utterances on \(agent.descriptor.identifier)...\n".utf8))
+    let report = await ChipEval(model: agent, skill: SampleSkills.downFor, labels: labels).run { result in
+        FileHandle.standardError.write(Data("  \(result.isExact ? "ok  " : "miss") \(result.label.text)\n".utf8))
+    }
+    print(report.markdown(title: heldOut ? "Down for... chip accuracy, held-out set" : "Down for... chip accuracy"))
+    if let jsonPath { try report.json().write(to: URL(fileURLWithPath: jsonPath)) }
+    exit(0)
 }
 
 if matching {
