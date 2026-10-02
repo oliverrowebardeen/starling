@@ -44,9 +44,9 @@ public struct ChipFormatter: Sendable {
         case .within(let slots):
             slots.sorted().map(slot)
         case .dailyWindow(let from, let to):
-            from == DayRange.evenings.from && to == DayRange.evenings.to
+            DayRange.Hours(from: from, to: to) == .evenings
                 ? ["Evenings"]
-                : ["Between \(values.minutesOfDay(from)) and \(values.minutesOfDay(to))"]
+                : ["Between \(clock(minutes: from)) and \(clock(minutes: to))"]
         case .atMost(let amount):
             ["Up to \(values.money(amount))"]
         case .atLeast(let amount):
@@ -77,9 +77,8 @@ public struct ChipFormatter: Sendable {
 
     /// "Tonight after 7 PM", "Tomorrow 10 AM to 2 PM", "Friday after 6 PM".
     public func slot(_ slot: TimeSlot) -> String {
-        // Whole days, as Find a time asks: "Today to Friday".
-        if calendar.startOfDay(for: slot.start) == slot.start, calendar.startOfDay(for: slot.end) == slot.end,
-           slot.end.timeIntervalSince(slot.start) > 24 * 3600 {
+        // Days, as Find a time asks: "Today to Friday".
+        if slot.end.timeIntervalSince(slot.start) > 24 * 3600 {
             return "\(dayWord(slot.start)) to \(dayWord(slot.end.addingTimeInterval(-60)))"
         }
         let day = dayWord(slot.start)
@@ -116,6 +115,14 @@ public struct ChipFormatter: Sendable {
         case 2...6: return date.formatted(Date.FormatStyle(locale: values.locale, calendar: calendar, timeZone: values.timeZone).weekday(.wide))
         default: return date.formatted(Date.FormatStyle(locale: values.locale, calendar: calendar, timeZone: values.timeZone).month(.abbreviated).day())
         }
+    }
+
+    /// A minute of the day as a clock time: "5 PM", "9:30 PM", "midnight".
+    func clock(minutes: Int) -> String {
+        guard minutes > 0, minutes < 1440,
+              let date = calendar.date(from: DateComponents(year: 2000, month: 1, day: 1, hour: minutes / 60, minute: minutes % 60))
+        else { return "midnight" }
+        return hour(date)
     }
 
     /// "7 PM", or "7:30 PM" when not on the hour.

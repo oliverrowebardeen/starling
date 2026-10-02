@@ -25,7 +25,7 @@ public struct ComposeChip: Hashable, Sendable, Identifiable {
         case words(IssueKey, String)
         /// One time window, start and end.
         case time(TimeSlot?)
-        /// A range of days, optionally evenings only (Find a time).
+        /// A range of days, optionally some hours of each (Find a time).
         case days(DayRange)
         case mode
         case audience
@@ -41,20 +41,32 @@ public struct ComposeChip: Hashable, Sendable, Identifiable {
     public var id: Part { part }
 }
 
-/// Find a time's "when": from one day to another, optionally evenings
-/// only (device test 2, issue #95).
+/// Find a time's "when": from one day to another, optionally only some
+/// hours of each day (device test 2, issue #95).
 public struct DayRange: Hashable, Sendable {
-    /// 5 PM to 10 PM, in minutes of the day.
-    public static let evenings = (from: 17 * 60, to: 22 * 60)
+    /// Hours of each day, in minutes of the day.
+    public struct Hours: Hashable, Sendable {
+        /// 5 PM to 10 PM.
+        public static let evenings = Hours(from: 17 * 60, to: 22 * 60)
+        public let from: Int
+        public let to: Int
+
+        public init(from: Int, to: Int) {
+            self.from = from
+            self.to = to
+        }
+    }
 
     public var from: Date
     public var to: Date
-    public var eveningsOnly: Bool
+    /// Only these hours of each day (evenings, or a meal's hours), or nil
+    /// for any time of day.
+    public var hours: Hours?
 
-    public init(from: Date, to: Date, eveningsOnly: Bool) {
+    public init(from: Date, to: Date, hours: Hours? = nil) {
         self.from = from
         self.to = to
-        self.eveningsOnly = eveningsOnly
+        self.hours = hours
     }
 }
 
@@ -134,15 +146,15 @@ extension ComposerModel {
     }
 
     /// The days the time chip asks about, for Find a time (device test 2):
-    /// from the first day the request allows to the last, and whether only
-    /// evenings. A week from today when nothing is set.
+    /// from the first day the request allows to the last, and the hours of
+    /// each day if limited. A week from today when nothing is set.
     public var dayRange: DayRange {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let rules = constraints.constraints[.time] ?? []
         var from = calendar.startOfDay(for: now())
         var to = calendar.date(byAdding: .day, value: 6, to: from) ?? from
-        var evenings = false
+        var hours: DayRange.Hours?
         for rule in rules {
             switch rule.rule {
             case .within(let slots):
@@ -151,16 +163,16 @@ extension ComposerModel {
                     to = calendar.startOfDay(for: end.addingTimeInterval(-60))
                 }
             case .dailyWindow(let start, let end):
-                evenings = start == DayRange.evenings.from && end == DayRange.evenings.to
+                hours = DayRange.Hours(from: start, to: end)
             default:
                 break
             }
         }
-        return DayRange(from: from, to: to, eveningsOnly: evenings)
+        return DayRange(from: from, to: to, hours: hours)
     }
 
     /// Asks about whole days from `range.from` through `range.to`, optionally
-    /// evenings only. At most two weeks, the longest window a request can
+    /// only some hours of each. At most two weeks, the longest window a request can
     /// carry. Returns whether it applied.
     @discardableResult
     public func setDays(_ range: DayRange) -> Bool {
@@ -174,11 +186,16 @@ extension ComposerModel {
         var rules: [Constraint] = []
         guard let within = try? Constraint(.within([slot]), strength: strength) else { return false }
         rules.append(within)
-        if range.eveningsOnly {
-            guard let evenings = try? Constraint(.dailyWindow(from: DayRange.evenings.from, to: DayRange.evenings.to), strength: strength) else { return false }
-            rules.append(evenings)
+        if let hours = range.hours {
+            guard let daily = try? Constraint(.dailyWindow(from: hours.from, to: hours.to), strength: strength) else { return false }
+            rules.append(daily)
         }
         return replace(.time, with: rules)
+    }
+
+    /// "Evenings", or "Between 5 PM and 9 PM": what a day range's hours toggle says.
+    public func hoursLabel(_ hours: DayRange.Hours) -> String {
+        chipFormatter.chips(for: .dailyWindow(from: hours.from, to: hours.to), issue: .time).first ?? "These hours"
     }
 
     /// Removes an optional chip: an issue the skill does not require, or a

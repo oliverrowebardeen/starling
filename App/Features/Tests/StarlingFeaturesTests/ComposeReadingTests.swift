@@ -1,4 +1,5 @@
 import Foundation
+import FindATime
 import StarlingCore
 import StarlingFakes
 @testable import StarlingFeatures
@@ -154,25 +155,44 @@ actor ReadingCounter {
         await h.model.understand()
         let chip = try #require(h.model.chipItems.first { $0.part == .issue(.time) })
         guard case .days(let parsed) = chip.editor else { Issue.record("Find a time edits days, got \(chip.editor)"); return }
-        #expect(!parsed.eveningsOnly)
+        #expect(parsed.hours == nil)
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = Fixtures.utc
         let today = calendar.startOfDay(for: h.clock.now)
         let friday = try #require(calendar.date(byAdding: .day, value: 4, to: today))
-        #expect(h.model.setDays(DayRange(from: today, to: friday, eveningsOnly: true)))
-        #expect(h.model.dayRange == DayRange(from: today, to: friday, eveningsOnly: true))
+        #expect(h.model.setDays(DayRange(from: today, to: friday, hours: .evenings)))
+        #expect(h.model.dayRange == DayRange(from: today, to: friday, hours: .evenings))
         let rules = try #require(h.model.constraints.constraints[.time]).map(\.rule)
         #expect(rules == [.within([try TimeSlot(start: today, end: friday.addingTimeInterval(24 * 3600))]), .dailyWindow(from: 17 * 60, to: 22 * 60)])
         let text = try #require(h.model.chipItems.first { $0.part == .issue(.time) }?.text)
         #expect(text == "Today to \(h.model.chipFormatter.dayWord(friday)), Evenings")
 
         // Back to all day; longer than two weeks is refused.
-        #expect(h.model.setDays(DayRange(from: today, to: friday, eveningsOnly: false)))
+        #expect(h.model.setDays(DayRange(from: today, to: friday)))
         #expect(h.model.constraints.constraints[.time]?.count == 1)
         let far = try #require(calendar.date(byAdding: .day, value: 20, to: today))
-        #expect(!h.model.setDays(DayRange(from: today, to: far, eveningsOnly: false)))
-        #expect(!h.model.setDays(DayRange(from: friday, to: today, eveningsOnly: false)))
+        #expect(!h.model.setDays(DayRange(from: today, to: far)))
+        #expect(!h.model.setDays(DayRange(from: friday, to: today)))
+    }
+
+    /// Lane C's request 6a: with no days in the words, Find a time asks
+    /// about the next week, in a meal's hours for a meal, and the editor
+    /// keeps those hours.
+    @Test func noDaysInTheWordsMeansNextWeekInTheMealsHours() async throws {
+        let model = ScriptedSkillModel(
+            onRoute: { _, _ in .findATime },
+            onIntent: { _, _ in ParsedIntent(constraints: try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("dinner")], avoided: []))]])) }
+        )
+        let h = try await ComposerHarness(skillModel: model)
+        h.model.text = "find a time for dinner"
+        await h.model.understand()
+        let rules = try #require(h.model.constraints.constraints[.time]).map(\.rule)
+        #expect(rules == (try FindATimeDefaults.timeConstraints(activity: try Keyword("dinner"), now: h.clock.now)).map(\.rule))
+        #expect(h.model.dayRange.hours == DayRange.Hours(from: 17 * 60, to: 21 * 60))
+        let chip = try #require(h.model.chipItems.first { $0.part == .issue(.time) }?.text)
+        #expect(plain(chip).hasPrefix("Today to ") && plain(chip).hasSuffix(", Between 5 PM and 9 PM"), "\(plain(chip))")
+        #expect(h.model.hoursLabel(.evenings) == "Evenings")
     }
 }
 
@@ -222,10 +242,10 @@ actor ReadingCounter {
         var range = try #require(details.days)
         #expect(details.window == nil)
         range.to = range.from.addingTimeInterval(3 * 24 * 3600)
-        range.eveningsOnly = true
+        range.hours = .evenings
         details.days = range
         #expect(h.model.apply(details) == nil)
-        #expect(h.model.dayRange.eveningsOnly)
+        #expect(h.model.dayRange.hours == .evenings)
         range.to = range.from.addingTimeInterval(-24 * 3600)
         details.days = range
         #expect(h.model.apply(details) == "The last day comes before the first.")

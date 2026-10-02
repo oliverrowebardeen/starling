@@ -59,7 +59,7 @@ struct NewView: View {
             case .time(let slot):
                 ChipTimeEditor(slot: slot) { composer.setTime($0) }
             case .days(let range):
-                ChipDaysEditor(range: range) { composer.setDays($0) }
+                ChipDaysEditor(range: range, hoursLabel: composer.hoursLabel) { composer.setDays($0) }
             }
         }
         .sheet(isPresented: $editingDetails) {
@@ -402,12 +402,13 @@ private struct ChipTimeEditor: View {
 /// only (device test 2).
 struct ChipDaysEditor: View {
     @State var range: DayRange
+    let hoursLabel: (DayRange.Hours) -> String
     let save: (DayRange) -> Bool
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            DayRangeFields(range: $range)
+            Form { DayRangeFields(range: $range, label: hoursLabel) }
                 .navigationTitle("When")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -421,15 +422,26 @@ struct ChipDaysEditor: View {
     }
 }
 
-/// From a day, to a day (at most two weeks), and evenings only.
+/// From a day, to a day (at most two weeks), and only some hours of each:
+/// the hours the request came with (a meal's), or evenings.
 struct DayRangeFields: View {
     @Binding var range: DayRange
+    let label: (DayRange.Hours) -> String
+    @State private var original: DayRange.Hours?
+
+    init(range: Binding<DayRange>, label: @escaping (DayRange.Hours) -> String) {
+        _range = range
+        self.label = label
+        _original = State(initialValue: range.wrappedValue.hours)
+    }
 
     var body: some View {
-        Form {
+        Group {
             DatePicker("From", selection: $range.from, displayedComponents: .date)
             DatePicker("To", selection: $range.to, in: range.from...range.from.addingTimeInterval(13 * 24 * 3600), displayedComponents: .date)
-            Toggle("Evenings only", isOn: $range.eveningsOnly)
+            let hours = original ?? .evenings
+            let words = label(hours)
+            Toggle("Only \(words.prefix(1).lowercased() + words.dropFirst())", isOn: Binding(get: { range.hours != nil }, set: { range.hours = $0 ? hours : nil }))
         }
     }
 }
@@ -508,12 +520,9 @@ private struct EventDetailsEditor: View {
     }
 
     @ViewBuilder private var when: some View {
-        if let days = details.days {
+        if details.days != nil {
             Section("When") {
-                DatePicker("From", selection: Binding(get: { days.from }, set: { details.days?.from = $0 }), displayedComponents: .date)
-                DatePicker("To", selection: Binding(get: { days.to }, set: { details.days?.to = $0 }),
-                           in: days.from...days.from.addingTimeInterval(13 * 24 * 3600), displayedComponents: .date)
-                Toggle("Evenings only", isOn: Binding(get: { days.eveningsOnly }, set: { details.days?.eveningsOnly = $0 }))
+                DayRangeFields(range: Binding(get: { details.days! }, set: { details.days = $0 }), label: composer.hoursLabel)
             }
         } else {
             Section("When") {

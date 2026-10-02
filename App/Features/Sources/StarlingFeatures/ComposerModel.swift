@@ -1,4 +1,5 @@
 import DownFor
+import FindATime
 import Foundation
 import Observation
 import PickAPlace
@@ -236,6 +237,16 @@ public final class ComposerModel {
         return "\(skill.wording.name) needs \(list). You set \(list) to Never."
     }
 
+    /// Lane C's default time for Find a time: the next 7 days, in a meal's
+    /// hours when the activity is a meal.
+    func findATimeDefault(activity: [Constraint]?) -> [Constraint]? {
+        let keyword = activity?.lazy.compactMap { constraint -> Keyword? in
+            if case .prefers(let liked, _) = constraint.rule { return liked.first }
+            return nil
+        }.first
+        return try? FindATimeDefaults.timeConstraints(activity: keyword, now: now())
+    }
+
     /// A tile tap: the owner chose the skill. Chips are refilled for it
     /// when there is text to read.
     public func choose(_ skill: SkillID) async {
@@ -248,6 +259,13 @@ public final class ComposerModel {
         // Another skill: its chips start from the words again.
         ownerSet = []
         hasReading = true
+        if skill == .findATime, constraints.constraints[.time] == nil, let time = findATimeDefault(activity: constraints.constraints[.activity]) {
+            applyingReading = true
+            var next = constraints.constraints
+            next[.time] = time
+            constraints = (try? ConstraintSet(next)) ?? constraints
+            applyingReading = false
+        }
         if let descriptor, availability(of: skill) == .available, !trimmedText.isEmpty, let skillModel {
             hasReading = false
             isUnderstanding = true
@@ -330,6 +348,11 @@ public final class ComposerModel {
         var next: [IssueKey: [Constraint]] = [:]
         for issue in skill.intent.slots.map(\.issue) {
             next[issue] = ownerSet.contains(.issue(issue)) ? constraints.constraints[issue] : parsed.constraints.constraints[issue]
+        }
+        // Find a time with no days in the words: lane C's default, the
+        // next week in the activity's usual hours (P15-C request 6a).
+        if skill.id == .findATime, next[.time] == nil {
+            next[.time] = findATimeDefault(activity: next[.activity])
         }
         constraints = (try? ConstraintSet(next)) ?? constraints
         if !ownerSet.contains(.expiry), let expires = parsed.expiresAt?.date, expires > now() { expiry = .at(expires) }
