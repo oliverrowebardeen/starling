@@ -2,7 +2,7 @@
 
 - Date: 2026-10-01
 - Owner: Orchestrator
-- Status: code complete and merged (main `7ed01cb`); the exit criteria still need Oliver's run on two iPhones
+- Status: open. The code is merged, but Phase 1.5 ends only after Oliver's run on two iPhones (Oliver, 2026-10-02).
 
 ## Summary
 
@@ -36,6 +36,16 @@ The prompt's section 12 is run on two real iPhones. "Ready for device" means the
 | 8 | A peer without a skill sees a graceful message; unsupported chains are hidden | Ready for device (ADRs 0010, 0012). |
 | 9 | Red-team scenarios pass | Done in code: 119 tests, zero known issues (ADRs 0250 to 0255). |
 | 10 | Release builds contain no Developer tab or test-build notices | Done: enforced on every gate and in CI (#62). |
+
+## Feedback from Oliver's first device test (2026-10-02, one phone)
+
+Fixes are in progress in lanes A to D.
+
+1. **Only the first chip was active.** Under "Starling understood", only the first chip was highlighted, and the others could be changed only through Edit. Every chip will be applied by default and tappable to edit. Optional chips can be removed (lane A).
+2. **"Change how long it stays out" read like the event's length.** It is how long friends can answer, and the copy will say so (lane A).
+3. **Find a time offered "expires in 3 hours".** The Down for… default was applied to every skill. Find a time and Pick a place will stay open until the asked-about time starts, at least 1 day and at most 7 (lanes A, C, D).
+4. **The mode chip "Invite" next to "Down for…" read oddly.** It will read "Ask quietly" or "Ask directly", and only for Down for… (lane A).
+5. **Chips paraphrased the owner's words.** "movie night" became "Watch Movie" and "IKEA trip" became "trip". Chips will use the owner's own words, without repeats (lane B, ADRs 0161 and 0212).
 
 ## Where reality contradicted the prompt
 
