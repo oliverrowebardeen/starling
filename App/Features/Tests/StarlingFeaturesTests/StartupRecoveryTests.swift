@@ -71,7 +71,7 @@ actor CountingService: SkillService {
         let message = MessageID()
         let record = EgressRecord(at: Timestamp(Fixtures.noon), recipient: maya,
                                   items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))], message: message)
-        let journal = GatedJournal([EgressJournalEntry(message: message, conversation: plan.conversation, record: record, sent: true)])
+        let journal = GatedJournal([EgressJournalEntry(message: message, conversation: plan.conversation, record: record, sent: true, skilled: true)])
         let service = CountingService()
         var services = AppModelTests.services()
         services.interactions = InMemoryInteractionStore([plan])
@@ -216,6 +216,7 @@ actor DeliverThenThrowTransport: Transport {
         try await outbox.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya, conversation: conversation, skill: SampleSkills.downFor.ref, mode: .askQuietly)
         #expect(app.pendingEgress.conversations == [conversation])
         #expect(await app.egress.unattributed == 0)
+        #expect(await app.egress.waitingForInteraction >= 1)
 
         let id = InteractionID()
         await down.emit(.incoming(id, conversation: conversation, from: maya, chainedFrom: nil))

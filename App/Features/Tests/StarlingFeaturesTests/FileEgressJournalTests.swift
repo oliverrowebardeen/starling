@@ -9,22 +9,40 @@ import Testing
     let directory = FileManager.default.temporaryDirectory.appending(path: "starling-journal-\(UUID().uuidString)")
     var file: JSONFile { JSONFile(url: directory.appending(path: "egress-journal.json")) }
 
-    func entry(sent: Bool, message: MessageID = MessageID()) -> EgressJournalEntry {
+    func entry(sent: Bool, skilled: Bool = true, message: MessageID = MessageID()) -> EgressJournalEntry {
         EgressJournalEntry(message: message, conversation: ConversationID(),
-                           record: EgressRecord(at: Timestamp(Date()), recipient: .random(), items: [], message: message), sent: sent)
+                           record: EgressRecord(at: Timestamp(Date()), recipient: .random(), items: [], message: message), sent: sent, skilled: skilled)
     }
 
     @Test func entriesSurviveARelaunchUntilForgotten() async throws {
         let first = entry(sent: false)
-        let second = entry(sent: true)
+        // A link-level send (a hello) as well as a skill's.
+        let second = entry(sent: true, skilled: false)
         let journal = FileEgressJournal(file: file)
         try await journal.remember(first)
         try await journal.remember(second)
-        let confirmed = EgressJournalEntry(message: first.message, conversation: first.conversation, record: first.record, sent: true)
+        let confirmed = EgressJournalEntry(message: first.message, conversation: first.conversation, record: first.record, sent: true, skilled: true)
         try await journal.remember(confirmed)
-        #expect(try await FileEgressJournal(file: file).unresolved() == [confirmed, second])
+        let reopened = try await FileEgressJournal(file: file).unresolved()
+        #expect(reopened == [confirmed, second])
+        #expect(reopened.map(\.skilled) == [true, false])
         try await journal.forget(first.message)
         #expect(try await FileEgressJournal(file: file).unresolved() == [second])
+    }
+
+    /// A journal from before lane E's `skilled` field still reads, and its
+    /// entries wait for their interaction, the safe reading.
+    @Test func anOlderJournalReadsItsEntriesAsSkillSends() async throws {
+        let old = entry(sent: true, skilled: false)
+        try await FileEgressJournal(file: file).remember(old)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file.url)) as? [String: Any])
+        var entries = try #require(json["entries"] as? [[String: Any]])
+        entries[0]["skilled"] = nil
+        json["entries"] = entries
+        try JSONSerialization.data(withJSONObject: json).write(to: file.url)
+        let reopened = try await FileEgressJournal(file: file).unresolved()
+        #expect(reopened.map(\.message) == [old.message])
+        #expect(reopened.map(\.skilled) == [true])
     }
 
     @Test func anUnreadableJournalThrowsAndTheRecorderSaysSo() async throws {

@@ -307,8 +307,11 @@ public final class AppModel {
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
             // A friend's request just installed: write any send its skill
-            // made before the coordinator saw it.
-            if before == nil, let egress = self?.egress { Task { await egress.retryPending() } }
+            // made before the coordinator saw it (lane E's recorder).
+            if before == nil, let egress = self?.egress {
+                let conversation = after.conversation
+                Task { await egress.interactionArrived(conversation: conversation) }
+            }
             // A card the owner passed stays quiet until its skill ends it.
             if self?.lifecycle.passed.contains(after.id) == true { return }
             guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
@@ -598,21 +601,16 @@ private final class EgressRelay: EgressSink {
     /// Clears the send from `pending` only once its record is durably on
     /// its interaction. A skill's send whose interaction is not installed
     /// yet (a friend's request answered right after the service announced
-    /// it) throws, so the recorder keeps it and retries once the
-    /// coordinator installs the interaction. Only a link-level send, or one
-    /// recovered from the journal with no interaction left, is unattributed.
+    /// it) returns false and stays pending: lane E's recorder keeps it
+    /// journaled and writes it when `interactionArrived` is called. Only a
+    /// link-level send, which no interaction owns, is cleared unattributed.
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
-        guard let lifecycle else { throw EgressAwaitingInteraction() }
+        guard let lifecycle else { return false }
         let found = try await lifecycle.appendEgress(record, conversation: conversation)
-        guard let message = record.message else { return found }
-        if !found, pending.isSkillSend(message) { throw EgressAwaitingInteraction() }
-        pending.recorded(message)
+        if let message = record.message, found || !pending.isSkillSend(message) { pending.recorded(message) }
         return found
     }
 }
-
-/// A skill's send whose interaction the coordinator has not installed yet.
-struct EgressAwaitingInteraction: Error {}
 
 /// Friends' names, readable from the `@Sendable` closures words use.
 private final class NameBox: @unchecked Sendable {
