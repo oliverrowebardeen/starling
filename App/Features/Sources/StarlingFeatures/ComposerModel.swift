@@ -628,6 +628,7 @@ public final class ComposerModel {
         do {
             // A quiet ask goes to each friend separately (amendment 17).
             let id = try await lifecycle.send(outgoing, chain: link, settings: settings.skillSettings).first ?? outgoing.interaction
+            if let inviting { lifecycle.addToRequestGroup(id, group: inviting) }
             clear()
             notice = fallback
             if !settings.settings.notificationsOffered { offerNotifications = true }
@@ -663,7 +664,31 @@ public final class ComposerModel {
         places?.clear()
         expiry = .hours(3)
         chain = nil
+        inviting = nil
         notice = nil
+    }
+
+    // MARK: One plan from pair plans
+
+    /// The quiet ask whose matched friends this draft invites together.
+    public private(set) var inviting: UUID?
+
+    /// Opens New on an Invite to the friends a quiet ask matched with, with
+    /// the plans' activity and time (P15-B request 9, ADR 0210 decision
+    /// 20). The invitation names who is coming under the people topic.
+    public func inviteMatched(_ invite: GroupInvite) {
+        clear()
+        skill = .downFor
+        mode = .invite
+        audience = .pick
+        picked = Set(invite.friends)
+        var issues: [IssueKey: [Constraint]] = [:]
+        if let activity = invite.activity, let keyword = try? Keyword(activity), let liked = try? Constraint(.prefers(liked: [keyword], avoided: [])) {
+            issues[.activity] = [liked]
+        }
+        if let time = invite.plans.first?.plan?.time, let within = try? Constraint(.within([time])) { issues[.time] = [within] }
+        constraints = (try? ConstraintSet(issues)) ?? .empty
+        inviting = invite.group
     }
 
     // MARK: Keep it going

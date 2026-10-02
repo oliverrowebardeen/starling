@@ -325,6 +325,14 @@ public final class LifecycleCoordinator {
         return started
     }
 
+    /// Puts a later request with the same friends under a quiet ask's group:
+    /// the invitation to make its pair plans one plan (P15-B request 9).
+    public func addToRequestGroup(_ id: InteractionID, group: UUID) {
+        guard interaction(id) != nil, requestGroups.values.contains(group) else { return }
+        requestGroups[id] = group
+        onRequestGroupsChange(requestGroups)
+    }
+
     /// Drops the group of a quiet ask none of whose interactions started and
     /// none of which is on the phone.
     private func forgetGroup(_ siblings: [SkillRequest]) {

@@ -270,6 +270,13 @@ actor FailingSkillService: SkillService {
         let group = try #require(lifecycle.requestGroups[ids[0]])
         #expect(lifecycle.requestGroups[ids[1]] == group)
         #expect(groups.count == 1)
+
+        // The later invitation to both joins the group; an unknown group does not.
+        let together = try await lifecycle.start(request(to: [maya, jake]), settings: Self.settings)
+        lifecycle.addToRequestGroup(together, group: UUID())
+        #expect(lifecycle.requestGroups[together] == nil)
+        lifecycle.addToRequestGroup(together, group: group)
+        #expect(lifecycle.requestGroups[together] == group)
     }
 
     @Test func anInviteStaysOneInteraction() async throws {

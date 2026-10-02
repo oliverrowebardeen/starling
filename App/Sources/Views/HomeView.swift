@@ -52,6 +52,15 @@ struct HomeView: View {
                     ForEach(home.comingUp) { summary in
                         NavigationLink(value: PlanRoute(id: summary.id)) { comingUp(summary) }
                     }
+                    // A quiet ask matched several friends: make it one plan.
+                    ForEach(home.groupInvites) { invite in
+                        Button {
+                            app.composer.inviteMatched(invite)
+                            startNew()
+                        } label: {
+                            Label(invite.title, systemImage: "person.3")
+                        }
+                    }
                 }
             }
         }

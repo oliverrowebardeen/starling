@@ -228,6 +228,26 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(Set(h.model.participants) == [h.maya.id, h.leo.id])
     }
 
+    /// P15-B request 9: New opens on an Invite to the matched friends with
+    /// the plans' activity and time, and sends it as one request.
+    @Test func invitingMatchedFriendsOpensOneInvite() async throws {
+        let h = try await ComposerHarness()
+        let slot = try TimeSlot(start: h.clock.now.addingTimeInterval(3600), end: h.clock.now.addingTimeInterval(7200))
+        let plan = try h.plannedParent(SampleSkills.downFor, attendees: [h.me, h.maya.id], activity: try Keyword("boba"), time: slot)
+        let invite = GroupInvite(group: UUID(), plans: [plan], friends: [h.maya.id, h.leo.id], title: "Invite Maya and Leo together", activity: "boba")
+        h.model.inviteMatched(invite)
+        #expect(h.model.skill == .downFor)
+        #expect(h.model.sendMode == .invite)
+        #expect(Set(h.model.participants) == [h.maya.id, h.leo.id])
+        #expect(h.model.constraints.constraints.keys.sorted() == [.activity, .time])
+
+        _ = try #require(await h.model.send())
+        let sent = await h.down.started
+        #expect(sent.count == 1)
+        #expect(sent.first?.intent.mode == .invite)
+        #expect(Set(sent.first?.participants ?? []) == [h.maya.id, h.leo.id])
+    }
+
     @Test func sendingStartsTheSkillWithTopicsAsSharingAndClearsTheDraft() async throws {
         let h = try await ComposerHarness()
         await h.settings.set(.never, for: .budget)

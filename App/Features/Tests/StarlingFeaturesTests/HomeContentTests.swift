@@ -64,6 +64,35 @@ import Testing
         #expect(oneMatch.inProgress.first?.status == "Checking with 1 friend")
     }
 
+    /// P15-B request 9: two or more pair plans from one quiet ask offer to
+    /// invite those friends together, until the owner has.
+    @Test func pairPlansFromOneQuietAskOfferOneInvite() throws {
+        let slot = try TimeSlot(start: Fixtures.noon.addingTimeInterval(6 * 3600), end: Fixtures.noon.addingTimeInterval(7 * 3600))
+        func planned(with friend: PeerID) throws -> Interaction {
+            var item = try make(SampleSkills.downFor, with: [friend], [.started, .proposalReady(SkillProposal(revision: 1, participants: [me, friend], terms: try Terms([
+                .activity: .keywords([try Keyword("boba")]),
+            ]))), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)])
+            item.record(.plan(try Plan(origin: item.conversation, attendees: Attendees([me, friend]), activity: Keyword("boba"), time: slot)))
+            return item
+        }
+        let withMaya = try planned(with: maya)
+        let withJake = try planned(with: jake)
+        let waiting = try make(SampleSkills.downFor, with: [priya], [.started])
+        let group = UUID()
+        let groups = [withMaya.id: group, withJake.id: group, waiting.id: group]
+
+        #expect(HomeContent([withMaya, waiting], words: words, groups: groups).groupInvites.isEmpty)
+        let invites = HomeContent([withMaya, withJake, waiting], words: words, groups: groups).groupInvites
+        #expect(invites.map(\.friends) == [[maya, jake]])
+        #expect(invites.first?.title == "Invite Maya and Jake together")
+        #expect(invites.first?.activity == "boba")
+
+        let sent = try make(SampleSkills.downFor, with: [maya, jake], [.started])
+        var withInvite = groups
+        withInvite[sent.id] = group
+        #expect(HomeContent([withMaya, withJake, waiting, sent], words: words, groups: withInvite).groupInvites.isEmpty)
+    }
+
     @Test func interactionsLandInTheirSectionsWithAHeadline() throws {
         let proposed = try make(SampleSkills.downFor, with: [maya, jake], [.started, .proposalReady(try bobaProposal())])
         let checking = try make(SampleSkills.downFor, with: [maya, jake, priya], [.started])
