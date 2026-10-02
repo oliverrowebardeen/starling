@@ -57,4 +57,24 @@ import Testing
         let timed = ProposalFacts(skill: SampleSkills.downFor.ref, friendNames: ["Riley"], activity: try Keyword("dinner"), time: try TimeSlot(start: at(18), end: at(20)), place: nil, timeZone: utc)
         #expect(try SkillOutputMapping.sentence("You and Riley are both down for dinner. {time}?", facts: timed, time: "tonight at 6 PM") == "You and Riley are both down for dinner. Tonight at 6 PM?")
     }
+
+    // MARK: Reading the same draft again
+
+    @Test func theSameWordsAreReadOnce() {
+        let cache = SkillReadCache()
+        let key = SkillReadCache.intentKey("dinner  tonight ", skill: SampleSkills.downFor)
+        #expect(key == SkillReadCache.intentKey("dinner tonight", skill: SampleSkills.downFor))
+        #expect(key != SkillReadCache.intentKey("dinner tonight", skill: SampleSkills.findATime))
+        #expect(cache.intent(for: key) == nil)
+        let raw = RawIntent(rules: RawRules(wants: ["dinner"]))
+        cache.remember(intent: raw, for: key)
+        #expect(cache.intent(for: key) == raw)
+        // "No skill" is an answer worth keeping too.
+        let route = SkillReadCache.routeKey("thanks!", skills: [SampleSkills.downFor])
+        cache.remember(route: nil, for: route)
+        #expect(cache.route(for: route) == .some(nil))
+        // Old drafts give way to new ones.
+        for index in 0..<SkillReadCache.capacity { cache.remember(intent: raw, for: "draft \(index)") }
+        #expect(cache.intent(for: key) == nil)
+    }
 }
