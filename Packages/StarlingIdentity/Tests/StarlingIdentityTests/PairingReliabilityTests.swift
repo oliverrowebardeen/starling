@@ -322,6 +322,7 @@ extension PairingConfiguration {
         #expect(steps.contains(.started(initiator: true)))
         #expect(steps.contains(.sent(.message1)))
         #expect(!String(describing: await log.values).contains(code))
+        #expect(await log.values.first { $0.step == .codeShown }?.description.hasSuffix(": code shown") == true)
         withExtendedLifetime(services) {}
     }
 }

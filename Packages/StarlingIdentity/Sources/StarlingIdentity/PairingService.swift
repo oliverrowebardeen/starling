@@ -841,3 +841,31 @@ actor PairingCeremony: PairingSession {
         }
     }
 }
+
+extension PairingStep: CustomStringConvertible {
+    /// One line for the Debug pairing log.
+    public var description: String {
+        switch self {
+        case .started(let initiator): "started as \(initiator ? "initiator" : "responder")"
+        case .sent(let message): "sent \(message.rawValue)"
+        case .resent(let message): "sent \(message.rawValue) again"
+        case .unsent(let message): "no link took \(message.rawValue)"
+        case .received(let message): "received \(message.rawValue)"
+        case .ignored(let message): "ignored \(message.rawValue)"
+        case .restarted: "the other phone started over; restarted the handshake"
+        case .codeShown: "code shown"
+        case .confirmed(let codesMatch): codesMatch ? "owner says the codes match" : "owner says the codes differ"
+        case .peerAccepted: "the other owner confirmed"
+        case .linkUp: "link up"
+        case .linkDown: "link down"
+        case .requested: "asked to pair by this phone"
+        case .answeredAfterEnd: "answered a resend after the ceremony ended"
+        case .paired: "paired"
+        case .failed(let failure): "failed: \(failure)"
+        }
+    }
+}
+
+extension PairingTrace: CustomStringConvertible {
+    public var description: String { "\(peer.short): \(step)" }
+}
