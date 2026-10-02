@@ -61,9 +61,10 @@ import Testing
         #expect(with.kinds == without.kinds, "with C \(with.kinds), without \(without.kinds)")
         // No audience check, or anything else, about other friends.
         #expect(with.checks == 0 && without.checks == 0)
-        // The proposal reaches B as soon as B's own answers are in.
-        let gap = abs((with.proposedAt - without.proposedAt) / .milliseconds(1))
-        #expect(gap < 250, "proposal time differs by \(gap) ms")
+        // The same proposals at the same scheduled instants, on the
+        // service's clock: compared exactly, whatever the machine's load.
+        #expect(with.proposalsByInstant == without.proposalsByInstant)
+        #expect(with.proposalsByInstant == Array(1...with.proposalsByInstant.count))
     }
 
     struct Transcript: Sendable {
@@ -71,33 +72,31 @@ import Testing
         let kinds: [MessageBody.Kind]
         /// PSI sessions A started with B beyond the first.
         let checks: Int
-        /// When A's proposal reached B, after A took the request on.
-        let proposedAt: Duration
+        /// Proposals B had from A by each instant of the delivery schedule.
+        let proposalsByInstant: [Int]
     }
 
-    /// A asks B and C, each on its own; B asks A; C, when up for it, asks A.
+    /// A asks B and C, each on its own; B asks A; C, when up for it, asks
+    /// A. Runs on virtual time.
     static func membersTranscript(otherFriendIsUp: Bool) async throws -> Transcript {
-        let world = World(3)
+        let time = VirtualTime()
+        let world = World(3, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b, c) = (world["A"], world["B"], world["C"])
-        let clock = ContinuousClock()
-        let started = clock.now
         _ = try await a.downEach(for: ["boba"], with: [b, c])
         let bs = try await b.down(for: ["boba"], with: [a])
         if otherFriendIsUp { _ = try await c.down(for: ["boba"], with: [a]) }
         try await b.waitForProposal(bs)
-        let proposedAt = started.duration(to: clock.now)
         #expect(await b.lifecycle.interaction(bs)?.proposal?.participants == [a.id, b.id])
-        // The wire's recorder can lag the card by a moment.
-        try await eventually("the proposal on the wire") {
-            await world.wire.envelopes.contains { $0.sender == a.id && $0.recipient == b.id && $0.body.kind == .propose }
+        let proposalsByInstant = try await time.proposalsAtEachInstant {
+            await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id && $0.body.kind == .propose }.count
         }
         let toB = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id }
         var kinds: [MessageBody.Kind] = []
         for kind in toB.map(\.body.kind) where kinds.last != kind { kinds.append(kind) }
         let sessions = Set(toB.compactMap { envelope -> UUID? in if case .psi(let frame) = envelope.body { frame.session } else { nil } })
-        return Transcript(kinds: kinds, checks: max(0, sessions.count - 1), proposedAt: proposedAt)
+        return Transcript(kinds: kinds, checks: max(0, sessions.count - 1), proposalsByInstant: proposalsByInstant)
     }
 
     // MARK: Focused review of e60b3c0: a restart retires the starter's conversation
@@ -231,26 +230,25 @@ import Testing
         let passed = try await Self.proposalsSeenByAFriend(starterPasses: true)
         let silent = try await Self.proposalsSeenByAFriend(starterPasses: false)
         #expect(passed.kinds == [.propose] && silent.kinds == [.propose], "passed \(passed.kinds), silent \(silent.kinds)")
-        // The same fixed schedule: as many resends, ending at the same time.
-        #expect(abs(passed.count - silent.count) <= 1, "passed \(passed.count), silent \(silent.count)")
-        #expect(passed.count > 3)
-        let gap = abs((passed.lastAfterFirst - silent.lastAfterFirst) / .milliseconds(1))
-        #expect(gap < 250, "the last proposal differs by \(gap) ms")
+        // The same fixed schedule, instant by instant, on the service's clock.
+        #expect(passed.proposalsByInstant == silent.proposalsByInstant)
+        #expect(passed.proposalsByInstant == Array(1...passed.proposalsByInstant.count))
+        #expect(passed.proposalsByInstant.count > 3)
     }
 
     struct Delivered: Sendable {
-        /// Kinds the starter sent after its proposal, repeats collapsed.
+        /// Kinds the starter sent from its first proposal on, repeats collapsed.
         let kinds: [MessageBody.Kind]
-        let count: Int
-        let lastAfterFirst: Duration
+        /// Proposals B had by each instant of the delivery schedule.
+        let proposalsByInstant: [Int]
     }
 
-    /// A and B ask each other; A carries the pair. Neither card is
-    /// answered by B; A passes soon after its card shows, or never answers.
-    /// Returns what A sent B from its first proposal until well after the
-    /// owner window, timed as B received it.
+    /// A and B ask each other; A carries the pair. B never answers its
+    /// card; A passes as soon as its card shows, or never answers. Runs on
+    /// virtual time through the schedule and the window.
     static func proposalsSeenByAFriend(starterPasses: Bool) async throws -> Delivered {
-        let world = World(2)
+        let time = VirtualTime()
+        let world = World(2, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b) = (world["A"], world["B"])
@@ -258,33 +256,17 @@ import Testing
         let theirs = try await b.down(for: ["boba"], with: [a])
         try await a.waitForProposal(mine)
         try await b.waitForProposal(theirs)
-        let clock = ContinuousClock()
-        var seen: [(MessageBody.Kind, ContinuousClock.Instant)] = []
-        var counted = 0
-        func observe() async {
-            let toB = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id }
-            let proposalsSoFar = toB.drop { $0.body.kind != .propose }
-            for envelope in proposalsSoFar.dropFirst(counted) { seen.append((envelope.body.kind, clock.now)) }
-            counted = proposalsSoFar.count
+        if starterPasses { try await a.pass(mine) }
+        let proposalsByInstant = try await time.proposalsAtEachInstant {
+            await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id && $0.body.kind == .propose }.count
         }
-        await observe()
-        if starterPasses {
-            try await Task.sleep(for: .milliseconds(150))
-            try await a.pass(mine)
-        }
-        // The window is 2 s; watch for a second more.
-        let until = clock.now.advanced(by: .seconds(3))
-        while clock.now < until {
-            await observe()
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try await a.waitFor(starterPasses ? .ended(.declined) : .ended(.expired), mine)
+        await time.advance(to: fastConfiguration.ownerWindow)
+        try await a.waitFor(starterPasses ? .ended(.declined) : .ended(.expired), mine, timeout: .seconds(60))
         #expect(await !b.lifecycle.reached(.planned, theirs))
+        let toB = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id }
         var kinds: [MessageBody.Kind] = []
-        for (kind, _) in seen where kinds.last != kind { kinds.append(kind) }
-        let first = try #require(seen.first?.1)
-        let last = try #require(seen.last?.1)
-        return Delivered(kinds: kinds, count: seen.count, lastAfterFirst: first.duration(to: last))
+        for kind in toB.map(\.body.kind).drop(while: { $0 != .propose }) where kinds.last != kind { kinds.append(kind) }
+        return Delivered(kinds: kinds, proposalsByInstant: proposalsByInstant)
     }
 
     // MARK: Focused review of 1d52e7b: toggle another friend's interest
@@ -300,9 +282,10 @@ import Testing
         #expect(bIsUp.terms == bIsNot.terms && bIsUp.terms != nil)
         #expect(bIsUp.participants == ["A", "C"] && bIsNot.participants == ["A", "C"])
         #expect(!bIsUp.kinds.contains(.reject))
-        #expect(abs(bIsUp.proposals - bIsNot.proposals) <= 1, "B up \(bIsUp.proposals), B not \(bIsNot.proposals)")
-        let gap = abs((bIsUp.firstProposalAt - bIsNot.firstProposalAt) / .milliseconds(1))
-        #expect(gap < 250, "the proposal reached C \(gap) ms apart")
+        // The same proposals at the same scheduled instants, compared
+        // exactly on the service's clock.
+        #expect(bIsUp.proposalsByInstant == bIsNot.proposalsByInstant)
+        #expect(bIsUp.proposalsByInstant == Array(1...bIsUp.proposalsByInstant.count))
         // And nothing at all from B, either way.
         #expect(bIsUp.fromB.isEmpty && bIsNot.fromB.isEmpty)
     }
@@ -312,32 +295,32 @@ import Testing
         let participants: [String]?
         /// Everything A sent C, repeats collapsed.
         let kinds: [MessageBody.Kind]
-        let proposals: Int
-        let firstProposalAt: Duration
+        /// Proposals C had from A by each instant of the delivery schedule.
+        let proposalsByInstant: [Int]
         let fromB: [MessageBody.Kind]
     }
 
+    /// Runs on virtual time.
     static func cTranscript(bIsUp: Bool) async throws -> CView {
-        let world = World(3)
+        let time = VirtualTime()
+        let world = World(3, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b, c) = (world["A"], world["B"], world["C"])
-        let clock = ContinuousClock()
-        let started = clock.now
         _ = try await a.downEach(for: ["boba"], with: [b, c])
         let cs = try await c.downEach(for: ["boba"], with: [a, b])
         if bIsUp { _ = try await b.down(for: ["boba"], with: [a]) }
         try await c.waitForProposal(cs[0])
-        let proposedAt = started.duration(to: clock.now)
-        try await Task.sleep(for: .milliseconds(1_500))
+        let proposalsByInstant = try await time.proposalsAtEachInstant {
+            await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == c.id && $0.body.kind == .propose }.count
+        }
         let toC = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == c.id }
         var kinds: [MessageBody.Kind] = []
         for kind in toC.map(\.body.kind) where kinds.last != kind { kinds.append(kind) }
         let card = await c.lifecycle.interaction(cs[0])?.proposal
         let names = [a.id: "A", b.id: "B", c.id: "C"]
         return CView(
-            terms: card?.terms, participants: card?.participants.map { names[$0] ?? "?" }, kinds: kinds,
-            proposals: toC.filter { $0.body.kind == .propose }.count, firstProposalAt: proposedAt,
+            terms: card?.terms, participants: card?.participants.map { names[$0] ?? "?" }, kinds: kinds, proposalsByInstant: proposalsByInstant,
             fromB: await world.wire.envelopes.filter { $0.sender == b.id && $0.recipient == c.id }.map(\.body.kind)
         )
     }
@@ -348,28 +331,29 @@ import Testing
     /// keeps the proposal on its schedule and reports the pass, and retires
     /// the conversation, only when that schedule and the window are over.
     @Test func aStartersPassEndsOnlyWhenItsScheduleDoes() async throws {
-        let world = World(2)
+        let time = VirtualTime()
+        let world = World(2, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b) = (world["A"], world["B"])
         let mine = try await a.down(for: ["boba"], with: [b])
         _ = try await b.down(for: ["boba"], with: [a])
         try await a.waitForProposal(mine)
-        let clock = ContinuousClock()
-        let cardShown = clock.now
         try await a.pass(mine)
         #expect(await a.lifecycle.hidden.contains(mine))
         let conversation = try #require(await a.lifecycle.interaction(mine)?.conversation)
-        try await Task.sleep(for: .milliseconds(500))
-        // Still running: not reported, not retired, the proposal still going.
+        // The whole schedule goes out after the pass, as after silence.
+        let proposalsByInstant = try await time.proposalsAtEachInstant {
+            await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.count
+        }
+        #expect(proposalsByInstant == Array(1...proposalsByInstant.count))
+        // Just before the window: not reported, not retired.
+        await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
         #expect(await a.lifecycle.state(mine) == .proposed)
         #expect(try await !a.ledger.isRetired(conversation))
-        let before = await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.count
-        try await Task.sleep(for: .milliseconds(400))
-        #expect(await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .propose }.count > before)
-        // Then the pass, after the window, with the conversation retired first.
-        try await a.waitFor(.ended(.declined), mine)
-        #expect(cardShown.duration(to: clock.now) >= .milliseconds(1_800))
+        // At the window: the pass, with the conversation retired first.
+        await time.advance(to: fastConfiguration.ownerWindow)
+        try await a.waitFor(.ended(.declined), mine, timeout: .seconds(60))
         #expect(try await a.ledger.isRetired(conversation))
         await world.expectCleanLifecycles()
     }

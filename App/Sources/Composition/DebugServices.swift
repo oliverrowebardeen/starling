@@ -294,7 +294,11 @@ final class DemoDriver {
             for request in await service.started where !seenStarts.contains(request.interaction) {
                 seenStarts.insert(request.interaction)
                 requests[request.interaction] = (request, service)
-                if autoPropose {
+                // An invitation's starter is never told a friend is down
+                // before that friend says I'm in (issue #95), so a scripted
+                // Down for... invitation waits for the Developer buttons.
+                let invitation = request.intent.skill.id == .downFor && request.intent.mode == .invite
+                if autoPropose, !invitation {
                     try? await Task.sleep(for: .seconds(2))
                     await propose(request.interaction)
                 }

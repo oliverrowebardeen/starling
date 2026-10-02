@@ -77,7 +77,7 @@ import Testing
 
     @Test func picksTheStartersFirstChoiceAtTheEarliestSharedTime() throws {
         let terms = try #require(PairPlanner.plan(
-            liked: ["boba", "tacos"].map(T.keyword), answers: answers(halfHours(19, 23), ["tacos", "boba"]), maxMinutes: 120, now: T.now
+            liked: ["boba", "tacos"].map(T.keyword), answers: answers(halfHours(19, 23), ["tacos", "boba"]), maxMinutes: 120, earliest: T.now
         ))
         #expect(terms[.activity] == .keywords([T.keyword("boba")]))
         // Grown from the first shared half-hour, up to two hours.
@@ -88,18 +88,18 @@ import Testing
 
     @Test func theTimeStopsWhereTheSharedTimeDoes() throws {
         let terms = try #require(PairPlanner.plan(
-            liked: [T.keyword("boba")], answers: answers(halfHours(19, 20) + halfHours(21, 22), ["boba"]), maxMinutes: 120, now: T.now
+            liked: [T.keyword("boba")], answers: answers(halfHours(19, 20) + halfHours(21, 22), ["boba"]), maxMinutes: 120, earliest: T.now
         ))
         #expect(terms[.time] == .slots([T.slot(19, 20)]))
     }
 
     @Test func noSharedActivityMeansNoPlan() {
-        #expect(PairPlanner.plan(liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), []), maxMinutes: 120, now: T.now) == nil)
+        #expect(PairPlanner.plan(liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), []), maxMinutes: 120, earliest: T.now) == nil)
     }
 
-    @Test func slotsThatHaveStartedAreSkipped() throws {
+    @Test func slotsBeforeTheEarliestStartAreSkipped() throws {
         let terms = try #require(PairPlanner.plan(
-            liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), ["boba"]), maxMinutes: 120, now: T.at(19.6)
+            liked: [T.keyword("boba")], answers: answers(halfHours(19, 21), ["boba"]), maxMinutes: 120, earliest: T.at(19.6)
         ))
         #expect(terms[.time] == .slots([T.slot(20, 21)]))
     }

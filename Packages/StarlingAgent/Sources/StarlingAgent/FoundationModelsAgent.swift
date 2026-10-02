@@ -22,6 +22,9 @@ public struct FoundationModelsAgent: AgentModel {
     private let model: SystemLanguageModel
     private let timeZone: TimeZone
     private let estimateWhenUncountable: Bool
+    /// Model answers for drafts already read (`SkillModel`), shared by
+    /// every copy of this agent.
+    let skillReads = SkillReadCache()
 
     /// - Parameter estimateWhenUncountable: When the SDK cannot count tokens,
     ///   report a characters/3.5 estimate instead of nil. For the bench only;

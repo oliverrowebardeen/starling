@@ -257,7 +257,7 @@ final class Phone: Sendable {
         try await service.answer(id, with: .accept(proposal: revision))
     }
 
-    func waitFor(_ state: InteractionState, _ id: InteractionID, timeout: Duration = .seconds(15)) async throws {
+    func waitFor(_ state: InteractionState, _ id: InteractionID, timeout: Duration = .seconds(30)) async throws {
         try await eventually(timeout: timeout, "\(name) \(state)") {
             // A plan arrives as its own event right after `planned`.
             let reached = await self.lifecycle.reached(state, id)
@@ -266,7 +266,7 @@ final class Phone: Sendable {
         }
     }
 
-    func waitForProposal(_ id: InteractionID, revision: UInt32 = 1, timeout: Duration = .seconds(15)) async throws {
+    func waitForProposal(_ id: InteractionID, revision: UInt32 = 1, timeout: Duration = .seconds(30)) async throws {
         try await eventually(timeout: timeout, "\(name) proposal \(revision)") {
             let interaction = await self.lifecycle.interaction(id)
             return interaction?.proposalRevision == revision && interaction?.state == .proposed
@@ -341,7 +341,7 @@ final class World: Sendable {
     }
 }
 
-func eventually(timeout: Duration = .seconds(15), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
+func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
@@ -422,5 +422,24 @@ actor VirtualTime {
             sleepers[id] = nil
             sleeper.continuation.resume()
         }
+    }
+}
+
+extension VirtualTime {
+    /// Steps time through one proposal's delivery schedule (ADR 0210
+    /// decision 13), from a proposal made at time zero, and returns how many
+    /// proposals had reached the friend by each scheduled instant. Two runs
+    /// compare exactly: no deadline depends on how busy the machine is,
+    /// and real time only waits, generously, for work already due.
+    func proposalsAtEachInstant(_ configuration: DownForConfiguration = fastConfiguration, count: @Sendable () async -> Int) async throws -> [Int] {
+        let schedule = DownForService.deliverySchedule(window: configuration.ownerWindow, first: configuration.retryInterval, cap: configuration.maxBackoff)
+        try await eventually(timeout: .seconds(60), "the schedule") { Set(await self.due).isSuperset(of: schedule.dropFirst()) }
+        var counts: [Int] = []
+        for (index, instant) in schedule.enumerated() {
+            advance(to: instant)
+            try await eventually(timeout: .seconds(60), "proposal \(index + 1)") { await count() >= index + 1 }
+            counts.append(await count())
+        }
+        return counts
     }
 }

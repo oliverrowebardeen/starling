@@ -16,12 +16,13 @@ extension DownForService {
     // MARK: - Starter
 
     /// The plan an invitation offers: the first block of the starter's own
-    /// free time, up to two hours, its first activity, and for two or more
+    /// free time that leaves an hour's notice (`minimumLead`), up to two hours, its first activity, and for two or more
     /// friends the roster, starter first. Nothing the starter keeps on the
     /// phone (budget, place) goes in it.
     func invitationTerms(for profile: DownForProfile, inviting friends: [PeerID], now: Date) -> Terms? {
         guard let activity = profile.liked.first else { return nil }
-        let slots = profile.tokens(now: now).slots
+        let earliest = earliestStart(now: now)
+        let slots = profile.tokens(now: now).slots.filter { $0.start >= earliest }
         guard let first = slots.first else { return nil }
         var end = first.endMinute
         for slot in slots.dropFirst() where slot.startMinute == end && slot.endMinute - first.startMinute <= configuration.maxPlanMinutes {
