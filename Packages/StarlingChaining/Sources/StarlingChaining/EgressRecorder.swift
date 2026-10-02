@@ -24,6 +24,20 @@ public protocol EgressSink: Sendable {
     /// interaction on this phone. The recorder retries a write that threw,
     /// and the first attempt may have landed.
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool
+
+    /// The same, with the interaction the send named in
+    /// `OutboundContext.interaction`, when it named one. A send can belong to
+    /// an interaction whose own conversation is another (a Down for… member
+    /// sends in the starter's), so a sink that can should record it there.
+    /// The recorder always calls this one; by default it drops
+    /// `interaction` and calls the two-argument method.
+    func appendEgress(_ record: EgressRecord, conversation: ConversationID, interaction: InteractionID?) async throws -> Bool
+}
+
+extension EgressSink {
+    public func appendEgress(_ record: EgressRecord, conversation: ConversationID, interaction: InteractionID?) async throws -> Bool {
+        try await appendEgress(record, conversation: conversation)
+    }
 }
 
 /// One send whose record is not yet confirmed on its interaction.
@@ -40,16 +54,21 @@ public struct EgressJournalEntry: Hashable, Sendable, Codable {
     /// record waits for it rather than being dropped. False only for a
     /// link-level envelope such as `hello`.
     public let skilled: Bool
+    /// The interaction the send named in `OutboundContext.interaction`, so a
+    /// send recovered after a crash still lands on it. Nil when the send
+    /// named none, and on entries written before this field existed.
+    public let interaction: InteractionID?
 
-    public init(message: MessageID, conversation: ConversationID, record: EgressRecord, sent: Bool, skilled: Bool) {
+    public init(message: MessageID, conversation: ConversationID, record: EgressRecord, sent: Bool, skilled: Bool, interaction: InteractionID? = nil) {
         self.message = message
         self.conversation = conversation
         self.record = record
         self.sent = sent
         self.skilled = skilled
+        self.interaction = interaction
     }
 
-    private enum CodingKeys: String, CodingKey { case message, conversation, record, sent, skilled }
+    private enum CodingKeys: String, CodingKey { case message, conversation, record, sent, skilled, interaction }
 
     /// An entry written before `skilled` existed waits for its interaction,
     /// the safe reading.
@@ -57,7 +76,8 @@ public struct EgressJournalEntry: Hashable, Sendable, Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(message: c.decode(MessageID.self, forKey: .message), conversation: c.decode(ConversationID.self, forKey: .conversation),
                       record: c.decode(EgressRecord.self, forKey: .record), sent: c.decode(Bool.self, forKey: .sent),
-                      skilled: c.decodeIfPresent(Bool.self, forKey: .skilled) ?? true)
+                      skilled: c.decodeIfPresent(Bool.self, forKey: .skilled) ?? true,
+                      interaction: c.decodeIfPresent(InteractionID.self, forKey: .interaction))
     }
 }
 
@@ -126,6 +146,8 @@ public actor EgressRecorder: OutboxObserver {
         /// A skill conversation: if no interaction owns it yet, the record
         /// waits for one instead of being dropped.
         let skilled: Bool
+        /// The interaction the send named, passed to the sink.
+        let interaction: InteractionID?
     }
 
     private let sink: any EgressSink
@@ -182,7 +204,7 @@ public actor EgressRecorder: OutboxObserver {
         for entry in entries {
             let record = entry.sent ? entry.record
                 : EgressRecord(at: entry.record.at, recipient: entry.record.recipient, items: entry.record.items, message: entry.message, itemsUnknown: true)
-            track(entry.message, Pending(conversation: entry.conversation, record: record, sent: true, skilled: entry.skilled))
+            track(entry.message, Pending(conversation: entry.conversation, record: record, sent: true, skilled: entry.skilled, interaction: entry.interaction))
         }
         await retryPending()
     }
@@ -194,9 +216,11 @@ public actor EgressRecorder: OutboxObserver {
         let record = Self.record(for: envelope, disclosed: disclosed, at: now())
         // Tracked before the first suspension, so the conversation is
         // unconfirmed from the moment the send is announced.
-        track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: false, skilled: envelope.skill != nil))
+        track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: false, skilled: envelope.skill != nil,
+                                   interaction: context.interaction))
         do {
-            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: false, skilled: envelope.skill != nil))
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: false,
+                                                     skilled: envelope.skill != nil, interaction: context.interaction))
         } catch {
             journalFailures += 1
             // Not sent, so nothing to record: forget it here too.
@@ -218,13 +242,15 @@ public actor EgressRecorder: OutboxObserver {
         // announced in willSend has the same ID.
         let record = Self.record(for: envelope, disclosed: disclosed, at: now())
         if pending[envelope.id] == nil {
-            track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: true, skilled: envelope.skill != nil))
+            track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: true, skilled: envelope.skill != nil,
+                                       interaction: context.interaction))
         } else {
             pending[envelope.id]?.record = record
             pending[envelope.id]?.sent = true
         }
         do {
-            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: true, skilled: envelope.skill != nil))
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: true,
+                                                     skilled: envelope.skill != nil, interaction: pending[envelope.id]?.interaction ?? context.interaction))
         } catch {
             // The entry stays as announced; a restart records it as unknown,
             // or, if this record lands first, Interaction.record keeps this one.
@@ -285,7 +311,7 @@ public actor EgressRecorder: OutboxObserver {
         attempting.insert(message)
         defer { attempting.remove(message) }
         do {
-            if try await sink.appendEgress(item.record, conversation: item.conversation) {
+            if try await sink.appendEgress(item.record, conversation: item.conversation, interaction: item.interaction) {
                 await resolve(message)
             } else if item.skilled {
                 // The skill announced the interaction, but the coordinator
@@ -321,9 +347,17 @@ public actor StoreEgressSink: EgressSink {
     public init(store: any InteractionStore) { self.store = store }
 
     public func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
-        guard var interaction = try await store.interaction(conversation: conversation) else { return false }
-        interaction.record(record)
-        try await store.save(interaction)
+        try await appendEgress(record, conversation: conversation, interaction: nil)
+    }
+
+    /// On the interaction the send named, when there is one; otherwise on
+    /// the one that owns the conversation.
+    public func appendEgress(_ record: EgressRecord, conversation: ConversationID, interaction: InteractionID?) async throws -> Bool {
+        let named: Interaction? = if let interaction { try await store.interaction(interaction) } else { nil }
+        let owner: Interaction? = if let named { named } else { try await store.interaction(conversation: conversation) }
+        guard var target = owner else { return false }
+        target.record(record)
+        try await store.save(target)
         return true
     }
 }
