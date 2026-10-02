@@ -4,7 +4,7 @@ Lane P15-D ships a package (`Packages/Skills/PickAPlace`), not screens. Run step
 
 ## On the Mac
 
-1. Run `Tools/test-all.sh Packages/Skills/PickAPlace`. Expect: `Test run with 137 tests in 15 suites passed`.
+1. Run `Tools/test-all.sh Packages/Skills/PickAPlace`. Expect: `Test run with 143 tests in 16 suites passed`.
 2. Run `STARLING_MAPKIT_TESTS=1 swift test --filter liveSearch` in `Packages/Skills/PickAPlace`. Expect: it passes and prints 1 to 8 coffee places near Union Square, San Francisco.
 
 ## Phones A and B (C where noted)
@@ -22,6 +22,8 @@ Lane P15-D ships a package (`Packages/Skills/PickAPlace`), not screens. Run step
 
 13. Phones A, B, and C: Phone A starts a Pick a place with B and C. Phone B taps Not this one; Phones A and C tap Sounds good. Expect: It's a plan appears on A and C only when the confirm window ends, not right after the taps, and the plan lists A and C. Phone A shows nothing about Phone B passing.
 14. Same three phones, a new request. Phone B taps Sounds good, then opens the card again and passes. Expect: within the confirm window, the plan on A and C lists only A and C, even if Phone A had already tapped Sounds good.
+15. Phones A, B, and C have a plan at a place. Phone A: open the plan, tap Somewhere else?, set a budget of $10, and send. Expect: only places that fit $10 are offered, and Phones B and C get a card. All three tap Sounds good. Expect: the plan shows the new place on all three phones, with all three still in it.
+16. Same plan. Phone A: Somewhere else? again. Phone B passes and Phone C taps Sounds good. Expect: when the confirm window ends, the plan keeps its place on all three phones, still with all three people, and Phone A's card names nobody.
 
 ## Report back
 
