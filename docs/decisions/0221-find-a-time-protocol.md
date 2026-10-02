@@ -56,7 +56,11 @@ Constraints:
 ### Delivery, deadlines, and consent
 
 16. Each step that expects a reply is resent every 5 seconds, up to 6 times, and again when the friend's link comes back, but never while the previous send of the same step is still waiting (on a consent sheet, say), so a retry never opens a second sheet. Retries are recognized by content and answered from what was already said.
-17. Deadlines: the starter waits 30 minutes for answers and 1 hour for "That works", both capped by the request's expiry; a friend keeps a request for 6 hours. The starter's expiry tells friends already asked "no plan"; a friend's expiry is silent.
+17. **Deadlines** (revised after the device test of 2026-10-02). Find a time has no expiry chip (`asksForExpiry` false): Compose keeps the request open until the asked-about window starts, from 1 to 7 days, so the waits are long.
+    - The starter waits up to 12 hours for answers, but never past halfway to the request's end or its last offered time's start, so there is always time left to agree.
+    - It waits up to 12 hours for "That works", never past the request's end or the proposed time's start: a plan cannot be agreed once its time has begun.
+    - A friend keeps a request open up to 7 days, never past its last offered time's start.
+    - The starter's expiry tells friends already asked "no plan"; a friend's expiry is silent.
 18. **Consent and refusals.** The coordinator applies `.started` when the owner sends, before `start` (ADR 0011, amendment 13); the service never reports it. Every send names its interaction in `OutboundContext.interaction` (Core v2.1), so the sheet suspends the right one. The app's `ConsentProvider` applies `consentNeeded`, `consentGiven`, and, on a decline, the owner's pass; the service adds no event for a decline, ends the conversation, and friends already asked hear "no plan". A send the policy denies ends the interaction as blocked by privacy, at any live step but planned, where the plan stands. Either result counts only for a send made for the current step; one that arrives after its step was superseded, such as the acceptance of proposal 1 after proposal 2 replaced it, is dropped (ADR 0011, amendment 14).
 19. **Withdrawal stops sends in flight.** Each conversation's sends run in tasks that are cancelled when it ends, is withdrawn, or the app shuts down, so a send waiting on a consent sheet never leaves afterwards. A friend never asked is never told anything, not even "no plan".
 20. The service applies every event to its own copy of the `Interaction` first and emits only what the lifecycle accepts, so the coordinator never has to drop one of its events.
@@ -67,7 +71,7 @@ Constraints:
 - Nothing needs consent under the default topics (time and activity Share) with on-device friends, and a two-person plan never touches the people topic.
 - **Remaining leak.** A starter shows friends up to 16 of its free times. A dishonest friend who keeps starting requests learns 16 of the owner's answers per request; the per-friend cap of 4 open requests bounds the rate, not the total. A private PSI (Nightjar) would remove this; recorded for the threat model.
 - Picking "the most friends" can leave a friend out of a group plan. The friend left out sees "no plan", like a pass.
-- **Silence costs time.** A starter whose friends all say no hears nothing and ends at the answer deadline (30 minutes by default) or, at a proposal, the confirm deadline (1 hour), sooner if the request expires first, instead of at once. The Orchestrator confirmed this trade (brief 2.6, silence by default; ADR 0017). The starter's card says it is still checking until then, never that a friend said no.
+- **Silence costs time.** A starter whose friends all say no hears nothing and ends at the answer deadline (up to 12 hours, sooner for a request that ends sooner) or, at a proposal, the confirm deadline (up to 12 hours), instead of at once. The Orchestrator confirmed this trade (brief 2.6, silence by default; ADR 0017). The starter's card says it is still checking until then, never that a friend said no.
 - Withdrawing after a plan is made ends it on this phone only; friends are not told. Cancelling a confirmed plan is out of scope for Phase 1.5.
 
 ## Sources
