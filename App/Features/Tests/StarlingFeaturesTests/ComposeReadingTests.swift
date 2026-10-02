@@ -143,3 +143,35 @@ actor ReadingCounter {
         #expect(!h.model.canSend && h.model.sendNote != nil)
     }
 }
+
+/// Device test 2 (issue #95): Find a time's "when" is a range of days,
+/// optionally evenings only, not one slot like "tonight after 6 PM".
+@MainActor
+@Suite struct FindATimeDayRangeTests {
+    @Test func theWhenChipTakesARangeOfDaysAndEvenings() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time for dinner"
+        await h.model.understand()
+        let chip = try #require(h.model.chipItems.first { $0.part == .issue(.time) })
+        guard case .days(let parsed) = chip.editor else { Issue.record("Find a time edits days, got \(chip.editor)"); return }
+        #expect(!parsed.eveningsOnly)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = Fixtures.utc
+        let today = calendar.startOfDay(for: h.clock.now)
+        let friday = try #require(calendar.date(byAdding: .day, value: 4, to: today))
+        #expect(h.model.setDays(DayRange(from: today, to: friday, eveningsOnly: true)))
+        #expect(h.model.dayRange == DayRange(from: today, to: friday, eveningsOnly: true))
+        let rules = try #require(h.model.constraints.constraints[.time]).map(\.rule)
+        #expect(rules == [.within([try TimeSlot(start: today, end: friday.addingTimeInterval(24 * 3600))]), .dailyWindow(from: 17 * 60, to: 22 * 60)])
+        let text = try #require(h.model.chipItems.first { $0.part == .issue(.time) }?.text)
+        #expect(text == "Today to \(h.model.chipFormatter.dayWord(friday)), Evenings")
+
+        // Back to all day; longer than two weeks is refused.
+        #expect(h.model.setDays(DayRange(from: today, to: friday, eveningsOnly: false)))
+        #expect(h.model.constraints.constraints[.time]?.count == 1)
+        let far = try #require(calendar.date(byAdding: .day, value: 20, to: today))
+        #expect(!h.model.setDays(DayRange(from: today, to: far, eveningsOnly: false)))
+        #expect(!h.model.setDays(DayRange(from: friday, to: today, eveningsOnly: false)))
+    }
+}

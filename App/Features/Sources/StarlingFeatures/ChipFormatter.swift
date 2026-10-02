@@ -43,7 +43,9 @@ public struct ChipFormatter: Sendable {
         case .within(let slots):
             slots.sorted().map(slot)
         case .dailyWindow(let from, let to):
-            ["Between \(values.minutesOfDay(from)) and \(values.minutesOfDay(to))"]
+            from == DayRange.evenings.from && to == DayRange.evenings.to
+                ? ["Evenings"]
+                : ["Between \(values.minutesOfDay(from)) and \(values.minutesOfDay(to))"]
         case .atMost(let amount):
             ["Up to \(values.money(amount))"]
         case .atLeast(let amount):
@@ -74,6 +76,11 @@ public struct ChipFormatter: Sendable {
 
     /// "Tonight after 7 PM", "Tomorrow 10 AM to 2 PM", "Friday after 6 PM".
     public func slot(_ slot: TimeSlot) -> String {
+        // Whole days, as Find a time asks: "Today to Friday".
+        if calendar.startOfDay(for: slot.start) == slot.start, calendar.startOfDay(for: slot.end) == slot.end,
+           slot.end.timeIntervalSince(slot.start) > 24 * 3600 {
+            return "\(dayWord(slot.start)) to \(dayWord(slot.end.addingTimeInterval(-60)))"
+        }
         let day = dayWord(slot.start)
         let lastMinute = slot.end.addingTimeInterval(-60)
         let endsLate = !calendar.isDate(slot.start, inSameDayAs: lastMinute) || calendar.component(.hour, from: lastMinute) >= 23

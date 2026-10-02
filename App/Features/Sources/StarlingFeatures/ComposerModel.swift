@@ -167,8 +167,8 @@ public final class ComposerModel {
     /// Runs before every send: the first time, the deliberate Local Network
     /// prompt and the radios (ADR 0013).
     public var beforeFirstRequest: @MainActor () async -> Void
-    private let now: @Sendable () -> Date
-    private let timeZone: TimeZone
+    let now: @Sendable () -> Date
+    let timeZone: TimeZone
 
     public init(
         skillModel: (any SkillModel)?,

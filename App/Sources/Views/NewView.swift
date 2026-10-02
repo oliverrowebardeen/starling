@@ -58,6 +58,8 @@ struct NewView: View {
                 }
             case .time(let slot):
                 ChipTimeEditor(slot: slot) { composer.setTime($0) }
+            case .days(let range):
+                ChipDaysEditor(range: range) { composer.setDays($0) }
             }
         }
         .sheet(item: $editing) { draft in
@@ -148,6 +150,10 @@ struct NewView: View {
                 .accessibilityHint("Edit")
         case .time(let slot):
             Button(chip.text) { chipEdit = .time(slot) }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edit")
+        case .days(let range):
+            Button(chip.text) { chipEdit = .days(range) }
                 .buttonStyle(.plain)
                 .accessibilityHint("Edit")
         case .details:
@@ -313,11 +319,13 @@ struct NewView: View {
 enum ChipEdit: Identifiable {
     case words(IssueKey, String)
     case time(TimeSlot?)
+    case days(DayRange)
 
     var id: String {
         switch self {
         case .words(let issue, _): "words-\(issue.rawValue)"
         case .time: "time"
+        case .days: "days"
         }
     }
 }
@@ -389,6 +397,42 @@ private struct ChipTimeEditor: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+/// Edits Find a time's "when": from a day to a day, optionally evenings
+/// only (device test 2).
+struct ChipDaysEditor: View {
+    @State var range: DayRange
+    let save: (DayRange) -> Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            DayRangeFields(range: $range)
+                .navigationTitle("When")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { if save(range) { dismiss() } }.disabled(range.to < range.from)
+                    }
+                }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+/// From a day, to a day (at most two weeks), and evenings only.
+struct DayRangeFields: View {
+    @Binding var range: DayRange
+
+    var body: some View {
+        Form {
+            DatePicker("From", selection: $range.from, displayedComponents: .date)
+            DatePicker("To", selection: $range.to, in: range.from...range.from.addingTimeInterval(13 * 24 * 3600), displayedComponents: .date)
+            Toggle("Evenings only", isOn: $range.eveningsOnly)
+        }
     }
 }
 
