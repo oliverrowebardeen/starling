@@ -1,5 +1,7 @@
 import Foundation
 import Observation
+import PickAPlace
+import StarlingChaining
 import StarlingCore
 
 /// Everything the app's features are built from. The app target assembles
@@ -38,6 +40,17 @@ public struct AppServices: Sendable {
     /// Remembers each conversation's highest sent sequence number across
     /// launches (Core v2.1). Nil keeps it in memory only.
     public var sequences: (any RetainingSentSequenceStore)?
+    /// Pick a place's search (MapKit and Core Location in the app) and the
+    /// candidates New stages for its service (P15-D request 2). Nil when
+    /// Pick a place is not in the build.
+    public var placeFinder: PlaceFinder?
+    public var stagedPlaces: StagedCandidates?
+    /// The owner's live choices, for skill services built in `makeSkills`.
+    /// `AppModel` attaches itself; nil when no service needs them.
+    public var choices: OwnerChoices?
+    /// Lane E's journal of sends whose egress record is not yet confirmed,
+    /// on disk in the app (ADR 0021 decision 4).
+    public var egressJournal: any EgressJournal
     /// The phone's record of retired conversations and answered candidates,
     /// which Outbox enforces (ADR 0021). Nil only in tests and previews.
     public var ledger: (any ConversationLedger)?
@@ -79,6 +92,10 @@ public struct AppServices: Sendable {
         auditLog: (any OutboxObserver)? = nil,
         sequences: (any RetainingSentSequenceStore)? = nil,
         ledger: (any ConversationLedger)? = nil,
+        egressJournal: any EgressJournal = InMemoryEgressJournal(),
+        placeFinder: PlaceFinder? = nil,
+        stagedPlaces: StagedCandidates? = nil,
+        choices: OwnerChoices? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -108,6 +125,10 @@ public struct AppServices: Sendable {
         self.auditLog = auditLog
         self.sequences = sequences
         self.ledger = ledger
+        self.egressJournal = egressJournal
+        self.placeFinder = placeFinder
+        self.stagedPlaces = stagedPlaces
+        self.choices = choices
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -151,6 +172,20 @@ public final class AppModel {
     public let localPeer: PeerID?
     /// Whether the owner allowed notifications, once asked.
     public private(set) var notificationsAllowed: Bool?
+    /// Lane E's recorder of what each send disclosed (the Outbox's observer).
+    public let egress: EgressRecorder
+    /// This launch's sends not yet durably recorded, read live by every
+    /// audit surface.
+    public let pendingEgress = PendingEgress()
+    /// Conversations whose egress log may be missing a send, from the
+    /// recorder, and whether its journal could not be read at launch. Plan
+    /// detail then claims nothing stayed on the phone there.
+    public private(set) var unconfirmedConversations: Set<ConversationID> = []
+    public private(set) var egressJournalUnreadable = false
+    /// Whether this launch's journal recovery has finished. Until it has,
+    /// every audit reads as incomplete: a send the journal alone holds is
+    /// not on its interaction yet.
+    public private(set) var egressRecovered = false
     /// Set when the conversation ledger cannot be read: Outbox then sends
     /// nothing at all, and Home says why.
     public private(set) var ledgerNotice: String?
@@ -159,7 +194,10 @@ public final class AppModel {
     public let proposals: ProposalTexts
 
     private var inboxLoop: Task<Void, Never>?
-    private var started = false
+    /// Lane E's after-plan-ends scheduler, running while the app is open.
+    private var scheduler: PlanEndScheduler?
+    private var schedulerLoop: Task<Void, Never>?
+    private var startup: Task<Void, Never>?
     private var linksStarted = false
     private var friendNames: [PeerID: String] = [:]
 
@@ -182,15 +220,20 @@ public final class AppModel {
         self.friends = friends
         cards = PeerCards(file: services.cardsFile) { peer in friends?.friends.contains { $0.id == peer } ?? false }
 
-        // The Outbox's observer records egress on the lifecycle, which does
-        // not exist yet; it is set right after.
-        let recorder = EgressRelay()
+        // Lane E's recorder writes "What left your phone" through the
+        // lifecycle coordinator, which does not exist yet; the relay is
+        // pointed at it right after (P15-E request 4.1).
+        let relay = EgressRelay(pending: pendingEgress)
+        let egress = EgressRecorder(sink: relay, journal: services.egressJournal)
+        self.egress = egress
         let outbox: Outbox? = if let policy, let transport = services.transport {
             Outbox(
-                transport: transport, policy: policy, consent: consent,
-                observer: EgressObserver(forward: services.auditLog) { record, interaction, conversation in
-                    recorder.lifecycle?.recordEgress(record, interaction: interaction, conversation: conversation)
-                },
+                transport: transport,
+                // Every envelope of an owner's chain link must name its parent
+                // (ADR 0240); the owner's topics still decide everything else.
+                policy: ChainedFromPolicy(wrapping: policy, store: services.interactions),
+                consent: consent,
+                observer: FanOutObserver([egress, PendingEgressObserver(pending: pendingEgress)] + (services.auditLog.map { [$0] } ?? [])),
                 sequences: services.sequences,
                 ledger: services.ledger
             )
@@ -200,10 +243,12 @@ public final class AppModel {
         self.outbox = outbox
         lifecycle = LifecycleCoordinator(
             registry: services.registry,
-            services: outbox.map(services.makeSkills) ?? [],
+            // A skill behind a flag that is off runs no service, so nothing a
+            // friend sends can reach it (Swap photos in Phase 1.5).
+            services: outbox.map { services.makeSkills($0).filter { services.flags.enabled.contains($0.descriptor.id) } } ?? [],
             store: services.interactions
         )
-        recorder.lifecycle = lifecycle
+        relay.lifecycle = lifecycle
         consent.tracker = lifecycle
         let consent = consent
         lifecycle.onFinished = { interaction, conversation in
@@ -230,10 +275,12 @@ public final class AppModel {
         composer = ComposerModel(
             skillModel: services.skillModel, lifecycle: lifecycle, settings: settings, cards: cards, permissions: permissions,
             friends: { friends?.friends ?? [] }, savedRules: { rulesEditor.saved?.rules }, localPeer: localPeer,
-            formatter: services.formatter
+            formatter: services.formatter,
+            places: services.placeFinder.flatMap { finder in services.stagedPlaces.map { PlacePicker(finder: finder, staging: $0) } }
         )
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
 
+        services.choices?.attach(self)
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
         settings.beforeSave = { [weak self] interim in
             guard let self else { return }
@@ -250,8 +297,23 @@ public final class AppModel {
         }
         let notifier = services.notifier
         let words = words
+        // Interactions load, then the journal is recovered, and only then do
+        // the services restore (privacy review of PR #73).
+        lifecycle.beforeRestore = { [weak self] in await self?.recoverEgress() }
+        let notes = notes
+        lifecycle.onPassedChange = { notes.setPassed($0) }
+        lifecycle.onRequestGroupsChange = { notes.setRequestGroups($0) }
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
+            self?.updateParent(of: after)
+            // A friend's request just installed: write any send its skill
+            // made before the coordinator saw it (lane E's recorder).
+            if before == nil, let egress = self?.egress {
+                let conversation = after.conversation
+                Task { await egress.interactionArrived(conversation: conversation) }
+            }
+            // A card the owner passed stays quiet until its skill ends it.
+            if self?.lifecycle.passed.contains(after.id) == true { return }
             guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
             Task { await notifier.post(notice) }
         }
@@ -262,7 +324,9 @@ public final class AppModel {
 
     public var home: HomeContent {
         syncNames()
-        return HomeContent(lifecycle.interactions, words: words)
+        // A passed card is gone from this phone at once (ADR 0011 amendment 16).
+        let passed = lifecycle.passed
+        return HomeContent(lifecycle.interactions.filter { !passed.contains($0.id) }, words: words, groups: lifecycle.requestGroups)
     }
 
     /// The card this agent sends in each `hello`: where its model runs and
@@ -320,9 +384,13 @@ public final class AppModel {
     /// Inbox. The radios start only once Local Network has been asked for
     /// (at the first Pair or request); before that nobody could reach this
     /// phone anyway, because nobody is paired.
+    /// Every caller waits for the same startup.
     public func start() async {
-        guard !started else { return }
-        started = true
+        if startup == nil { startup = Task { await self.runStartup() } }
+        await startup?.value
+    }
+
+    private func runStartup() async {
         // Rules and settings first: the policy denies every send until both
         // are loaded.
         await rulesEditor.load()
@@ -332,9 +400,14 @@ public final class AppModel {
         syncNames()
         cards.load()
         notes.load()
+        lifecycle.restorePassed(notes.passed)
+        lifecycle.restoreRequestGroups(notes.requestGroups)
         refreshCard()
+        // Recovers the egress journal between loading and restoring.
         await lifecycle.start()
         lifecycle.tick()
+        await retryRetirements()
+        startScheduler()
         if let ledger = services.ledger {
             do {
                 _ = try await ledger.isRetired(ConversationID())
@@ -348,13 +421,18 @@ public final class AppModel {
         if lifecycle.notice == nil { try? services.sequences?.retainOnly(lifecycle.resumableConversations) }
         // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
-        if settings.settings.localNetworkAsked { await startLinks() }
+        if settings.settings.localNetworkAsked { await bringUpLinks() }
     }
 
     /// Starts the radios and then whatever must follow them (lane E1's
     /// pairing services). Runs once.
     public func startLinks() async {
         await start()
+        await bringUpLinks()
+    }
+
+    /// Startup's own step, which must not wait for startup to finish.
+    private func bringUpLinks() async {
         guard !linksStarted else { return }
         linksStarted = true
         try? await services.transport?.start()
@@ -399,16 +477,90 @@ public final class AppModel {
         }
     }
 
-    /// Ends plans whose time has passed; the app calls it when it comes to
-    /// the foreground.
+    /// A chained Pick a place that agreed on a place moves its parent's plan
+    /// there (lane E's `ChainPlanner.parent(_:updatedBy:)`, P15-E 4.6).
+    private func updateParent(of link: Interaction) {
+        guard let me = localPeer, let parentID = link.chain?.parent, let parent = lifecycle.interaction(parentID),
+              let updated = ChainPlanner(registry: services.registry, me: me).parent(parent, updatedBy: link)
+        else { return }
+        lifecycle.update(updated)
+    }
+
+    /// Reads the recorder's view of which egress logs may be incomplete, and
+    /// retries any record still waiting. Plan detail calls it when it opens.
+    /// Brings back sends the journal still holds, so their conversations
+    /// read as unconfirmed, and records them (P15-E 4.1). Runs inside the
+    /// coordinator's startup, before any service restores.
+    private func recoverEgress() async {
+        await egress.recover()
+        await refreshAudit()
+        egressRecovered = true
+    }
+
+    /// The conversations whose audit may be missing a send right now: each
+    /// pending send's own, and that of the interaction it named, which a
+    /// Down for... member's send in the starter's conversation belongs to.
+    var pendingAuditConversations: Set<ConversationID> {
+        var result = Set<ConversationID>()
+        for send in pendingEgress.messages.values {
+            result.insert(send.conversation)
+            if let id = send.interaction, let owner = lifecycle.owner(interaction: id, skill: send.skill, conversation: send.conversation) {
+                result.insert(owner.conversation)
+            }
+        }
+        return result
+    }
+
+    public func refreshAudit() async {
+        await egress.retryPending()
+        unconfirmedConversations = await egress.unconfirmedConversations
+        egressJournalUnreadable = await egress.journalUnreadable
+    }
+
+    /// Ends plans whose time has passed and checks what is due after one;
+    /// the app calls it when it comes to the foreground.
     public func foreground() {
         lifecycle.tick()
+        Task {
+            await retryRetirements()
+            if let due = try? await scheduler?.due() { await handleScheduled(due) }
+        }
+    }
+
+    private func retryRetirements() async {
+        for case let service as any RetriesRetirements in lifecycle.allServices { await service.retryRetirements() }
+    }
+
+    /// Runs lane E's PlanEndScheduler while the app is open (P15-E 4.5): an
+    /// after-plan-ends link the owner opted into starts when its plan ends.
+    private func startScheduler() {
+        guard schedulerLoop == nil, let me = localPeer else { return }
+        let settings = settings
+        let cards = cards
+        let scheduler = PlanEndScheduler(
+            schedule: PlanEndSchedule(planner: ChainPlanner(registry: services.registry, me: me)),
+            store: services.interactions,
+            settings: { await MainActor.run { settings.skillSettings } },
+            cards: { await MainActor.run { cards.cards } }
+        )
+        self.scheduler = scheduler
+        let handle: @Sendable ([ScheduledChain]) async -> Void = { [weak self] results in await self?.handleScheduled(results) }
+        schedulerLoop = Task { await scheduler.run(handle) }
+    }
+
+    func handleScheduled(_ results: [ScheduledChain]) async {
+        // A link that starts after the plan carries the owner's standing
+        // rules, and stays out for a day.
+        let expires = Timestamp(Date().addingTimeInterval(24 * 3600))
+        for result in results { await lifecycle.applyScheduled(result, rules: standingRules, expiresAt: expires) }
     }
 
     /// Tears down the skills and the link.
     public func shutdown() async {
         inboxLoop?.cancel()
         inboxLoop = nil
+        schedulerLoop?.cancel()
+        schedulerLoop = nil
         await lifecycle.shutdown()
         await services.transport?.stop()
     }
@@ -432,28 +584,47 @@ public final class AppModel {
     /// Plan detail for a planned or finished interaction.
     public func planDetail(_ root: Interaction) -> PlanDetail {
         syncNames()
-        return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes)
+        return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes,
+                          unconfirmed: unconfirmedConversations.union(pendingAuditConversations), auditUnknown: egressJournalUnreadable || !egressRecovered)
     }
 
-    /// "Keep it going" after a plan: skills that accept what it produced,
-    /// can run now, are in the build, and every friend in it supports
-    /// (`SkillRegistry.chainSuggestions`, ADR 0012). A friend with no card
-    /// yet hides the suggestion, since support cannot be shown.
-    public func chainSuggestions(after plan: Interaction) -> [SkillDescriptor] {
-        let peers = (plan.plan?.attendees.peers ?? plan.participants).filter { $0 != localPeer }
-        let peerCards = peers.compactMap(cards.card(for:))
-        guard peerCards.count == peers.count else { return [] }
+    /// "Keep it going" after a plan: lane E's rows (P15-E request 4.4),
+    /// only skills that accept what the plan produced, can run now, are in
+    /// the build, and every friend in it supports. A friend whose card is
+    /// not here hides the row. Rows that wait for the plan to end appear
+    /// only while their skill's flag is on.
+    public func chainSuggestions(after plan: Interaction) -> [ChainSuggestion] {
+        guard let me = localPeer else { return [] }
         let inBuild = lifecycle.skillsInBuild
-        return services.registry.chainSuggestions(after: plan.skill.id, in: settings.skillSettings, peers: peerCards)
-            .filter { inBuild.contains($0.id) && $0.chainTrigger == .atConfirm }
+        return ChainPlanner(registry: services.registry, me: me)
+            .suggestions(after: plan.id, in: lifecycle.interactions, settings: settings.skillSettings, cards: cards.cards)
+            .filter { inBuild.contains($0.id) && settings.flags.enabled.contains($0.id) && $0.trigger == .atConfirm }
     }
 }
 
-/// Lets the Outbox's observer reach the lifecycle coordinator, which is
-/// built after the Outbox.
+/// Lets the egress recorder reach the lifecycle coordinator, which is built
+/// after the Outbox. Before it is set (never, after init), nothing is
+/// attributed.
 @MainActor
-private final class EgressRelay: Sendable {
+private final class EgressRelay: EgressSink {
     weak var lifecycle: LifecycleCoordinator?
+    let pending: PendingEgress
+
+    init(pending: PendingEgress) { self.pending = pending }
+
+    /// Clears the send from `pending` only once its record is durably on
+    /// its interaction. A skill's send whose interaction is not installed
+    /// yet (a friend's request answered right after the service announced
+    /// it) returns false and stays pending: lane E's recorder keeps it
+    /// journaled and writes it when `interactionArrived` is called. Only a
+    /// link-level send, which no interaction owns, is cleared unattributed.
+    func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
+        guard let lifecycle else { return false }
+        let named = record.message.flatMap { pending.messages[$0] }
+        let found = try await lifecycle.appendEgress(record, interaction: named?.interaction, skill: named?.skill, conversation: conversation)
+        if let message = record.message, found || !pending.isSkillSend(message) { pending.recorded(message) }
+        return found
+    }
 }
 
 /// Friends' names, readable from the `@Sendable` closures words use.

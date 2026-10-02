@@ -1,29 +1,53 @@
+import DownFor
+import FindATime
 import Foundation
 import Network
+import PickAPlace
+import PickAPlaceMapKit
 import StarlingAgent
+import StarlingAvailability
+import StarlingChaining
 import StarlingCore
 import StarlingFeatures
 import StarlingIdentity
 import StarlingPolicy
+import StarlingSwapPhotos
 import StarlingWiFiAware
 import UserNotifications
 
 extension AppServices {
     /// Release builds: real implementations only, never StarlingFakes
     /// (ADR 0140). Lane E1's identity, pinned friends, pairing, and secure
-    /// links; lane G's policy and audit log; lane E2's Wi-Fi Aware. No skill
-    /// service is in the build until the skill lanes merge (B, C, D, E), so
-    /// New shows each tile as "Not in this build yet" instead of running a
-    /// fake. Permission access APIs arrive with lanes C and D.
+    /// links; lane G's policy and audit log; lane E2's Wi-Fi Aware; Find a
+    /// time, Pick a place, and Swap photos (behind its flag) from lanes C, D,
+    /// and E. Down for... has no service until a private PSI provider exists
+    /// outside StarlingFakes (ADR 0144 decision 3), so its tile says "Not in
+    /// this build yet" instead of running on the insecure stub.
+    @MainActor
     static func release() async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
+        // One on-device model for the rules editor, New, and proposal cards.
+        let agent = FoundationModelsAgent()
         let links = SecureLinks.make(identity: identity, friends: KeychainPairedPeerStore())
+        let ledger = LiveServices.ledger()
+        let rules = LiveServices.rulesStore()
+        let places = LiveServices.places()
+        let interactions = LiveServices.interactionStore()
+        let choices = OwnerChoices()
         return AppServices(
-            agent: FoundationModelsAgent(),
+            agent: agent,
+            skillModel: agent,
             registry: LiveServices.registry,
-            interactions: LiveServices.interactionStore(),
+            makeSkills: { outbox in
+                [
+                    LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
+                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                ]
+            },
+            interactions: interactions,
             settings: LiveServices.settingsStore(),
-            rules: LiveServices.rulesStore(),
+            rules: rules,
             peers: links.friends,
             pairing: links.pairingDirectory,
             unpair: links.unpair,
@@ -32,13 +56,18 @@ extension AppServices {
             makePolicy: LiveServices.policy(peers: links.friends),
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
-            ledger: LiveServices.ledger(),
+            ledger: ledger,
+            egressJournal: LiveServices.egressJournal(),
+            placeFinder: places.finder,
+            stagedPlaces: places.staged,
+            choices: choices,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter(),
+            permissions: [LocationPermissionAccess(location: places.location), LiveServices.calendarPermission],
             cardsFile: try? .standard("peer-cards.json"),
             notesFile: try? .standard("plan-notes.json")
         )
@@ -46,50 +75,26 @@ extension AppServices {
 }
 
 enum LiveServices {
-    /// Every Phase 1.5 skill's descriptor, until each skill package ships
-    /// its own. Data only: a descriptor runs nothing without its service.
-    /// The values match StarlingFakes.SampleSkills, which Release cannot link.
+    /// Every Phase 1.5 skill's descriptor, from each lane's package. Data
+    /// only: a descriptor runs nothing without its service. Down for... has
+    /// no service in Release until a private PSI provider exists outside
+    /// StarlingFakes (ADR 0144 decision 3), so its tile says "Not in this
+    /// build yet".
     static let registry: SkillRegistry = try! SkillRegistry([
-        try! SkillDescriptor(
-            ref: SkillRef(.downFor, SkillVersion(1)),
-            wording: SkillWording(name: "Down for…", summary: "See who's up for something", startAction: "See who's up for it",
-                                  acceptAction: "I'm in", declineAction: "Not tonight", declineNote: "If you pass, they just won't see it."),
-            buildingBlock: .mutualReveal, topicsUsed: [.time, .activity, .place, .budget], topicsRequired: [.time, .activity],
-            accepts: [.timeSlot], produces: [.plan],
-            intent: IntentSchema(slots: [
-                IntentSlot(.activity, required: true, hint: "what they want to do, such as boba or a walk"),
-                IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
-                IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
-                IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-            ]),
-            sendModes: [.askQuietly, .invite]
-        ),
-        try! SkillDescriptor(
-            ref: SkillRef(.findATime, SkillVersion(1)),
-            wording: SkillWording(name: "Find a time", summary: "Agree on when", startAction: "Find a time",
-                                  acceptAction: "That works", declineAction: "Not then", declineNote: "If you pass, they just won't see it."),
-            // Calendar details are read on the phone only (ADR 0019).
-            buildingBlock: .privateQuery, topicsUsed: [.time, .activity, .people, .calendarDetails], topicsRequired: [.time],
-            permissions: [.calendarFullAccess], produces: [.timeSlot, .plan],
-            intent: IntentSchema(slots: [
-                IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
-                IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
-            ])
-        ),
-        try! SkillDescriptor(
-            ref: SkillRef(.pickAPlace, SkillVersion(1)),
-            wording: SkillWording(name: "Pick a place", summary: "Agree on where", startAction: "Find a place",
-                                  acceptAction: "Sounds good", declineAction: "Somewhere else", declineNote: "If you pass, they just won't see it."),
-            // Budget, diet, and location judge venues on the phone (ADR 0019).
-            buildingBlock: .privateAggregation, topicsUsed: [.place, .location, .budget, .diet], topicsRequired: [.place],
-            permissions: [.locationWhenInUse], accepts: [.plan, .timeSlot], produces: [.placeChoice],
-            intent: IntentSchema(slots: [
-                IntentSlot(.place, required: false, hint: "the kind of place or area, such as near Franklin"),
-                IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-                IntentSlot(.diet, required: false, hint: "what they can't eat"),
-            ])
-        ),
+        DownFor.descriptor,
+        FindATimeSkill.descriptor,
+        PickAPlaceSkill.descriptor,
+        SwapPhotos.descriptor,
     ])
+
+    /// The app's one EventKit store: the permission sheet asks through it,
+    /// and Find a time reads busy times from it (P15-C request 1).
+    static let calendar = EventKitCalendarStore()
+
+    /// Lane C's calendar access, asked only from Starling's sheet.
+    static var calendarPermission: CalendarPermissionAccess {
+        CalendarPermissionAccess(access: CalendarAccess(store: calendar))
+    }
 
     static func rulesStore() -> any RulesStore {
         (try? FileRulesStore.standard()) ?? InMemoryRulesStore()
@@ -105,6 +110,75 @@ enum LiveServices {
     /// sends nothing rather than sending without one.
     static func ledger() -> any ConversationLedger {
         (try? FileConversationLedger.standard()) ?? UnavailableConversationLedger()
+    }
+
+    /// Lane E's journal of unconfirmed sends, on disk (P15-E request 4.1).
+    /// If its file cannot be located, a journal that refuses everything
+    /// stands in, so no send leaves unrecorded.
+    static func egressJournal() -> any EgressJournal {
+        (try? FileEgressJournal.standard()) ?? UnavailableEgressJournal()
+    }
+
+    /// Pick a place's search pieces: one Core Location access shared by the
+    /// finder and the permission gate, MapKit search, and the staging New
+    /// fills before a request starts (P15-D requests 1 and 2).
+    @MainActor
+    static func places() -> (finder: PlaceFinder, staged: StagedCandidates, location: CoreLocationAccess) {
+        let location = CoreLocationAccess()
+        return (PlaceFinder(search: MapKitPlaceSearch(), location: location), StagedCandidates(), location)
+    }
+
+    /// Lane B's service over the app's one Outbox and the ledger it
+    /// enforces, with its requests on disk and only paired friends'
+    /// invitations shown (P15-B request 2). `psi` must be private before
+    /// Release may call this (ADR 0144).
+    static func downFor(me: PeerID, outbox: Outbox, agent: any AgentModel, psi: any PSIProvider, friends: any PairedPeerStore, ledger: any ConversationLedger) -> any SkillService {
+        let store: any DownForRequestStore = (try? FileDownForRequestStore.standard()) ?? UnavailableDownForRequestStore()
+        return DownForService(localPeer: me, outbox: outbox, model: agent, psi: psi, ledger: ledger, store: store, pairedPeers: friends)
+    }
+
+    /// Lane C's service over the app's one Outbox and the same conversation
+    /// ledger the Outbox enforces (P15-C request 2). It reads busy times from
+    /// the app's one calendar store, only while the owner uses it, and
+    /// keeps its checkpoints in Application Support so a request survives a
+    /// relaunch (ADR 0222).
+    static func findATime(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, ledger: any ConversationLedger, choices: OwnerChoices) -> any SkillService {
+        FindATimeService(
+            localPeer: me, outbox: outbox, conversations: ledger, pairedPeers: friends,
+            availability: .standard(calendar: calendar, use: { await choices.calendarUse() }),
+            checkpoints: FileFindATimeCheckpoints(directory: findATimeCheckpoints()),
+            isTurnedOn: { await choices.isOn(.findATime) },
+            standingRules: { await choices.standingConstraints() }
+        )
+    }
+
+    /// `Application Support/Starling/FindATime`, or a temporary directory if
+    /// that cannot be located, as for the interaction store.
+    static func findATimeCheckpoints() -> URL {
+        (try? JSONFile.standard("FindATime").url) ?? FileManager.default.temporaryDirectory.appending(path: "FindATime", directoryHint: .isDirectory)
+    }
+
+    /// Lane D's service over the app's one Outbox and the same conversation
+    /// ledger the Outbox enforces (P15-D request 3).
+    static func pickAPlace(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, staged: StagedCandidates,
+                           rules: any RulesStore, ledger: any ConversationLedger) -> any SkillService {
+        PickAPlaceService(
+            localPeer: me, outbox: outbox, pairedPeers: friends, candidates: staged, maps: MapKitPlaceSearch(),
+            // The owner's standing budget, diet, and place limits, read when
+            // a friend asks; the organizer's own come with its request.
+            ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty },
+            ledger: UserDefaultsPickAPlaceLedger(), conversations: ledger
+        )
+    }
+
+    /// Lane E's Swap photos over the app's one Outbox and the same
+    /// conversation ledger it enforces (P15-E request 4.8). An offer is
+    /// checked against the plan saved on this phone. Runs only while its
+    /// flag is on (AppModel drops a flagged-off service).
+    static func swapPhotos(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, interactions: any InteractionStore) -> any SkillService {
+        SwapPhotosService(outbox: outbox, ledger: ledger, me: me, planLookup: { conversation in
+            try? await interactions.interaction(conversation: conversation)?.plan
+        })
     }
 
     static func settingsStore() -> any OwnerSettingsStore {
@@ -134,6 +208,10 @@ enum LiveServices {
         )
     }
 }
+
+/// Swap photos keeps a retirement its ledger could not record and retries
+/// it; the app asks at launch and on foreground (P15-E request 4.8).
+extension SwapPhotosService: @retroactive RetriesRetirements {}
 
 /// Posts plan notifications and shows them while Starling is open.
 final class UserNotificationsNotifier: NSObject, PlanNotifier, UNUserNotificationCenterDelegate {

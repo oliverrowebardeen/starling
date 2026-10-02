@@ -1,13 +1,18 @@
 #if DEBUG
 // Debug builds only. StarlingFakes includes the insecure PSI stub and
 // scripted doubles, so nothing outside `#if DEBUG` may import it (ADR 0140).
+import DownFor
+import FindATime
 import Foundation
 import Observation
+import PickAPlace
 import StarlingAgent
+import StarlingChaining
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
 import StarlingIdentity
+import StarlingSwapPhotos
 import StarlingTransport
 
 /// The Debug composition: the same lane E1 stack as Release (Keychain
@@ -21,12 +26,23 @@ import StarlingTransport
 final class DebugHarness {
     nonisolated static let scriptedModelKey = "dev.scriptedModel"
     nonisolated static let denyPermissionsKey = "dev.denyPermissions"
+    /// Plays Down for... with a scripted service and the demo driver, for a
+    /// walk-through on one phone, instead of lane B's service.
+    nonisolated static let scriptedDownForKey = "dev.scriptedDownFor"
 
     let usesScriptedModel: Bool
+    let usesScriptedDownFor: Bool
     /// Friends that exist only in this Debug session. Never written to the
     /// Keychain.
     let overlay = InMemoryPairedPeerStore()
-    let skills = SampleSkills.registry.descriptors.filter { SkillFlags.phase1_5.enabled.contains($0.id) }.map(ScriptedSkillService.init(descriptor:))
+    /// Skills played by scripted services: Down for... only when the
+    /// Developer section asks for it.
+    let skills: [ScriptedSkillService]
+    /// Debug's registry: every lane's real descriptor, or the sample Down
+    /// for... while it is scripted.
+    var registry: SkillRegistry {
+        try! SkillRegistry([usesScriptedDownFor ? SampleSkills.downFor : DownFor.descriptor, FindATimeSkill.descriptor, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
+    }
     private(set) var driver: DemoDriver?
     private(set) var friends: (any PairedPeerStore)?
     private(set) var localPeer: PeerID?
@@ -36,25 +52,44 @@ final class DebugHarness {
 
     init(defaults: UserDefaults = .standard) {
         usesScriptedModel = defaults.bool(forKey: Self.scriptedModelKey)
+        // The headless self-test walks the demo, so it needs the script.
+        usesScriptedDownFor = defaults.bool(forKey: Self.scriptedDownForKey) || defaults.bool(forKey: "starlingSelfTestLifecycle")
+        skills = usesScriptedDownFor ? [ScriptedSkillService(descriptor: SampleSkills.downFor)] : []
         sampleStart = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 3600).rounded(.up) * 3600)
     }
 
     func services(rules: any RulesStore = LiveServices.rulesStore()) async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
-        let agent: any AgentModel = usesScriptedModel ? Self.scriptedAgent() : FoundationModelsAgent()
+        let model = FoundationModelsAgent()
+        let agent: any AgentModel = usesScriptedModel ? Self.scriptedAgent() : model
+        let skillModel: any SkillModel = usesScriptedModel ? Self.scriptedSkillModel() : model
+        let scriptedDownFor = usesScriptedDownFor
         let friends = OverlayPairedPeerStore(base: KeychainPairedPeerStore(), overlay: overlay)
         let links = SecureLinks.make(identity: identity, friends: friends)
         self.friends = friends
         localPeer = identity.peerID
         let skills = skills
         driver = DemoDriver(me: identity.peerID, services: skills)
+        let ledger = LiveServices.ledger()
+        let places = LiveServices.places()
+        let interactions = LiveServices.interactionStore()
+        let choices = OwnerChoices()
 
         return AppServices(
             agent: agent,
-            skillModel: Self.scriptedSkillModel(),
-            registry: SampleSkills.registry,
-            makeSkills: { _ in skills },
-            interactions: LiveServices.interactionStore(),
+            skillModel: skillModel,
+            registry: registry,
+            makeSkills: { outbox in
+                // Lane B's service on the insecure PSI stub, which only
+                // Debug may link (ADR 0144).
+                let downFor = scriptedDownFor ? [] : [LiveServices.downFor(me: identity.peerID, outbox: outbox, agent: agent, psi: InsecurePSIStub(), friends: friends, ledger: ledger)]
+                return skills + downFor + [
+                    LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
+                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                ]
+            },
+            interactions: interactions,
             settings: LiveServices.settingsStore(),
             rules: rules,
             peers: friends,
@@ -65,14 +100,20 @@ final class DebugHarness {
             makePolicy: LiveServices.policy(peers: friends),
             auditLog: LiveServices.auditLog,
             sequences: try? FileSentSequenceStore.standard(),
-            ledger: LiveServices.ledger(),
+            ledger: ledger,
+            egressJournal: LiveServices.egressJournal(),
+            placeFinder: places.finder,
+            stagedPlaces: places.staged,
+            choices: choices,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,
             presentConsent: LiveServices.presentConsent,
             notifier: UserNotificationsNotifier.shared,
             localNetwork: BonjourLocalNetworkPrompter(),
-            permissions: SystemPermission.allCases.map(DebugPermissionAccess.init),
+            // Calendar (lane C) and location (lane D) are real; photos stays
+            // simulated while Swap photos is behind its flag.
+            permissions: [LocationPermissionAccess(location: places.location), LiveServices.calendarPermission, DebugPermissionAccess(permission: .photoLibrary)],
             cardsFile: try? .standard("peer-cards.json"),
             notesFile: try? .standard("plan-notes.json")
         )
@@ -179,7 +220,7 @@ final class DebugHarness {
         try? await overlay.save(friend)
         await app.friends?.load()
         guard let me = localPeer else { return }
-        let card = AgentCard.forBuild(skills: SampleSkills.registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
+        let card = AgentCard.forBuild(skills: registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
         if let hello = try? Envelope(conversation: ConversationID(), sender: friend.id, recipient: me, sequence: 0, sentAt: Timestamp(Date()), body: .hello(card)) {
             app.cards.handle(.message(hello))
         }
@@ -230,7 +271,6 @@ final class DemoDriver {
     private var seenAnswers = 0
     private var requests: [InteractionID: (SkillRequest, ScriptedSkillService)] = [:]
     private var revisions: [InteractionID: UInt32] = [:]
-    private var questions: [InteractionID: UInt32] = [:]
     var autoPropose = true
     private var loop: Task<Void, Never>?
 
@@ -260,10 +300,16 @@ final class DemoDriver {
                 }
             }
         }
-        var answers: [(InteractionID, OwnerAnswer)] = []
-        for service in services { answers += await service.answers }
-        for (id, answer) in answers.dropFirst(seenAnswers) {
-            if case .accept(let revision) = answer { await confirm(id, revision: revision) }
+        var answers: [(InteractionID, OwnerAnswer, ScriptedSkillService)] = []
+        for service in services { answers += await service.answers.map { ($0.0, $0.1, service) } }
+        for (id, answer, service) in answers.dropFirst(seenAnswers) {
+            switch answer {
+            case .accept(let revision): await confirm(id, revision: revision)
+            // A skill reports the pass when ending cannot reveal it (ADR 0011
+            // amendment 16); the scripted one does so at once.
+            case .pass: await service.emit(.lifecycle(id, .ownerPassed))
+            case .reply: break
+            }
         }
         seenAnswers = answers.count
     }
@@ -324,19 +370,6 @@ final class DemoDriver {
 
     func nobodyUp(_ id: InteractionID) async {
         await requests[id]?.1.emit(.lifecycle(id, .noAgreement))
-    }
-
-    /// A friend's Find a time reaches this phone and asks when the owner is free.
-    func friendAsksForATime(from friend: PeerID) async {
-        guard let service = services.first(where: { $0.descriptor.id == .findATime }) else { return }
-        let id = InteractionID()
-        await service.emit(.incoming(id, conversation: ConversationID(), from: friend, chainedFrom: nil))
-        let calendar = Calendar(identifier: .gregorian)
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.date(bySettingHour: 16, minute: 0, second: 0, of: Date()) ?? Date()) ?? Date()
-        let slots = (0..<3).compactMap { day in try? TimeSlot(start: tomorrow.addingTimeInterval(Double(day) * 86_400), end: tomorrow.addingTimeInterval(Double(day) * 86_400 + 3600)) }
-        let revision = (questions[id] ?? 0) + 1
-        questions[id] = revision
-        await service.emit(.lifecycle(id, .ownerNeeded(SkillQuestion(revision: revision, issue: .time, candidates: .slots(slots), asker: friend))))
     }
 
     /// A friend's Down for… lines up with the owner's: both are down.

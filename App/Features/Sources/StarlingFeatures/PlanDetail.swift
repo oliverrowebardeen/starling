@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import StarlingChaining
 import StarlingCore
 
 /// A hand-off the owner made from a plan, for "How this came together".
@@ -34,7 +35,9 @@ public struct ContactLink: Hashable, Sendable, Codable {
 }
 
 /// What the owner keeps about plans and friends on this phone beyond the
-/// interactions themselves: hand-offs made, and contact links. One JSON
+/// interactions themselves: hand-offs made, contact links, cards passed
+/// whose skill has not ended them yet (ADR 0011 amendment 16), and which
+/// one-to-one interactions came from one quiet ask (amendment 17). One JSON
 /// file (ADR 0204), never sent.
 @MainActor
 @Observable
@@ -42,10 +45,15 @@ public final class PlanNotes {
     struct Document: Codable {
         var handOffs: [String: [HandOffRecord]] = [:]
         var contactLinks: [String: ContactLink] = [:]
+        var passed: [String]? = nil
+        var requestGroups: [String: String]? = nil
     }
 
     public private(set) var handOffs: [InteractionID: [HandOffRecord]] = [:]
     public private(set) var contactLinks: [PeerID: ContactLink] = [:]
+    public private(set) var passed: Set<InteractionID> = []
+    /// Quiet asks' one-to-one interactions by request, for Home only.
+    public private(set) var requestGroups: [InteractionID: UUID] = [:]
     private let file: JSONFile?
     private let now: @Sendable () -> Date
 
@@ -62,6 +70,22 @@ public final class PlanNotes {
         for (hex, link) in document.contactLinks {
             if let peer = try? PeerID(hex: hex) { contactLinks[peer] = link }
         }
+        passed = Set((document.passed ?? []).compactMap { UUID(uuidString: $0).map(InteractionID.init) })
+        for (key, value) in document.requestGroups ?? [:] {
+            if let id = UUID(uuidString: key), let group = UUID(uuidString: value) { requestGroups[InteractionID(id)] = group }
+        }
+    }
+
+    public func setRequestGroups(_ groups: [InteractionID: UUID]) {
+        guard groups != requestGroups else { return }
+        requestGroups = groups
+        save()
+    }
+
+    public func setPassed(_ ids: Set<InteractionID>) {
+        guard ids != passed else { return }
+        passed = ids
+        save()
     }
 
     public func record(_ kind: HandOffRecord.Kind, for plan: InteractionID) {
@@ -83,7 +107,9 @@ public final class PlanNotes {
         guard let file else { return }
         try? file.write(Document(
             handOffs: Dictionary(uniqueKeysWithValues: handOffs.map { ($0.key.description, $0.value) }),
-            contactLinks: Dictionary(uniqueKeysWithValues: contactLinks.map { ($0.key.hex, $0.value) })
+            contactLinks: Dictionary(uniqueKeysWithValues: contactLinks.map { ($0.key.hex, $0.value) }),
+            passed: passed.map(\.description).sorted(),
+            requestGroups: Dictionary(uniqueKeysWithValues: requestGroups.map { ($0.key.description, $0.value.uuidString) })
         ))
     }
 }
@@ -142,9 +168,19 @@ public struct PlanDetail: Hashable, Sendable {
     public let message: MessageDraft
     public let place: PlaceChoice?
 
+    /// - Parameters:
+    ///   - unconfirmed: `EgressRecorder.unconfirmedConversations`: logs that
+    ///     may be missing a send.
+    ///   - auditUnknown: the recorder's journal could not be read at launch,
+    ///     or has not been recovered yet, so no log can be vouched for.
     @MainActor
-    public init(root: Interaction, all: [Interaction], words: InteractionWords, notes: PlanNotes) {
-        let chain = all.chain(from: root.id)
+    public init(root: Interaction, all: [Interaction], words: InteractionWords, notes: PlanNotes,
+                unconfirmed: Set<ConversationID> = [], auditUnknown: Bool = false) {
+        // Lane E's timeline: the plan, the owner's links, and friends'
+        // requests grouped under it by their checked hints (ADR 0240).
+        let timeline = PlanTimeline(for: root.id, in: all, registry: words.registry, unconfirmed: unconfirmed)
+        let ids = timeline?.entries.map(\.id) ?? [root.id]
+        let chain = ids.compactMap { id in all.first { $0.id == id } }
         self.root = root
         self.chain = chain.isEmpty ? [root] : chain
 
@@ -166,9 +202,10 @@ public struct PlanDetail: Hashable, Sendable {
         if let place = plan?.place { line.append(place.name.rawValue) }
         subtitle = line.joined(separator: " · ")
 
-        timeline = Self.timeline(self.chain, words: words, notes: notes)
-        (shared, kept) = Self.audit(self.chain, words: words)
-        auditIsComplete = self.chain.allSatisfy(\.egressIsKnown)
+        self.timeline = Self.timeline(self.chain, entries: timeline?.entries ?? [], words: words, notes: notes)
+        let whatLeft = timeline?.whatLeft ?? WhatLeftYourPhone(interactions: self.chain, registry: words.registry, unconfirmed: unconfirmed)
+        auditIsComplete = !auditUnknown && whatLeft.unconfirmed.isEmpty
+        (shared, kept) = Self.audit(whatLeft, complete: auditIsComplete, words: words)
 
         if let plan, let time = plan.time {
             calendar = CalendarDraft(title: title, start: time.start, end: time.end, location: plan.place?.name.rawValue)
@@ -188,9 +225,14 @@ public struct PlanDetail: Hashable, Sendable {
     }
 
     @MainActor
-    static func timeline(_ chain: [Interaction], words: InteractionWords, notes: PlanNotes) -> [TimelineEntry] {
-        var entries: [TimelineEntry] = chain.compactMap { link in
+    static func timeline(_ chain: [Interaction], entries: [PlanTimeline.Entry], words: InteractionWords, notes: PlanNotes) -> [TimelineEntry] {
+        var rows: [TimelineEntry] = chain.compactMap { link in
             guard let summary = words.summary(link) else { return nil }
+            let entry = entries.first { $0.id == link.id }
+            // An after-plan-ends link the owner opted into, still waiting.
+            if let startsAfter = entry?.startsAfter {
+                return TimelineEntry(id: link.id.description, tag: summary.skill.wording.name, text: "Starts when the plan ends", at: startsAfter, isDone: false)
+            }
             let agreed = link.state == .planned || link.state == .done
             return TimelineEntry(
                 id: link.id.description, tag: summary.skill.wording.name,
@@ -204,9 +246,9 @@ public struct PlanDetail: Hashable, Sendable {
             case .messages: ("Messages", "Messaged the group")
             case .directions: ("Maps", "Opened directions")
             }
-            entries.append(TimelineEntry(id: "\(record.kind.rawValue)-\(record.at.millisecondsSince1970)", tag: tag, text: text, at: record.at.date, isDone: true))
+            rows.append(TimelineEntry(id: "\(record.kind.rawValue)-\(record.at.millisecondsSince1970)", tag: tag, text: text, at: record.at.date, isDone: true))
         }
-        return entries.sorted { ($0.at ?? .distantFuture) < ($1.at ?? .distantFuture) }
+        return rows.sorted { ($0.at ?? .distantFuture) < ($1.at ?? .distantFuture) }
     }
 
     /// "All 3 down for boba", "Boba Guys · 3 of 3 agreed".
@@ -229,24 +271,29 @@ public struct PlanDetail: Hashable, Sendable {
         }
     }
 
-    /// Shared versus kept on the phone, from the egress log (the consent
-    /// sheet's own items, ADR 0011 decision 5) and the skills' topics.
-    static func audit(_ chain: [Interaction], words: InteractionWords) -> (shared: [String], kept: [String]) {
+    /// Shared versus kept on the phone, from lane E's `WhatLeftYourPhone`
+    /// over the egress logs (the consent sheet's own items, ADR 0011
+    /// decision 5). Nothing is claimed kept unless every log is complete.
+    static func audit(_ whatLeft: WhatLeftYourPhone, complete: Bool, words: InteractionWords) -> (shared: [String], kept: [String]) {
         var shared: [String] = []
-        var sharedTopics: Set<PrivacyTopic> = []
-        for record in chain.flatMap(\.egress) {
-            sharedTopics.formUnion(record.topics)
-            for item in record.items {
-                for text in describe(item, words: words) where !shared.contains(text) { shared.append(text) }
-            }
+        for topic in whatLeft.shared {
+            let texts = topic.values.isEmpty
+                ? [topic.topic.label]
+                : topic.values.flatMap { describe(DisclosedItem(category: .terms, issue: topic.topic.issues.sorted().first, value: $0), words: words) }
+            for text in texts where !shared.contains(text) { shared.append(text) }
         }
-        // A send whose items are unknown might have carried anything.
-        guard chain.allSatisfy(\.egressIsKnown) else { return (shared, []) }
-        let skills = chain.compactMap { words.registry.descriptor(for: $0.skill.id) }
-        let used = skills.reduce(into: Set<PrivacyTopic>()) { $0.formUnion($1.topicsUsed) }
-        // Location and calendar details are topics in Core v2.1 (ADR 0019),
-        // so what a permission reads is covered by its topic.
-        return (shared, used.subtracting(sharedTopics).sorted().map(\.label))
+        guard complete else { return (shared, []) }
+        var kept: [String] = []
+        for item in whatLeft.kept {
+            let text: String = switch item {
+            case .topic(let topic): topic.label
+            case .permission(.calendarFullAccess): "Calendar details"
+            case .permission(.locationWhenInUse): "Exact location"
+            case .permission(.photoLibrary): "Your photo library"
+            }
+            if !kept.contains(text) { kept.append(text) }
+        }
+        return (shared, kept)
     }
 
     static func describe(_ item: DisclosedItem, words: InteractionWords) -> [String] {

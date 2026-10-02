@@ -1,4 +1,5 @@
 import Foundation
+import StarlingAvailability
 import StarlingCore
 import StarlingFakes
 import StarlingFeatures
@@ -52,6 +53,55 @@ import Testing
         let app = AppModel(services: Self.services(built: built))
         #expect(built.outbox === app.outbox)
         #expect(app.lifecycle.skillsInBuild == [.downFor, .findATime])
+    }
+
+    @Test func aSkillWhoseFlagIsOffRunsNoService() async {
+        let app = AppModel(services: Self.services(skills: [SampleSkills.downFor, SampleSkills.swapPhotos]))
+        #expect(app.lifecycle.skillsInBuild == [.downFor])
+    }
+
+    /// Stands in for Swap photos, which retries retirements its ledger missed.
+    actor RetryingService: SkillService, RetriesRetirements {
+        nonisolated let descriptor = SampleSkills.downFor
+        nonisolated let events = AsyncStream<SkillEvent> { _ in }
+        private(set) var retries = 0
+        func retryRetirements() async { retries += 1 }
+        func start(_ request: SkillRequest) async throws {}
+        func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws {}
+        func withdraw(_ interaction: InteractionID) async {}
+        func handle(_ event: InboxEvent) async {}
+        func restore(_ interactions: [Interaction]) async {}
+        func shutdown() async {}
+    }
+
+    @Test func launchRetriesRetirementsTheLedgerMissed() async {
+        let retrying = RetryingService()
+        var services = Self.services()
+        services.makeSkills = { _ in [retrying] }
+        let app = AppModel(services: services)
+        await app.start()
+        #expect(await retrying.retries == 1)
+        await app.shutdown()
+    }
+
+    @Test func skillsReadTheOwnersChoicesLiveAndCautiousBeforeLoading() async {
+        let choices = OwnerChoices()
+        var services = Self.services()
+        services.choices = choices
+        let app = AppModel(services: services)
+        // Before settings load: off, Just ask me.
+        #expect(!choices.isOn(.findATime))
+        #expect(choices.calendarUse() == .justAskMe)
+        await app.start()
+        #expect(choices.isOn(.findATime))
+        #expect(choices.calendarUse() == .useMyCalendar)
+        await app.settings.setSkill(.findATime, on: false)
+        #expect(!choices.isOn(.findATime))
+        await app.settings.setAskInstead(.findATime, true)
+        #expect(choices.calendarUse() == .justAskMe)
+        // Swap photos is behind its flag.
+        #expect(!choices.isOn(.swapPhotos))
+        await app.shutdown()
     }
 
     @Test func noSkillsWithoutAnOutbox() {
@@ -226,7 +276,8 @@ import Testing
         await down.emit(.lifecycle(id, .proposalReady(proposal)))
         await eventually { app.home.needsYou.count == 1 }
         for _ in 0..<2000 where await notifier.posted.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
-        #expect(await notifier.posted.map(\.title) == ["You and Maya are both down for boba"])
+        #expect(await notifier.posted.map(\.title) == ["Down for boba"])
+        #expect(await notifier.posted.map(\.body) == ["You and Maya are both down for boba."])
     }
 
     /// Unpairing forgets the friend's card, contact link, and close-friend mark.
@@ -287,6 +338,44 @@ import Testing
         #expect(try await ledger.isRetired(request.conversation))
     }
 
+    /// ADR 0011 amendment 16: a pass hides the card at once, but the
+    /// conversation is retired only when the skill reports the pass.
+    @Test func aPassHidesTheCardButRetiresOnlyWhenTheSkillReportsIt() async throws {
+        let ledger = InMemoryConversationLedger()
+        let built = Built()
+        var services = Self.services(built: built)
+        services.ledger = ledger
+        let app = AppModel(services: services)
+        await app.start()
+        let maya = PeerID.random()
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .allFriends, mode: .askQuietly, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [maya]
+        )
+        try await app.lifecycle.start(request, settings: app.settings.skillSettings)
+        let down = try #require(built.services.first { $0.descriptor.id == .downFor })
+        let proposal = SkillProposal(revision: 1, participants: [maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        await down.emit(.lifecycle(request.interaction, .proposalReady(proposal)))
+        await eventually { app.home.needsYou.contains { $0.id == request.interaction } }
+        #expect(app.home.needsYou.contains { $0.id == request.interaction })
+
+        #expect(await app.lifecycle.answer(request.interaction, with: .pass))
+        #expect(!app.home.needsYou.contains { $0.id == request.interaction })
+        #expect(app.home.isEmpty)
+        // Not retired, not ended: friends see the same traffic as for no answer.
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(try await !ledger.isRetired(request.conversation))
+        #expect(app.lifecycle.interaction(request.interaction)?.state == .proposed)
+
+        // The skill's schedule ended: now the pass is applied and retired.
+        await down.emit(.lifecycle(request.interaction, .ownerPassed))
+        for _ in 0..<2000 where try await !ledger.isRetired(request.conversation) { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(try await ledger.isRetired(request.conversation))
+        #expect(app.lifecycle.interaction(request.interaction)?.state == .ended(.declined))
+        await app.shutdown()
+    }
+
     @Test func anUnreadableLedgerIsReportedOnHome() async throws {
         var services = Self.services()
         services.ledger = UnavailableConversationLedger()
@@ -295,19 +384,62 @@ import Testing
         #expect(app.ledgerNotice != nil)
     }
 
+    /// P15-E request 4.6: a chained Pick a place that agrees on a place
+    /// moves the parent plan there.
+    @Test func aChainedPlaceMovesTheParentPlan() async throws {
+        let maya = Fixtures.peer("Maya")
+        let transport = RecordingTransport()
+        let me = transport.localPeer
+        var parent = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try parent.apply(event, at: Timestamp(Date()))
+        }
+        parent.record(.plan(try Plan(origin: parent.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: nil)))
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        var services = Self.services(peers: InMemoryPairedPeerStore([maya]), transport: transport)
+        services.makeSkills = { _ in [pick] }
+        services.interactions = InMemoryInteractionStore([parent])
+        let app = AppModel(services: services)
+        await app.start()
+
+        let link = ChainLink(parent: parent.id, parentConversation: parent.conversation, consumed: [.plan], trigger: .atConfirm, optedInAt: Timestamp(Date()))
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.pickAPlace.ref, rules: .empty, audience: .picked([maya.id]), mode: .invite, expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [maya.id], chainedFrom: parent.conversation
+        )
+        let id = try await app.lifecycle.start(request, chain: link, settings: app.settings.skillSettings)
+        let place = try PlaceChoice(name: PlaceName("Boba Guys"))
+        let offer = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.place: .places([place])]))
+        await pick.emit(.lifecycle(id, .proposalReady(offer)))
+        await eventually { app.lifecycle.interaction(id)?.state == .proposed }
+        await app.lifecycle.answer(id, with: .accept(proposal: 1))
+        await pick.emit(.lifecycle(id, .everyoneConfirmed(revision: 1)))
+        await pick.emit(.produced(id, .placeChoice(place)))
+        await eventually { app.lifecycle.interaction(parent.id)?.plan?.place == place }
+        #expect(app.lifecycle.interaction(parent.id)?.plan?.place == place)
+        #expect(app.lifecycle.interaction(parent.id)?.state == .planned)
+    }
+
     @Test func keepItGoingHidesChainsAFriendCannotRun() async throws {
         let maya = Fixtures.peer("Maya")
         let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
-        var services = Self.services(peers: InMemoryPairedPeerStore([maya]))
+        let transport = RecordingTransport()
+        let me = transport.localPeer
+        var planned = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try planned.apply(event, at: Timestamp(Date()))
+        }
+        planned.record(.plan(try Plan(origin: planned.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: nil)))
+        var services = Self.services(peers: InMemoryPairedPeerStore([maya]), transport: transport)
         services.makeSkills = { _ in [ScriptedSkillService(descriptor: SampleSkills.downFor), pick] }
+        services.interactions = InMemoryInteractionStore([planned])
         let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
         services.inboxEvents = inbox
         let app = AppModel(services: services)
         await app.start()
-        let me = try #require(app.localPeer)
-
-        var planned = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
-        planned.record(.plan(try Plan(origin: planned.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: nil)))
         // No card from Maya yet: nothing is offered.
         #expect(app.chainSuggestions(after: planned).isEmpty)
 

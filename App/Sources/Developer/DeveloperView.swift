@@ -14,6 +14,7 @@ struct DeveloperView: View {
     let harness: DebugHarness
     @AppStorage(DebugHarness.scriptedModelKey) private var scriptedModel = false
     @AppStorage(DebugHarness.denyPermissionsKey) private var denyPermissions = false
+    @AppStorage(DebugHarness.scriptedDownForKey) private var scriptedDownFor = false
     @State private var status: String?
 
     var body: some View {
@@ -21,7 +22,9 @@ struct DeveloperView: View {
             Section {
                 Label("This test build doesn't hide free times. Its matching step uses an insecure stand-in until Nightjar's private set intersection lands.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
-                Label("Skills that haven't merged yet are played by scripted services. Their proposals come from your own chips, not from friends.", systemImage: "theatermasks")
+                if harness.usesScriptedDownFor {
+                    Label("Down for… is played by scripted services. Its proposals come from your own chips, not from friends.", systemImage: "theatermasks")
+                }
             } header: {
                 Text("This is a test build")
             }
@@ -34,9 +37,6 @@ struct DeveloperView: View {
                     }
                 }
                 if let friend = app.friends?.friends.first, let driver = harness.driver {
-                    Button("\(friend.nickname)'s agent asks when you're free") {
-                        Task { await driver.friendAsksForATime(from: friend.id) }
-                    }
                     Button("\(friend.nickname) is down for tacos too") {
                         Task { await driver.friendIsDownToo(friend.id) }
                     }
@@ -59,10 +59,11 @@ struct DeveloperView: View {
                 Toggle("System alerts say Don't Allow", isOn: $denyPermissions)
                 Button("Forget permission answers") { DebugPermissionAccess.reset() }
                 Toggle("Scripted rules model (next launch)", isOn: $scriptedModel)
+                Toggle("Scripted Down for… (next launch)", isOn: $scriptedDownFor)
             } header: {
                 Text("Permissions and model")
             } footer: {
-                Text("Calendar, location, and photos are stand-ins until lanes C, D, and E merge: Starling's sheet is real, the system alert is simulated.")
+                Text("Calendar and location ask the real system alerts. Photos is a stand-in until Swap photos is turned on: Starling's sheet is real, its system alert is simulated. Down for… is lane B's service on the insecure PSI stub, which only this build has; the scripted one plays a friend on this phone.")
             }
 
             Section {

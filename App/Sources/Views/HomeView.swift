@@ -1,3 +1,4 @@
+import StarlingChaining
 import StarlingCore
 import StarlingDesign
 import StarlingFeatures
@@ -8,7 +9,7 @@ import SwiftUI
 struct HomeView: View {
     let app: AppModel
     let startNew: () -> Void
-    let continueWith: (Interaction, SkillDescriptor) -> Void
+    let continueWith: (Interaction, ChainSuggestion) -> Void
     @State private var question: Interaction?
 
     var body: some View {
@@ -50,6 +51,15 @@ struct HomeView: View {
                 Section("Coming up") {
                     ForEach(home.comingUp) { summary in
                         NavigationLink(value: PlanRoute(id: summary.id)) { comingUp(summary) }
+                    }
+                    // A quiet ask matched several friends: make it one plan.
+                    ForEach(home.groupInvites) { invite in
+                        Button {
+                            app.composer.inviteMatched(invite)
+                            startNew()
+                        } label: {
+                            Label(invite.title, systemImage: "person.3")
+                        }
                     }
                 }
             }

@@ -28,6 +28,20 @@ packages:
   # Lane E1's identity, pinned friends, pairing, and secure channel.
   StarlingIdentity:
     path: ../Packages/StarlingIdentity
+  # Lane B's Down for..., lane C's Find a time and calendar access, lane D's
+  # Pick a place, lane E's chaining and audit, and its Swap photos.
+  DownFor:
+    path: ../Packages/Skills/DownFor
+  FindATime:
+    path: ../Packages/Skills/FindATime
+  PickAPlace:
+    path: ../Packages/Skills/PickAPlace
+  StarlingAvailability:
+    path: ../Packages/StarlingAvailability
+  StarlingChaining:
+    path: ../Packages/StarlingChaining
+  SwapPhotos:
+    path: ../Packages/Skills/SwapPhotos
   # Lane BR's status mark and palette (ADR 0172).
   StarlingDesign:
     path: ../Packages/StarlingDesign
@@ -83,6 +97,20 @@ targets:
         product: StarlingFeatures
       - package: StarlingDesign
         product: StarlingDesign
+      - package: DownFor
+        product: DownFor
+      - package: FindATime
+        product: FindATime
+      - package: StarlingAvailability
+        product: StarlingAvailability
+      - package: PickAPlace
+        product: PickAPlace
+      - package: PickAPlace
+        product: PickAPlaceMapKit
+      - package: StarlingChaining
+        product: StarlingChaining
+      - package: SwapPhotos
+        product: StarlingSwapPhotos
       - package: StarlingPolicy
         product: StarlingPolicy
       - package: StarlingIdentity

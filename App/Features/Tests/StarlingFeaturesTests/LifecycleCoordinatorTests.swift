@@ -111,6 +111,21 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.interaction(planned.id)?.state == .done)
     }
 
+    /// Privacy review of PR #73: the app's journal recovery runs once the
+    /// interactions are loaded and before any service is restored.
+    @Test func beforeRestoreRunsBetweenLoadingAndRestoring() async throws {
+        let live = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([live]))
+        var seen: (loaded: Bool, restored: Int)?
+        lifecycle.beforeRestore = { [down] in
+            seen = (lifecycle.interaction(live.id) != nil, await down.restored.count)
+        }
+        await lifecycle.start()
+        #expect(seen?.loaded == true)
+        #expect(seen?.restored == 0)
+        #expect(await down.restored.map(\.id) == [live.id])
+    }
+
     @Test func inboxEventsReachEveryServiceOnlyAfterRestore() async throws {
         let lifecycle = coordinator()
         await lifecycle.route(.peerAvailable(maya))
@@ -137,6 +152,34 @@ actor FailingSkillService: SkillService {
         // A peer's chainedFrom is a hint: no ChainLink, nothing started.
         #expect(invitee.chain == nil)
         #expect(await down.started.isEmpty)
+    }
+
+    /// P15-E request 4.3: a friend's chainedFrom groups their request under
+    /// a plan they were in, and nothing else.
+    @Test func aFriendsChainHintIsKeptOnlyForAPlanTheyWereIn() async throws {
+        var plan = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        for event: InteractionEvent in [.started, .proposalReady(try proposal(1)), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try plan.apply(event, at: Timestamp(clock.now))
+        }
+        // Lane E accepts a hint only from the plan's final attendees.
+        plan.record(.plan(try self.plan(endingIn: 3600, origin: plan.conversation)))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([plan]))
+        await lifecycle.start()
+
+        let fromMaya = InteractionID()
+        await lifecycle.handle(.incoming(fromMaya, conversation: ConversationID(), from: maya, chainedFrom: plan.conversation), from: SampleSkills.findATime)
+        #expect(lifecycle.interaction(fromMaya)?.friendChainHint == plan.conversation)
+        #expect(lifecycle.interaction(fromMaya)?.chain == nil)
+
+        let stranger = PeerID.random()
+        let fromStranger = InteractionID()
+        await lifecycle.handle(.incoming(fromStranger, conversation: ConversationID(), from: stranger, chainedFrom: plan.conversation), from: SampleSkills.findATime)
+        #expect(lifecycle.interaction(fromStranger)?.friendChainHint == nil, "not in that plan")
+
+        let unknown = InteractionID()
+        await lifecycle.handle(.incoming(unknown, conversation: ConversationID(), from: maya, chainedFrom: ConversationID()), from: SampleSkills.findATime)
+        #expect(lifecycle.interaction(unknown)?.friendChainHint == nil, "no such plan")
+        #expect(await time.started.isEmpty)
     }
 
     @Test func aRepeatedIncomingIsDropped() async throws {
@@ -185,13 +228,109 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.isEmpty)
     }
 
-    @Test func passingEndsDeclinedAndTellsTheService() async throws {
+    /// P15-B request 8: a member's send in the starter's conversation names
+    /// its own interaction; the sheet suspends that one when the skill matches.
+    @Test func aMembersSheetSuspendsTheInteractionItNamesForTheSameSkill() async throws {
         let lifecycle = coordinator()
+        let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
+        let startersConversation = ConversationID()
+        #expect(lifecycle.consentRequested(interaction: id, skill: SampleSkills.findATime.ref, conversation: startersConversation) == nil)
+        let request = try #require(lifecycle.consentRequested(interaction: id, skill: SampleSkills.downFor.ref, conversation: startersConversation))
+        #expect(lifecycle.interaction(id)?.pendingConsents == [request])
+        #expect(lifecycle.consentAnswered(interaction: id, skill: SampleSkills.downFor.ref, conversation: startersConversation, request: request, approved: true))
+        #expect(lifecycle.interaction(id)?.state == .negotiating)
+    }
+
+    /// ADR 0011 amendment 17: a quiet ask is one interaction per friend, each
+    /// in its own conversation with the same intent, started separately.
+    @Test func aQuietAskGoesOneToOne() async throws {
+        let lifecycle = coordinator()
+        var groups: [[InteractionID: UUID]] = []
+        lifecycle.onRequestGroupsChange = { groups.append($0) }
+        let quiet = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .picked([maya, jake]), mode: .askQuietly,
+                                expiresAt: Timestamp(clock.now.addingTimeInterval(3600))),
+            participants: [maya, jake]
+        )
+        let ids = try await lifecycle.send(quiet, settings: Self.settings)
+        #expect(ids.count == 2)
+        #expect(ids.first == quiet.interaction)
+        let made = ids.compactMap(lifecycle.interaction)
+        #expect(made.map(\.participants) == [[maya], [jake]])
+        #expect(made.allSatisfy { $0.role == .initiator && $0.state == .negotiating })
+        #expect(Set(made.map(\.conversation)).count == 2)
+        #expect(made.first?.conversation == quiet.conversation)
+
+        let started = await down.started
+        #expect(started.map(\.interaction) == ids)
+        #expect(started.map(\.participants) == [[maya], [jake]])
+        #expect(started.allSatisfy { $0.intent == quiet.intent })
+        // One local group, recorded before anything started, never sent.
+        let group = try #require(lifecycle.requestGroups[ids[0]])
+        #expect(lifecycle.requestGroups[ids[1]] == group)
+        #expect(groups.count == 1)
+
+        // The later invitation to both joins the group; an unknown group does not.
+        let together = try await lifecycle.start(request(to: [maya, jake]), settings: Self.settings)
+        lifecycle.addToRequestGroup(together, group: UUID())
+        #expect(lifecycle.requestGroups[together] == nil)
+        lifecycle.addToRequestGroup(together, group: group)
+        #expect(lifecycle.requestGroups[together] == group)
+    }
+
+    @Test func anInviteStaysOneInteraction() async throws {
+        let lifecycle = coordinator()
+        let invite = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .picked([maya, jake]), mode: .invite,
+                                expiresAt: Timestamp(clock.now.addingTimeInterval(3600))),
+            participants: [maya, jake]
+        )
+        #expect(try await lifecycle.send(invite, settings: Self.settings) == [invite.interaction])
+        #expect(lifecycle.interaction(invite.interaction)?.participants == [maya, jake])
+        #expect(await down.started.count == 1)
+        #expect(lifecycle.requestGroups.isEmpty)
+    }
+
+    /// ADR 0011 amendment 16: a pass hides the card and goes to the
+    /// service; the record ends only when the service reports the pass.
+    @Test func aPassHidesTheCardAndEndsOnlyWhenTheSkillReportsIt() async throws {
+        let lifecycle = coordinator()
+        var reported: [Set<InteractionID>] = []
+        lifecycle.onPassedChange = { reported.append($0) }
         let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
         await lifecycle.handle(.lifecycle(id, .proposalReady(try proposal(1))), from: SampleSkills.downFor)
         #expect(await lifecycle.answer(id, with: .pass))
-        #expect(lifecycle.interaction(id)?.state == .ended(.declined))
+        #expect(lifecycle.passed == [id])
+        #expect(lifecycle.interaction(id)?.state == .proposed)
         #expect(await down.answers.map(\.1) == [.pass])
+
+        await lifecycle.handle(.lifecycle(id, .ownerPassed), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(id)?.state == .ended(.declined))
+        #expect(lifecycle.passed.isEmpty)
+        #expect(reported == [[id], []])
+    }
+
+    @Test func aPassOnAnEndedCardIsDroppedBeforeTheService() async throws {
+        let lifecycle = coordinator()
+        let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
+        await lifecycle.withdraw(id)
+        #expect(await !lifecycle.answer(id, with: .pass))
+        #expect(lifecycle.passed.isEmpty)
+        #expect(await down.answers.isEmpty)
+    }
+
+    @Test func aPassFromAnEarlierLaunchStaysHiddenUntilItEnds() async throws {
+        var open = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        try open.apply(.started, at: Timestamp(clock.now))
+        try open.apply(.proposalReady(try proposal(1)), at: Timestamp(clock.now))
+        var ended = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now))
+        try ended.apply(.withdrawn, at: Timestamp(clock.now))
+        let lifecycle = coordinator(store: InMemoryInteractionStore([open, ended]))
+        lifecycle.restorePassed([open.id, ended.id])
+        await lifecycle.start()
+        #expect(lifecycle.passed == [open.id])
     }
 
     @Test func withdrawingEndsTheRequestAndTellsTheService() async throws {
@@ -411,14 +550,31 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.isEmpty)
     }
 
+    /// The coordinator is lane E's EgressSink: a record lands on the
+    /// conversation's interaction once, is saved before it returns, and a
+    /// conversation nobody owns reports false.
     @Test func egressIsRecordedOnTheInteractionThatSentIt() async throws {
-        let lifecycle = coordinator()
+        let store = InMemoryInteractionStore()
+        let lifecycle = coordinator(store: store)
         let sent = request(to: [maya])
         let id = try await lifecycle.start(sent, settings: Self.settings)
-        let record = EgressRecord(at: Timestamp(clock.now), recipient: maya, items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))])
-        lifecycle.recordEgress(record, conversation: sent.conversation)
-        lifecycle.recordEgress(record, conversation: ConversationID())
+        let record = EgressRecord(at: Timestamp(clock.now), recipient: maya, items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))],
+                                  message: MessageID())
+        #expect(try await lifecycle.appendEgress(record, conversation: sent.conversation))
+        #expect(try await lifecycle.appendEgress(record, conversation: sent.conversation), "a repeat is ignored")
+        #expect(try await !lifecycle.appendEgress(record, conversation: ConversationID()))
         #expect(lifecycle.interaction(id)?.egress == [record])
+        #expect(try await store.interaction(id)?.egress == [record], "saved before it returned")
+    }
+
+    @Test func anEgressRecordThatCannotBeSavedThrowsSoTheRecorderRetries() async throws {
+        let store = BlockingStore()
+        let lifecycle = coordinator(store: store)
+        let sent = request(to: [maya])
+        _ = try await lifecycle.start(sent, settings: Self.settings)
+        await store.failSaves()
+        let record = EgressRecord(at: Timestamp(clock.now), recipient: maya, items: [], message: MessageID())
+        await #expect(throws: EgressNotSaved.self) { try await lifecycle.appendEgress(record, conversation: sent.conversation) }
     }
 
     // MARK: Starting

@@ -1,3 +1,4 @@
+import FindATime
 import StarlingCore
 import StarlingDesign
 import StarlingFeatures
@@ -141,8 +142,9 @@ struct YouView<Developer: View>: View {
                             get: { settings.asksInstead(skill.id) },
                             set: { ask in Task { await settings.setAskInstead(skill.id, ask) } }
                         )) {
-                            Text("Use my calendar").tag(false)
-                            Text("Just ask me").tag(true)
+                            // Lane C's labels (P15-C request 1).
+                            Text(FindATimeCopy.useMyCalendar).tag(false)
+                            Text(FindATimeCopy.justAskMe).tag(true)
                         }
                         .pickerStyle(.segmented)
                     }

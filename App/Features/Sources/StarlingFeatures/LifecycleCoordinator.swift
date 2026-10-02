@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import StarlingChaining
 import StarlingCore
 
 /// An event the coordinator did not apply, kept for the Developer section
@@ -71,6 +72,21 @@ public final class LifecycleCoordinator {
     /// Newest last, at most `maxDropped`.
     public private(set) var dropped: [DroppedEvent] = []
     public private(set) var isLoaded = false
+    /// Cards the owner passed on whose skill has not reported the pass yet
+    /// (ADR 0011 amendment 16). Hidden on this phone at once; the record is
+    /// unchanged, and nothing is retired, until the service reports
+    /// `ownerPassed`, so friends see the same traffic as for no answer.
+    public private(set) var passed: Set<InteractionID> = []
+    /// Called whenever `passed` changes, so the app can keep it across a
+    /// relaunch.
+    public var onPassedChange: @MainActor (Set<InteractionID>) -> Void = { _ in }
+    /// The quiet ask each one-to-one interaction came from (ADR 0011
+    /// amendment 17), so Home can show them under one request. A local ID
+    /// for display only; it is never sent.
+    public private(set) var requestGroups: [InteractionID: UUID] = [:]
+    /// Called whenever `requestGroups` changes, so the app can keep it
+    /// across a relaunch.
+    public var onRequestGroupsChange: @MainActor ([InteractionID: UUID]) -> Void = { _ in }
     /// A plain sentence when the store could not be read or written.
     public private(set) var notice: String?
 
@@ -80,6 +96,12 @@ public final class LifecycleCoordinator {
     /// Called when an interaction reaches a final state, so the consent
     /// sheets still queued for its conversation are withdrawn.
     public var onFinished: @MainActor (_ interaction: InteractionID, _ conversation: ConversationID) -> Void = { _, _ in }
+    /// Runs once at launch, after the interactions are loaded and before any
+    /// service is restored. The app recovers lane E's egress journal here, so
+    /// no service can schedule a send, and no audit can be read as complete,
+    /// before the sends the journal still holds are back (P15-E 4.1, privacy
+    /// review of PR #73).
+    public var beforeRestore: @MainActor () async -> Void = {}
 
     /// How long an ended interaction is still handed to `restore(_:)`, so a
     /// service can ignore a late retry instead of reopening it (ADR 0011
@@ -95,6 +117,9 @@ public final class LifecycleCoordinator {
     private var starting: Task<Void, Never>?
     private var dirty: [InteractionID] = []
     private var writer: Task<Void, Never>?
+    /// Interactions whose latest save failed, so a caller that must know its
+    /// change is on disk (the egress sink) can tell.
+    private var unsaved: Set<InteractionID> = []
     /// Progress a service reported while its interaction was suspended on a
     /// consent sheet, in order, applied once the step resumes (amendment 15).
     private var deferred: [InteractionID: [InteractionEvent]] = [:]
@@ -131,9 +156,9 @@ public final class LifecycleCoordinator {
 
     // MARK: Launch
 
-    /// Loads the store, restores each service's live interactions, then
-    /// starts consuming every service's events. Runs once; later calls wait
-    /// for the first.
+    /// Loads the store, runs `beforeRestore`, restores each service's live
+    /// interactions, then starts consuming every service's events. Runs
+    /// once; later calls wait for the first.
     public func start() async {
         if starting == nil {
             starting = Task { await self.load() }
@@ -158,6 +183,20 @@ public final class LifecycleCoordinator {
             for request in item.pendingConsents.sorted() {
                 apply(.consentCancelled(request: request), to: item.id, reportedAs: nil, skill: item.skill.id)
             }
+        }
+        await beforeRestore()
+        // Groups only for interactions still on the phone.
+        let known = Set(interactions.map(\.id))
+        if requestGroups.keys.contains(where: { !known.contains($0) }) {
+            requestGroups = requestGroups.filter { known.contains($0.key) }
+            onRequestGroupsChange(requestGroups)
+        }
+        // A pass the skill reported while the app was closed has ended its
+        // interaction; nothing else is hidden any more.
+        let open = Set(interactions.filter { !$0.state.isFinal }.map(\.id))
+        if !passed.isSubset(of: open) {
+            passed.formIntersection(open)
+            onPassedChange(passed)
         }
         let cutoff = Timestamp(now().addingTimeInterval(-Self.recentlyEnded))
         for (id, service) in services {
@@ -204,13 +243,18 @@ public final class LifecycleCoordinator {
     /// events without waiting on a stream.
     func handle(_ event: SkillEvent, from skill: SkillDescriptor) async {
         switch event {
-        case .incoming(let id, let conversation, let peer, _):
-            // `chainedFrom` is a hint only (ADR 0012 decision 6): it never
-            // creates a ChainLink, starts a skill, or asks for a permission.
+        case .incoming(let id, let conversation, let peer, let chainedFrom):
             guard interaction(id) == nil, interaction(conversation: conversation) == nil else {
                 return drop(event, id, skill.id, .duplicateIncoming)
             }
-            let invitee = Interaction(id: id, conversation: conversation, skill: skill.ref, role: .invitee, participants: [peer], createdAt: Timestamp(now()))
+            var invitee = Interaction(id: id, conversation: conversation, skill: skill.ref, role: .invitee, participants: [peer], createdAt: Timestamp(now()))
+            // `chainedFrom` is a hint for the timeline only (ADR 0012
+            // decision 6, P15-E request 4.3): kept only when it names a plan
+            // on this phone the sender was in, and never a ChainLink, a
+            // start, a permission, or a schedule.
+            if let parent = IncomingChain.timelineParent(chainedFrom: chainedFrom, sender: peer, interactions: interactions) {
+                try? invitee.setFriendChainHint(parent)
+            }
             insert(invitee)
         case .lifecycle(let id, let lifecycle):
             guard let current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
@@ -231,6 +275,73 @@ public final class LifecycleCoordinator {
     }
 
     // MARK: Owner steps
+
+    /// Groups from an earlier launch. Call before `start()`.
+    public func restoreRequestGroups(_ groups: [InteractionID: UUID]) {
+        requestGroups.merge(groups) { current, _ in current }
+    }
+
+    /// Sends a request the owner composed. A quiet ask is one-to-one (ADR
+    /// 0011 amendment 17): one initiator interaction per friend, each in its
+    /// own conversation with the same intent, started separately, so no
+    /// friend's messages depend on another's answers. They share a local
+    /// group ID for Home only. Anything else is one interaction. Returns
+    /// the interactions started, the first being `request.interaction`.
+    @discardableResult
+    public func send(_ request: SkillRequest, chain: ChainLink? = nil, settings: SkillSettings) async throws(StartRefusal) -> [InteractionID] {
+        guard request.intent.mode == .askQuietly, request.participants.count > 1 else {
+            return [try await start(request, chain: chain, settings: settings)]
+        }
+        let siblings = request.participants.enumerated().map { index, friend in
+            SkillRequest(
+                interaction: index == 0 ? request.interaction : InteractionID(),
+                conversation: index == 0 ? request.conversation : ConversationID(),
+                intent: request.intent, participants: [friend], inputs: request.inputs, chainedFrom: request.chainedFrom
+            )
+        }
+        // Loaded first, so the launch's pruning cannot drop the new group.
+        await start()
+        // Grouped before any starts, so Home never shows them apart.
+        let group = UUID()
+        for sibling in siblings { requestGroups[sibling.interaction] = group }
+        onRequestGroupsChange(requestGroups)
+        var started: [InteractionID] = []
+        var firstRefusal: StartRefusal?
+        for sibling in siblings {
+            do {
+                started.append(try await start(sibling, chain: chain, settings: settings))
+            } catch {
+                switch error {
+                // The same for every friend: stop at the first.
+                case .notInThisBuild, .blockedByPrivacy:
+                    if started.isEmpty { forgetGroup(siblings); throw error }
+                    return started
+                default:
+                    firstRefusal = firstRefusal ?? error
+                }
+            }
+        }
+        if started.isEmpty, let firstRefusal { forgetGroup(siblings); throw firstRefusal }
+        return started
+    }
+
+    /// Puts a later request with the same friends under a quiet ask's group:
+    /// the invitation to make its pair plans one plan (P15-B request 9).
+    public func addToRequestGroup(_ id: InteractionID, group: UUID) {
+        guard interaction(id) != nil, requestGroups.values.contains(group) else { return }
+        requestGroups[id] = group
+        onRequestGroupsChange(requestGroups)
+    }
+
+    /// Drops the group of a quiet ask none of whose interactions started and
+    /// none of which is on the phone.
+    private func forgetGroup(_ siblings: [SkillRequest]) {
+        var changed = false
+        for sibling in siblings where interaction(sibling.interaction) == nil {
+            changed = requestGroups.removeValue(forKey: sibling.interaction) != nil || changed
+        }
+        if changed { onRequestGroupsChange(requestGroups) }
+    }
 
     /// Sends a request the owner composed. Creates the initiator
     /// interaction, applies `started`, then starts the service. A request
@@ -275,13 +386,22 @@ public final class LifecycleCoordinator {
         return item.id
     }
 
+    /// Cards passed in an earlier launch whose skill had not reported the
+    /// pass yet. Call before `start()`.
+    public func restorePassed(_ ids: Set<InteractionID>) {
+        passed.formUnion(ids)
+    }
+
     /// The owner's answer on a card. Applied here first: an acceptance of
     /// anything but the current proposal revision, or a reply to anything
     /// but the pending question, is dropped and never reaches the service.
+    /// A pass only hides the card and goes to the service, which reports
+    /// `ownerPassed` when ending cannot reveal it (ADR 0011 amendment 16).
     /// Returns whether it was applied.
     @discardableResult
     public func answer(_ id: InteractionID, with answer: OwnerAnswer) async -> Bool {
         guard let current = interaction(id), let service = services[current.skill.id] else { return false }
+        if case .pass = answer { return await pass(current, service: service) }
         let event: InteractionEvent = switch answer {
         case .accept(let revision): .ownerAccepted(revision: revision)
         case .pass: .ownerPassed
@@ -292,6 +412,31 @@ public final class LifecycleCoordinator {
             try await service.answer(id, with: answer)
         } catch {
             logger.error("service refused an answer for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+        return true
+    }
+
+    private func pass(_ current: Interaction, service: any SkillService) async -> Bool {
+        // A pass must still apply to the record as it stands, so a tap on a
+        // stale card is dropped as before; the record itself is not changed.
+        var probe = current
+        do {
+            try probe.apply(.ownerPassed, at: Timestamp(now()))
+        } catch {
+            drop("\(InteractionEvent.ownerPassed)", current.id, current.skill.id, .other(String(describing: error)))
+            return false
+        }
+        guard passed.insert(current.id).inserted else { return true }
+        onPassedChange(passed)
+        do {
+            try await service.answer(current.id, with: .pass)
+        } catch {
+            // The skill did not take the pass: show the card again so the
+            // owner can answer it.
+            logger.error("service refused a pass for \(current.id, privacy: .public): \(String(describing: error), privacy: .public)")
+            passed.remove(current.id)
+            onPassedChange(passed)
+            return false
         }
         return true
     }
@@ -307,11 +452,16 @@ public final class LifecycleCoordinator {
 
     /// The interaction a send belongs to: the one the service named
     /// (`Disclosure.interaction`, from `OutboundContext.interaction`) when
-    /// it is in that conversation, otherwise the conversation's own. A group
-    /// member sends in the starter's conversation, so the conversation
-    /// alone can be ambiguous (Core v2.1).
-    public func owner(interaction id: InteractionID?, conversation: ConversationID) -> Interaction? {
-        if let id, let named = interaction(id), named.conversation == conversation { return named }
+    /// it is in that conversation or belongs to the disclosure's skill,
+    /// otherwise the conversation's own. A Down for... member sends in the
+    /// starter's conversation, never its own request's, so the named
+    /// interaction is trusted when its skill matches (P15-B request 8). The
+    /// ID comes from this phone's service, never from a peer.
+    public func owner(interaction id: InteractionID?, skill: SkillRef? = nil, conversation: ConversationID) -> Interaction? {
+        if let id, let named = interaction(id) {
+            if named.conversation == conversation { return named }
+            if let skill, named.skill.id == skill.id { return named }
+        }
         return interaction(conversation: conversation)
     }
 
@@ -319,8 +469,8 @@ public final class LifecycleCoordinator {
     /// interaction under a new request ID, which it returns, or nil when no
     /// interaction owns the send (the link layer's hello) or it cannot be
     /// suspended now.
-    public func consentRequested(interaction id: InteractionID? = nil, conversation: ConversationID) -> UInt32? {
-        guard let current = owner(interaction: id, conversation: conversation), !current.state.isFinal else { return nil }
+    public func consentRequested(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID) -> UInt32? {
+        guard let current = owner(interaction: id, skill: skill, conversation: conversation), !current.state.isFinal else { return nil }
         let request = current.consentWatermark &+ 1
         guard request > current.consentWatermark else { return nil }
         return apply(.consentNeeded(request: request), to: current.id, reportedAs: nil, skill: current.skill.id) ? request : nil
@@ -332,23 +482,23 @@ public final class LifecycleCoordinator {
     /// (the interaction ended, or the request is unknown or was already
     /// closed) must not let the send go out.
     @discardableResult
-    public func consentAnswered(interaction id: InteractionID? = nil, conversation: ConversationID, request: UInt32, approved: Bool) -> Bool {
-        guard let current = owner(interaction: id, conversation: conversation) else { return false }
+    public func consentAnswered(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID, request: UInt32, approved: Bool) -> Bool {
+        guard let current = owner(interaction: id, skill: skill, conversation: conversation) else { return false }
         return apply(approved ? .consentGiven(request: request) : .ownerPassed, to: current.id, reportedAs: nil, skill: current.skill.id)
     }
 
     /// The send waiting on that sheet was cancelled: nobody answered and
     /// nothing was sent, so the step resumes without recording an approval
     /// or a pass (ADR 0011 amendment 15).
-    public func consentCancelled(interaction id: InteractionID? = nil, conversation: ConversationID, request: UInt32) {
-        guard let current = owner(interaction: id, conversation: conversation) else { return }
+    public func consentCancelled(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID, request: UInt32) {
+        guard let current = owner(interaction: id, skill: skill, conversation: conversation) else { return }
         apply(.consentCancelled(request: request), to: current.id, reportedAs: nil, skill: current.skill.id)
     }
 
     /// Whether the send's interaction has ended, so nothing more may be sent
     /// for it, even with a remembered approval.
-    public func isFinished(interaction id: InteractionID? = nil, conversation: ConversationID) -> Bool {
-        owner(interaction: id, conversation: conversation)?.state.isFinal ?? false
+    public func isFinished(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID) -> Bool {
+        owner(interaction: id, skill: skill, conversation: conversation)?.state.isFinal ?? false
     }
 
     /// Progress that waits while a consent sheet is up. Ends apply at once.
@@ -359,17 +509,62 @@ public final class LifecycleCoordinator {
         }
     }
 
-    /// Records what one send disclosed, for "What left your phone". Sends
-    /// outside any interaction (hello) are not recorded here.
-    public func recordEgress(_ record: EgressRecord, interaction id: InteractionID? = nil, conversation: ConversationID) {
-        // The interaction the service named wins: a group member sends in
-        // the starter's conversation, so the conversation alone can be
-        // ambiguous (Core v2.1, OutboundContext.interaction).
-        let owner = id.flatMap(interaction) ?? interaction(conversation: conversation)
-        guard var current = owner, current.conversation == conversation else { return }
-        let before = current
-        current.record(record)
-        replace(current, before: before)
+    /// Every registered service, for app-level upkeep such as retrying
+    /// retirements that failed.
+    public var allServices: [any SkillService] { Array(services.values) }
+
+    /// Acts on one of lane E's after-plan-ends decisions (P15-E request
+    /// 4.5). Checked against the stored link right before acting, in the
+    /// same main-actor step, so a link the owner opted out of, or one that
+    /// already started, is left alone. A start is saved before the service
+    /// hears of it, like any other start (ADR 0011 amendment 13).
+    public func applyScheduled(_ scheduled: ScheduledChain, rules: OwnerRules, expiresAt: Timestamp) async {
+        let current = interaction(scheduled.link.id)
+        guard scheduled.isCurrent(current), let link = current else { return }
+        switch scheduled {
+        case .cancel(_, let event):
+            apply(event, to: link.id, reportedAs: nil, skill: link.skill.id)
+        case .start(let due):
+            guard let service = services[link.skill.id] else {
+                apply(.failed, to: link.id, reportedAs: nil, skill: link.skill.id)
+                return
+            }
+            // Through the one writer, so a later opt-out can never be
+            // overwritten on disk by this start. Nothing is sent unless the
+            // start is saved (ADR 0011 amendment 13). The saved link keeps
+            // only the plan's people as they stand now (P15-E 4.5).
+            var started = link
+            started.setParticipants(due.link.participants)
+            do {
+                try started.apply(.started, at: Timestamp(now()))
+            } catch {
+                drop("\(InteractionEvent.started)", link.id, link.skill.id, .other(String(describing: error)))
+                return
+            }
+            replace(started, before: link)
+            await flush()
+            if unsaved.contains(link.id) {
+                logger.error("scheduled start not saved; not sent")
+                apply(.failed, to: link.id, reportedAs: nil, skill: link.skill.id)
+                return
+            }
+            // The owner may have withdrawn it while it saved.
+            guard let saved = interaction(link.id), !saved.state.isFinal else { return }
+            do {
+                try await service.start(due.request(rules: rules, expiresAt: expiresAt))
+            } catch {
+                apply(.failed, to: link.id, reportedAs: nil, skill: link.skill.id)
+            }
+        }
+    }
+
+    /// Saves a change made from another interaction, such as lane E moving a
+    /// plan to the place its chained link agreed on. Only for an interaction
+    /// already on the phone; its state machine is untouched.
+    public func update(_ changed: Interaction) {
+        guard let current = interaction(changed.id), current != changed,
+              current.state == changed.state, current.conversation == changed.conversation else { return }
+        replace(changed, before: current)
     }
 
     /// Ends plans whose time has passed (`planEnded`). The app calls this at
@@ -421,6 +616,7 @@ public final class LifecycleCoordinator {
         interactions[index] = item
         markDirty(item.id)
         onChange(before, item)
+        if item.state.isFinal, passed.remove(item.id) != nil { onPassedChange(passed) }
         if item.state.isFinal, !before.state.isFinal {
             deferred[item.id] = nil
             onFinished(item.id, item.conversation)
@@ -464,7 +660,9 @@ public final class LifecycleCoordinator {
             while let self, let next = self.nextDirty() {
                 do {
                     try await self.store.save(next)
+                    self.unsaved.remove(next.id)
                 } catch {
+                    self.unsaved.insert(next.id)
                     self.notice = "Starling couldn't save your latest plans. They'll be lost if the app closes."
                     self.logger.error("save failed: \(String(describing: error), privacy: .public)")
                 }
@@ -487,3 +685,32 @@ public final class LifecycleCoordinator {
         while let writer { await writer.value }
     }
 }
+
+/// Lane E's `EgressRecorder` writes "What left your phone" through the
+/// coordinator, the one place every interaction write goes (P15-E request
+/// 4.1, ADR 0011 decision 7).
+extension LifecycleCoordinator: EgressSink {
+    /// Appends `record` to the conversation's interaction (a repeat for the
+    /// same envelope is ignored) and returns once it is saved. Throws when
+    /// the save failed, so the recorder keeps the send and retries it.
+    public func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
+        try await appendEgress(record, interaction: nil, skill: nil, conversation: conversation)
+    }
+
+    /// As above, for the interaction the send named
+    /// (`OutboundContext.interaction`) when it belongs to the send's skill,
+    /// like a consent sheet (P15-B request 8): a Down for... member's send
+    /// goes in the starter's conversation but belongs to its own request.
+    public func appendEgress(_ record: EgressRecord, interaction id: InteractionID?, skill: SkillRef?, conversation: ConversationID) async throws -> Bool {
+        guard var current = owner(interaction: id, skill: skill, conversation: conversation) else { return false }
+        let before = current
+        current.record(record)
+        if current != before { replace(current, before: before) }
+        await flush()
+        if unsaved.contains(current.id) { throw EgressNotSaved() }
+        return true
+    }
+}
+
+/// The interaction holding an egress record could not be saved.
+public struct EgressNotSaved: Error, Hashable, Sendable {}

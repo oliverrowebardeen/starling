@@ -1,4 +1,7 @@
+import DownFor
+import FindATime
 import Foundation
+import PickAPlace
 import StarlingCore
 
 /// The status mark's pose, named like `StarlingDesign.MarkState`, which this
@@ -30,12 +33,15 @@ public struct InteractionWords: Sendable {
     public let formatter: ValueFormatter
     public let chips: ChipFormatter
     private let names: @Sendable () -> [PeerID: String]
+    /// Decides "tonight" or "tomorrow" in a template sentence.
+    let now: @Sendable () -> Date
 
     public init(registry: SkillRegistry, localPeer: PeerID?, formatter: ValueFormatter, names: @escaping @Sendable () -> [PeerID: String], now: @escaping @Sendable () -> Date = { Date() }) {
         self.registry = registry
         self.localPeer = localPeer
         self.formatter = formatter
         self.names = names
+        self.now = now
         chips = ChipFormatter(values: formatter, now: now)
     }
 
@@ -72,6 +78,9 @@ public struct InteractionWords: Sendable {
     }
 
     public static let unpaired = "someone you're not paired with"
+
+    /// The owner's own nickname for a paired friend, or nil.
+    public func nickname(_ peer: PeerID) -> String? { names()[peer] }
 
     /// Whether `peer` is a paired friend now, for drawing their symbol.
     public func isFriend(_ peer: PeerID) -> Bool { names()[peer] != nil }
@@ -191,11 +200,16 @@ public struct InteractionWords: Sendable {
     /// boba." and "Boba Guys at 8:30 PM?". Skills ship their own template
     /// fallback (ADR 0016); this one covers any skill in the shell.
     public func template(_ facts: ProposalFacts) -> (headline: String, detail: String?) {
+        // Lane C's own sentence already says when (P15-C request 2): "You
+        // and Priya are free Thursday, October 8 at 4:00 PM for stats."
+        if facts.skill.id == .findATime { return (FindATimeTemplate.sentence(facts, locale: formatter.locale), nil) }
+        // Lane B's sentence, which also says where and when (P15-B request 2):
+        // "You and Maya are both down for boba. Tonight at 8:30 PM?"
+        if facts.skill.id == .downFor { return (ProposalTemplate.sentence(facts, now: now()), nil) }
         let people = PermissionExplanation.names(["You"] + facts.friendNames)
         let together = facts.friendNames.count == 1 ? "both" : "all"
         let headline: String = switch facts.skill.id {
         case .downFor: facts.activity.map { "\(people) are \(together) down for \($0.value)" } ?? "\(people) are \(together) up for it"
-        case .findATime: "A time that works for \(people)"
         case .pickAPlace: "A place for \(people)"
         default: "\(registry.descriptor(for: facts.skill.id)?.wording.name ?? "A plan") with \(people)"
         }
@@ -210,6 +224,18 @@ public struct InteractionWords: Sendable {
     }
 }
 
+/// The offer to make one plan from a quiet ask's pair plans.
+public struct GroupInvite: Hashable, Sendable, Identifiable {
+    public var id: UUID { group }
+    /// The quiet ask's local group; the invite joins it once sent.
+    public let group: UUID
+    public let plans: [Interaction]
+    public let friends: [PeerID]
+    /// "Invite Maya and Jake together".
+    public let title: String
+    public let activity: String?
+}
+
 /// Home (ADR 0015 decision 1, mockup "Home"): what needs the owner, what
 /// the agent is working on, and plans coming up, with one line and the
 /// status mark at the top.
@@ -220,11 +246,15 @@ public struct HomeContent: Hashable, Sendable {
     public let headline: String
     public let pose: StatusPose
 
-    public init(_ interactions: [Interaction], words: InteractionWords) {
+    /// - Parameter groups: the quiet ask each one-to-one interaction came
+    ///   from (ADR 0011 amendment 17). Siblings still in progress show as
+    ///   one request; each match shows as its own card.
+    public init(_ interactions: [Interaction], words: InteractionWords, groups: [InteractionID: UUID] = [:]) {
+        groupInvites = Self.groupInvites(interactions, groups: groups, words: words)
         let visible = interactions.filter(words.isVisible).compactMap(words.summary)
         needsYou = visible.filter { $0.interaction.state.homeSection == .needsYou }
             .sorted { $0.interaction.updatedAt > $1.interaction.updatedAt }
-        inProgress = visible.filter { $0.interaction.state.homeSection == .inProgress }
+        inProgress = Self.grouped(visible.filter { $0.interaction.state.homeSection == .inProgress }, groups: groups, words: words)
             .sorted { $0.interaction.updatedAt > $1.interaction.updatedAt }
         comingUp = visible.filter { $0.interaction.state.homeSection == .comingUp }
             .sorted { Self.startsAt($0.interaction) < Self.startsAt($1.interaction) }
@@ -244,7 +274,45 @@ public struct HomeContent: Hashable, Sendable {
         }
     }
 
+    /// Quiet asks that became two or more pair plans, which the owner may
+    /// turn into one plan by inviting those friends together (P15-B
+    /// request 9, ADR 0210 decision 20).
+    public let groupInvites: [GroupInvite]
+
     public var isEmpty: Bool { needsYou.isEmpty && inProgress.isEmpty && comingUp.isEmpty }
+
+    static func groupInvites(_ interactions: [Interaction], groups: [InteractionID: UUID], words: InteractionWords) -> [GroupInvite] {
+        var byGroup: [UUID: [Interaction]] = [:]
+        for item in interactions { if let group = groups[item.id] { byGroup[group, default: []].append(item) } }
+        return byGroup.compactMap { group, members in
+            // Once the owner has invited them together, the offer is gone.
+            guard !members.contains(where: { $0.participants.count > 1 }) else { return nil }
+            let plans = members.filter { $0.state == .planned }.sorted { $0.createdAt < $1.createdAt }
+            var friends: [PeerID] = []
+            for plan in plans { for peer in plan.participants where !friends.contains(peer) { friends.append(peer) } }
+            guard friends.count > 1, let first = plans.first else { return nil }
+            let names = PermissionExplanation.names(words.friendNames(friends))
+            return GroupInvite(group: group, plans: plans, friends: friends, title: "Invite \(names) together", activity: words.activity(of: first))
+        }
+        .sorted { $0.plans[0].createdAt < $1.plans[0].createdAt }
+    }
+
+    /// One row per quiet ask: the first sibling, with every sibling's friend.
+    static func grouped(_ summaries: [InteractionSummary], groups: [InteractionID: UUID], words: InteractionWords) -> [InteractionSummary] {
+        var seen: Set<UUID> = []
+        return summaries.compactMap { summary in
+            // Only a quiet ask's one-to-one requests show as one.
+            guard let group = groups[summary.id], summary.interaction.participants.count == 1 else { return summary }
+            guard seen.insert(group).inserted else { return nil }
+            let siblings = summaries.filter { groups[$0.id] == group && $0.interaction.participants.count == 1 }
+            guard siblings.count > 1 else { return summary }
+            var combined = siblings.min { $0.interaction.createdAt < $1.interaction.createdAt }!.interaction
+            var friends: [PeerID] = []
+            for sibling in siblings { for peer in sibling.interaction.participants where !friends.contains(peer) { friends.append(peer) } }
+            combined.setParticipants(friends)
+            return words.summary(combined) ?? summary
+        }
+    }
 
     static func startsAt(_ interaction: Interaction) -> Date {
         interaction.plan?.time?.start ?? interaction.updatedAt.date
@@ -266,7 +334,9 @@ public struct LifecycleNotice: Hashable, Sendable {
         case .proposed:
             guard let facts = words.facts(after) else { return nil }
             let text = words.template(facts)
-            return LifecycleNotice(id: id, title: text.headline, body: text.detail ?? "Open Starling to answer.")
+            // A skill's own sentence says when too: the tag is the title.
+            guard let detail = text.detail else { return LifecycleNotice(id: id, title: summary.tag, body: text.headline) }
+            return LifecycleNotice(id: id, title: text.headline, body: detail)
         case .planned:
             return LifecycleNotice(id: id, title: "It's a plan", body: summary.title)
         case .awaitingOwner where after.role == .invitee:
@@ -305,6 +375,7 @@ public final class ProposalTexts {
 
     /// The headline and detail for the interaction's current proposal.
     public func text(for interaction: Interaction, words: InteractionWords) -> (headline: String, detail: String?)? {
+        if interaction.skill.id == .pickAPlace { return placeText(for: interaction, words: words) }
         guard let facts = words.facts(interaction), let revision = interaction.proposalRevision else { return nil }
         let template = words.template(facts)
         let key = Key(interaction: interaction.id, revision: revision)
@@ -321,4 +392,29 @@ public final class ProposalTexts {
         }
         return template
     }
+
+    /// Pick a place's card, in lane D's words (P15-D request 5): the model
+    /// may write the headline, but never sees the venue's name, which a
+    /// friend may have chosen (ADR 0231).
+    private func placeText(for interaction: Interaction, words: InteractionWords) -> (headline: String, detail: String?)? {
+        guard let proposal = interaction.proposal, let revision = interaction.proposalRevision else { return nil }
+        let facts = PickAPlaceCopy.facts(for: proposal, me: words.localPeer ?? PeerID.zero, nickname: words.nickname, timeZone: words.formatter.timeZone)
+        let detail = PickAPlaceCopy.detail(facts, locale: words.formatter.locale)
+        let key = Key(interaction: interaction.id, revision: revision)
+        if let headline = written[key] { return (headline, detail) }
+        if let model, !asked.contains(key) {
+            asked.insert(key)
+            Task {
+                let copy = await PickAPlaceCopy.proposal(facts, model: model, locale: words.formatter.locale)
+                written[key] = copy.headline
+            }
+        }
+        return (PickAPlaceCopy.templateHeadline(facts), detail)
+    }
+}
+
+extension PeerID {
+    /// Stands in for "this phone" where no transport is in the build, so no
+    /// friend is ever mistaken for the owner.
+    static let zero = try! PeerID(bytes: Data(repeating: 0, count: PeerID.byteCount))
 }

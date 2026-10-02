@@ -1,5 +1,8 @@
+import DownFor
 import Foundation
 import Observation
+import PickAPlace
+import StarlingChaining
 import StarlingCore
 
 /// How long a request stays out.
@@ -82,6 +85,9 @@ public final class ComposerModel {
         /// (ADR 0020 decision 9.3), whatever artifacts the next skill
         /// accepts: Down for… after Find a time takes only the time slot.
         public let allowed: Set<PeerID>
+        /// Lane E's "Keep it going" row this step came from. Start checks it
+        /// again with `ChainPlanner.begin` (ADR 0240).
+        public let suggestion: ChainSuggestion
     }
 
     /// Every edit the owner makes to the draft bumps `generation`, so a
@@ -116,6 +122,8 @@ public final class ComposerModel {
     public let cards: PeerCards
     public let permissions: PermissionGate
     public let chipFormatter: ChipFormatter
+    /// Pick a place's candidates, when Pick a place is in the build.
+    public let places: PlacePicker?
     private let skillModel: (any SkillModel)?
     private let friends: @MainActor () -> [PairedPeer]
     private let savedRules: @MainActor () -> OwnerRules?
@@ -136,9 +144,11 @@ public final class ComposerModel {
         savedRules: @escaping @MainActor () -> OwnerRules?,
         localPeer: PeerID?,
         formatter: ValueFormatter = ValueFormatter(),
+        places: PlacePicker? = nil,
         beforeFirstRequest: @escaping @MainActor () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.places = places
         self.skillModel = skillModel
         self.lifecycle = lifecycle
         self.settings = settings
@@ -260,13 +270,35 @@ public final class ComposerModel {
         constraints = (try? ConstraintSet(parsed.constraints.constraints.filter { slots.contains($0.key) })) ?? .empty
         if let expires = parsed.expiresAt?.date, expires > now() { expiry = .at(expires) }
         if let wanted = parsed.mode, skill.sendModes.contains(wanted) { mode = wanted }
+        // The model reports names only (P15-B request 2). With "everyone
+        // except", they are the friends left out; a name that is one of
+        // the owner's groups names that group; otherwise they are who to ask.
         let named = parsed.mentionedNames.compactMap(friend(named:))
-        if !named.isEmpty {
+        if case .everyoneExcept(let peers)? = parsed.audience {
+            guard named.count == parsed.mentionedNames.count else {
+                // Someone the owner left out can't be told apart: ask nobody
+                // until the owner picks, rather than risk asking them.
+                audience = .pick
+                picked = []
+                notice = "Starling couldn't tell who to leave out. Pick who to ask."
+                return
+            }
+            apply(.everyoneExcept(peers + named))
+        } else if named.isEmpty, let group = parsed.mentionedNames.lazy.compactMap(group(named:)).first {
+            apply(.group(group))
+        } else if !named.isEmpty {
             audience = .pick
             picked = Set(named)
         } else if let audience = parsed.audience {
             apply(audience)
         }
+    }
+
+    /// One of the owner's saved groups named exactly `name`, ignoring case.
+    private func group(named name: String) -> GroupID? {
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matches = settings.groups.filter { $0.name.lowercased() == key }
+        return matches.count == 1 ? matches[0].id : nil
     }
 
     /// A friend whose nickname is exactly `name`, ignoring case. A name two
@@ -407,6 +439,8 @@ public final class ComposerModel {
     /// support itself when it starts.
     private func canRun(_ peer: PeerID) -> Bool {
         guard let descriptor else { return true }
+        // Down for... says who can't run it by lane B's own rule.
+        if descriptor.id == .downFor { return DownForService.unsupported(among: [peer], cards: cards.cards).isEmpty }
         return cards.support(of: peer, for: descriptor.ref)?.isSupported ?? true
     }
 
@@ -455,6 +489,10 @@ public final class ComposerModel {
         }
         let missing = descriptor.intent.requiredIssues.subtracting(constraints.constraints.keys)
         if let issue = missing.sorted().first { return Self.missingSlotNote(issue, descriptor) }
+        if descriptor.id == .pickAPlace, let places {
+            if places.chosen.isEmpty { return "Find a few places, or type one." }
+            if places.askable(limits: requestLimits).isEmpty { return "None of these fit your limits." }
+        }
         if friends().isEmpty { return "Pair with a friend first, in Friends." }
         if chosenFriends.isEmpty { return "Pick at least one friend to ask." }
         if participants.isEmpty { return leftOutNote }
@@ -472,6 +510,11 @@ public final class ComposerModel {
 
     /// Off while the model is reading the draft, so the owner never sends
     /// before the chips settle.
+    /// The limits a request would carry: the chips with the standing rules.
+    private var requestLimits: ConstraintSet {
+        (try? StandingRules.forRequest(intent: constraints, saved: savedRules(), privacy: settings.settings.privacy).constraints) ?? constraints
+    }
+
     public var canSend: Bool { blocker == nil && !isSending && !isUnderstanding }
 
     /// The skill's own button label: "See who's up for it" for Down for….
@@ -481,7 +524,7 @@ public final class ComposerModel {
     public var footnote: String? {
         guard descriptor != nil else { return nil }
         return switch sendMode {
-        case .askQuietly: "If nobody's up for it, nobody sees you asked."
+        case .askQuietly: DownFor.revealNote
         case .invite: "The friends you ask see this as an invite."
         }
     }
@@ -525,6 +568,8 @@ public final class ComposerModel {
         let audienceValue = audienceValue
         let sendMode = sendMode
         let chain = chain
+        // Pick a place's candidates are part of what the owner reviewed.
+        let places = descriptor.id == .pickAPlace ? places?.chosen : nil
         let request = SkillRequest(
             interaction: InteractionID(),
             conversation: ConversationID(),
@@ -548,8 +593,42 @@ public final class ComposerModel {
             return nil
         }
 
+        // Candidates exist before anything is sent (P15-D request 2).
+        // A chained step: lane E checks the row is still offered and that
+        // the owner approved what it adds, then builds the link (ADR 0240).
+        // The owner's tap on Start, with the additions shown above it, is
+        // the approval.
+        var outgoing = request
+        var link = chain?.link
+        if let chain {
+            guard let me = localPeer else {
+                notice = "This step can't start in this build."
+                return nil
+            }
+            let tap = Timestamp(now())
+            do {
+                let start = try ChainPlanner(registry: registry, me: me).begin(
+                    chain.suggestion, in: lifecycle.interactions, settings: settings.skillSettings, cards: cards.cards,
+                    tap: OwnerTap(at: tap), consent: chain.suggestion.needsConsent ? chain.suggestion.consent(approvedAt: tap) : nil,
+                    rules: rules, expiresAt: Timestamp(expiresAt)
+                )
+                outgoing = SkillRequest(
+                    interaction: start.interaction.id, conversation: start.interaction.conversation,
+                    intent: request.intent,
+                    participants: request.participants.filter(chain.allowed.contains),
+                    inputs: start.request.inputs, chainedFrom: start.request.chainedFrom
+                )
+                link = start.interaction.chain
+            } catch {
+                notice = "This step can't start now: the plan, a friend's Starling, or your settings changed. Open the plan again."
+                return nil
+            }
+        }
+        if let places { await self.places?.stage(places, for: outgoing.interaction) }
         do {
-            let id = try await lifecycle.start(request, chain: chain?.link, settings: settings.skillSettings)
+            // A quiet ask goes to each friend separately (amendment 17).
+            let id = try await lifecycle.send(outgoing, chain: link, settings: settings.skillSettings).first ?? outgoing.interaction
+            if let inviting { lifecycle.addToRequestGroup(id, group: inviting) }
             clear()
             notice = fallback
             if !settings.settings.notificationsOffered { offerNotifications = true }
@@ -557,27 +636,6 @@ public final class ComposerModel {
         } catch {
             notice = Self.refusalNote(error, descriptor)
             return nil
-        }
-    }
-
-    /// "Suggest places near me" in Pick a place: location is asked here,
-    /// the first time the owner wants nearby places, not when the skill
-    /// starts (ADR 0013 decision 2). Granted adds "nearby" to the chips;
-    /// otherwise the owner types an area.
-    public func suggestNearby() async {
-        guard let descriptor else { return }
-        let names = audienceFriends.filter { $0.isIncluded && $0.canRun }.map(\.name)
-        switch await permissions.prepare(.locationWhenInUse, for: descriptor, friends: names, settings: settings) {
-        case .granted, .limited:
-            var all = constraints.constraints
-            guard let nearby = try? Keyword("nearby"), let rule = try? Constraint(.prefers(liked: [nearby], avoided: [])) else { return }
-            if !(all[.place] ?? []).contains(rule) { all[.place, default: []].append(rule) }
-            if let updated = try? ConstraintSet(all) { constraints = updated }
-            notice = nil
-        case .askInstead(let fallback):
-            notice = fallback ?? "Type an area instead, like near Franklin."
-        case .unavailable:
-            notice = "Type an area instead, like near Franklin."
         }
     }
 
@@ -603,9 +661,34 @@ public final class ComposerModel {
         picked = []
         excepted = []
         mode = nil
+        places?.clear()
         expiry = .hours(3)
         chain = nil
+        inviting = nil
         notice = nil
+    }
+
+    // MARK: One plan from pair plans
+
+    /// The quiet ask whose matched friends this draft invites together.
+    public private(set) var inviting: UUID?
+
+    /// Opens New on an Invite to the friends a quiet ask matched with, with
+    /// the plans' activity and time (P15-B request 9, ADR 0210 decision
+    /// 20). The invitation names who is coming under the people topic.
+    public func inviteMatched(_ invite: GroupInvite) {
+        clear()
+        skill = .downFor
+        mode = .invite
+        audience = .pick
+        picked = Set(invite.friends)
+        var issues: [IssueKey: [Constraint]] = [:]
+        if let activity = invite.activity, let keyword = try? Keyword(activity), let liked = try? Constraint(.prefers(liked: [keyword], avoided: [])) {
+            issues[.activity] = [liked]
+        }
+        if let time = invite.plans.first?.plan?.time, let within = try? Constraint(.within([time])) { issues[.time] = [within] }
+        constraints = (try? ConstraintSet(issues)) ?? .empty
+        inviting = invite.group
     }
 
     // MARK: Keep it going
@@ -613,25 +696,32 @@ public final class ComposerModel {
     /// Opens New on a chained step from a plan (ADR 0012): the plan's
     /// people, the plan as input, and what the step adds shown before the
     /// owner taps start. Nothing runs without that tap.
-    public func continuePlan(_ parent: Interaction, with next: SkillDescriptor) {
-        guard let plan = parent.plan, let parentSkill = registry.descriptor(for: parent.skill.id) else { return }
+    public func continuePlan(_ parent: Interaction, with suggestion: ChainSuggestion) {
+        guard let plan = parent.plan, parent.id == suggestion.parent else { return }
         clear()
-        var inputs: [Artifact] = []
-        if next.accepts.contains(.plan) { inputs.append(.plan(plan)) }
-        if next.accepts.contains(.timeSlot), let time = plan.time { inputs.append(.timeSlot(time)) }
+        let next = suggestion.skill
+        let inputs: [Artifact] = suggestion.consumes.compactMap { kind in
+            switch kind {
+            case .plan: .plan(plan)
+            case .timeSlot: plan.time.map(Artifact.timeSlot)
+            case .attendees: .attendees(plan.attendees)
+            case .placeChoice: plan.place.map(Artifact.placeChoice)
+            }
+        }
         chain = ChainDraft(
             link: ChainLink(
                 parent: parent.id, parentConversation: parent.conversation,
-                consumed: inputs.map(\.kind), trigger: next.chainTrigger, optedInAt: Timestamp(now())
+                consumed: suggestion.consumes, trigger: next.chainTrigger, optedInAt: Timestamp(now())
             ),
             inputs: inputs,
             parentSkill: parent.skill,
-            adds: next.exposure.adding(over: parentSkill.exposure),
-            allowed: Set(plan.attendees.peers).subtracting(localPeer.map { [$0] } ?? [])
+            adds: suggestion.adds,
+            allowed: Set(suggestion.participants),
+            suggestion: suggestion
         )
         skill = next.id
         audience = .pick
-        picked = Set(plan.attendees.peers.filter { $0 != localPeer })
+        picked = Set(suggestion.participants)
     }
 }
 
