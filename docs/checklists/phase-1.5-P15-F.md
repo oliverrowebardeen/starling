@@ -1,9 +1,11 @@
 # P15-F device checklist
 
 Not run by the agent. Oliver runs this after the real skills and shell merge.
-Use paired phones and test data. The exclusion checks need a third phone.
-Issue #49 tracks pending automated adapters, including wire and timing checks
-that a visual device pass cannot establish.
+Use paired phones and test data. Down for requires Debug until private PSI
+exists; Release shows it as unavailable (ADR 0206). The exclusion checks need a third phone.
+Issue #49 tracks automated evidence and its limits, including wire and timing
+checks that a visual device pass cannot establish. Open findings #76 and #79 to #81
+need fixes before their expected behavior can pass.
 
 1. Phone A: tap New, type "boba tonight", select Phone B, and send with Ask quietly. Expect: the activity and real friend appear; both owners confirm before It's a plan. Repeat with Invite. Expect: B sees a direct invitation. Read the visible and VoiceOver copy as plans with friends.
 2. Phone A: start Find a time, Continue through Starling's explanation, then deny calendar access. Expect: one typed owner question, no repeated alert, and a completed plan after both owners answer. Repeat with Phone B using a calendar containing distinctive private event titles; none appear on Phone A.
@@ -21,7 +23,7 @@ that a visual device pass cannot establish.
 14. Phone A: leave two outgoing consent requests pending, cancel one, and relaunch. Expect: the other request is not approved by the cancellation, abandoned sheets close, and the current step remains usable with a fresh request. In a test build, deny the current invitee acceptance in Outbox. Expect: an ended blocked-by-privacy card; an already agreed plan stays planned.
 15. Phone B: set Place to Never. Phone A: invite B to Pick a place and propose one venue. Phone B: accept A's exact offer. Expect: the plan completes without a topic consent sheet; only A's offered terms appear in B's outgoing audit. Change A's proposal, then tap an old acceptance card. Expect: the old card cannot approve the new terms.
 16. Phone A: withdraw a request, force-quit Starling, then relaunch. Phone B: retry the old request or acceptance card. Expect: no revived card, send, or permission prompt on A. Repeat after a day; the ended card may leave Home, but the conversation remains retired.
-17. Phone A, instrumented test build: pause a send after its pending audit note, force-quit, then relaunch. Expect: the audit shows uncertainty, never a claim that nothing left. Repeat with the audit write made to fail. Expect: B receives nothing. Issue #49 specifies the automated crash and storage-failure adapters.
+17. Phone A, instrumented test build: pause a send after its pending audit note, force-quit, then relaunch. Expect: the audit shows uncertainty, never a claim that nothing left. Repeat for a Down for member whose send uses the starter's conversation (#80), then with the audit write made to fail. Expect: B receives nothing. Issue #49 specifies the automated crash and storage-failure adapters.
 18. Phone A, instrumented test build: hold a place offer in the send queue, then change Place from Share to Never in You. Release the queue. Expect: B never receives that offer. Repeat withdrawal with the retirement write made to fail. Expect: queued data stops and A reports failure, without presenting a clean ending. After storage failure, no later request silently starts with an empty ledger.
 19. Phones A, B, and C: confirm a plan, then Pick a place. B accepts and C passes. After the deadline, inspect the parent plan and the next photo-chain audience. Expect: only A and B. Have C send a chained request naming the parent. Expect: no grouping under that plan. Automated regressions for #66 and #67 pass after PR #72.
 20. Phones A, B, and C: A sends a quiet ask to B and C. Leave B's card untouched, then repeat with B passing. Expect: B's card hides locally on a pass; C's messages and timing stay the same in both runs. Any quiet match shows only that pair. A separate group plan requires an explicit Invite with its roster reviewed (ADR 0011 amendments 16 and 17).
