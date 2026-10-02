@@ -10,45 +10,62 @@ import Testing
 /// Down for... card through the real `LifecycleCoordinator` and the real
 /// `DownForService` (ADR 0011 amendment 16, ADR 0210 decision 13). The
 /// friend's agent is played on the wire, so everything the starter sends
-/// it is recorded as it leaves.
+/// it is recorded as it leaves. The service runs on virtual time, so every
+/// deadline falls at an exact instant however busy the machine is
+/// (lane F's #84).
 @MainActor
 @Suite(.timeLimit(.minutes(1))) struct DownForPassThroughCoordinatorTests {
     /// The owner passes on the card, or never answers it. Either way the
-    /// friend gets the same proposals on the same schedule. A pass hides
+    /// friend gets the same proposals at the same instants. A pass hides
     /// the card at once, changes and retires nothing until the window, and
     /// only then ends as passed, when silence ends as expired.
     @Test func aStartersPassLooksLikeSilenceToTheFriend() async throws {
         let passed = try await Self.starter(passes: true)
         let silent = try await Self.starter(passes: false)
 
+        // Every scheduled proposal, at its instant, and nothing else.
+        #expect(passed.sentByInstant == silent.sentByInstant)
+        #expect(passed.sentByInstant == Array(1...Self.schedule.count))
         #expect(passed.kinds == [.propose] && silent.kinds == [.propose], "passed \(passed.kinds), silent \(silent.kinds)")
-        #expect(abs(passed.proposals - silent.proposals) <= 1, "passed \(passed.proposals), silent \(silent.proposals)")
-        #expect(passed.proposals > 3)
-        let gap = abs((passed.lastProposalAfterCard - silent.lastProposalAfterCard) / .milliseconds(1))
-        #expect(gap < 250, "the last proposal differs by \(gap) ms")
 
-        #expect(passed.hiddenAtOnce && passed.unchangedAfterPass && !passed.retiredBeforeEnd)
+        #expect(passed.hiddenAtOnce)
+        // Up to the window: still proposed, nothing retired, either way.
+        #expect(passed.beforeWindow == .proposed && silent.beforeWindow == .proposed)
+        #expect(!passed.retiredBeforeWindow && !silent.retiredBeforeWindow)
+        // At the window: the pass, or the expiry, with the conversation retired.
         #expect(passed.ending == .ended(.declined) && silent.ending == .ended(.expired))
-        #expect(passed.endedAfterCard >= Self.window - .milliseconds(200) && silent.endedAfterCard >= Self.window - .milliseconds(200))
         #expect(passed.retiredAtEnd && silent.retiredAtEnd)
         #expect(!passed.stillHidden)
     }
 
     struct Outcome {
-        /// Kinds the starter sent after its proposal, repeats collapsed.
+        /// Proposals the friend had received after each scheduled instant.
+        let sentByInstant: [Int]
+        /// Kinds the starter sent from its first proposal on, repeats collapsed.
         let kinds: [MessageBody.Kind]
-        let proposals: Int
-        let lastProposalAfterCard: Duration
         let hiddenAtOnce: Bool
-        let unchangedAfterPass: Bool
-        let retiredBeforeEnd: Bool
+        let beforeWindow: InteractionState?
+        let retiredBeforeWindow: Bool
         let ending: InteractionState?
-        let endedAfterCard: Duration
         let retiredAtEnd: Bool
         let stillHidden: Bool
     }
 
     static let window = Duration.seconds(2)
+    static let retryInterval = Duration.milliseconds(20)
+    static let maxBackoff = Duration.milliseconds(200)
+
+    /// ADR 0210 decision 13: at once, then after waits that start at
+    /// `retryInterval` and double up to `maxBackoff`, within the window.
+    static var schedule: [Duration] {
+        var schedule: [Duration] = [.zero]
+        var wait = retryInterval
+        while schedule.last! + wait <= window {
+            schedule.append(schedule.last! + wait)
+            wait = min(wait * 2, maxBackoff)
+        }
+        return schedule
+    }
 
     static func starter(passes: Bool) async throws -> Outcome {
         // The starter's PeerID is the lowest, so it carries the pair.
@@ -57,10 +74,11 @@ import Testing
         let transport = RecordingTransport(localPeer: me)
         let ledger = InMemoryConversationLedger()
         let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved), ledger: ledger)
-        let configuration = DownForConfiguration(retryInterval: .milliseconds(20), maxAttempts: 100, ownerWindow: window, maxBackoff: .milliseconds(200))
+        let configuration = DownForConfiguration(retryInterval: retryInterval, maxAttempts: 100, ownerWindow: window, maxBackoff: maxBackoff)
+        let time = VirtualTime()
         let service = DownForService(
             localPeer: me, outbox: outbox, model: ScriptedAgentModel(), psi: InsecurePSIStub(), ledger: ledger,
-            clock: SkillClock(now: { Evening.now }, sleep: { try await Task.sleep(for: $0) }), timeZone: Evening.utc, configuration: configuration
+            clock: time.clock(now: Evening.now), timeZone: Evening.utc, configuration: configuration
         )
         let coordinator = LifecycleCoordinator(registry: try SkillRegistry([DownFor.descriptor]), services: [service], store: InMemoryInteractionStore(), now: { Evening.now })
         await coordinator.start()
@@ -79,53 +97,60 @@ import Testing
         )
         let id = try await coordinator.start(request, settings: SkillSettings(flags: .phase1_5))
 
-        // The friend's agent: answers the time check and the activity query.
+        // The friend's agent answers the time check and the activity query.
         let wire = FriendOnTheWire(me: me, friend: friend, transport: transport, service: service, conversation: conversation)
         try await wire.answerUntilProposed(liking: boba)
-        await eventually { coordinator.interaction(id)?.state == .proposed }
-        #expect(coordinator.interaction(id)?.state == .proposed)
-        let clock = ContinuousClock()
-        let cardShown = clock.now
-        // Counted from the first proposal, as the card shows.
-        let firstProposal = await wire.sentKinds().firstIndex(of: .propose) ?? 0
+        try await until("the card") { coordinator.interaction(id)?.state == .proposed }
+        // The whole schedule and the window are set from the moment of the
+        // proposal, on virtual time that has not moved.
+        let instants = Array(schedule.dropFirst()) + [window]
+        try await until("the schedule") { Set(await time.due).isSuperset(of: instants) }
+        func proposals() async -> Int { await wire.sentKinds().filter { $0 == .propose }.count }
 
         var hiddenAtOnce = false
-        var unchangedAfterPass = false
-        var retiredBeforeEnd = false
         if passes {
             #expect(await coordinator.answer(id, with: .pass))
             hiddenAtOnce = coordinator.passed.contains(id)
-            try await Task.sleep(for: .milliseconds(500))
-            unchangedAfterPass = coordinator.interaction(id)?.state == .proposed
-            retiredBeforeEnd = (try? await ledger.isRetired(conversation)) ?? true
         }
 
-        // Watch what leaves for the friend until the request ends.
-        var arrivals: [(MessageBody.Kind, ContinuousClock.Instant)] = []
-        var seen = firstProposal
-        let deadline = clock.now.advanced(by: window + .seconds(2))
-        func observe() async {
-            // One read per look, so nothing that arrives in between is lost.
-            let kinds = await wire.sentKinds()
-            for kind in kinds.dropFirst(seen) { arrivals.append((kind, clock.now)) }
-            seen = kinds.count
+        var sentByInstant: [Int] = []
+        try await until("the first proposal") { await proposals() == 1 }
+        sentByInstant.append(await proposals())
+        for (index, instant) in schedule.enumerated().dropFirst() {
+            await time.advance(to: instant)
+            try await until("proposal \(index + 1)") { await proposals() == index + 1 }
+            sentByInstant.append(await proposals())
         }
-        while clock.now < deadline, coordinator.interaction(id)?.state.isFinal != true {
-            await observe()
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        let endedAfterCard = cardShown.duration(to: clock.now)
-        await observe()
 
+        // Just before the window nothing is due: the card stands, unretired.
+        await time.advance(to: window - .milliseconds(1))
+        let beforeWindow = coordinator.interaction(id)?.state
+        let retiredBeforeWindow = (try? await ledger.isRetired(conversation)) ?? true
+
+        await time.advance(to: window)
+        try await until("the ending") { coordinator.interaction(id)?.state.isFinal == true }
+        #expect(await proposals() == schedule.count)
+
+        let all = await wire.sentKinds()
         var kinds: [MessageBody.Kind] = []
-        for (kind, _) in arrivals where kinds.last != kind { kinds.append(kind) }
-        let last = arrivals.last { $0.0 == .propose }?.1 ?? cardShown
+        for kind in all.dropFirst(all.firstIndex(of: .propose) ?? 0) where kinds.last != kind { kinds.append(kind) }
         return Outcome(
-            kinds: kinds, proposals: arrivals.filter { $0.0 == .propose }.count, lastProposalAfterCard: cardShown.duration(to: last),
-            hiddenAtOnce: hiddenAtOnce, unchangedAfterPass: unchangedAfterPass, retiredBeforeEnd: retiredBeforeEnd,
-            ending: coordinator.interaction(id)?.state, endedAfterCard: endedAfterCard,
+            sentByInstant: sentByInstant, kinds: kinds, hiddenAtOnce: hiddenAtOnce,
+            beforeWindow: beforeWindow, retiredBeforeWindow: retiredBeforeWindow,
+            ending: coordinator.interaction(id)?.state,
             retiredAtEnd: (try? await ledger.isRetired(conversation)) ?? false, stillHidden: coordinator.passed.contains(id)
         )
+    }
+
+    /// Waits for `condition`, failing after ten seconds of real time. Only
+    /// work already due is waited for; no deadline depends on it.
+    static func until(_ what: String, _ condition: () async -> Bool) async throws {
+        for _ in 0..<2000 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("timed out waiting for \(what)")
+        throw CancellationError()
     }
 }
 
@@ -196,5 +221,50 @@ actor FriendOnTheWire {
         let query = try await next(.query)
         try await reply(.answer(try Answer(query: query.id, issue: .activity, status: .answered, acceptable: .keywords([liked]))))
         _ = try await next(.propose)
+    }
+}
+
+/// Virtual time for the service's clock: a sleep returns only when the test
+/// advances past its deadline. Wall time stays at the date given to
+/// `clock(now:)`.
+actor VirtualTime {
+    private(set) var now: Duration = .zero
+    private var sleepers: [UUID: (at: Duration, continuation: CheckedContinuation<Void, any Error>)] = [:]
+
+    /// When each pending sleep is due, earliest first.
+    var due: [Duration] { sleepers.values.map(\.at).sorted() }
+
+    nonisolated func clock(now date: Date) -> SkillClock {
+        SkillClock(now: { date }, sleep: { try await self.sleep($0) })
+    }
+
+    func sleep(_ duration: Duration) async throws {
+        guard duration > .zero else { return }
+        let id = UUID()
+        let at = now + duration
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    sleepers[id] = (at, continuation)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
+        }
+    }
+
+    private func cancel(_ id: UUID) {
+        sleepers.removeValue(forKey: id)?.continuation.resume(throwing: CancellationError())
+    }
+
+    /// Moves time forward to `time`, waking every sleep due by then.
+    func advance(to time: Duration) {
+        now = max(now, time)
+        for (id, sleeper) in sleepers.sorted(by: { $0.value.at < $1.value.at }) where sleeper.at <= now {
+            sleepers[id] = nil
+            sleeper.continuation.resume()
+        }
     }
 }
