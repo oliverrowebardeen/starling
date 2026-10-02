@@ -31,6 +31,13 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0203](0203-pair-symbol-palette.md) | Pair symbols from ten contrast-checked hue pairs | Proposed |
 | [0204](0204-hand-offs-on-the-phone.md) | How the hand-offs and their local records work | Proposed |
 | [0205](0205-audience-book-and-sent-sequences-on-the-phone.md) | The audience book, the Ask picker, and sent sequence numbers on the phone | Proposed |
+| [0206](0206-wiring-skill-services-into-the-app.md) | Wiring the skill lanes' services into the app | Proposed |
+| [0210](0210-down-for-one-friend-at-a-time.md) | Down for..., one friend at a time | Proposed |
+| [0211](0211-negotiation-becomes-building-blocks.md) | StarlingNegotiation becomes shared building blocks | Proposed |
+| [0212](0212-skill-model-routing-chips-and-sentences.md) | SkillModel: routing, chips, and proposal sentences | Proposed |
+| [0220](0220-availability-busy-and-free-only.md) | Availability reads busy and free only, behind one seam | Proposed |
+| [0221](0221-find-a-time-protocol.md) | Find a time is one private query per friend, then a plan | Proposed |
+| [0222](0222-find-a-time-restores-from-checkpoints.md) | Find a time resumes from its own checkpoints | Proposed |
 | [0230](0230-pick-a-place-private-aggregation.md) | Pick a place agrees on a venue by private aggregation over place queries | Proposed |
 | [0231](0231-venue-names-stay-out-of-prompts.md) | Venue names stay out of prompts in Phase 1.5 | Proposed (needs lane P15-F review) |
 | [0232](0232-candidates-from-apple-maps-location-at-first-use.md) | Candidates from Apple Maps, location at first use, typed places when denied | Proposed |
