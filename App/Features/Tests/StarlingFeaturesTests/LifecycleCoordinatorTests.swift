@@ -228,6 +228,19 @@ actor FailingSkillService: SkillService {
         #expect(lifecycle.dropped.isEmpty)
     }
 
+    /// P15-B request 8: a member's send in the starter's conversation names
+    /// its own interaction; the sheet suspends that one when the skill matches.
+    @Test func aMembersSheetSuspendsTheInteractionItNamesForTheSameSkill() async throws {
+        let lifecycle = coordinator()
+        let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
+        let startersConversation = ConversationID()
+        #expect(lifecycle.consentRequested(interaction: id, skill: SampleSkills.findATime.ref, conversation: startersConversation) == nil)
+        let request = try #require(lifecycle.consentRequested(interaction: id, skill: SampleSkills.downFor.ref, conversation: startersConversation))
+        #expect(lifecycle.interaction(id)?.pendingConsents == [request])
+        #expect(lifecycle.consentAnswered(interaction: id, skill: SampleSkills.downFor.ref, conversation: startersConversation, request: request, approved: true))
+        #expect(lifecycle.interaction(id)?.state == .negotiating)
+    }
+
     /// ADR 0011 amendment 17: a quiet ask is one interaction per friend, each
     /// in its own conversation with the same intent, started separately.
     @Test func aQuietAskGoesOneToOne() async throws {

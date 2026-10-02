@@ -444,11 +444,16 @@ public final class LifecycleCoordinator {
 
     /// The interaction a send belongs to: the one the service named
     /// (`Disclosure.interaction`, from `OutboundContext.interaction`) when
-    /// it is in that conversation, otherwise the conversation's own. A group
-    /// member sends in the starter's conversation, so the conversation
-    /// alone can be ambiguous (Core v2.1).
-    public func owner(interaction id: InteractionID?, conversation: ConversationID) -> Interaction? {
-        if let id, let named = interaction(id), named.conversation == conversation { return named }
+    /// it is in that conversation or belongs to the disclosure's skill,
+    /// otherwise the conversation's own. A Down for... member sends in the
+    /// starter's conversation, never its own request's, so the named
+    /// interaction is trusted when its skill matches (P15-B request 8). The
+    /// ID comes from this phone's service, never from a peer.
+    public func owner(interaction id: InteractionID?, skill: SkillRef? = nil, conversation: ConversationID) -> Interaction? {
+        if let id, let named = interaction(id) {
+            if named.conversation == conversation { return named }
+            if let skill, named.skill.id == skill.id { return named }
+        }
         return interaction(conversation: conversation)
     }
 
@@ -456,8 +461,8 @@ public final class LifecycleCoordinator {
     /// interaction under a new request ID, which it returns, or nil when no
     /// interaction owns the send (the link layer's hello) or it cannot be
     /// suspended now.
-    public func consentRequested(interaction id: InteractionID? = nil, conversation: ConversationID) -> UInt32? {
-        guard let current = owner(interaction: id, conversation: conversation), !current.state.isFinal else { return nil }
+    public func consentRequested(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID) -> UInt32? {
+        guard let current = owner(interaction: id, skill: skill, conversation: conversation), !current.state.isFinal else { return nil }
         let request = current.consentWatermark &+ 1
         guard request > current.consentWatermark else { return nil }
         return apply(.consentNeeded(request: request), to: current.id, reportedAs: nil, skill: current.skill.id) ? request : nil
@@ -469,23 +474,23 @@ public final class LifecycleCoordinator {
     /// (the interaction ended, or the request is unknown or was already
     /// closed) must not let the send go out.
     @discardableResult
-    public func consentAnswered(interaction id: InteractionID? = nil, conversation: ConversationID, request: UInt32, approved: Bool) -> Bool {
-        guard let current = owner(interaction: id, conversation: conversation) else { return false }
+    public func consentAnswered(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID, request: UInt32, approved: Bool) -> Bool {
+        guard let current = owner(interaction: id, skill: skill, conversation: conversation) else { return false }
         return apply(approved ? .consentGiven(request: request) : .ownerPassed, to: current.id, reportedAs: nil, skill: current.skill.id)
     }
 
     /// The send waiting on that sheet was cancelled: nobody answered and
     /// nothing was sent, so the step resumes without recording an approval
     /// or a pass (ADR 0011 amendment 15).
-    public func consentCancelled(interaction id: InteractionID? = nil, conversation: ConversationID, request: UInt32) {
-        guard let current = owner(interaction: id, conversation: conversation) else { return }
+    public func consentCancelled(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID, request: UInt32) {
+        guard let current = owner(interaction: id, skill: skill, conversation: conversation) else { return }
         apply(.consentCancelled(request: request), to: current.id, reportedAs: nil, skill: current.skill.id)
     }
 
     /// Whether the send's interaction has ended, so nothing more may be sent
     /// for it, even with a remembered approval.
-    public func isFinished(interaction id: InteractionID? = nil, conversation: ConversationID) -> Bool {
-        owner(interaction: id, conversation: conversation)?.state.isFinal ?? false
+    public func isFinished(interaction id: InteractionID? = nil, skill: SkillRef? = nil, conversation: ConversationID) -> Bool {
+        owner(interaction: id, skill: skill, conversation: conversation)?.state.isFinal ?? false
     }
 
     /// Progress that waits while a consent sheet is up. Ends apply at once.
