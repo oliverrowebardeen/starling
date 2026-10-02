@@ -89,6 +89,10 @@ import Testing
         try await b.waitForProposal(bs)
         let proposedAt = started.duration(to: clock.now)
         #expect(await b.lifecycle.interaction(bs)?.proposal?.participants == [a.id, b.id])
+        // The wire's recorder can lag the card by a moment.
+        try await eventually("the proposal on the wire") {
+            await world.wire.envelopes.contains { $0.sender == a.id && $0.recipient == b.id && $0.body.kind == .propose }
+        }
         let toB = await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id }
         var kinds: [MessageBody.Kind] = []
         for kind in toB.map(\.body.kind) where kinds.last != kind { kinds.append(kind) }
