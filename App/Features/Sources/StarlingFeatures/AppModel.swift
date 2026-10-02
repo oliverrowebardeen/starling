@@ -249,6 +249,7 @@ public final class AppModel {
             store: services.interactions
         )
         relay.lifecycle = lifecycle
+        if let outbox { lifecycle.retire = { conversation in try await outbox.retire(conversation) } }
         consent.tracker = lifecycle
         let consent = consent
         lifecycle.onFinished = { interaction, conversation in

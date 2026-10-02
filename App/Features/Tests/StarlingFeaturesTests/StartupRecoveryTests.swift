@@ -232,10 +232,13 @@ actor DeliverThenThrowTransport: Transport {
         await app.shutdown()
     }
 
-    /// Lane E's PR #78: a member's send in the starter's conversation that
-    /// was journaled but not recorded before a crash lands on the member's
-    /// own request at the next launch, by the interaction the journal kept.
-    @Test func aMembersSendRecoveredAfterACrashLandsOnItsOwnRequest() async throws {
+    /// Lane E's PR #78, issue #80: a member's send in the starter's
+    /// conversation that was journaled but not recorded before a crash lands
+    /// on the member's own request at the next launch, by the interaction the
+    /// journal kept. One that never reached the transport is recorded as
+    /// unknown, so the request's audit claims nothing stayed on the phone.
+    @Test(arguments: [true, false])
+    func aMembersSendRecoveredAfterACrashLandsOnItsOwnRequest(sent: Bool) async throws {
         let maya = PeerID.random()
         var own = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Date()))
         try own.apply(.started, at: Timestamp(Date()))
@@ -245,17 +248,24 @@ actor DeliverThenThrowTransport: Transport {
                                   items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))], message: message)
         let journal = InMemoryEgressJournal()
         try await journal.remember(EgressJournalEntry(message: message, conversation: startersConversation, record: record,
-                                                      sent: true, skilled: true, interaction: own.id))
+                                                      sent: sent, skilled: true, interaction: own.id))
         var services = AppModelTests.services()
         services.interactions = InMemoryInteractionStore([own])
         services.egressJournal = journal
         let app = AppModel(services: services)
         await app.start()
 
-        #expect(app.lifecycle.interaction(own.id)?.egress.map(\.message) == [message])
+        let restored = try #require(app.lifecycle.interaction(own.id))
+        #expect(restored.egress.map(\.message) == [message])
+        #expect(restored.egress.first?.itemsUnknown == !sent)
         #expect(await app.egress.waitingForInteraction == 0)
         #expect(await app.egress.unconfirmedConversations.isEmpty)
         #expect(try await journal.unresolved().isEmpty)
+        if !sent {
+            let detail = app.planDetail(restored)
+            #expect(!detail.auditIsComplete)
+            #expect(detail.kept.isEmpty)
+        }
         await app.shutdown()
     }
 

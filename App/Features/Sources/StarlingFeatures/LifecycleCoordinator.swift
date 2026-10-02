@@ -80,6 +80,10 @@ public final class LifecycleCoordinator {
     /// Called whenever `passed` changes, so the app can keep it across a
     /// relaunch.
     public var onPassedChange: @MainActor (Set<InteractionID>) -> Void = { _ in }
+    /// Durably retires a conversation (the app's `Outbox.retire`), awaited
+    /// before a withdrawal is shown as ended. Nil only where nothing can be
+    /// sent, such as previews.
+    public var retire: (@Sendable (ConversationID) async throws -> Void)?
     /// The quiet ask each one-to-one interaction came from (ADR 0011
     /// amendment 17), so Home can show them under one request. A local ID
     /// for display only; it is never sent.
@@ -442,10 +446,37 @@ public final class LifecycleCoordinator {
     }
 
     /// The owner withdrew a request. Friends learn nothing beyond "no plan".
+    ///
+    /// An ending is shown only once the conversation is durably retired
+    /// (ADR 0021 amendment 13): the service is told first, and retires and
+    /// reports its own ending; the coordinator then awaits `retire` for the
+    /// interaction's conversation and applies `withdrawn`, or `failed` if
+    /// retiring threw. Whichever ending lands first stands. A withdrawal
+    /// that no longer applies (a stale tap) reaches nothing.
     public func withdraw(_ id: InteractionID) async {
         guard let current = interaction(id), let service = services[current.skill.id] else { return }
-        guard apply(.withdrawn, to: id, reportedAs: nil, skill: current.skill.id) else { return }
+        var probe = current
+        do {
+            try probe.apply(.withdrawn, at: Timestamp(now()))
+        } catch {
+            drop("\(InteractionEvent.withdrawn)", id, current.skill.id, .other(String(describing: error)))
+            return
+        }
         await service.withdraw(id)
+        guard let retire else {
+            apply(.withdrawn, to: id, reportedAs: nil, skill: current.skill.id)
+            return
+        }
+        let ending: InteractionEvent
+        do {
+            try await retire(current.conversation)
+            ending = .withdrawn
+        } catch {
+            logger.error("withdrawal not retired for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+            ending = .failed
+        }
+        // The service's own ending may have landed meanwhile.
+        if let latest = interaction(id), !latest.state.isFinal { apply(ending, to: id, reportedAs: nil, skill: current.skill.id) }
     }
 
     // MARK: Consent and egress

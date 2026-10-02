@@ -341,6 +341,29 @@ actor FailingSkillService: SkillService {
         #expect(await down.withdrawn == [id])
     }
 
+    /// ADR 0021 amendment 13, issue #79: a withdrawal is shown as ended only
+    /// once its conversation is durably retired; a failed retirement ends it
+    /// failed, never as a clean withdrawal.
+    @Test(arguments: [true, false])
+    func aWithdrawalEndsCleanOnlyOnceRetired(retires: Bool) async throws {
+        struct Unretired: Error {}
+        let lifecycle = coordinator()
+        var retired: [ConversationID] = []
+        lifecycle.retire = { conversation in
+            await MainActor.run { retired.append(conversation) }
+            if !retires { throw Unretired() }
+        }
+        let id = try await lifecycle.start(request(to: [maya]), settings: Self.settings)
+        await lifecycle.withdraw(id)
+        #expect(await down.withdrawn == [id])
+        #expect(retired == [try #require(lifecycle.interaction(id)).conversation])
+        #expect(lifecycle.interaction(id)?.state == (retires ? .ended(.withdrawn) : .ended(.failed)))
+
+        // A second tap on the ended request reaches nothing.
+        await lifecycle.withdraw(id)
+        #expect(await down.withdrawn == [id])
+    }
+
     // MARK: Stale and invalid events
 
     /// The owner's tap on an older card never accepts newer terms, and the
