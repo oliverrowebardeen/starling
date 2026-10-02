@@ -44,6 +44,12 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0240](0240-chain-links-consent-and-time-triggers.md) | Chain links, per-link consent, and time-triggered chains | Proposed |
 | [0241](0241-egress-log-and-plan-audit.md) | The egress log and the plan's audit | Proposed |
 | [0242](0242-swap-photos-stub.md) | Swap photos ships flagged off, picking with the system picker | Proposed |
+| [0250](0250-phase-1-5-adversarial-contracts.md) | Separate executable boundary tests from real-skill integration evidence | Accepted (P15-F tests only) |
+| [0251](0251-core-v21-red-team-boundaries.md) | Test Core v2.1 privacy and audience boundaries without claiming service enforcement | Accepted (P15-F tests only) |
+| [0252](0252-ledger-and-journal-adversarial-tests.md) | Test shared ledger enforcement and pre-send journal boundaries | Accepted (P15-F tests only) |
+| [0253](0253-real-skill-adversarial-adapters.md) | Test merged services at authenticated and persistent boundaries | Proposed |
+| [0254](0254-authenticated-down-for-transcripts.md) | Verify one-to-one quiet asks through authenticated transcripts | Proposed |
+| [0255](0255-app-wiring-adversarial-boundaries.md) | Test adversarial boundaries through the installed app coordinator | Proposed |
 | [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Proposed |
 | [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Proposed |
 | [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |
