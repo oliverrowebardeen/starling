@@ -418,4 +418,63 @@ actor GatedSink: EgressSink {
         #expect(try await journal.unresolved().isEmpty)
         #expect(await recorder.unconfirmedConversations.isEmpty)
     }
+
+    /// Lane A's PR #73 race: Pick a place announces an incoming request and
+    /// sends its automatic answer before the coordinator has created the
+    /// invitee interaction.
+    @Test func aSkillSendBeforeItsInteractionExistsWaitsForIt() async throws {
+        let store = InMemoryInteractionStore()
+        let journal = InMemoryEgressJournal()
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let conversation = ConversationID()
+        try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya,
+                              conversation: conversation, skill: SampleSkills.pickAPlace.ref, mode: .invite)
+        // No interaction yet: not dropped as unattributed, still journaled.
+        #expect(await recorder.unattributed == 0)
+        #expect(await recorder.unconfirmedConversations == [conversation])
+        #expect(try await journal.unresolved().map(\.conversation) == [conversation])
+
+        // A restart now keeps it waiting too.
+        let after = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        await after.recover()
+        #expect(await after.unconfirmedConversations == [conversation])
+
+        // The coordinator catches up and creates the invitee interaction.
+        let invitee = Interaction(conversation: conversation, skill: SampleSkills.pickAPlace.ref, role: .invitee,
+                                  participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 1))
+        try await store.save(invitee)
+        // Before the record lands, the audit claims nothing about Place.
+        var whatLeft = WhatLeftYourPhone(interactions: [invitee], registry: SampleSkills.registry, unconfirmed: await after.unconfirmedConversations)
+        #expect(whatLeft.unconfirmed == [invitee.id])
+        #expect(!whatLeft.kept.contains(.topic(.place)))
+
+        await after.interactionArrived(conversation: conversation)
+        #expect(await after.unconfirmedConversations.isEmpty)
+        #expect(try await journal.unresolved().isEmpty)
+        let saved = try #require(try await store.interaction(invitee.id))
+        #expect(saved.egress.map(\.topics) == [[.place, .diet]])
+        whatLeft = WhatLeftYourPhone(interactions: [saved], registry: SampleSkills.registry, unconfirmed: await after.unconfirmedConversations)
+        #expect(whatLeft.shared.map(\.topic) == [.place, .diet])
+        #expect(!whatLeft.kept.contains(.topic(.place)))
+    }
+
+    @Test func theNextSendAlsoRetriesARecordWaitingForItsInteraction() async throws {
+        let store = InMemoryInteractionStore()
+        let recorder = EgressRecorder(sink: StoreEgressSink(store: store), journal: InMemoryEgressJournal())
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        let conversation = ConversationID()
+        let offer = MessageBody.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms()))
+        try await outbox.send(offer, to: Fixtures.maya, conversation: conversation, skill: SampleSkills.pickAPlace.ref, mode: .invite)
+        try await store.save(Interaction(conversation: conversation, skill: SampleSkills.pickAPlace.ref, role: .invitee,
+                                         participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 1)))
+        // Without interactionArrived: the next send in any conversation retries it.
+        try await outbox.send(.hello(Fixtures.card([SampleSkills.pickAPlace])), to: Fixtures.jake, conversation: ConversationID())
+        #expect(await recorder.unconfirmedConversations.isEmpty)
+        #expect(try await store.interaction(conversation: conversation)?.egress.count == 1)
+        // The link-level hello, with no skill, is the only unattributed send.
+        #expect(await recorder.unattributed == 1)
+    }
 }

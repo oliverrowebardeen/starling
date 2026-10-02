@@ -35,12 +35,29 @@ public struct EgressJournalEntry: Hashable, Sendable, Codable {
     /// envelope. An entry still false at launch may or may not have left,
     /// so its record is written as unknown.
     public let sent: Bool
+    /// The envelope carried a skill, so an interaction on this phone owns
+    /// its conversation, even if the coordinator has not created it yet: the
+    /// record waits for it rather than being dropped. False only for a
+    /// link-level envelope such as `hello`.
+    public let skilled: Bool
 
-    public init(message: MessageID, conversation: ConversationID, record: EgressRecord, sent: Bool) {
+    public init(message: MessageID, conversation: ConversationID, record: EgressRecord, sent: Bool, skilled: Bool) {
         self.message = message
         self.conversation = conversation
         self.record = record
         self.sent = sent
+        self.skilled = skilled
+    }
+
+    private enum CodingKeys: String, CodingKey { case message, conversation, record, sent, skilled }
+
+    /// An entry written before `skilled` existed waits for its interaction,
+    /// the safe reading.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(message: c.decode(MessageID.self, forKey: .message), conversation: c.decode(ConversationID.self, forKey: .conversation),
+                      record: c.decode(EgressRecord.self, forKey: .record), sent: c.decode(Bool.self, forKey: .sent),
+                      skilled: c.decodeIfPresent(Bool.self, forKey: .skilled) ?? true)
     }
 }
 
@@ -106,6 +123,9 @@ public actor EgressRecorder: OutboxObserver {
         var record: EgressRecord
         /// Outbox confirmed the transport took it. Only then is it written.
         var sent: Bool
+        /// A skill conversation: if no interaction owns it yet, the record
+        /// waits for one instead of being dropped.
+        let skilled: Bool
     }
 
     private let sink: any EgressSink
@@ -120,13 +140,17 @@ public actor EgressRecorder: OutboxObserver {
     /// Conversations that lost a record for good (the retry queue was full).
     private var lost: Set<ConversationID> = []
 
-    /// Sends for a conversation no interaction on this phone owns, such as a
-    /// link-level `hello`. The policy's audit log still has them.
+    /// Link-level sends (no skill, such as `hello`) for a conversation no
+    /// interaction on this phone owns. The policy's audit log still has
+    /// them. A skill send never counts here: it waits for its interaction.
     public private(set) var unattributed = 0
     /// Sends the policy could not explain. Recorded with `itemsUnknown`, so
     /// the send still shows and the audit knows it cannot vouch for that
     /// interaction.
     public private(set) var unexplained = 0
+    /// Times a skill send found no interaction for its conversation yet and
+    /// was kept waiting.
+    public private(set) var waitingForInteraction = 0
     /// Write attempts the sink rejected, retries included.
     public private(set) var failedWrites = 0
     /// Journal operations that failed. A failure in `willSend` stops the
@@ -158,7 +182,7 @@ public actor EgressRecorder: OutboxObserver {
         for entry in entries {
             let record = entry.sent ? entry.record
                 : EgressRecord(at: entry.record.at, recipient: entry.record.recipient, items: entry.record.items, message: entry.message, itemsUnknown: true)
-            track(entry.message, Pending(conversation: entry.conversation, record: record, sent: true))
+            track(entry.message, Pending(conversation: entry.conversation, record: record, sent: true, skilled: entry.skilled))
         }
         await retryPending()
     }
@@ -170,9 +194,9 @@ public actor EgressRecorder: OutboxObserver {
         let record = Self.record(for: envelope, disclosed: disclosed, at: now())
         // Tracked before the first suspension, so the conversation is
         // unconfirmed from the moment the send is announced.
-        track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: false))
+        track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: false, skilled: envelope.skill != nil))
         do {
-            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: false))
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: false, skilled: envelope.skill != nil))
         } catch {
             journalFailures += 1
             // Not sent, so nothing to record: forget it here too.
@@ -194,13 +218,13 @@ public actor EgressRecorder: OutboxObserver {
         // announced in willSend has the same ID.
         let record = Self.record(for: envelope, disclosed: disclosed, at: now())
         if pending[envelope.id] == nil {
-            track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: true))
+            track(envelope.id, Pending(conversation: envelope.conversation, record: record, sent: true, skilled: envelope.skill != nil))
         } else {
             pending[envelope.id]?.record = record
             pending[envelope.id]?.sent = true
         }
         do {
-            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: true))
+            try await journal.remember(EgressJournalEntry(message: envelope.id, conversation: envelope.conversation, record: record, sent: true, skilled: envelope.skill != nil))
         } catch {
             // The entry stays as announced; a restart records it as unknown,
             // or, if this record lands first, Interaction.record keeps this one.
@@ -220,6 +244,14 @@ public actor EgressRecorder: OutboxObserver {
     /// lands. The app calls it when the store recovers; every send also runs it.
     public func retryPending() async {
         for message in order where pending[message]?.sent == true && !attempting.contains(message) {
+            await attempt(message)
+        }
+    }
+
+    /// The coordinator created an interaction: records waiting for its
+    /// conversation are written now.
+    public func interactionArrived(conversation: ConversationID) async {
+        for message in order where pending[message]?.conversation == conversation && pending[message]?.sent == true && !attempting.contains(message) {
             await attempt(message)
         }
     }
@@ -253,8 +285,18 @@ public actor EgressRecorder: OutboxObserver {
         attempting.insert(message)
         defer { attempting.remove(message) }
         do {
-            if try await !sink.appendEgress(item.record, conversation: item.conversation) { unattributed += 1 }
-            await resolve(message)
+            if try await sink.appendEgress(item.record, conversation: item.conversation) {
+                await resolve(message)
+            } else if item.skilled {
+                // The skill announced the interaction, but the coordinator
+                // has not created it yet: keep the record pending and
+                // journaled until it can land (interactionArrived, or the
+                // next send's retry).
+                waitingForInteraction += 1
+            } else {
+                unattributed += 1
+                await resolve(message)
+            }
         } catch {
             failedWrites += 1
         }
