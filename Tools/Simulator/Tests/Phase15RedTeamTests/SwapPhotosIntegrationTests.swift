@@ -87,7 +87,7 @@ struct SwapPhotosIntegrationTests {
         #expect(SwapPhotos.answer(picked: 0, to: SwapPhotos.pickQuestion(revision: 1)) == nil)
         #expect(try await store.interaction(waiting.id)?.egress.isEmpty == true)
         try await service.answer(waiting.id, with: #require(SwapPhotos.answer(picked: 3, to: SwapPhotos.pickQuestion(revision: 1))))
-        try await Simulation.eventually("photo count delivered") { await b.agent.received.contains { $0.conversation == waiting.conversation } }
+        try await P15.eventually("photo count delivered") { await b.agent.received.contains { $0.conversation == waiting.conversation } }
         #expect(await c.agent.received.filter { $0.conversation == waiting.conversation }.isEmpty)
         let envelope = try #require(await b.agent.received.first { $0.conversation == waiting.conversation })
         #expect(envelope.chainedFrom == parent.conversation && envelope.mode == .invite)
@@ -120,11 +120,11 @@ struct SwapPhotosIntegrationTests {
         await b.conversations.gateRetirement(failing: fail)
         let pass = Task { try await service.answer(id, with: .pass) }
         defer { pass.cancel(); Task { await b.conversations.release() } }
-        try await Simulation.eventually("photo retirement held") { await b.conversations.retiring.contains(conversation) }
+        try await P15.eventually("photo retirement held") { await b.conversations.retiring.contains(conversation) }
         #expect(await log.values.count == 2)
         await b.conversations.release()
         try await pass.value
-        try await Simulation.eventually("photo ending emitted") { await log.values.count == 3 }
+        try await P15.eventually("photo ending emitted") { await log.values.count == 3 }
         #expect(await log.values.last == .lifecycle(id, fail ? .failed : .ownerPassed))
         #expect(await b.sent(conversation).isEmpty)
     }

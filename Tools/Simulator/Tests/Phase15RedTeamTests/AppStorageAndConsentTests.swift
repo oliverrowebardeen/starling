@@ -113,13 +113,17 @@ struct AppStorageAndConsentTests {
         await a.wire.release()
         await #expect(throws: (any Error).self) { try await send.value }
         try await a.restart()
+        // Restored services can journal fresh sends as soon as startup
+        // completes. Only the interrupted message must be resolved here.
+        try await appEventually("recovery resolves the interrupted message") {
+            try await !a.journal.unresolved().contains { $0.message == pending.message }
+        }
         let restored = try #require(a.app.lifecycle.interaction(owner.id))
         let detail = a.app.planDetail(restored)
-        let emptyJournal = try await a.journal.unresolved().isEmpty
         #expect(!detail.auditIsComplete)
         #expect(detail.kept.isEmpty)
         #expect(restored.egress.contains { $0.message == pending.message && $0.itemsUnknown })
-        #expect(emptyJournal)
+        #expect(try await !a.journal.unresolved().contains { $0.message == pending.message })
     }
 
     @Test(arguments: [false, true])

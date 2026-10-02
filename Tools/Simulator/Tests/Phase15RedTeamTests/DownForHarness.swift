@@ -121,14 +121,10 @@ final class DownPhone: Sendable {
     }
     func boot(restoring: [Interaction]? = nil) async throws {
         let clock = phone.clock
-        // Delivery and invitation windows now honor SkillClock (PR #86).
-        // Use real short sleeps here and freeze only long expiry timers.
         let fresh = DownForService(localPeer: id, outbox: outbox, model: model.model, psi: InsecurePSIStub(),
             ledger: phone.conversations, store: store, pairedPeers: phone.peers,
-            clock: SkillClock(now: { P15.date }, sleep: { duration in
-                if duration >= .seconds(600) { try await clock.sleep(duration) }
-                else { try await Task.sleep(for: duration) }
-            }), timeZone: TimeZone(secondsFromGMT: 0)!, configuration: configuration)
+            clock: SkillClock(now: clock.clock.now, sleep: clock.clock.sleep),
+            timeZone: TimeZone(secondsFromGMT: 0)!, configuration: configuration)
         current.withLock { $0 = fresh }
         let events = events
         tasks.withLock { $0.append(Task { for await event in fresh.events { await events.record(event) } }) }
@@ -172,7 +168,7 @@ final class DownPhone: Sendable {
         return interaction
     }
     func wait(_ state: InteractionState, _ interaction: Interaction) async throws -> Interaction {
-        try await Simulation.eventually("Down for reaches \(state)") {
+        try await P15.eventually("Down for reaches \(state)") {
             (try? await self.events.store.interaction(interaction.id)?.state) == state
         }
         return try #require(await events.store.interaction(interaction.id))
@@ -214,7 +210,7 @@ struct DownWorld: Sendable {
         for phone in phones {
             for other in phones where phone.id != other.id {
                 let hello = try await phone.outbox.send(.hello(P15.card([DownFor.ref])), to: other.id, conversation: ConversationID())
-                try await Simulation.eventually("authenticated Down for card") { await other.phone.agent.received.contains(hello) }
+                try await P15.eventually("authenticated Down for card") { await other.phone.agent.received.contains(hello) }
             }
         }
         for phone in phones { try await phone.boot() }

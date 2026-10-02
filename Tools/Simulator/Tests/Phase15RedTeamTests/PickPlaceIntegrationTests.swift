@@ -20,7 +20,7 @@ struct PickPlaceIntegrationTests {
         await a.relay.attach(nil) // A paired adversary, not an automatic organizer.
         let sent = try await a.send(.query(query(candidates)), to: b.id, conversation: conversation)
         try await world.delivered(sent, to: b)
-        try await Simulation.eventually("real invitee answers") { await b.sent(conversation).contains { $0.body.kind == .answer } }
+        try await P15.eventually("real invitee answers") { await b.sent(conversation).contains { $0.body.kind == .answer } }
         return try #require(await b.events.interaction(conversation))
     }
 
@@ -33,7 +33,8 @@ struct PickPlaceIntegrationTests {
         let candidate = try PlaceWorld.candidate()
         await world.seed([candidate])
         let request = try await a.organize([candidate], participants: [b.id, c.id])
-        try await Simulation.eventually("included friend answered") { await b.sent(request.conversation).contains { $0.body.kind == .answer } }
+        try await P15.eventually("included friend answered") { await b.sent(request.conversation).contains { $0.body.kind == .answer } }
+        try await a.clock.waitForSleeps([.seconds(20)])
         #expect(try await a.events.interaction(request.conversation)?.proposal == nil)
         await a.clock.advance(19)
         try await Task.sleep(for: .milliseconds(75))
@@ -74,7 +75,7 @@ struct PickPlaceIntegrationTests {
         // A real card without this skill is delivered through Inbox, then
         // handed to the service because Simulation consumes hello itself.
         let hello = try await c.outbox.send(.hello(P15.card([])), to: a.id, conversation: ConversationID())
-        try await Simulation.eventually("missing-skill hello") { await a.agent.received.contains(hello) }
+        try await P15.eventually("missing-skill hello") { await a.agent.received.contains(hello) }
         await a.service.handle(.message(hello))
         let unsupported = try await a.organize([candidate], participants: [c.id])
         _ = try await a.wait(.ended(.unsupported), in: unsupported.conversation)
@@ -130,13 +131,15 @@ struct PickPlaceIntegrationTests {
         _ = try await b.wait(.proposed, in: request.conversation)
         if pass { try await c.service.answer(invite.id, with: .pass) }
         try await b.accept(request.conversation)
+        _ = try await b.wait(.confirmed, in: request.conversation)
         try await a.accept(request.conversation)
+        try await a.clock.waitForSleeps([.seconds(30), .seconds(60)])
         await a.clock.advance(29)
         try await Task.sleep(for: .milliseconds(75))
         #expect(try await b.events.interaction(request.conversation)?.state == .confirmed)
         await a.clock.advance(1)
         let final = try await b.wait(.planned, in: request.conversation)
-        try await Simulation.eventually("shortened attendees published") {
+        try await P15.eventually("shortened attendees published") {
             (try? await b.events.interaction(request.conversation)?.artifacts.contains(.attendees(Attendees([a.id, b.id])))) == true
         }
         #expect(final.proposal?.participants.contains(c.id) == true) // The original proposal was broader.
@@ -157,7 +160,7 @@ struct PickPlaceIntegrationTests {
         #expect(await b.sent(first.conversation).count == 1)
         try await b.restart()
         _ = try await open(world, Array(candidates[8..<16]), conversation: first.conversation)
-        try await Simulation.eventually("second eight reserved") {
+        try await P15.eventually("second eight reserved") {
             await b.conversations.base.answeredCount(issue: .place, to: a.id, in: first.conversation) == 16
         }
         let before = await b.sent(first.conversation).count
@@ -183,7 +186,7 @@ struct PickPlaceIntegrationTests {
         let conversation = ConversationID()
         let sent = try await a.send(.query(query([expensive])), to: b.id, conversation: conversation)
         try await world.delivered(sent, to: b)
-        try await Simulation.eventually("private conflict retired") { (try? await b.conversations.isRetired(conversation)) == true }
+        try await P15.eventually("private conflict retired") { (try? await b.conversations.isRetired(conversation)) == true }
         let no = try #require(await b.sent(conversation).only)
         guard case .reject(let rejection) = no.body else { Issue.record("Expected ordinary no"); return }
         #expect(rejection.reason == .noOverlap)
@@ -209,7 +212,7 @@ struct PickPlaceIntegrationTests {
         _ = try await b.wait(.proposed, in: invite.conversation)
         await b.conversations.gateRetirement(failing: fail)
         try await b.service.answer(invite.id, with: .pass)
-        try await Simulation.eventually("retirement blocked") { await b.conversations.retiring.contains(invite.conversation) }
+        try await P15.eventually("retirement blocked") { await b.conversations.retiring.contains(invite.conversation) }
         #expect(try await b.events.interaction(invite.conversation)?.state == .proposed)
         #expect(await b.sent(invite.conversation).allSatisfy { $0.body.kind == .answer })
         await b.conversations.release()
@@ -275,7 +278,7 @@ struct PickPlaceIntegrationTests {
         let bad = try await a.send(.query(Query(issue: .place, candidates: .places([renamed]))), to: b.id,
             conversation: conversation, parent: ConversationID())
         try await world.delivered(bad, to: b)
-        try await Simulation.eventually("mislabeled venue retired") { (try? await b.conversations.isRetired(conversation)) == true }
+        try await P15.eventually("mislabeled venue retired") { (try? await b.conversations.isRetired(conversation)) == true }
         #expect(try await b.events.interaction(conversation) == nil)
         let unsolicited = ConversationID()
         let proposal = try await a.send(.propose(offer(actual, from: a, to: b)), to: b.id,

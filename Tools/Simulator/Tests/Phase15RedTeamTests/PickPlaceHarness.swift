@@ -20,15 +20,20 @@ actor PlaceRelay: AgentBehavior {
 }
 
 actor PlaceTestClock {
-    nonisolated let instant = Mutex(P15.date)
-    private var sleepers: [UUID: (Date, CheckedContinuation<Void, any Error>)] = [:]
+    nonisolated let instant: Mutex<Date>
+    private let start: Date
+    private(set) var elapsed: Duration = .zero
+    private var sleepers: [UUID: (Duration, CheckedContinuation<Void, any Error>)] = [:]
+    var due: Set<Duration> { Set(sleepers.values.map(\.0)) }
+    init(now: Date = P15.date) { start = now; instant = Mutex(now) }
     nonisolated var clock: PickAPlaceClock {
         PickAPlaceClock(now: { self.instant.withLock { $0 } }, sleep: { try await self.sleep($0) })
     }
     func sleep(_ duration: Duration) async throws {
+        try Task.checkCancellation()
+        guard duration > .zero else { return }
         let id = UUID()
-        let parts = duration.components
-        let deadline = instant.withLock { $0.addingTimeInterval(Double(parts.seconds) + Double(parts.attoseconds) / 1e18) }
+        let deadline = elapsed + duration
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             try await withCheckedThrowingContinuation { sleepers[id] = (deadline, $0) }
@@ -36,9 +41,20 @@ actor PlaceTestClock {
     }
     private func cancel(_ id: UUID) { sleepers.removeValue(forKey: id)?.1.resume(throwing: CancellationError()) }
     func advance(_ seconds: TimeInterval) {
-        let now = instant.withLock { $0.addTimeInterval(seconds); return $0 }
-        for (id, sleeper) in sleepers where sleeper.0 <= now {
+        advance(to: elapsed + .seconds(seconds))
+    }
+    func advance(to target: Duration) {
+        precondition(target >= elapsed)
+        elapsed = target
+        let parts = target.components
+        instant.withLock { $0 = start.addingTimeInterval(Double(parts.seconds) + Double(parts.attoseconds) / 1e18) }
+        for (id, sleeper) in sleepers.sorted(by: { $0.value.0 < $1.value.0 }) where sleeper.0 <= elapsed {
             sleepers.removeValue(forKey: id)?.1.resume()
+        }
+    }
+    func waitForSleeps(_ deadlines: Set<Duration>) async throws {
+        try await P15.eventually("service arms virtual deadlines \(deadlines)") {
+            self.due.isSuperset(of: deadlines)
         }
     }
 }
@@ -188,7 +204,7 @@ final class PlacePhone: Sendable {
             context: context, skill: skill, mode: mode, chainedFrom: parent)
     }
     func wait(_ state: InteractionState, in conversation: ConversationID) async throws -> Interaction {
-        try await Simulation.eventually("Pick a place reaches \(state)") {
+        try await P15.eventually("Pick a place reaches \(state)") {
             (try? await self.events.interaction(conversation)?.state) == state
         }
         return try #require(await events.interaction(conversation))
@@ -221,7 +237,7 @@ struct PlaceWorld: Sendable {
                 limits: index == 1 ? limits : .empty, onlyOnDevice: index == 0 && onlyOnDevice,
                 ledger: index == 1 ? inviteeLedger : InMemoryPickAPlaceLedger()))
         }
-        try await simulation.waitForMesh()
+        try await P15.waitForMesh(simulation)
         for phone in phones {
             let secure = try #require(phone.agent.secureTransport)
             for other in phones where other.id != phone.id {
@@ -234,7 +250,7 @@ struct PlaceWorld: Sendable {
             let card = try AgentCard(model: phone.agent.card.model, capabilities: [], skills: [PickAPlaceSkill.ref])
             for other in phones where other.id != phone.id {
                 let hello = try await phone.outbox.send(.hello(card), to: other.id, conversation: ConversationID())
-                try await Simulation.eventually("skill hello accepted") { await other.agent.received.contains(hello) }
+                try await P15.eventually("skill hello accepted") { await other.agent.received.contains(hello) }
             }
         }
         for phone in phones { try await phone.boot() }
@@ -249,7 +265,7 @@ struct PlaceWorld: Sendable {
     /// Negative observations follow an authenticated delivery barrier and a
     /// short scheduling allowance. Protocol deadlines use the injected clock.
     func delivered(_ envelope: Envelope, to phone: PlacePhone) async throws {
-        try await Simulation.eventually("service handled authenticated message") { await phone.relay.handled.contains(envelope.id) }
+        try await P15.eventually("service handled authenticated message") { await phone.relay.handled.contains(envelope.id) }
         try await Task.sleep(for: .milliseconds(75))
     }
 }

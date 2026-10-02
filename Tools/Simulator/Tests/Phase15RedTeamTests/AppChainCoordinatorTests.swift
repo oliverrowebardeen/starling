@@ -55,11 +55,11 @@ struct AppChainCoordinatorTests {
         let child = try #require(await a.app.composer.send())
         let owner = try #require(a.app.lifecycle.interaction(child))
         let invitee = try await b.incoming(owner.conversation)
-        _ = try await b.wait(.proposed, invitee.id)
+        _ = try await b.wait(.proposed, invitee.id, retrying: [a, b])
         try await b.accept(invitee.id)
         _ = try await b.wait(.confirmed, invitee.id)
         try await a.accept(child)
-        _ = try await a.wait(.planned, child)
+        _ = try await a.wait(.planned, child, retrying: [a, b])
         try await appEventually("real place artifact updates app parent") { a.app.lifecycle.interaction(plan.id)?.plan?.place != nil }
         #expect(a.app.lifecycle.interaction(plan.id)?.plan?.attendees.peers == [a.id, b.id])
         #expect(await c.agent.received.filter { $0.conversation == owner.conversation }.isEmpty)

@@ -51,7 +51,7 @@ final class TimePhone: Sendable {
         return interaction
     }
     func wait(_ state: InteractionState, in conversation: ConversationID) async throws -> Interaction {
-        try await Simulation.eventually("Find a time reaches \(state)") { (try? await self.events.interaction(conversation)?.state) == state }
+        try await P15.eventually("Find a time reaches \(state)") { (try? await self.events.interaction(conversation)?.state) == state }
         return try #require(await events.interaction(conversation))
     }
 }
@@ -81,7 +81,7 @@ struct FindTimeIntegrationTests {
         for from in [a, b] {
             let other = from.id == a.id ? invitee : starter
             let hello = try await from.outbox.send(.hello(P15.card([FindATimeSkill.ref])), to: other.phone.id, conversation: ConversationID())
-            try await Simulation.eventually("real time skill hello") { await other.phone.agent.received.contains(hello) }
+            try await P15.eventually("real time skill hello") { await other.phone.agent.received.contains(hello) }
             await other.service.handle(.message(hello))
         }
         let request = try await starter.start(with: [b.id], slots: Self.slots())
@@ -109,10 +109,10 @@ struct FindTimeIntegrationTests {
         try await starter.boot()
         defer { Task { await starter.stop() } }
         let hello = try await b.outbox.send(.hello(P15.card([FindATimeSkill.ref])), to: a.id, conversation: ConversationID())
-        try await Simulation.eventually("time capable card") { await a.agent.received.contains(hello) }
+        try await P15.eventually("time capable card") { await a.agent.received.contains(hello) }
         await starter.service.handle(.message(hello))
         let request = try await starter.start(with: [b.id], slots: Self.slots())
-        try await Simulation.eventually("time query delivered") { await b.agent.received.contains { $0.conversation == request.conversation && $0.body.kind == .query } }
+        try await P15.eventually("time query delivered") { await b.agent.received.contains { $0.conversation == request.conversation && $0.body.kind == .query } }
         let envelope = try #require(await b.agent.received.first { $0.conversation == request.conversation && $0.body.kind == .query })
         guard case .query(let query) = envelope.body else { return }
         let invented = MessageID()
@@ -126,7 +126,7 @@ struct FindTimeIntegrationTests {
         let accepted = try await b.send(.answer(genuine), to: a.id, conversation: request.conversation,
             context: OutboundContext(answering: query), skill: FindATimeSkill.ref)
         try await world.delivered(accepted, to: a)
-        try await Simulation.eventually("genuine time answer advances the proposal") {
+        try await P15.eventually("genuine time answer advances the proposal") {
             (try? await starter.events.interaction(request.conversation)?.state) == .proposed
         }
     }
@@ -142,7 +142,7 @@ struct FindTimeIntegrationTests {
         let slots = try Self.slots(17), conversation = ConversationID()
         let sent = try await ask(Array(slots.prefix(16)), a: a, b: b, conversation: conversation)
         try await world.delivered(sent, to: b)
-        try await Simulation.eventually("sixteen time answers reserved") { await b.conversations.base.answeredCount(issue: .time, to: a.id, in: conversation) == 16 }
+        try await P15.eventually("sixteen time answers reserved") { await b.conversations.base.answeredCount(issue: .time, to: a.id, in: conversation) == 16 }
         await first.stop()
         let replacement = TimePhone(b, calendar: FakeCalendarStore())
         try await replacement.boot()
@@ -155,7 +155,7 @@ struct FindTimeIntegrationTests {
         #expect(replacement.calendar.readCount == 0)
         let fresh = try await ask([slots[16]], a: a, b: b, conversation: ConversationID())
         try await world.delivered(fresh, to: b)
-        try await Simulation.eventually("new time conversation is independent") { await b.sent(fresh.conversation).contains { $0.body.kind == .answer } }
+        try await P15.eventually("new time conversation is independent") { await b.sent(fresh.conversation).contains { $0.body.kind == .answer } }
     }
 
     @Test(arguments: [false, true])
@@ -172,7 +172,7 @@ struct FindTimeIntegrationTests {
         let question = try await time.wait(.awaitingOwner, in: sent.conversation)
         await b.conversations.gateRetirement(failing: fail)
         try await time.service.answer(question.id, with: .pass)
-        try await Simulation.eventually("time retirement held") { await b.conversations.retiring.contains(sent.conversation) }
+        try await P15.eventually("time retirement held") { await b.conversations.retiring.contains(sent.conversation) }
         #expect(try await time.events.interaction(sent.conversation)?.state == .awaitingOwner)
         await b.conversations.release()
         _ = try await time.wait(.ended(fail ? .failed : .declined), in: sent.conversation)
@@ -197,12 +197,12 @@ struct FindTimeIntegrationTests {
         #expect(await b.sent(conversation).isEmpty)
         let revision = try #require(question.pendingQuestion?.revision)
         try await time.service.answer(question.id, with: .reply(question: revision, .slots([slots[0]])))
-        try await Simulation.eventually("owner's bounded answer sent") { await b.sent(conversation).contains { $0.body.kind == .answer } }
+        try await P15.eventually("owner's bounded answer sent") { await b.sent(conversation).contains { $0.body.kind == .answer } }
         let proposal = try await propose(slots[0], a: a, b: b, conversation: conversation)
         try await world.delivered(proposal, to: b)
         let card = try await time.wait(.proposed, in: conversation)
         try await time.service.answer(card.id, with: .accept(proposal: #require(card.proposalRevision)))
-        try await Simulation.eventually("time acceptance left") { await b.sent(conversation).contains { $0.body.kind == .accept } }
+        try await P15.eventually("time acceptance left") { await b.sent(conversation).contains { $0.body.kind == .accept } }
         guard case .propose(let offer) = proposal.body else { return }
         let confirmation = try await a.send(.accept(Acceptance(proposal: proposal.id, terms: offer.terms)), to: b.id,
             conversation: conversation, skill: FindATimeSkill.ref)
@@ -227,7 +227,7 @@ struct FindTimeIntegrationTests {
         let conversation = ConversationID()
         let sent = try await ask(slots, a: a, b: b, conversation: conversation)
         try await world.delivered(sent, to: b)
-        try await Simulation.eventually("calendar subset answer") { await b.sent(conversation).contains { $0.body.kind == .answer } }
+        try await P15.eventually("calendar subset answer") { await b.sent(conversation).contains { $0.body.kind == .answer } }
         let answer = try #require(await b.sent(conversation).first)
         guard case .answer(let value) = answer.body else { Issue.record("Expected answer"); return }
         #expect(value.query == sent.id && value.acceptable == .slots([slots[1]]))
@@ -299,7 +299,7 @@ struct FindTimeIntegrationTests {
         try await world.delivered(first, to: b)
         let card = try await time.wait(.proposed, in: conversation)
         try await time.service.answer(card.id, with: .accept(proposal: #require(card.proposalRevision)))
-        try await Simulation.eventually("old acceptance policy suspended") { await policy.waiting }
+        try await P15.eventually("old acceptance policy suspended") { await policy.waiting }
         if superseded {
             let next = try await propose(slots[1], round: 1, a: a, b: b, conversation: conversation)
             try await world.delivered(next, to: b)

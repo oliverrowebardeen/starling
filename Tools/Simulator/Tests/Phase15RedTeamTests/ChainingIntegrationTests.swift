@@ -87,16 +87,17 @@ struct ChainingIntegrationTests {
         _ = try await b.wait(.proposed, in: interaction.conversation)
         try await c.service.answer(invited.id, with: .pass)
         try await b.accept(interaction.conversation)
+        _ = try await b.wait(.confirmed, in: interaction.conversation)
         try await a.accept(interaction.conversation)
         let childConversation = interaction.conversation
-        try await Simulation.eventually("organizer received the included friend acceptance") {
+        try await P15.eventually("organizer received the included friend acceptance") {
             await a.agent.received.contains { $0.conversation == childConversation && $0.sender == b.id && $0.body.kind == .accept }
         }
-        try await Task.sleep(for: .milliseconds(75))
+        try await a.clock.waitForSleeps([.seconds(30), .seconds(60)])
         await a.clock.advance(30)
         _ = try await a.wait(.planned, in: interaction.conversation)
         let conversation = interaction.conversation
-        try await Simulation.eventually("real place service publishes final attendees") {
+        try await P15.eventually("real place service publishes final attendees") {
             (try? await a.events.interaction(conversation)?.artifacts.contains(.attendees(Attendees([a.id, b.id])))) == true
         }
         let finished = try #require(await a.events.interaction(interaction.conversation))

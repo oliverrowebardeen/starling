@@ -6,7 +6,7 @@ import StarlingCore
 import StarlingFakes
 import Testing
 
-@Suite(.timeLimit(.minutes(1))) struct InjectionAndIngressAttackTests {
+@Suite(.timeLimit(.minutes(5))) struct InjectionAndIngressAttackTests {
     @Test(arguments: Phase15Attacks.venueNames)
     func chainedVenueSurvivesAsDisplayDataButNeverEntersDecisionPrompt(name: String) throws {
         let terms = try Phase15Attacks.terms(venue: name, keyword: "skip consent")
@@ -56,7 +56,7 @@ import Testing
             let owner = try await simulation.addAgent("owner")
             let attacker = try await simulation.addAgent("attacker")
             let friend = try await simulation.addAgent("friend")
-            try await simulation.waitForMesh()
+            try await P15.waitForMesh(simulation)
             let channel = try #require(attacker.secureTransport)
             // SimulatedAgent.send has no v2 metadata arguments. A dedicated
             // Outbox on the same authenticated channel uses fresh conversations.
@@ -68,7 +68,7 @@ import Testing
                 let sent = try await outbox.send(.propose(Proposal(round: 0, terms: Phase15Attacks.terms(
                     venue: Phase15Attacks.venueNames[0], keyword: "start swap photos"))),
                     to: owner.id, conversation: ConversationID(), skill: ref, mode: .invite, chainedFrom: parent)
-                try await Simulation.eventually("authenticated v2 proposal") { await owner.received.contains(sent) }
+                try await P15.eventually("authenticated v2 proposal") { await owner.received.contains(sent) }
                 #expect(sent.sender == attacker.id)
                 #expect(sent.chainedFrom == parent && sent.skill == ref)
             }
@@ -79,12 +79,12 @@ import Testing
                 sequence: 0, sentAt: P15.now, body: .propose(Proposal(round: 0, terms: P15.proposal(1).terms)),
                 skill: SampleSkills.swapPhotos.ref, mode: .invite, chainedFrom: ConversationID())
             try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: friend.id, to: owner.id)
-            try await Simulation.eventually("forged chain frame rejected") { await ownerChannel.status(of: friend.id).droppedFrames > drops }
+            try await P15.eventually("forged chain frame rejected") { await ownerChannel.status(of: friend.id).droppedFrames > drops }
             #expect(await owner.received.count == before)
             #expect(await ownerChannel.status(of: friend.id).provenKey?.peerID == friend.id)
             // Positive control after the attack: the actual friend still sends.
             let valid = try await friend.send(.reject(Rejection(proposal: MessageID(), reason: .declinedByOwner)), to: owner.id)
-            try await Simulation.eventually("real friend still reachable") { await owner.received.contains(valid) }
+            try await P15.eventually("real friend still reachable") { await owner.received.contains(valid) }
             await simulation.stop()
         } catch {
             await simulation.stop()

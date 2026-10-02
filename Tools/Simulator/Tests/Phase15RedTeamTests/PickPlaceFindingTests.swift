@@ -14,7 +14,7 @@ struct PickPlaceFindingTests {
         await b.relay.attach(nil)
         let candidate = try PlaceWorld.candidate()
         let request = try await a.organize([candidate], participants: [b.id])
-        try await Simulation.eventually("organizer query delivered") {
+        try await P15.eventually("organizer query delivered") {
             await b.agent.received.contains { $0.conversation == request.conversation && $0.body.kind == .query }
         }
         let queries = await b.agent.received.filter { $0.conversation == request.conversation }
