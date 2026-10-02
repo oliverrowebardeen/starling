@@ -33,6 +33,7 @@ Phones A and B are paired, both on the Phase 1.5 build.
 6. Phone A: start "pho tonight", then tap the request and withdraw it before Phone B has a request. Expect: it moves to history; Phone B never shows anything.
 7. Phone B: switch Down for... off in You, then on Phone A start "boba tonight". Expect: Phone A says B's Starling doesn't do this (if B is the only friend) or leaves B out.
 8. Phone A: force-quit Starling while a request is In progress, reopen it. Expect: the request is still In progress, and a plan still forms if Phone B goes down for the same thing.
+8a. Phones A and B, both down for boba, with the card showing on B. Phone B: force-quit Starling, reopen it. Expect: B's card is gone from Needs you and the request is in history. Phone B: start "boba tonight" with A again. Expect: a fresh card on both phones, not the old one.
 9. Phone A: type "invite B to tacos friday" in New. Expect: the Down for... chips show Tacos, Friday, B, and the Invite mode. Send it. Phone B, with no request of its own: Expect a card under Needs you within 20 seconds, "A invites you" with tacos and a time. Phone B taps I'm in. Expect: Phone A's card lists A and B; Phone A taps I'm in; It's a plan on both.
 10. Phone A: type "boba tonight with everyone except C". Expect: the audience chip shows everyone except C, and Phone C never shows anything, now or when Phone C starts its own boba request.
 11. Check every Down for... screen and notification by eye: an activity always follows "Down for", and nothing reads like a dating app (ADR 0017).
