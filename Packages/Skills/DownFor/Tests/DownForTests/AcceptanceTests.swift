@@ -122,21 +122,24 @@ import Testing
         // Nothing B sent after its card differs between the two.
         #expect(passed.afterCard.isEmpty && silent.afterCard.isEmpty)
         #expect(passed.startersEvents == silent.startersEvents)
-        // Both ended when the window passed, not when B answered.
-        #expect(passed.endedAfter >= .milliseconds(1_800) && silent.endedAfter >= .milliseconds(1_800))
+        // Both were still open just before the window and ended at it, on
+        // the service's clock, not when B answered.
+        #expect(passed.openBeforeWindow && silent.openBeforeWindow)
     }
 
     struct Departure: Sendable {
         let afterCard: [MessageBody.Kind]
         let startersEvents: [String]
-        let endedAfter: Duration
+        let openBeforeWindow: Bool
     }
 
     /// A and B are both down; A says I'm in; B passes or never answers.
     /// Returns what B sent after its card, A's lifecycle event kinds, and
-    /// how long A's request took to end.
+    /// whether A's request was still open just before the window. Runs on
+    /// virtual time.
     static func pairWhereBLeaves(byPassing: Bool) async throws -> Departure {
-        let world = World(2)
+        let time = VirtualTime()
+        let world = World(2, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b) = (world["A"], world["B"])
@@ -145,15 +148,16 @@ import Testing
         try await a.waitForProposal(mine)
         try await b.waitForProposal(theirs)
         let sentBefore = await world.wire.sent(by: b.id).count
-        let clock = ContinuousClock()
-        let cardShown = clock.now
         try await a.imIn(mine)
         if byPassing {
             try await b.pass(theirs)
             try await b.waitFor(.ended(.declined), theirs)
         }
-        try await a.waitFor(.ended(.nobodyUp), mine)
-        let endedAfter = cardShown.duration(to: clock.now)
+        try await eventually("A's I'm in") { await a.lifecycle.state(mine) == .confirmed }
+        await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
+        let openBeforeWindow = await a.lifecycle.state(mine) == .confirmed
+        await time.advance(to: fastConfiguration.ownerWindow)
+        try await a.waitFor(.ended(.nobodyUp), mine, timeout: .seconds(60))
         await world.expectCleanLifecycles()
 
         let afterCard = await world.wire.sent(by: b.id).dropFirst(sentBefore).map(\.body.kind)
@@ -163,7 +167,7 @@ import Testing
             default: "\(event)"
             }
         }
-        return Departure(afterCard: afterCard, startersEvents: events, endedAfter: endedAfter)
+        return Departure(afterCard: afterCard, startersEvents: events, openBeforeWindow: openBeforeWindow)
     }
 
     @Test func aPeerWithoutTheSkillIsReportedAsUnsupported() async throws {
