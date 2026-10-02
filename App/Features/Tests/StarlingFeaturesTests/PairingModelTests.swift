@@ -531,3 +531,121 @@ final class FriendActions: @unchecked Sendable {
         #expect(await notifier.authorizationRequests == 0)
     }
 }
+
+/// Codex privacy review of PR #104 (HIGH): Cancel must invalidate a pairing
+/// whose session is still being created, or a later attempt's confirm can
+/// reach the wrong session and pin a key whose code was never compared.
+@MainActor
+@Suite struct PairingAttemptTests {
+    /// A session the test drives: it shows codes on demand and records
+    /// confirms and cancels.
+    actor ControlledSession: PairingSession {
+        nonisolated let events: AsyncStream<PairingEvent>
+        private let continuation: AsyncStream<PairingEvent>.Continuation
+        private(set) var confirms: [Bool] = []
+        private(set) var cancels = 0
+
+        init() { (events, continuation) = AsyncStream.makeStream(of: PairingEvent.self) }
+
+        func show(_ code: String) { continuation.yield(.confirmCode(code)) }
+        func confirm(codesMatch: Bool) async { confirms.append(codesMatch) }
+        func cancel() async { cancels += 1 }
+    }
+
+    /// Holds one pair call until released.
+    actor Gate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var open = false
+        private(set) var waiting = false
+
+        func wait() async {
+            if open { return }
+            waiting = true
+            await withCheckedContinuation { waiter = $0 }
+        }
+
+        func release() {
+            open = true
+            waiter?.resume()
+            waiter = nil
+        }
+    }
+
+    @Test func aCancelledAttemptNeverShowsItsCodeOrTakesAConfirm() async {
+        let friend = PeerID.random()
+        let attacker = PeerID.random()
+        let friendSession = ControlledSession()
+        let attackerSession = ControlledSession()
+        let gate = Gate()
+        let directory = ScriptedDirectory(candidates: []) { peer, _ in
+            if peer == friend {
+                await gate.wait()
+                return friendSession
+            }
+            return attackerSession
+        }
+        let model = PairingModel(directory: directory.directory)
+
+        // The owner picks the friend; the pair call is still sending its hello.
+        let picking = Task { await model.choose(PairingCandidate(peer: friend, deviceName: "Riley's iPhone")) }
+        for _ in 0..<2000 where !(await gate.waiting) { try? await Task.sleep(for: .milliseconds(1)) }
+        #expect(model.phase == .connecting)
+
+        // Cancel, then a nearby phone's request is joined.
+        await model.cancel()
+        #expect(model.phase == .choosing)
+        directory.ask(from: attacker)
+        await model.refresh()
+        #expect(directory.starts.map(\.0) == [friend, attacker])
+
+        // The attacker's code shows; then the cancelled call returns and its
+        // session produces a code too.
+        await attackerSession.show("111111")
+        await eventually { model.phase == .comparing(code: "111111") }
+        await gate.release()
+        await picking.value
+        await friendSession.show("222222")
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(await friendSession.cancels == 1, "the cancelled attempt's session is cancelled, not installed")
+        #expect(model.phase == .comparing(code: "111111"), "the cancelled attempt's code never reaches the screen")
+
+        await model.confirm(codesMatch: true)
+        #expect(await attackerSession.confirms == [true], "the answer goes to the session whose code is shown")
+        #expect(await friendSession.confirms.isEmpty)
+    }
+
+    /// The same for the sheet closing while a session is being created.
+    @Test func anAttemptOverriddenByANewOneDropsItsEvents() async {
+        let first = ControlledSession()
+        let second = ControlledSession()
+        let sessions = [first, second]
+        let counter = Counter()
+        let directory = ScriptedDirectory(candidates: []) { _, _ in sessions[await counter.next()] }
+        let model = PairingModel(directory: directory.directory)
+        let peer = PeerID.random()
+        await model.choose(PairingCandidate(peer: peer))
+        await first.show("111111")
+        await eventually { model.phase == .comparing(code: "111111") }
+        await model.cancel()
+        await model.tryAgain()
+        // The old session's late code is dropped; the new one's shows.
+        await first.show("999999")
+        await second.show("222222")
+        await eventually { model.phase == .comparing(code: "222222") }
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(model.phase == .comparing(code: "222222"))
+        await model.confirm(codesMatch: true)
+        #expect(await first.confirms.isEmpty)
+        #expect(await second.confirms == [true])
+        #expect(await first.cancels == 1)
+    }
+
+    actor Counter {
+        private var value = 0
+        func next() -> Int {
+            defer { value += 1 }
+            return value
+        }
+    }
+}

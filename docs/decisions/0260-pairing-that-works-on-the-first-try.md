@@ -54,6 +54,12 @@ Primary sources checked on 2026-10-02:
    - The service lists phones whose hellos ask to pair with no ceremony running here (`requests()`, each kept for 5 s after its last hello).
    - The app joins a request while the sheet is open and idle. A request comes only from a phone whose owner picked this one, by its PeerID. The code comparison still decides.
    - An attacker in range can at most show a code that will not match, which is the denial of service an abort already allowed.
+   - Each attempt on the sheet has a generation that Cancel, the sheet closing, and every new attempt move forward (Codex review of PR #104).
+     - A session returned for an older attempt is cancelled, not installed.
+     - Its events and its stream ending are dropped.
+     - The code on screen is bound to the session that produced it, and Confirm answers only that session.
+
+     Without this, a Cancel while a session was still being created let a later attempt's Confirm reach a session whose code the owner never compared.
 5. **One service over every link.** The app runs one `PairingService` over the pairing links of every `SecureTransport`, sending each frame on all of them and listening on all of them. The phones meet on whichever link works. `PairingRoute` is removed (ADR 0145 decision 4).
 6. **One Wi-Fi Aware role per paired device** (`WiFiAwareTransport`, replacing ADR 0110 decision 3):
    - The phone whose owner picked in `WiFiAwareDevicePicker` subscribes and dials.

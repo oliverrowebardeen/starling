@@ -131,6 +131,12 @@ public final class PairingModel {
     /// This owner ended the last ceremony (Cancel, or "They're different"),
     /// so the sheet does not rejoin that phone on its own.
     private var endedHere = false
+    /// Bumped by every new attempt, by Cancel, and when the sheet goes away.
+    /// A session, event, or stream ending from an older attempt is ignored.
+    private var attempt = 0
+    /// The session whose code is on screen, and its attempt. Confirm
+    /// answers only this session.
+    private var shownCode: (attempt: Int, session: any PairingSession)?
 
     /// - Parameters:
     ///   - friends: Every paired friend now, for the nickname check.
@@ -161,9 +167,6 @@ public final class PairingModel {
     /// its owner tapped Try again, and this owner should not have to.
     public func refresh() async {
         if case .failed = phase, !endedHere, let phone, await directory.requests().contains(phone.peer), case .failed = phase {
-            events?.cancel()
-            events = nil
-            session = nil
             await start(with: phone)
             return
         }
@@ -188,14 +191,17 @@ public final class PairingModel {
     /// with the PeerID behind it once its link says hello.
     public func pickedDevice(id: UInt64, name: String) async {
         guard phase == .choosing, let resolve = directory.peerForPickedDevice else { return }
+        attempt += 1
+        let mine = attempt
         let offered = name.trimmingCharacters(in: .whitespacesAndNewlines)
         pickedName = offered.isEmpty ? "the phone you picked" : offered
         notice = nil
         phase = .connecting
         let peer = await resolve(id)
+        // Cancel, or another attempt, while the link came up.
+        guard mine == attempt, phase == .connecting, !isEnded else { return }
         let label = pickedName
         pickedName = nil
-        guard phase == .connecting, !isEnded else { return }
         guard let peer else {
             phase = .choosing
             notice = "Starling couldn't reach \(label ?? "that phone") yet. Keep Starling open on both phones and try again, or pick it below."
@@ -206,58 +212,76 @@ public final class PairingModel {
 
     // MARK: The ceremony
 
+    /// Ends the current attempt on this screen: its session, events, and
+    /// shown code. Any call still creating a session for it will find its
+    /// attempt obsolete and cancel that session instead of installing it.
+    /// Returns the session to cancel, if one was installed.
+    private func abandonAttempt() -> (any PairingSession)? {
+        attempt += 1
+        events?.cancel()
+        events = nil
+        shownCode = nil
+        defer { session = nil }
+        return session
+    }
+
     private func start(with candidate: PairingCandidate) async {
+        if let previous = abandonAttempt() { await previous.cancel() }
+        let mine = attempt
         phone = candidate
         endedHere = false
         phase = .connecting
         notice = nil
         do {
             let session = try await directory.pair(candidate.peer, Self.placeholderName)
-            if isEnded {
+            // Cancel, the sheet closing, or a newer attempt while the
+            // session was being created: it is never installed (Codex
+            // review of PR #104).
+            guard mine == attempt, !isEnded else {
                 await session.cancel()
-                phase = .failed(.cancelled)
+                if mine == attempt { phase = .failed(.cancelled) }
                 return
             }
             self.session = session
             events = Task { [weak self] in
                 for await event in session.events {
-                    await self?.handle(event)
+                    await self?.handle(event, from: session, attempt: mine)
                 }
-                self?.streamEnded()
+                self?.streamEnded(attempt: mine)
             }
         } catch {
-            phase = .failed(.transportFailed)
+            if mine == attempt { phase = .failed(.transportFailed) }
         }
     }
 
-    /// The owner compared the codes on both phones.
+    /// The owner compared the codes on both phones. The answer goes to the
+    /// session whose code is on screen, and only while its attempt is current.
     public func confirm(codesMatch: Bool) async {
-        guard case .comparing = phase, let session else { return }
+        guard case .comparing = phase, let shown = shownCode, shown.attempt == attempt else { return }
         endedHere = !codesMatch
         phase = .waiting
-        await session.confirm(codesMatch: codesMatch)
+        await shown.session.confirm(codesMatch: codesMatch)
     }
 
     public func cancel() async {
         endedHere = true
-        guard let session else {
-            pickedName = nil
+        pickedName = nil
+        if let current = abandonAttempt() {
+            phase = .failed(.cancelled)
+            await current.cancel()
+        } else {
             phase = .choosing
-            return
         }
-        await session.cancel()
     }
 
     /// Starts again with the same phone, or goes back to choosing one.
     public func tryAgain() async {
-        events?.cancel()
-        events = nil
-        session = nil
         notice = nil
         isEnded = false
         if let phone {
             await start(with: phone)
         } else {
+            _ = abandonAttempt()
             phase = .choosing
         }
     }
@@ -269,30 +293,41 @@ public final class PairingModel {
         isEnded = true
         switch phase {
         case .connecting, .comparing, .waiting:
-            await session?.cancel()
+            let current = abandonAttempt()
+            phase = .failed(.cancelled)
+            await current?.cancel()
         case .choosing, .naming, .notifications, .done, .failed:
             break
         }
     }
 
-    func handle(_ event: PairingEvent) async {
+    /// Events from an obsolete attempt are dropped, so a cancelled session
+    /// can never put its code on screen.
+    func handle(_ event: PairingEvent, from session: any PairingSession, attempt mine: Int) async {
+        guard mine == attempt else { return }
         switch event {
         case .confirmCode(let code):
+            shownCode = (mine, session)
             phase = .comparing(code: code)
         case .paired(let peer):
+            shownCode = nil
             await directory.paired(peer)
             var deviceName = phone?.deviceName
             if deviceName == nil { deviceName = await directory.deviceName(peer.id) }
+            guard mine == attempt else { return }
             name = FriendNameSuggestion.from(deviceName: deviceName) ?? ""
             phase = .naming(peer)
         case .failed(let failure):
+            shownCode = nil
             phase = .failed(failure)
         }
     }
 
-    private func streamEnded() {
+    private func streamEnded(attempt mine: Int) {
+        guard mine == attempt else { return }
         session = nil
         events = nil
+        shownCode = nil
         switch phase {
         case .connecting, .comparing, .waiting:
             // The session ended without a result.
