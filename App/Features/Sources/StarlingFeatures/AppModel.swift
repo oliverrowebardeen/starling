@@ -306,6 +306,9 @@ public final class AppModel {
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
+            // A friend's request just installed: write any send its skill
+            // made before the coordinator saw it.
+            if before == nil, let egress = self?.egress { Task { await egress.retryPending() } }
             // A card the owner passed stays quiet until its skill ends it.
             if self?.lifecycle.passed.contains(after.id) == true { return }
             guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
@@ -593,15 +596,23 @@ private final class EgressRelay: EgressSink {
     init(pending: PendingEgress) { self.pending = pending }
 
     /// Clears the send from `pending` only once its record is durably on
-    /// its interaction, or there is no interaction to record it on. A write
-    /// that throws leaves it pending.
+    /// its interaction. A skill's send whose interaction is not installed
+    /// yet (a friend's request answered right after the service announced
+    /// it) throws, so the recorder keeps it and retries once the
+    /// coordinator installs the interaction. Only a link-level send, or one
+    /// recovered from the journal with no interaction left, is unattributed.
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
-        guard let lifecycle else { return false }
+        guard let lifecycle else { throw EgressAwaitingInteraction() }
         let found = try await lifecycle.appendEgress(record, conversation: conversation)
-        if let message = record.message { pending.recorded(message) }
+        guard let message = record.message else { return found }
+        if !found, pending.isSkillSend(message) { throw EgressAwaitingInteraction() }
+        pending.recorded(message)
         return found
     }
 }
+
+/// A skill's send whose interaction the coordinator has not installed yet.
+struct EgressAwaitingInteraction: Error {}
 
 /// Friends' names, readable from the `@Sendable` closures words use.
 private final class NameBox: @unchecked Sendable {

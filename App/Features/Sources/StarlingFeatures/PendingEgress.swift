@@ -12,16 +12,27 @@ import StarlingCore
 @MainActor
 @Observable
 public final class PendingEgress {
-    public private(set) var messages: [MessageID: ConversationID] = [:]
+    public struct Send: Hashable, Sendable {
+        public let conversation: ConversationID
+        /// A skill's send, which always belongs to an interaction, even one
+        /// the coordinator has not installed yet. A link-level send (a
+        /// hello) has none.
+        public let isSkill: Bool
+    }
+
+    public private(set) var messages: [MessageID: Send] = [:]
 
     public init() {}
 
     /// Conversations whose log may be missing a send right now.
-    public var conversations: Set<ConversationID> { Set(messages.values) }
+    public var conversations: Set<ConversationID> { Set(messages.values.map(\.conversation)) }
 
-    func announce(_ message: MessageID, in conversation: ConversationID) {
-        messages[message] = conversation
+    func announce(_ message: MessageID, in conversation: ConversationID, isSkill: Bool) {
+        messages[message] = Send(conversation: conversation, isSkill: isSkill)
     }
+
+    /// Whether `message` is a skill's send this launch announced.
+    func isSkillSend(_ message: MessageID) -> Bool { messages[message]?.isSkill == true }
 
     func recorded(_ message: MessageID) {
         messages[message] = nil
@@ -36,7 +47,7 @@ struct PendingEgressObserver: OutboxObserver {
 
     func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
         if case .deny = decision { return }
-        await pending.announce(envelope.id, in: envelope.conversation)
+        await pending.announce(envelope.id, in: envelope.conversation, isSkill: envelope.skill != nil)
     }
 
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}

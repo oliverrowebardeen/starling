@@ -188,3 +188,46 @@ actor DeliverThenThrowTransport: Transport {
         await app.shutdown()
     }
 }
+
+/// Focused review of PR #73 at 077613a: a skill can answer a friend's
+/// request before the coordinator installs it. The send stays pending until
+/// its interaction exists and the record is saved, never unattributed.
+@MainActor
+@Suite struct EarlyAnswerAuditTests {
+    @Test func aSendBeforeItsInteractionIsInstalledIsRecordedOnceItIs() async throws {
+        let maya = PeerID.random()
+        let built = AppModelTests.Built()
+        var services = AppModelTests.services(built: built)
+        services.makePolicy = { _, _ in
+            FixedPolicyEngine(.allow, explain: { message in
+                Disclosure(recipient: message.envelope.recipient, recipientModel: nil,
+                           items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try! Keyword("boba")]))],
+                           conversation: message.envelope.conversation, skill: message.envelope.skill)
+            })
+        }
+        let app = AppModel(services: services)
+        await app.start()
+        let outbox = try #require(app.outbox)
+        let down = try #require(built.services.first { $0.descriptor.id == .downFor })
+
+        // The skill answers in a friend's conversation, and only then does
+        // the coordinator hear of the request.
+        let conversation = ConversationID()
+        try await outbox.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya, conversation: conversation, skill: SampleSkills.downFor.ref, mode: .askQuietly)
+        #expect(app.pendingEgress.conversations == [conversation])
+        #expect(await app.egress.unattributed == 0)
+
+        let id = InteractionID()
+        await down.emit(.incoming(id, conversation: conversation, from: maya, chainedFrom: nil))
+        await eventually { app.lifecycle.interaction(id)?.egress.count == 1 }
+        let invitee = try #require(app.lifecycle.interaction(id))
+        #expect(invitee.egress.count == 1)
+        await eventually { app.pendingEgress.messages.isEmpty }
+        #expect(app.pendingEgress.messages.isEmpty)
+        let detail = app.planDetail(invitee)
+        #expect(!detail.shared.isEmpty)
+        #expect(!detail.kept.contains { $0.localizedCaseInsensitiveContains("activity") })
+        #expect(await app.egress.unattributed == 0)
+        await app.shutdown()
+    }
+}
