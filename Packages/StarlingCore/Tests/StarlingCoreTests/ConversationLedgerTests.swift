@@ -334,3 +334,60 @@ actor SwitchablePolicy: PolicyEngine {
     func set(_ decision: PolicyDecision) { self.decision = decision }
     func evaluate(_ message: OutboundMessage) async -> PolicyDecision { decision }
 }
+
+/// Issue #81 (lane F): cancelInFlight() and retire(_:) must reach a send
+/// still waiting on its consent sheet or in willSend, not only one queued
+/// for the transport.
+@Suite struct CancelEverywhereTests {
+    static let body = MessageBody.reject(Rejection(proposal: MessageID(), reason: .noOverlap))
+
+    @Test func cancelInFlightReachesASendWaitingOnItsConsentSheet() async throws {
+        let consent = HeldConsent()
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let disclosure = Disclosure(recipient: Fixtures.bob, recipientModel: .onDevice, items: [])
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.needsConsent(disclosure)), consent: consent, now: { Fixtures.now })
+        let send = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await OutboxAdmissionTests().waitUntil { await consent.asked }
+        await outbox.cancelInFlight()
+        await #expect(throws: (any Error).self) { try await send.value }
+        #expect(await consent.sawCancellation)
+        #expect(await transport.sent.isEmpty)
+    }
+
+    @Test func retireReachesASendWaitingInWillSend() async throws {
+        let ledger = InMemoryConversationLedger()
+        let observer = GatedObserver()
+        let transport = RecordingTransport(localPeer: Fixtures.alice)
+        let outbox = Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved),
+                            observer: observer, ledger: ledger, now: { Fixtures.now })
+        let send = Task { try await outbox.send(Self.body, to: Fixtures.bob, conversation: Fixtures.conversation) }
+        try await OutboxAdmissionTests().waitUntil { await observer.waiting }
+        try await outbox.retire(Fixtures.conversation)
+        await observer.release()
+        await #expect(throws: (any Error).self) { try await send.value }
+        #expect(await transport.sent.isEmpty)
+    }
+}
+
+/// A consent sheet that stays open until its send is cancelled, and notes
+/// that it saw the cancellation (the app closes the sheet then).
+actor HeldConsent: ConsentProvider {
+    private(set) var asked = false
+    private(set) var sawCancellation = false
+    private var pending: CheckedContinuation<ConsentOutcome, Never>?
+
+    func requestConsent(for disclosure: Disclosure) async -> ConsentOutcome {
+        asked = true
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { pending = $0 }
+        } onCancel: {
+            Task { await self.cancelled() }
+        }
+    }
+
+    private func cancelled() {
+        sawCancellation = true
+        pending?.resume(returning: .declined)
+        pending = nil
+    }
+}

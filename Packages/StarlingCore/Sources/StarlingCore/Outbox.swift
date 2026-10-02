@@ -122,6 +122,38 @@ public actor Outbox {
         mode: SendMode? = nil,
         chainedFrom: ConversationID? = nil
     ) async throws -> Envelope {
+        // The whole send, from the policy and the consent sheet onward, runs
+        // as one task registered from the start, so cancelInFlight() and
+        // retire(_:) reach it wherever it waits: on a sheet, in willSend, in
+        // the per-friend queue, or in the transport (issue #81). The
+        // caller's own cancellation reaches it too.
+        let pipeline = Task { () async throws -> Envelope in
+            try await self.pipeline(body, to: recipient, conversation: conversation, recipientCard: recipientCard,
+                                    context: context, skill: skill, mode: mode, chainedFrom: chainedFrom)
+        }
+        let id = UUID()
+        inFlight[conversation, default: [:]][id] = pipeline
+        defer {
+            inFlight[conversation]?[id] = nil
+            if inFlight[conversation]?.isEmpty == true { inFlight[conversation] = nil }
+        }
+        return try await withTaskCancellationHandler {
+            try await pipeline.value
+        } onCancel: {
+            pipeline.cancel()
+        }
+    }
+
+    private func pipeline(
+        _ body: MessageBody,
+        to recipient: PeerID,
+        conversation: ConversationID,
+        recipientCard: AgentCard?,
+        context: OutboundContext,
+        skill: SkillRef?,
+        mode: SendMode?,
+        chainedFrom: ConversationID?
+    ) async throws -> Envelope {
         // The policy judges a draft. The number and send time are set only
         // once the send is cleared (below), so nothing about a refused send
         // shows on the wire.
@@ -196,12 +228,6 @@ public actor Outbox {
             return try await self.numberAndSend(draft, key: key, message: message, cleared: decision)
         }
         tails[key] = Task { _ = await work.result }
-        let workID = UUID()
-        inFlight[conversation, default: [:]][workID] = work
-        defer {
-            inFlight[conversation]?[workID] = nil
-            if inFlight[conversation]?.isEmpty == true { inFlight[conversation] = nil }
-        }
         let envelope = try await withTaskCancellationHandler {
             try await work.value
         } onCancel: {
