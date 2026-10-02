@@ -361,3 +361,21 @@ public final class PairingModel {
         }
     }
 }
+
+/// The names lane P15-F's red-team test still uses (`docs/requests/P15-G.md`
+/// request 4), mapped onto the flow of ADR 0260 until that test moves to
+/// `phone` and `name`. Not deprecated, because a warning would fail the
+/// warnings-as-errors build of a lane this one cannot edit.
+extension PairingModel {
+    /// The phone being paired.
+    public var selected: PairingCandidate? { phone }
+    /// The friend's name field. Empty until the codes are confirmed: a
+    /// device name never fills it before the owner reviews it.
+    public var nickname: String {
+        get { name }
+        set { name = newValue }
+    }
+    /// The name the other phone gave itself. It labels the phone; the name
+    /// step offers only a first name read from it.
+    public var suggestedName: String? { phone?.deviceName }
+}
