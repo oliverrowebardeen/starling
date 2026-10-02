@@ -83,6 +83,7 @@ struct DeveloperView: View {
             }
 
             Section {
+                NavigationLink("Pairing log") { PairingLogView(log: harness.pairingLog) }
                 NavigationLink("Wi-Fi Aware") { WiFiAwareView(app: app) }
                 NavigationLink("Audit log") { AuditLogView(log: LiveServices.auditLog, friends: app.friends?.friends ?? []) }
                 NavigationLink("Model Bench", destination: ModelBenchView())

@@ -6,155 +6,199 @@ import StarlingCore
 public struct PairingCandidate: Identifiable, Hashable, Sendable {
     public var id: PeerID { peer }
     public let peer: PeerID
-    /// Which link it was seen on, for the owner ("Wi-Fi Aware", "Nearby").
-    public let link: String
+    /// The system's name for the phone, where a Wi-Fi Aware link named it.
+    /// It labels a phone, never a person (ADR 0260).
+    public let deviceName: String?
 
-    public init(peer: PeerID, link: String) {
+    public init(peer: PeerID, deviceName: String? = nil) {
         self.peer = peer
-        self.link = link
+        self.deviceName = deviceName
     }
+
+    /// How the sheet names this phone.
+    public var label: String { deviceName ?? "Phone \(peer.short)" }
 }
 
-/// What the pairing screen needs from the app's links (lane E1's
-/// PairingService and SecureTransports, docs/requests/E1.md item 2).
+/// What the pairing sheet needs from the app's links (lane E1's
+/// PairingService and SecureTransports, ADR 0260).
 public struct PairingDirectory: Sendable {
     /// This phone's PeerID, so both owners can tell the phones apart.
     public var localPeer: PeerID
     /// Nearby phones that are not paired yet.
     public var candidates: @Sendable () async -> [PairingCandidate]
-    /// Starts a ceremony with `candidate`, saving it as `nickname` if both
+    /// Phones asking to pair with this one right now.
+    public var requests: @Sendable () async -> [PeerID]
+    /// Starts a ceremony with a phone, saving it under `nickname` if both
     /// owners confirm. Lane E1 commits the pin; the app never writes it.
-    public var pair: @Sendable (PairingCandidate, String) async throws -> any PairingSession
+    public var pair: @Sendable (PeerID, String) async throws -> any PairingSession
     /// Called once paired, to reconnect each link to the new friend.
     public var paired: @Sendable (PairedPeer) async -> Void
+    /// Renames a friend through the pin authority (ADR 0100).
+    public var rename: @Sendable (PeerID, String) async throws -> Void
+    /// The system's name for the phone behind a peer, where known.
+    public var deviceName: @Sendable (PeerID) async -> String?
+    /// The pairing sheet opened (Wi-Fi Aware publishes to a phone that
+    /// pairs from its picker meanwhile, ADR 0260).
+    public var opened: @Sendable () async -> Void
     /// The PeerID behind a device the owner picked in the system's Wi-Fi
-    /// Aware picker (lane E2's `peerID(for:waitingUpTo:)`), or nil if its
-    /// link hello did not arrive in time. Nil where Wi-Fi Aware is absent.
+    /// Aware picker, or nil if its link hello did not arrive in time. Nil
+    /// where Wi-Fi Aware is absent.
     public var peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)?
 
     public init(
         localPeer: PeerID,
         candidates: @escaping @Sendable () async -> [PairingCandidate],
-        pair: @escaping @Sendable (PairingCandidate, String) async throws -> any PairingSession,
+        requests: @escaping @Sendable () async -> [PeerID] = { [] },
+        pair: @escaping @Sendable (PeerID, String) async throws -> any PairingSession,
         paired: @escaping @Sendable (PairedPeer) async -> Void,
+        rename: @escaping @Sendable (PeerID, String) async throws -> Void = { _, _ in },
+        deviceName: @escaping @Sendable (PeerID) async -> String? = { _ in nil },
+        opened: @escaping @Sendable () async -> Void = {},
         peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)? = nil
     ) {
-        self.peerForPickedDevice = peerForPickedDevice
         self.localPeer = localPeer
         self.candidates = candidates
+        self.requests = requests
         self.pair = pair
         self.paired = paired
+        self.rename = rename
+        self.deviceName = deviceName
+        self.opened = opened
+        self.peerForPickedDevice = peerForPickedDevice
     }
 }
 
-/// Drives the in-person pairing ceremony (ADR 0003, lane E1): pick the
-/// nearby phone, name the friend, then both people compare a code and
-/// confirm or cancel. The friend is saved by lane E1 only if both confirm.
+/// After the first pairing, the one-button explanation before iOS's
+/// notification alert (ADR 0013 decision 3, ADR 0260).
+public struct NotificationOffer: Sendable {
+    /// Whether to show it: iOS has not asked yet.
+    public var shouldOffer: @MainActor @Sendable () async -> Bool
+    /// Shows the system alert.
+    public var ask: @MainActor @Sendable () async -> Void
+
+    public init(shouldOffer: @escaping @MainActor @Sendable () async -> Bool, ask: @escaping @MainActor @Sendable () async -> Void) {
+        self.shouldOffer = shouldOffer
+        self.ask = ask
+    }
+}
+
+/// Drives "Add a friend" (ADR 0003, ADR 0101, ADR 0260): one owner picks
+/// the other phone, the other phone joins on its own, both compare a code,
+/// and then the owner names the friend. Lane E1 saves the friend only if
+/// both owners confirm.
 @MainActor
 @Observable
 public final class PairingModel {
     public enum Phase: Hashable, Sendable {
-        /// Choosing the phone and the name.
-        case idle
-        case starting
+        /// Finding the other phone.
+        case choosing
+        /// A phone is chosen; waiting for the code.
+        case connecting
         /// Both phones show this code. Pairing continues only if both match.
         case comparing(code: String)
         /// This owner confirmed; waiting for the other phone.
-        case confirming
-        case paired(PairedPeer)
+        case waiting
+        /// Paired under a placeholder name; the owner names the friend.
+        case naming(PairedPeer)
+        /// The one-button explanation before iOS's notification alert.
+        case notifications(friend: String)
+        case done
         case failed(PairingFailure)
     }
 
-    public private(set) var phase = Phase.idle
+    /// The name a friend has until the owner names them, never a device name.
+    public static let placeholderName = "New friend"
+
+    public private(set) var phase = Phase.choosing
     public private(set) var candidates: [PairingCandidate] = []
-    public var selected: PairingCandidate?
-    public var nickname = ""
-    /// The name the other phone gave itself in the system picker. It comes
-    /// from that phone, so it is only offered, never filled in (issue #46).
-    public private(set) var suggestedName: String?
+    /// The phone in the ceremony, for the sheet's wording.
+    public private(set) var phone: PairingCandidate?
+    /// The device picked in the system picker, while its link comes up.
+    public private(set) var pickedName: String?
+    /// The friend's name, prefilled when the code is confirmed.
+    public var name = ""
     public private(set) var notice: String?
     public var localPeer: PeerID { directory.localPeer }
 
     private let directory: PairingDirectory
+    private let friends: @MainActor () -> [PairedPeer]
+    private let notifications: NotificationOffer?
     private var session: (any PairingSession)?
     private var events: Task<Void, Never>?
-    /// Set when the pairing screen went away, so a session that is still
-    /// being created is cancelled as soon as it exists.
+    /// Set when the sheet went away, so a session still being created is
+    /// cancelled as soon as it exists.
     private var isEnded = false
 
-    private let friends: @MainActor () -> [PairedPeer]
-
-    /// - Parameter friends: Every paired friend now, for the nickname check.
-    public init(directory: PairingDirectory, friends: @escaping @MainActor () -> [PairedPeer] = { [] }) {
+    /// - Parameters:
+    ///   - friends: Every paired friend now, for the nickname check.
+    ///   - notifications: Offered after a pairing while iOS has not asked.
+    public init(
+        directory: PairingDirectory,
+        friends: @escaping @MainActor () -> [PairedPeer] = { [] },
+        notifications: NotificationOffer? = nil
+    ) {
         self.directory = directory
         self.friends = friends
+        self.notifications = notifications
     }
 
-    /// A warning when the name matches or looks like another friend's.
-    public var nicknameWarning: String? {
-        NicknameCheck.warning(for: nickname, among: friends())
+    // MARK: Choosing
+
+    /// The sheet appeared.
+    public func opened() async {
+        await directory.opened()
     }
 
-    /// The owner chose to use the other phone's own name.
-    public func useSuggestedName() {
-        guard let suggestedName else { return }
-        nickname = suggestedName
-    }
-
-    public func refreshCandidates() async {
-        var fresh = await directory.candidates()
-        // The selected phone keeps its entry (a picked phone stays on Wi-Fi
-        // Aware), with no second entry for the same PeerID.
-        if let selected {
-            fresh.removeAll { $0.peer == selected.peer }
-            fresh.insert(selected, at: 0)
-        }
+    /// Refreshes the nearby list and joins a phone that asks to pair. A
+    /// request only comes from a phone whose owner picked this one, and the
+    /// code comparison still verifies it, so joining saves the second owner
+    /// a pick (ADR 0260).
+    public func refresh() async {
+        guard phase == .choosing else { return }
+        let fresh = await directory.candidates()
+        guard phase == .choosing else { return }
         candidates = fresh
+        guard pickedName == nil, let asking = await directory.requests().first, phase == .choosing else { return }
+        var deviceName = candidates.first { $0.peer == asking }?.deviceName
+        if deviceName == nil { deviceName = await directory.deviceName(asking) }
+        guard phase == .choosing else { return }
+        await start(with: PairingCandidate(peer: asking, deviceName: deviceName))
     }
 
-    /// The link a phone picked in the system's Wi-Fi Aware picker pairs on.
-    public static let pickedDeviceLink = "Wi-Fi Aware"
+    /// The owner tapped a phone in the nearby list.
+    public func choose(_ candidate: PairingCandidate) async {
+        guard phase == .choosing else { return }
+        await start(with: candidate)
+    }
 
-    /// The owner picked a device in the system's Wi-Fi Aware picker: select
-    /// the PeerID behind it, and offer the device's name without filling it
-    /// in. The code comparison still verifies the pick (ADR 0003).
+    /// The owner picked a device in the system's Wi-Fi Aware picker: pair
+    /// with the PeerID behind it once its link says hello.
     public func pickedDevice(id: UInt64, name: String) async {
-        guard let resolve = directory.peerForPickedDevice else { return }
-        notice = nil
-        guard let peer = await resolve(id) else {
-            notice = "Starling couldn't reach the phone you picked. Keep both phones close and open Starling on both, then try again."
-            return
-        }
-        // The picker paired the phones over Wi-Fi Aware, so the ceremony
-        // runs there, even if another link listed the same phone first.
-        let candidate = PairingCandidate(peer: peer, link: Self.pickedDeviceLink)
-        candidates.removeAll { $0.peer == peer }
-        candidates.insert(candidate, at: 0)
-        selected = candidate
+        guard phase == .choosing, let resolve = directory.peerForPickedDevice else { return }
         let offered = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        suggestedName = offered.isEmpty ? nil : String(offered.prefix(PairedPeer.maxNicknameCharacters))
-    }
-
-    /// A phone is chosen and the nickname is one lane E1 will accept.
-    public var canStart: Bool {
-        guard selected != nil else { return false }
-        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (1...PairedPeer.maxNicknameCharacters).contains(trimmed.count)
-    }
-
-    public func start() async {
-        switch phase {
-        case .idle, .paired, .failed: break
-        default: return
-        }
-        guard canStart, let selected else {
-            notice = "Pick a phone and name your friend (1 to \(PairedPeer.maxNicknameCharacters) characters)."
+        pickedName = offered.isEmpty ? "the phone you picked" : offered
+        notice = nil
+        phase = .connecting
+        let peer = await resolve(id)
+        let label = pickedName
+        pickedName = nil
+        guard phase == .connecting, !isEnded else { return }
+        guard let peer else {
+            phase = .choosing
+            notice = "Starling couldn't reach \(label ?? "that phone") yet. Keep Starling open on both phones and try again, or pick it below."
             return
         }
-        phase = .starting
+        await start(with: PairingCandidate(peer: peer, deviceName: offered.isEmpty ? nil : offered))
+    }
+
+    // MARK: The ceremony
+
+    private func start(with candidate: PairingCandidate) async {
+        phone = candidate
+        phase = .connecting
         notice = nil
         do {
-            let session = try await directory.pair(selected, nickname.trimmingCharacters(in: .whitespacesAndNewlines))
+            let session = try await directory.pair(candidate.peer, Self.placeholderName)
             if isEnded {
                 await session.cancel()
                 phase = .failed(.cancelled)
@@ -175,38 +219,44 @@ public final class PairingModel {
     /// The owner compared the codes on both phones.
     public func confirm(codesMatch: Bool) async {
         guard case .comparing = phase, let session else { return }
-        phase = .confirming
+        phase = .waiting
         await session.confirm(codesMatch: codesMatch)
     }
 
     public func cancel() async {
         guard let session else {
-            phase = .idle
+            pickedName = nil
+            phase = .choosing
             return
         }
         await session.cancel()
     }
 
-    /// The pairing screen went away, for example swiped down. Cancels a
-    /// ceremony in progress so it does not keep running with no screen;
-    /// a finished pairing is left alone.
-    public func end() async {
-        isEnded = true
-        switch phase {
-        case .starting, .comparing, .confirming:
-            await session?.cancel()
-        case .idle, .paired, .failed:
-            break
-        }
-    }
-
-    public func reset() {
-        isEnded = false
+    /// Starts again with the same phone, or goes back to choosing one.
+    public func tryAgain() async {
         events?.cancel()
         events = nil
         session = nil
         notice = nil
-        phase = .idle
+        isEnded = false
+        if let phone {
+            await start(with: phone)
+        } else {
+            phase = .choosing
+        }
+    }
+
+    /// The sheet went away, for example swiped down. Cancels a ceremony in
+    /// progress so it does not keep running with no screen; a finished
+    /// pairing is left alone.
+    public func end() async {
+        isEnded = true
+        switch phase {
+        case .connecting, .comparing, .waiting:
+            await session?.cancel()
+        case .choosing, .naming, .notifications, .done, .failed:
+            break
+        }
     }
 
     func handle(_ event: PairingEvent) async {
@@ -215,7 +265,10 @@ public final class PairingModel {
             phase = .comparing(code: code)
         case .paired(let peer):
             await directory.paired(peer)
-            phase = .paired(peer)
+            var deviceName = phone?.deviceName
+            if deviceName == nil { deviceName = await directory.deviceName(peer.id) }
+            name = FriendNameSuggestion.from(deviceName: deviceName) ?? ""
+            phase = .naming(peer)
         case .failed(let failure):
             phase = .failed(failure)
         }
@@ -225,12 +278,55 @@ public final class PairingModel {
         session = nil
         events = nil
         switch phase {
-        case .starting, .comparing, .confirming:
+        case .connecting, .comparing, .waiting:
             // The session ended without a result.
             phase = .failed(.protocolError)
         default:
             break
         }
+    }
+
+    // MARK: Naming
+
+    /// A warning when the name matches or looks like another friend's.
+    public var nameWarning: String? {
+        guard case .naming(let peer) = phase else { return nil }
+        return NicknameCheck.warning(for: name, among: friends(), excluding: peer.id)
+    }
+
+    public var canSaveName: Bool {
+        (1...PairedPeer.maxNicknameCharacters).contains(name.trimmingCharacters(in: .whitespacesAndNewlines).count)
+    }
+
+    /// Saves the friend's name, then offers notifications if iOS has not asked.
+    public func saveName() async {
+        guard case .naming(let peer) = phase else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canSaveName else {
+            notice = "Give them a name of 1 to \(PairedPeer.maxNicknameCharacters) characters."
+            return
+        }
+        if trimmed != peer.nickname {
+            do {
+                try await directory.rename(peer.id, trimmed)
+            } catch {
+                notice = "Starling couldn't save that name. Try again, or rename them later in Friends."
+                return
+            }
+        }
+        notice = nil
+        if let notifications, await notifications.shouldOffer() {
+            phase = .notifications(friend: trimmed)
+        } else {
+            phase = .done
+        }
+    }
+
+    /// The explanation's one button: straight to the system alert.
+    public func continueToNotifications() async {
+        guard case .notifications = phase else { return }
+        await notifications?.ask()
+        phase = .done
     }
 
     /// What to tell the owner about a failure.
@@ -239,9 +335,9 @@ public final class PairingModel {
         case .codeMismatch:
             "The codes didn't match, so Starling didn't pair. If you picked the right phone, someone nearby may be interfering. Try again somewhere else."
         case .cancelled:
-            "Pairing was cancelled."
+            "Pairing stopped on one of the phones."
         case .timedOut:
-            "Pairing took too long. Keep both phones close and try again."
+            "Pairing took too long. Keep Starling open on both phones and try again."
         case .transportFailed:
             "Starling couldn't reach the other phone. Keep both phones close and try again."
         case .protocolError:

@@ -9,165 +9,282 @@ final class ScriptedDirectory: @unchecked Sendable {
     private let lock = NSLock()
     private var started: [(PeerID, String)] = []
     private var finished: [PairedPeer] = []
+    private var renamed: [(PeerID, String)] = []
+    private var asking: [PeerID] = []
+    private var openCount = 0
     let candidates: [PairingCandidate]
-    let makeSession: @Sendable (PairingCandidate, String) async throws -> any PairingSession
+    let deviceNames: [PeerID: String]
+    let renameFails: Bool
+    let makeSession: @Sendable (PeerID, String) async throws -> any PairingSession
 
-    init(candidates: [PairingCandidate], makeSession: @escaping @Sendable (PairingCandidate, String) async throws -> any PairingSession) {
+    init(
+        candidates: [PairingCandidate], deviceNames: [PeerID: String] = [:], renameFails: Bool = false,
+        makeSession: @escaping @Sendable (PeerID, String) async throws -> any PairingSession
+    ) {
         self.candidates = candidates
+        self.deviceNames = deviceNames
+        self.renameFails = renameFails
         self.makeSession = makeSession
     }
 
     var starts: [(PeerID, String)] { lock.withLock { started } }
     var paired: [PairedPeer] { lock.withLock { finished } }
+    var renames: [(PeerID, String)] { lock.withLock { renamed } }
+    var opens: Int { lock.withLock { openCount } }
+    func ask(from peer: PeerID) { lock.withLock { asking = [peer] } }
+
+    struct RenameFailed: Error {}
 
     var directory: PairingDirectory {
         PairingDirectory(
             localPeer: PeerID.random(),
             candidates: { [candidates] in candidates },
-            pair: { [self] candidate, nickname in
-                lock.withLock { started.append((candidate.peer, nickname)) }
-                return try await makeSession(candidate, nickname)
+            requests: { [self] in lock.withLock { asking } },
+            pair: { [self] peer, nickname in
+                lock.withLock { started.append((peer, nickname)) }
+                return try await makeSession(peer, nickname)
             },
-            paired: { [self] peer in lock.withLock { finished.append(peer) } }
+            paired: { [self] peer in lock.withLock { finished.append(peer) } },
+            rename: { [self] id, name in
+                if renameFails { throw RenameFailed() }
+                lock.withLock { renamed.append((id, name)) }
+            },
+            deviceName: { [deviceNames] id in deviceNames[id] },
+            opened: { [self] in lock.withLock { openCount += 1 } }
         )
     }
 }
 
+/// Counts what the model asks of notifications.
 @MainActor
-func readyToPair(_ model: PairingModel) async {
-    await model.refreshCandidates()
-    model.selected = model.candidates.first
-    model.nickname = "Maya"
+final class OfferRecorder {
+    var notAsked: Bool
+    var asks = 0
+    init(notAsked: Bool) { self.notAsked = notAsked }
+
+    var offer: NotificationOffer {
+        NotificationOffer(shouldOffer: { [self] in notAsked }, ask: { [self] in asks += 1; notAsked = false })
+    }
 }
 
 @MainActor
 @Suite struct PairingModelTests {
     static let maya = Fixtures.peer("Phone")
-    static let candidate = PairingCandidate(peer: maya.id, link: "Wi-Fi Aware")
+    static let candidate = PairingCandidate(peer: maya.id, deviceName: "Maya's iPhone")
 
-    static func scripted(code: String = "482 913") -> ScriptedDirectory {
+    static func scripted(code: String = "482 913", deviceNames: [PeerID: String] = [:], renameFails: Bool = false) -> ScriptedDirectory {
         let peer = maya
-        return ScriptedDirectory(candidates: [candidate]) { _, nickname in
+        return ScriptedDirectory(candidates: [candidate], deviceNames: deviceNames, renameFails: renameFails) { _, nickname in
             ScriptedPairingSession(code: code, peer: try PairedPeer(publicKey: peer.publicKey, nickname: nickname, pairedAt: peer.pairedAt))
         }
     }
 
-    @Test func listsNearbyPhonesAndNeedsAChoiceAndANameFirst() async {
-        let model = PairingModel(directory: Self.scripted().directory)
-        await model.refreshCandidates()
-        #expect(model.candidates == [Self.candidate])
-        #expect(!model.canStart)
-        model.selected = Self.candidate
-        #expect(!model.canStart, "a nickname is needed before the ceremony (lane E1 saves it with the pin)")
-        model.nickname = "Maya"
-        #expect(model.canStart)
+    func pairAndConfirm(_ model: PairingModel) async {
+        await model.choose(Self.candidate)
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        await model.confirm(codesMatch: true)
+        await eventually { if case .naming = model.phase { true } else { false } }
     }
 
-    @Test func showsTheCodeThenFinishesWithTheNamedFriend() async throws {
+    @Test func listsNearbyPhonesByTheirNameOrShortID() async {
+        let model = PairingModel(directory: Self.scripted().directory)
+        await model.refresh()
+        #expect(model.candidates == [Self.candidate])
+        #expect(Self.candidate.label == "Maya's iPhone")
+        #expect(PairingCandidate(peer: Self.maya.id).label == "Phone \(Self.maya.id.short)")
+    }
+
+    /// One tap on a phone starts the ceremony: no name first (issue #95).
+    @Test func choosingAPhoneStartsAtOnceUnderAPlaceholderName() async {
         let directory = Self.scripted()
         let model = PairingModel(directory: directory.directory)
-        await readyToPair(model)
-
-        await model.start()
+        await model.choose(Self.candidate)
         await eventually { model.phase == .comparing(code: "482 913") }
         #expect(model.phase == .comparing(code: "482 913"))
-        #expect(directory.starts.map(\.1) == ["Maya"])
+        #expect(directory.starts.map(\.0) == [Self.maya.id])
+        #expect(directory.starts.map(\.1) == [PairingModel.placeholderName])
+    }
 
-        await model.confirm(codesMatch: true)
-        await eventually { if case .paired = model.phase { true } else { false } }
-        guard case .paired(let peer) = model.phase else { Issue.record("expected paired"); return }
-        #expect(peer.nickname == "Maya")
+    /// The other phone does not pick: it joins the phone that asked.
+    @Test func aRequestFromAnotherPhoneIsJoined() async {
+        let directory = Self.scripted(deviceNames: [Self.maya.id: "Maya's iPhone"])
+        let model = PairingModel(directory: directory.directory)
+        await model.refresh()
+        #expect(directory.starts.isEmpty)
+        directory.ask(from: Self.maya.id)
+        await model.refresh()
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        #expect(directory.starts.map(\.0) == [Self.maya.id])
+        #expect(model.phone?.label == "Maya's iPhone")
+    }
+
+    @Test func requestsAreNotJoinedMidCeremony() async {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await model.choose(Self.candidate)
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        directory.ask(from: PeerID.random())
+        await model.refresh()
+        #expect(directory.starts.count == 1)
+    }
+
+    /// After both confirm, the owner names the friend. The prefill is a
+    /// first name read from the phone's name, never the device name.
+    @Test func confirmingAsksForANamePrefilledFromThePhone() async {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await pairAndConfirm(model)
+        #expect(model.name == "Maya")
         #expect(directory.paired.map(\.id) == [Self.maya.id], "the app reconnects the links after pairing")
+        model.name = "Maya R"
+        await model.saveName()
+        #expect(directory.renames.map(\.1) == ["Maya R"])
+        #expect(model.phase == .done)
+    }
+
+    @Test func aPhoneWithNoUsableNameLeavesTheFieldEmpty() async {
+        let maya = Self.maya
+        let directory = ScriptedDirectory(candidates: []) { _, nickname in
+            ScriptedPairingSession(code: "1", peer: try PairedPeer(publicKey: maya.publicKey, nickname: nickname, pairedAt: maya.pairedAt))
+        }
+        let model = PairingModel(directory: directory.directory)
+        await model.choose(PairingCandidate(peer: Self.maya.id, deviceName: "iPhone"))
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        await model.confirm(codesMatch: true)
+        await eventually { if case .naming = model.phase { true } else { false } }
+        #expect(model.name.isEmpty)
+        #expect(!model.canSaveName)
+        await model.saveName()
+        #expect(model.notice != nil)
+        if case .naming = model.phase {} else { Issue.record("still naming") }
+    }
+
+    @Test func aFailedRenameStaysOnTheNameStep() async {
+        let model = PairingModel(directory: Self.scripted(renameFails: true).directory)
+        await pairAndConfirm(model)
+        model.name = "Maya"
+        await model.saveName()
+        #expect(model.notice?.contains("couldn't save") == true)
+        if case .naming = model.phase {} else { Issue.record("still naming") }
+    }
+
+    /// Oliver's request: after the first friend, one button leads straight
+    /// to iOS's notification alert, and only while iOS has not asked.
+    @Test func notificationsAreOfferedOnceAfterPairingWhileNotAsked() async {
+        let recorder = OfferRecorder(notAsked: true)
+        let model = PairingModel(directory: Self.scripted().directory, notifications: recorder.offer)
+        await pairAndConfirm(model)
+        await model.saveName()
+        #expect(model.phase == .notifications(friend: "Maya"))
+        await model.continueToNotifications()
+        #expect(recorder.asks == 1)
+        #expect(model.phase == .done)
+
+        let again = PairingModel(directory: Self.scripted().directory, notifications: recorder.offer)
+        await pairAndConfirm(again)
+        await again.saveName()
+        #expect(again.phase == .done, "iOS already asked")
+        #expect(recorder.asks == 1)
     }
 
     @Test func mismatchedCodesFailAndFinishNothing() async throws {
         let directory = Self.scripted()
         let model = PairingModel(directory: directory.directory)
-        await readyToPair(model)
-        await model.start()
+        await model.choose(Self.candidate)
         await eventually { if case .comparing = model.phase { true } else { false } }
-
         await model.confirm(codesMatch: false)
         await eventually { if case .failed = model.phase { true } else { false } }
-
         #expect(model.phase == .failed(.codeMismatch))
         #expect(directory.paired.isEmpty)
     }
 
-    @Test func cancelEndsTheCeremony() async throws {
-        let model = PairingModel(directory: Self.scripted().directory)
-        await readyToPair(model)
-        await model.start()
+    @Test func tryAgainStartsWithTheSamePhone() async {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await model.choose(Self.candidate)
         await eventually { if case .comparing = model.phase { true } else { false } }
         await model.cancel()
         await eventually { if case .failed = model.phase { true } else { false } }
         #expect(model.phase == .failed(.cancelled))
+        await model.tryAgain()
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        #expect(directory.starts.map(\.0) == [Self.maya.id, Self.maya.id])
     }
 
     @Test func confirmIsIgnoredBeforeACodeIsShown() async {
         let model = PairingModel(directory: Self.scripted().directory)
         await model.confirm(codesMatch: true)
-        #expect(model.phase == .idle)
-    }
-
-    @Test func anInvalidNicknameIsRefusedBeforeTheCeremony() async {
-        let directory = Self.scripted()
-        let model = PairingModel(directory: directory.directory)
-        await readyToPair(model)
-        model.nickname = "   "
-        #expect(!model.canStart)
-        await model.start()
-        #expect(model.phase == .idle)
-        #expect(directory.starts.isEmpty)
+        #expect(model.phase == .choosing)
     }
 
     @Test func aFailureToStartIsReported() async {
         struct NoLink: Error {}
         let directory = ScriptedDirectory(candidates: [Self.candidate]) { _, _ in throw NoLink() }
         let model = PairingModel(directory: directory.directory)
-        await readyToPair(model)
-        await model.start()
+        await model.choose(Self.candidate)
         #expect(model.phase == .failed(.transportFailed))
     }
 
-    /// Lane E2's WiFiAwareTransport.peerID(for:waitingUpTo:) (PR #38): the
-    /// phone picked in the system's device picker becomes the one to pair.
-    @Test func aPickedDeviceIsSelectedByItsPeerIDWithItsNameSuggested() async {
-        let peer = PeerID.random()
-        var directory = Self.scripted().directory
-        directory.peerForPickedDevice = { id in id == 42 ? peer : nil }
-        let model = PairingModel(directory: directory)
-        await model.refreshCandidates()
-
+    /// The phone picked in the system's device picker is paired as soon as
+    /// its link says hello, and its name labels the phone.
+    @Test func aPickedDeviceStartsTheCeremonyWithItsPeerID() async {
+        let directory = Self.scripted()
+        var paths = directory.directory
+        let maya = Self.maya.id
+        paths.peerForPickedDevice = { id in id == 42 ? maya : nil }
+        let model = PairingModel(directory: paths)
         await model.pickedDevice(id: 42, name: "Maya's iPhone")
-        #expect(model.selected?.peer == peer)
-        #expect(model.selected?.link == "Wi-Fi Aware")
-        #expect(model.candidates.contains { $0.peer == peer })
-        // Issue #46: the other phone's own name is offered, never filled in.
-        #expect(model.nickname.isEmpty)
-        #expect(model.suggestedName == "Maya's iPhone")
-        #expect(!model.canStart)
-        model.useSuggestedName()
-        #expect(model.nickname == "Maya's iPhone")
-
-        model.nickname = "Maya"
-        await model.pickedDevice(id: 42, name: "Maya's iPhone")
-        #expect(model.nickname == "Maya", "an owner's own name is not replaced")
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        #expect(directory.starts.map(\.0) == [Self.maya.id])
+        #expect(model.phone?.label == "Maya's iPhone")
     }
 
-    @Test func aPickedDeviceThatNeverSaysHelloIsReported() async {
+    @Test func aPickedDeviceThatNeverSaysHelloGoesBackToChoosing() async {
         var directory = Self.scripted().directory
         directory.peerForPickedDevice = { _ in nil }
         let model = PairingModel(directory: directory)
-        await model.pickedDevice(id: 7, name: "Phone")
-        #expect(model.selected == nil)
-        #expect(model.notice != nil)
+        await model.pickedDevice(id: 7, name: "Maya's iPhone")
+        #expect(model.phase == .choosing)
+        #expect(model.notice?.contains("Maya's iPhone") == true)
+    }
+
+    @Test func openingTellsTheLinks() async {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await model.opened()
+        #expect(directory.opens == 1)
     }
 
     @Test func everyFailureHasAMessage() {
         for failure in [PairingFailure.codeMismatch, .cancelled, .timedOut, .transportFailed, .protocolError] {
             #expect(!PairingModel.message(for: failure).isEmpty)
+            #expect(!PairingModel.message(for: failure).contains("\u{2014}"))
         }
+    }
+}
+
+@Suite struct FriendNameSuggestionTests {
+    @Test(arguments: [
+        ("Riley's iPhone", "Riley"),
+        ("Riley’s iPhone 17 Pro", "Riley"),
+        ("Mary Ann's iPad", "Mary Ann"),
+        ("James' iPhone", "James"),
+        ("iPhone de Lucía", "Lucía"),
+        ("iPhone von Jonas", "Jonas"),
+        ("小明的iPhone", "小明"),
+    ])
+    func readsAFirstName(_ device: String, _ expected: String) {
+        #expect(FriendNameSuggestion.from(deviceName: device) == expected)
+    }
+
+    @Test(arguments: ["iPhone", "iPhone 17", "Living Room", "", "   ", "'s iPhone", "123's iPhone"])
+    func neverSuggestsADeviceName(_ device: String) {
+        #expect(FriendNameSuggestion.from(deviceName: device) == nil)
+    }
+
+    @Test func isCappedToANickname() {
+        let long = String(repeating: "a", count: 200) + "'s iPhone"
+        #expect(FriendNameSuggestion.from(deviceName: long)?.count == PairedPeer.maxNicknameCharacters)
     }
 }
 
@@ -198,12 +315,9 @@ func readyToPair(_ model: PairingModel) async {
     @Test func endingWhileComparingCancelsTheCeremony() async {
         let session = CountingSession()
         let model = PairingModel(directory: ScriptedDirectory(candidates: [PairingModelTests.candidate]) { _, _ in session }.directory)
-        await readyToPair(model)
-        await model.start()
+        await model.choose(PairingModelTests.candidate)
         await eventually { model.phase == .comparing(code: "123 456") }
-
         await model.end()
-
         #expect(await session.cancels == 1)
         await eventually { model.phase == .failed(.cancelled) }
         #expect(model.phase == .failed(.cancelled))
@@ -215,13 +329,10 @@ func readyToPair(_ model: PairingModel) async {
             try await Task.sleep(for: .milliseconds(50))
             return session
         }.directory)
-        await readyToPair(model)
-        let starting = Task { await model.start() }
-        await eventually { model.phase == .starting }
-
+        let starting = Task { await model.choose(PairingModelTests.candidate) }
+        await eventually { model.phase == .connecting }
         await model.end()
         await starting.value
-
         #expect(await session.cancels == 1)
         #expect(model.phase == .failed(.cancelled))
     }
@@ -229,13 +340,11 @@ func readyToPair(_ model: PairingModel) async {
     @Test func endingAfterPairingChangesNothing() async throws {
         let directory = PairingModelTests.scripted(code: "1")
         let model = PairingModel(directory: directory.directory)
-        await readyToPair(model)
-        await model.start()
+        await model.choose(PairingModelTests.candidate)
         await eventually { model.phase == .comparing(code: "1") }
         await model.confirm(codesMatch: true)
-        await eventually { if case .paired = model.phase { true } else { false } }
+        await eventually { if case .naming = model.phase { true } else { false } }
         let paired = model.phase
-
         await model.end()
         #expect(model.phase == paired)
         #expect(directory.paired.count == 1)
@@ -331,5 +440,52 @@ final class FriendActions: @unchecked Sendable {
         #expect(model.friends.map(\.id) == [maya.id], "still paired")
         #expect(model.notice?.contains("Maya") == true)
         #expect(model.notice?.contains("still paired") == true)
+    }
+}
+
+/// Oliver's request (ADR 0260): notifications are asked right after a
+/// pairing, never at launch, and never again once iOS has an answer.
+@MainActor
+@Suite struct PairingNotificationTests {
+    func pairAndName(_ model: PairingModel) async {
+        await model.choose(PairingModelTests.candidate)
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        await model.confirm(codesMatch: true)
+        await eventually { if case .naming = model.phase { true } else { false } }
+        await model.saveName()
+    }
+
+    @Test func launchAsksNothingAndThePairingSheetAsksOnce() async throws {
+        let notifier = RecordingNotifier(allow: true, access: .notAsked)
+        let app = AppModel(services: AppModelTests.services(notifier: notifier))
+        await app.start()
+        #expect(await notifier.authorizationRequests == 0)
+        #expect(app.notificationAccess == .notAsked)
+
+        let model = try #require(app.makePairing())
+        await pairAndName(model)
+        #expect(model.phase == .notifications(friend: "Maya"))
+        #expect(await notifier.authorizationRequests == 0, "nothing until Continue")
+        await model.continueToNotifications()
+        #expect(await notifier.authorizationRequests == 1)
+        #expect(app.notificationAccess == .allowed)
+        #expect(app.settings.settings.notificationsOffered, "the request-time offer does not ask again")
+
+        let second = try #require(app.makePairing())
+        await pairAndName(second)
+        #expect(second.phase == .done)
+        #expect(await notifier.authorizationRequests == 1)
+    }
+
+    /// Declined in iOS: no explanation, and You can show its quiet line.
+    @Test func aDeclineInIOSIsNotAskedAgain() async throws {
+        let notifier = RecordingNotifier(allow: false, access: .denied)
+        let app = AppModel(services: AppModelTests.services(notifier: notifier))
+        await app.start()
+        #expect(app.notificationAccess == .denied)
+        let model = try #require(app.makePairing())
+        await pairAndName(model)
+        #expect(model.phase == .done)
+        #expect(await notifier.authorizationRequests == 0)
     }
 }

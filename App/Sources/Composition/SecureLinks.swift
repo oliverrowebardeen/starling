@@ -6,22 +6,23 @@ import StarlingLocalP2P
 import StarlingWiFiAware
 
 /// The app's links on lane E1's secure channel (docs/requests/E1.md item 2):
-/// one identity, one PinAuthority shared by every SecureTransport and
+/// one identity, one PinAuthority shared by every SecureTransport and the
 /// PairingService, LocalP2P and (where it runs) Wi-Fi Aware, merged behind
-/// one Outbox and one Inbox (ADR 0145).
+/// one Outbox and one Inbox (ADR 0145). One PairingService runs over every
+/// link at once, so two phones pair on whichever link reaches (ADR 0260).
 struct SecureLinks: Sendable {
     struct Link: Sendable {
         let label: String
         let watcher: LinkWatcher
         let secure: SecureTransport
-        let pairing: PairingService
     }
 
     let identity: IdentityKeyPair
     let friends: any PairedPeerStore
     let authority: PinAuthority
     let links: [Link]
-    /// The raw Wi-Fi Aware link, for lane E2's picked-device lookup.
+    let pairing: PairingService
+    /// The raw Wi-Fi Aware link, for the picked device and device names.
     let wifiAware: WiFiAwareTransport?
     let transport: CompositeTransport
     let inboxEvents: AsyncStream<InboxEvent>
@@ -32,41 +33,45 @@ struct SecureLinks: Sendable {
     ///     authority may change it.
     ///   - extraLinks: More raw links with this identity's PeerID, for
     ///     example Debug's in-process Loopback link.
-    static func make(identity: IdentityKeyPair, friends: any PairedPeerStore, extraLinks: [(String, any Transport)] = []) -> SecureLinks {
+    ///   - log: Debug builds only: the pairing log (ADR 0260).
+    static func make(identity: IdentityKeyPair, friends: any PairedPeerStore, extraLinks: [(String, any Transport)] = [], log: PairingLog? = nil) -> SecureLinks {
         // Exactly one authority for the app: a second one over the same
         // store would let an unpair through one transport miss the other's
         // sessions and commits (ADR 0100 decision 11).
         let authority = PinAuthority(identity: identity, store: friends)
         var raw: [(String, any Transport)] = []
-        let wifiAware = WiFiAwareSupport.isSupported ? WiFiAwareTransport(localPeer: identity.peerID) : nil
+        let wifiAware = WiFiAwareSupport.isSupported ? WiFiAwareTransport(localPeer: identity.peerID, trace: log?.recorder(source: "Wi-Fi Aware")) : nil
         if let wifiAware { raw.append(("Wi-Fi Aware", wifiAware)) }
         raw.append(("Nearby", LocalP2PTransport(localPeer: identity.peerID)))
         raw += extraLinks
         let links = raw.map { label, transport in
             let watcher = LinkWatcher(wrapping: transport)
-            let secure = SecureTransport(wrapping: watcher, authority: authority)
-            return Link(label: label, watcher: watcher, secure: secure, pairing: PairingService(secureTransport: secure))
+            return Link(label: label, watcher: watcher, secure: SecureTransport(wrapping: watcher, authority: authority))
         }
+        var trace: (@Sendable (PairingTrace) -> Void)?
+        if let record = log?.recorder(source: "Pairing") {
+            trace = { step in record(step.description) }
+        }
+        let pairing = PairingService(authority: authority, links: links.map(\.secure.pairingLink), trace: trace)
         let transport = CompositeTransport(links: links.map(\.secure))
         return SecureLinks(
             identity: identity,
             friends: friends,
             authority: authority,
             links: links,
+            pairing: pairing,
             wifiAware: wifiAware,
             transport: transport,
             inboxEvents: Inbox(localPeer: identity.peerID).events(from: transport)
         )
     }
 
-    /// Starts each pairing service after its secure transport has started.
-    /// The services must live as long as the app: their event loops hold
-    /// them weakly. This closure, kept by AppServices, holds them.
+    /// Starts the pairing service after the secure transports have started.
+    /// It must live as long as the app: its event loops hold it weakly.
+    /// This closure, kept by AppServices, holds it.
     var startPairing: @Sendable () async -> Void {
-        let links = links
-        return {
-            for link in links { try? await link.pairing.start() }
-        }
+        let pairing = pairing
+        return { try? await pairing.start() }
     }
 
     /// Unpairs through the one authority: ends the friend's sessions on
@@ -86,10 +91,15 @@ struct SecureLinks: Sendable {
 
     var pairingDirectory: PairingDirectory {
         let links = links
+        let pairing = pairing
+        let aware = wifiAware
         var peerForPickedDevice: (@Sendable (UInt64) async -> PeerID?)?
-        if let aware = wifiAware {
+        if let aware {
             peerForPickedDevice = { id in
-                await aware.peerID(for: WiFiAwarePairedDevice(id: id, name: ""), waitingUpTo: .seconds(15))
+                let device = WiFiAwarePairedDevice(id: id, name: "")
+                // This phone picked: it subscribes and dials (ADR 0260).
+                await aware.pickedDevice(device)
+                return await aware.peerID(for: device, waitingUpTo: .seconds(30))
             }
         }
         let friends = friends
@@ -102,29 +112,20 @@ struct SecureLinks: Sendable {
                 var candidates: [PairingCandidate] = []
                 for link in links {
                     for peer in await link.watcher.reachablePeers().sorted() where peer != me && !pinned.contains(peer) && seen.insert(peer).inserted {
-                        candidates.append(PairingCandidate(peer: peer, link: link.label))
+                        candidates.append(PairingCandidate(peer: peer, deviceName: await aware?.pairedDevice(for: peer)?.name))
                     }
                 }
                 return candidates
             },
-            pair: { candidate, nickname in
-                // Both phones must use the same link's PairingService, so the
-                // link comes from one rule (Wi-Fi Aware once it reports the
-                // friend), not from which list entry the owner tapped.
-                let label = await PairingRoute.link(for: candidate.peer, in: links.map(\.label)) { label in
-                    await links.first { $0.label == label }?.watcher.reachablePeers() ?? []
-                }
-                guard let link = links.first(where: { $0.label == label }) ?? links.first else {
-                    throw TransportError.peerUnreachable(candidate.peer)
-                }
-                return try await link.pairing.pair(with: candidate.peer, nickname: nickname)
-            },
+            requests: { await pairing.requests() },
+            pair: { peer, nickname in try await pairing.pair(with: peer, nickname: nickname) },
             paired: { peer in
                 // E1: on .paired, reconnect on each transport.
                 for link in links { await link.secure.reconnect(peer.id) }
             },
-            // Lane E2 (PR #38): the PeerID behind the device the owner picked,
-            // waiting for its link hello, which follows the system pairing.
+            rename: rename,
+            deviceName: { peer in await aware?.pairedDevice(for: peer)?.name },
+            opened: { await aware?.expectPairing() },
             peerForPickedDevice: peerForPickedDevice
         )
     }

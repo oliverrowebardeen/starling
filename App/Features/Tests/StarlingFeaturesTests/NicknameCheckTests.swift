@@ -1,5 +1,6 @@
 import Foundation
 import StarlingCore
+import StarlingFakes
 @testable import StarlingFeatures
 import Testing
 
@@ -28,11 +29,22 @@ import Testing
         #expect(NicknameCheck.warning(for: "Maya", among: [alex, maya], excluding: alex.id) != nil)
     }
 
-    @Test func pairingWarnsAgainstExistingFriends() {
-        let model = PairingModel(directory: PairingDirectory(localPeer: .random(), candidates: { [] }, pair: { _, _ in fatalError() }, paired: { _ in }), friends: { [self] in [alex] })
-        model.nickname = "Alex"
-        #expect(model.nicknameWarning != nil)
-        model.nickname = "Jordan"
-        #expect(model.nicknameWarning == nil)
+    /// The name step after pairing warns against existing friends, and
+    /// against a look-alike a phone's own name could suggest.
+    @Test func pairingWarnsAgainstExistingFriends() async {
+        let newFriend = Fixtures.peer("Phone")
+        let directory = ScriptedDirectory(candidates: []) { _, nickname in
+            ScriptedPairingSession(code: "1", peer: try PairedPeer(publicKey: newFriend.publicKey, nickname: nickname, pairedAt: newFriend.pairedAt))
+        }
+        let alex = alex
+        let model = PairingModel(directory: directory.directory, friends: { [alex] })
+        await model.choose(PairingCandidate(peer: newFriend.id, deviceName: "Аlex's iPhone"))
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        await model.confirm(codesMatch: true)
+        await eventually { if case .naming = model.phase { true } else { false } }
+        #expect(model.name == "Аlex", "prefilled, with its Cyrillic А")
+        #expect(model.nameWarning != nil)
+        model.name = "Jordan"
+        #expect(model.nameWarning == nil)
     }
 }

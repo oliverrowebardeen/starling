@@ -28,6 +28,7 @@ struct YouView<Developer: View>: View {
                 NoticeSection(text: notice)
             }
             agent
+            NotificationsOffSection(app: app)
             privacy
             skills
             Section {
