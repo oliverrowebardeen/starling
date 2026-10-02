@@ -477,4 +477,57 @@ actor GatedSink: EgressSink {
         // The link-level hello, with no skill, is the only unattributed send.
         #expect(await recorder.unattributed == 1)
     }
+
+    /// Lane A's request 5: a Down for… member sends in the starter's
+    /// conversation, but the send belongs to the member's own request.
+    @Test func aRecoveredSendLandsOnTheInteractionItNamed() async throws {
+        let starterConversation = ConversationID()
+        // The member's own request, in its own conversation.
+        let member = Interaction(skill: SampleSkills.downFor.ref, role: .invitee, participants: [Fixtures.maya], createdAt: Fixtures.at(minutes: 0))
+        let store = InMemoryInteractionStore([member])
+        let journal = InMemoryEgressJournal()
+        // The send goes out, then the store fails and the app quits.
+        let before = EgressRecorder(sink: GatedSink(store: store, failing: true), journal: journal)
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: before)
+        let sent = try await outbox.send(.propose(try Proposal(round: 0, terms: Terms([.activity: .keywords([Fixtures.boba])]))),
+                                         to: Fixtures.maya, conversation: starterConversation, context: OutboundContext(interaction: member.id),
+                                         skill: SampleSkills.downFor.ref, mode: .askQuietly)
+        #expect(try await journal.unresolved().map(\.interaction) == [member.id])
+
+        // Relaunch: the entry names the member's request, so it lands there
+        // instead of waiting for an interaction of the starter's conversation.
+        let after = EgressRecorder(sink: StoreEgressSink(store: store), journal: journal)
+        await after.recover()
+        #expect(try await store.interaction(member.id)?.egress.map(\.message) == [sent.id])
+        #expect(await after.unconfirmedConversations.isEmpty)
+        #expect(try await journal.unresolved().isEmpty)
+    }
+
+    @Test func aSinkThatIgnoresTheInteractionStillGetsTheSend() async throws {
+        // GatedSink implements only the two-argument method; the default
+        // drops the interaction and attributes by conversation.
+        let plan = try Fixtures.plannedDownFor()
+        let store = InMemoryInteractionStore([plan])
+        let recorder = EgressRecorder(sink: GatedSink(store: store, failing: false), journal: InMemoryEgressJournal())
+        let outbox = Outbox(transport: RecordingTransport(localPeer: Fixtures.me), policy: allowingWithItems(),
+                            consent: ScriptedConsentProvider(.approved), observer: recorder)
+        try await outbox.send(.propose(try Proposal(round: 0, terms: EgressRecorderTests.placeTerms())), to: Fixtures.maya,
+                              conversation: plan.conversation, context: OutboundContext(interaction: InteractionID()))
+        #expect(try await store.interaction(plan.id)?.egress.count == 1)
+    }
+
+    @Test func anOlderJournalEntryDecodesWithNoInteraction() throws {
+        let record = EgressRecord(at: Fixtures.at(minutes: 1), recipient: Fixtures.maya, items: [], message: MessageID())
+        let entry = EgressJournalEntry(message: try #require(record.message), conversation: ConversationID(), record: record, sent: true,
+                                       skilled: true, interaction: InteractionID())
+        let data = try JSONEncoder().encode(entry)
+        #expect(try JSONDecoder().decode(EgressJournalEntry.self, from: data) == entry)
+        // Strip the new key, as a file written before it would be.
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object["interaction"] = nil
+        let older = try JSONDecoder().decode(EgressJournalEntry.self, from: try JSONSerialization.data(withJSONObject: object))
+        #expect(older.interaction == nil)
+        #expect(older.message == entry.message)
+    }
 }
