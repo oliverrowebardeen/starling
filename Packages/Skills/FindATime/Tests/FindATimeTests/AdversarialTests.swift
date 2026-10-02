@@ -343,20 +343,31 @@ struct AdversarialTests {
         await world.stop()
     }
 
+    /// Ana never retries in these two tests: her retry interval is an hour
+    /// of real time, so any count of sends is exact, not a race with a
+    /// retry timer, and a dropped reply is never recovered.
+    static var noRetries: FindATimeConfiguration {
+        var configuration = fastConfiguration
+        configuration.retryInterval = .seconds(3600)
+        return configuration
+    }
+
     /// Issue #105 (found in Pick a place, checked here): a friend's answer
     /// can arrive before Outbox returns the query's envelope, while Outbox
     /// awaits its audit observer. It still counts, once the query is
-    /// recorded, and needs no second query.
+    /// recorded, with no second query.
     @Test func anAnswerBeforeTheQuerySendReturnsStillCounts() async throws {
         let world = World()
         let audit = HoldingObserver { $0.body.kind == .query }
-        let a = world.phone("Ana", observer: audit)
+        let a = world.phone("Ana", configuration: Self.noRetries, observer: audit)
         let b = world.phone("Ben")
         try await world.start()
 
         let started = try await a.findATime(with: [b])
-        try await eventually("Ben's answer arrived") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .answer } }
-        try await Task.sleep(for: .milliseconds(60))
+        // Release only once Ana's service holds Ben's answer itself.
+        try await eventually("Ana holds Ben's early answer") {
+            await a.service.diagnostics.ignored["reply held until its send returns", default: 0] == 1
+        }
         #expect(await audit.held == 1)
         #expect(await a.coordinator.interaction(started)?.proposal == nil)
 
@@ -374,7 +385,7 @@ struct AdversarialTests {
     @Test func anAcceptanceBeforeTheProposalSendReturnsStillCounts() async throws {
         let world = World()
         let audit = HoldingObserver { $0.body.kind == .propose }
-        let a = world.phone("Ana", observer: audit)
+        let a = world.phone("Ana", configuration: Self.noRetries, observer: audit)
         var once = fastConfiguration
         once.maxAttempts = 1
         let b = world.phone("Ben", configuration: once)
@@ -383,8 +394,10 @@ struct AdversarialTests {
         let started = try await a.findATime(with: [b])
         let (bCard, _) = try await b.waitForProposal()
         try await b.accept(bCard)
-        try await eventually("Ben's acceptance arrived") { world.envelopes.contains { $0.sender == b.id && $0.body.kind == .accept } }
-        try await Task.sleep(for: .milliseconds(60))
+        // Release only once Ana's service holds Ben's acceptance itself.
+        try await eventually("Ana holds Ben's early acceptance") {
+            await a.service.diagnostics.ignored["reply held until its send returns", default: 0] == 1
+        }
         await audit.release()
 
         try await a.waitForState(started, .proposed)
