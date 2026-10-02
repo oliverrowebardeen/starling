@@ -15,8 +15,11 @@ enum SearchRange {
     /// and breaking none of the owner's hard limits (ARCHITECTURE rule 6).
     static func candidates(rules: OwnerRules, now: Date, timeZone: TimeZone, configuration: FindATimeConfiguration) throws -> [TimeSlot] {
         let timeRules = rules.constraints[.time]
-        var dailyFrom = configuration.dailyFrom
-        var dailyTo = configuration.dailyTo
+        // Without hours of the owner's own, a meal's usual hours ("dinner"
+        // is the evening), else the skill's default (issue #95).
+        let defaultHours = FindATimeDefaults.dailyWindow(for: activity(in: rules)) ?? (configuration.dailyFrom, configuration.dailyTo)
+        var dailyFrom = defaultHours.0
+        var dailyTo = defaultHours.1
         var ownerDaily = false
         for constraint in timeRules {
             if case .dailyWindow(let from, let to) = constraint.rule {

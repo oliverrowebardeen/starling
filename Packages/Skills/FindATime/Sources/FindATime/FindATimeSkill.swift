@@ -23,7 +23,9 @@ public enum FindATimeSkill {
         permissions: [.calendarFullAccess],
         produces: [.timeSlot, .plan],
         intent: IntentSchema(slots: [
-            IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
+            // Only days the owner names: "dinner" alone is not "tonight". With
+            // none, the skill searches the next 7 days (FindATimeDefaults).
+            IntentSlot(.time, required: true, hint: "the days to look in, such as next week; only days the owner names, else leave it empty"),
             IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
         // No expiry chip: "expires in 3 hours" makes no sense for next week
         // (device test, 2026-10-02). Compose keeps the request open until the
