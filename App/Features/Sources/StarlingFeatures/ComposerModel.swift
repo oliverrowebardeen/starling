@@ -269,13 +269,35 @@ public final class ComposerModel {
         constraints = (try? ConstraintSet(parsed.constraints.constraints.filter { slots.contains($0.key) })) ?? .empty
         if let expires = parsed.expiresAt?.date, expires > now() { expiry = .at(expires) }
         if let wanted = parsed.mode, skill.sendModes.contains(wanted) { mode = wanted }
+        // The model reports names only (P15-B request 2). With "everyone
+        // except", they are the friends left out; a name that is one of
+        // the owner's groups names that group; otherwise they are who to ask.
         let named = parsed.mentionedNames.compactMap(friend(named:))
-        if !named.isEmpty {
+        if case .everyoneExcept(let peers)? = parsed.audience {
+            guard named.count == parsed.mentionedNames.count else {
+                // Someone the owner left out can't be told apart: ask nobody
+                // until the owner picks, rather than risk asking them.
+                audience = .pick
+                picked = []
+                notice = "Starling couldn't tell who to leave out. Pick who to ask."
+                return
+            }
+            apply(.everyoneExcept(peers + named))
+        } else if named.isEmpty, let group = parsed.mentionedNames.lazy.compactMap(group(named:)).first {
+            apply(.group(group))
+        } else if !named.isEmpty {
             audience = .pick
             picked = Set(named)
         } else if let audience = parsed.audience {
             apply(audience)
         }
+    }
+
+    /// One of the owner's saved groups named exactly `name`, ignoring case.
+    private func group(named name: String) -> GroupID? {
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matches = settings.groups.filter { $0.name.lowercased() == key }
+        return matches.count == 1 ? matches[0].id : nil
     }
 
     /// A friend whose nickname is exactly `name`, ignoring case. A name two

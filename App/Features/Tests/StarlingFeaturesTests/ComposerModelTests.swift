@@ -70,7 +70,7 @@ final class ComposerHarness {
     }
 
     /// "boba tonight with Maya" → Down for… · Boba · Tonight after 7 PM.
-    nonisolated static func bobaModel(route: SkillID? = .downFor, names: [String] = []) -> ScriptedSkillModel {
+    nonisolated static func bobaModel(route: SkillID? = .downFor, names: [String] = [], audience: Audience? = nil) -> ScriptedSkillModel {
         ScriptedSkillModel(
             onRoute: { _, skills in
                 // The model may only answer with a skill it was offered.
@@ -86,6 +86,7 @@ final class ComposerHarness {
                         // Not one of Down for…'s slots: dropped by the composer.
                         .diet: [try Constraint(.prefers(liked: [], avoided: [try Keyword("meat")]))],
                     ]),
+                    audience: audience,
                     mentionedNames: names
                 )
             }
@@ -195,6 +196,36 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.blocker == "Pick at least one friend to ask.")
         h.model.toggle(h.maya.id)
         #expect(h.model.participants == [h.maya.id])
+    }
+
+    /// P15-B request 2: "everyone except Jake" arrives as everyoneExcept
+    /// with Jake's name; Jake is left out, never picked.
+    @Test func everyoneExceptLeavesOutTheNamedFriend() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(names: ["Jake"], audience: .everyoneExcept([])))
+        h.model.text = "boba tonight with everyone except jake"
+        await h.model.understand()
+        #expect(h.model.audience == .everyoneExcept)
+        #expect(!h.model.participants.contains(h.jake.id))
+        #expect(h.model.participants.contains(h.maya.id))
+    }
+
+    @Test func aLeftOutNameThatCannotBeResolvedAsksNobody() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(names: ["Zed"], audience: .everyoneExcept([])))
+        h.model.text = "boba tonight with everyone except zed"
+        await h.model.understand()
+        #expect(h.model.audience == .pick)
+        #expect(h.model.participants.isEmpty)
+        #expect(h.model.notice == "Starling couldn't tell who to leave out. Pick who to ask.")
+    }
+
+    @Test func aGroupsNameAsksThatGroup() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(names: ["the climbing crew"]))
+        let group = try FriendGroup(name: "The climbing crew", members: [h.maya.id, h.leo.id])
+        await h.settings.saveGroup(group)
+        h.model.text = "boba tonight with the climbing crew"
+        await h.model.understand()
+        #expect(h.model.audience == .group(group.id))
+        #expect(Set(h.model.participants) == [h.maya.id, h.leo.id])
     }
 
     @Test func sendingStartsTheSkillWithTopicsAsSharingAndClearsTheDraft() async throws {
