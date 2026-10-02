@@ -21,6 +21,10 @@ public enum ChainError: Error, Hashable, Sendable {
     case alreadyScheduled(InteractionID)
     /// The interaction is not an after-plan-ends link waiting to start.
     case notScheduled(InteractionID)
+    /// The friend a change would add is already in the plan, is this phone,
+    /// is not a friend whose card runs the skill, or the roster changes more
+    /// than one person (ADR 0022 decision 5).
+    case cannotAdd
 }
 
 /// A link ready to start: the interaction to save first, then the request
