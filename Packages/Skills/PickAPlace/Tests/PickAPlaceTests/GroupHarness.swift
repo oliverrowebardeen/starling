@@ -267,6 +267,8 @@ final class Phone: Sendable {
     let consent: CoordinatorConsent
     /// Every send the Outbox made, with its context.
     let sends = RecordingOutboxObserver()
+    /// Wraps `sends`; holds nothing unless a test asks (issue #105).
+    let hold: DidSendHold
     let outbox: Outbox
     let card: AgentCard
     private let current: Mutex<PickAPlaceService>
@@ -291,7 +293,8 @@ final class Phone: Sendable {
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
         consent = CoordinatorConsent(coordinator: coordinator, outcome: outcome, gate: gate)
-        outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: sends, ledger: conversations)
+        hold = DidSendHold(sends)
+        outbox = Outbox(transport: transport, policy: policy, consent: consent, observer: hold, ledger: conversations)
         card = try! AgentCard(model: model, capabilities: [], skills: skills)
         let (peer, outbox, store, staged, conversations) = (key.peerID, outbox, store, staged, conversations)
         let ledger: any PickAPlaceLedger = placeLedger ?? self.ledger
@@ -425,6 +428,46 @@ final class Phone: Sendable {
         guard let interaction = await interaction(conversation) else { return nil }
         let artifacts = await coordinator.produced[interaction.id] ?? []
         return artifacts.lazy.compactMap { if case .placeChoice(let place) = $0 { place } else { nil } }.first
+    }
+}
+
+/// Holds Outbox's `didSend` for chosen kinds of message, as an audit
+/// journal that is slow to write can (issue #105): the transport has
+/// delivered the envelope, but the sender's `send` has not returned.
+actor DidSendHold: OutboxObserver {
+    private let inner: RecordingOutboxObserver
+    private var kinds: Set<MessageBody.Kind> = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    /// Envelopes held so far, in order.
+    private(set) var held: [Envelope] = []
+
+    init(_ inner: RecordingOutboxObserver) { self.inner = inner }
+
+    func hold(_ kinds: Set<MessageBody.Kind>) { self.kinds = kinds }
+
+    /// Lets every held send return. With `holdingOn`, later sends of the
+    /// same kinds are still held, so a retry cannot stand in for the send
+    /// that was held.
+    func release(holdingOn: Bool = false) {
+        if !holdingOn { kinds = [] }
+        let pending = waiters
+        waiters = []
+        for waiter in pending { waiter.resume() }
+    }
+
+    func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
+        try await inner.outbox(willSend: envelope, context: context, decision: decision, disclosed: disclosed)
+    }
+
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {
+        await outbox(didSend: envelope, context: context, decision: decision, disclosed: nil)
+    }
+
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        await inner.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
+        guard kinds.contains(envelope.body.kind) else { return }
+        held.append(envelope)
+        await withCheckedContinuation { waiters.append($0) }
     }
 }
 

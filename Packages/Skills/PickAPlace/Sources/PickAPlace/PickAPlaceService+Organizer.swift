@@ -40,6 +40,15 @@ struct Organizer {
     /// The proposals sent to each friend, most recent last and bounded. A
     /// yes counts only when it names one of them.
     var proposeIDs: [PeerID: [MessageID]] = [:]
+    /// Friends a query or proposal is on its way to. Outbox returns a sent
+    /// envelope only after its observer has run, which can be after the
+    /// friend has already replied to it (issue #105).
+    var sending: Set<PeerID> = []
+    /// Replies from a friend in `sending` that named an envelope this
+    /// organizer has not recorded yet, newest last and bounded. They are
+    /// looked at again once that send returns, and count only if they name
+    /// what it sent; the rest are dropped.
+    var early: [PeerID: [Envelope]] = [:]
     var accepted: Set<PeerID> = []
     /// Friends who passed or took their yes back. Final: a late or
     /// repeated yes from them is ignored, so a withdrawal is never undone.
@@ -170,6 +179,7 @@ extension PickAPlaceService {
         var interval = configuration.retryInterval
         while let organizer = organized[conversation], organizer.phase == .asking, organizer.waitingOn.contains(friend),
               !organizer.excluded.contains(friend) {
+            organized[conversation]?.sending.insert(friend)
             do {
                 let query = try Query(issue: .place, candidates: .places(organizer.ranking))
                 let sent = try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
@@ -177,7 +187,9 @@ extension PickAPlaceService {
                 if let count = organized[conversation]?.queryIDs[friend]?.count, count > Self.maxRememberedProposals {
                     organized[conversation]?.queryIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
                 }
+                sendReturned(conversation, to: friend)
             } catch {
+                sendReturned(conversation, to: friend)
                 guard organizerCanRetry(conversation, after: error, step: .asking, friend: friend) else { return }
             }
             guard let next = await pause(interval) else { return }
@@ -195,9 +207,11 @@ extension PickAPlaceService {
         case (.asking, .answer(let answer)):
             // Only an answer to a query this organizer sent that friend, in
             // this conversation and step, counts (issue #63).
-            guard organizer.waitingOn.contains(sender), answer.issue == .place,
-                  organizer.queryIDs[sender]?.contains(answer.query) == true
-            else { return }
+            guard organizer.waitingOn.contains(sender), answer.issue == .place else { return }
+            guard organizer.queryIDs[sender]?.contains(answer.query) == true else {
+                holdIfEarly(envelope, in: &organizer)
+                return
+            }
             switch answer.status {
             case .answered:
                 guard case .places(let list)? = answer.acceptable else { organizer.out.insert(sender); break }
@@ -214,9 +228,12 @@ extension PickAPlaceService {
             organizer.out.insert(sender)
         case (.proposing, .accept(let acceptance)):
             guard organizer.invited.contains(sender), !organizer.passed.contains(sender), !organizer.timedOut.contains(sender),
-                  acceptance.terms == organizer.proposal?.terms,
-                  organizer.proposeIDs[sender]?.contains(acceptance.proposal) == true
+                  acceptance.terms == organizer.proposal?.terms
             else { return }
+            guard organizer.proposeIDs[sender]?.contains(acceptance.proposal) == true else {
+                holdIfEarly(envelope, in: &organizer)
+                return
+            }
             organizer.accepted.insert(sender)
         case (.proposing, .reject):
             guard organizer.invited.contains(sender) else { return }
@@ -276,6 +293,8 @@ extension PickAPlaceService {
         let proposal = SkillProposal(revision: revision, participants: roster, terms: terms, plan: plan)
         organizer.proposal = proposal
         organizer.phase = .proposing
+        // Replies held for a query are about a step that is over.
+        organizer.early = [:]
         organizer.out.formUnion(left)
         organizer.out.formUnion(organizer.excluded)
         organized[conversation] = organizer
@@ -335,6 +354,7 @@ extension PickAPlaceService {
         while let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal,
               organizer.invited.contains(friend), !organizer.accepted.contains(friend), !organizer.passed.contains(friend),
               !organizer.timedOut.contains(friend), !organizer.excluded.contains(friend) {
+            organized[conversation]?.sending.insert(friend)
             do {
                 let round = UInt16(min(proposal.revision - 1, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
                 let sent = try await send(.propose(Proposal(round: round, terms: proposal.terms)), to: friend,
@@ -344,7 +364,9 @@ extension PickAPlaceService {
                 if let count = organized[conversation]?.proposeIDs[friend]?.count, count > Self.maxRememberedProposals {
                     organized[conversation]?.proposeIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
                 }
+                sendReturned(conversation, to: friend)
             } catch {
+                sendReturned(conversation, to: friend)
                 guard organizerCanRetry(conversation, after: error, step: .proposing(proposal.revision), friend: friend) else { return }
             }
             guard let next = await pause(interval) else { return }
@@ -355,6 +377,31 @@ extension PickAPlaceService {
     /// Proposals remembered per friend, so a yes naming one sent a while ago
     /// still counts.
     static let maxRememberedProposals = 32
+
+    /// Replies held per friend while a send to them has not returned.
+    static let maxEarlyReplies = 4
+
+    /// A query or proposal to `friend` has returned, sent or not: replies
+    /// held meanwhile are judged now, against the IDs recorded by then.
+    /// One that names nothing this organizer sent that friend is dropped,
+    /// as it would have been on arrival (issue #63).
+    func sendReturned(_ conversation: ConversationID, to friend: PeerID) {
+        organized[conversation]?.sending.remove(friend)
+        guard let held = organized[conversation]?.early.removeValue(forKey: friend) else { return }
+        for envelope in held { organizerReceived(envelope) }
+    }
+
+    /// Holds a reply that names an envelope not recorded yet, if a send to
+    /// its sender may still be returning. Otherwise it is dropped.
+    func holdIfEarly(_ envelope: Envelope, in organizer: inout Organizer) {
+        let sender = envelope.sender
+        guard organizer.sending.contains(sender) else { return }
+        var held = organizer.early[sender, default: []]
+        held.append(envelope)
+        if held.count > Self.maxEarlyReplies { held.removeFirst(held.count - Self.maxEarlyReplies) }
+        organizer.early[sender] = held
+        organized[envelope.conversation] = organizer
+    }
 
     func organizerAnswer(_ conversation: ConversationID, _ answer: OwnerAnswer) async throws {
         guard let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal else {
@@ -431,6 +478,7 @@ extension PickAPlaceService {
         values[.people] = .peers([localPeer] + yes)
         organizer.finalTerms = try! Terms(values)
         organizer.phase = .settled
+        organizer.early = [:]
         organized[conversation] = organizer
         cancelTasks(conversation)
         rememberOrganizer(conversation)
@@ -510,6 +558,7 @@ extension PickAPlaceService {
         guard var organizer = organized[conversation], !organizer.isFinished else { return }
         let tell = organizer.stillInvolved
         organizer.phase = .ended
+        organizer.early = [:]
         organized[conversation] = organizer
         cancelTasks(conversation)
         rememberOrganizer(conversation)
