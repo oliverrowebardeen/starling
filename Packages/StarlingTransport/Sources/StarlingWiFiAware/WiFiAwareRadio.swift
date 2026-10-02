@@ -42,13 +42,13 @@ extension WiFiAwareTransport {
     /// device paired through `WiFiAwarePairingView` or `WiFiAwareDevicePicker`.
     /// `trace` receives one line per link event, for Debug diagnostics.
     public init(localPeer: PeerID, trace: (@Sendable (String) -> Void)? = nil) {
-        self.init(localPeer: localPeer, radio: WiFiAwareRadio(), trace: trace)
+        self.init(localPeer: localPeer, radio: WiFiAwareRadio(), roleStore: DefaultsAwareRoleStore(), trace: trace)
     }
 }
 
-/// The real Wi-Fi Aware radio: publishes and subscribes
-/// `StarlingWiFiAwareService.link` for all paired devices, with TCP and
-/// TLV framing on every connection (ADR 0110).
+/// The real Wi-Fi Aware radio: publishes or subscribes
+/// `StarlingWiFiAwareService.link` for the paired devices the transport
+/// names, with TCP and TLV framing on every connection (ADR 0110, ADR 0260).
 package actor WiFiAwareRadio: AwareRadio {
     /// Endpoints from the latest browse results, by paired device.
     private var endpoints: [AwareDeviceID: WAEndpoint] = [:]
@@ -62,52 +62,35 @@ package actor WiFiAwareRadio: AwareRadio {
         }
     }
 
-    /// Subscribes to paired devices publishing the link service. Waits for
-    /// at least one paired device first, and asks for a restart when the set
-    /// of paired devices changes, so a friend paired while the app runs is
-    /// found without relaunching.
-    package func browse(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {
+    package func pairedDevices(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {
+        let all = WAPairedDevice.allDevices
+        await update(Self.pairedDeviceIDs(try await all.current()))
+        for try await devices in all { await update(Self.pairedDeviceIDs(devices)) }
+    }
+
+    /// Subscribes to the link service on `devices` until cancelled. The
+    /// transport restarts it when the devices it covers change.
+    package func browse(_ devices: AwareDevices, _ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {
         guard let service = WASubscribableService.starlingLink else {
             throw WiFiAwareRadioError.serviceNotDeclared(StarlingWiFiAwareService.link)
         }
-        let paired = try await Self.waitForPairedDevices()
-
-        enum Ended { case browser, pairedDevicesChanged, pairedDevicesUnobservable }
-        try await withThrowingTaskGroup(of: Ended.self) { group in
-            group.addTask { [weak self] in
-                let browser = NetworkBrowser(for: .wifiAware(.connecting(to: .allPairedDevices, from: service)))
-                try await browser.run { [weak self] found in
-                    let byDevice = Dictionary(found.map { ($0.device.id, $0) }, uniquingKeysWith: { first, _ in first })
-                    await self?.setEndpoints(byDevice)
-                    await update(Set(byDevice.keys))
-                }
-                return .browser
-            }
-            group.addTask {
-                try await Self.changed(from: paired) ? .pairedDevicesChanged : .pairedDevicesUnobservable
-            }
-            defer { group.cancelAll() }
-            while let ended = try await group.next() {
-                switch ended {
-                case .browser: return
-                case .pairedDevicesChanged: throw AwareRadioRestart()
-                case .pairedDevicesUnobservable: continue
-                }
-            }
+        let browser = NetworkBrowser(for: .wifiAware(.connecting(to: try await Self.subscriberDevices(devices), from: service)))
+        try await browser.run { [weak self] found in
+            let byDevice = Dictionary(found.map { ($0.device.id, $0) }, uniquingKeysWith: { first, _ in first })
+            await self?.setEndpoints(byDevice)
+            await update(Set(byDevice.keys))
         }
     }
 
-    /// Publishes the link service to all paired devices. Unlike `browse`,
-    /// this does not restart when a device is paired, because restarting a
-    /// listener closes the links it accepted. A friend paired later still
-    /// links, because our browser finds them and dials.
-    package func listen(_ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {
+    /// Publishes the link service to `devices` until cancelled. Restarting
+    /// a listener closes the links it accepted, so the transport restarts it
+    /// only when the devices it covers change.
+    package func listen(_ devices: AwareDevices, _ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {
         guard let service = WAPublishableService.starlingLink else {
             throw WiFiAwareRadioError.serviceNotDeclared(StarlingWiFiAwareService.link)
         }
-        _ = try await Self.waitForPairedDevices()
         let listener = try NetworkListener(
-            for: .wifiAware(.connecting(to: service, from: .allPairedDevices)),
+            for: .wifiAware(.connecting(to: service, from: try await Self.publisherDevices(devices))),
             using: Self.parameters()
         )
         try await listener.run { connection in
@@ -115,10 +98,38 @@ package actor WiFiAwareRadio: AwareRadio {
         }
     }
 
+    private static func selected(_ ids: Set<AwareDeviceID>) async throws -> [WAPairedDevice] {
+        let current = try await WAPairedDevice.allDevices.current() ?? [:]
+        return ids.compactMap { current[$0] }
+    }
+
+    private static func subscriberDevices(_ devices: AwareDevices) async throws -> WASubscriberBrowser.Devices {
+        switch devices {
+        case .all: .allPairedDevices
+        case .only(let ids): .selected(try await selected(ids))
+        }
+    }
+
+    private static func publisherDevices(_ devices: AwareDevices) async throws -> WAPublisherListener.Devices {
+        switch devices {
+        case .all: .allPairedDevices
+        case .only(let ids): .selected(try await selected(ids))
+        }
+    }
+
     package func dial(_ device: AwareDeviceID, _ body: @escaping @Sendable (any AwareChannel) async -> Void) async throws {
         guard let endpoint = endpoints[device] else { throw WiFiAwareRadioError.deviceNotDiscovered(device) }
         let connection = NetworkConnection(to: endpoint, using: Self.parameters())
         await body(WiFiAwareChannel(connection: connection))
+    }
+
+    /// Network framework reports Wi-Fi Aware failures as `NWError.wifiAware`
+    /// codes; `wifiAware` maps them to `WAError` (for example -11992 is
+    /// `noPairedDevices`), which says what went wrong (Apple DTS, forum
+    /// thread 794271).
+    package nonisolated func describe(_ error: any Error) -> String {
+        if let network = error as? NWError, let aware = network.wifiAware { return "Wi-Fi Aware: \(aware)" }
+        return String(describing: error)
     }
 
     package func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice? {
@@ -150,26 +161,6 @@ package actor WiFiAwareRadio: AwareRadio {
 
     private static func pairedDeviceIDs(_ devices: WAPairedDevice.Devices?) -> Set<AwareDeviceID> {
         Set(devices?.keys.map { $0 } ?? [])
-    }
-
-    /// The current paired devices, once there is at least one. A listener or
-    /// browser for `allPairedDevices` has nothing to do before that.
-    private static func waitForPairedDevices() async throws -> Set<AwareDeviceID> {
-        let current = pairedDeviceIDs(try await WAPairedDevice.allDevices.current())
-        if !current.isEmpty { return current }
-        for try await devices in WAPairedDevice.allDevices where !devices.isEmpty {
-            return pairedDeviceIDs(devices)
-        }
-        throw CancellationError()
-    }
-
-    /// True once the paired set differs from `known`; false if the system
-    /// stops reporting changes.
-    private static func changed(from known: Set<AwareDeviceID>) async throws -> Bool {
-        for try await devices in WAPairedDevice.allDevices where pairedDeviceIDs(devices) != known {
-            return true
-        }
-        return false
     }
 }
 

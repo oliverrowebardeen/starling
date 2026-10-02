@@ -508,8 +508,9 @@ private func frame(_ index: Int) throws -> Frame {
     @Test func startReportsARadioThatCannotRun() async throws {
         struct Broken: AwareRadio {
             func preflight() throws { throw FakeRadioError(reason: "service not declared") }
-            func browse(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {}
-            func listen(_ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {}
+            func pairedDevices(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {}
+            func browse(_ devices: AwareDevices, _ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {}
+            func listen(_ devices: AwareDevices, _ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {}
             func dial(_ device: AwareDeviceID, _ body: @escaping @Sendable (any AwareChannel) async -> Void) async throws {}
             func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice? { nil }
         }
