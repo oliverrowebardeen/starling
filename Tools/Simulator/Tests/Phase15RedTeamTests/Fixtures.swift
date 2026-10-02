@@ -1,8 +1,34 @@
 import Foundation
+import SimulatorKit
 import StarlingCore
 import StarlingFakes
 
 enum P15 {
+    /// Host scheduling is not a protocol deadline. Check the condition even
+    /// after a delayed wake, and exclude machine sleep from the wait budget.
+    static func eventually(
+        _ description: String,
+        isolation: isolated (any Actor)? = #isolation,
+        _ condition: () async throws -> Bool
+    ) async throws {
+        let clock = SuspendingClock()
+        let deadline = clock.now.advanced(by: .seconds(60))
+        while true {
+            try Task.checkCancellation()
+            if try await condition() { return }
+            guard clock.now < deadline else { throw SimulationError.timedOut(description) }
+            try await clock.sleep(for: .milliseconds(10))
+        }
+    }
+
+    static func waitForMesh(_ simulation: Simulation) async throws {
+        let agents = await simulation.agents
+        try await eventually("authenticated mesh of \(agents.count)") {
+            for agent in agents where await agent.peerCards.count < agents.count - 1 { return false }
+            return true
+        }
+    }
+
     static let date = Date(timeIntervalSince1970: 1_790_967_600)
     static let now = Timestamp(date)
     static let alice = try! PeerID(hex: String(repeating: "aa", count: 32))

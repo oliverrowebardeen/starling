@@ -4,7 +4,7 @@ import StarlingFakes
 import StarlingPolicy
 import Testing
 
-@Suite(.timeLimit(.minutes(1))) struct ConversationLedgerAttackTests {
+@Suite(.timeLimit(.minutes(5))) struct ConversationLedgerAttackTests {
     enum Shape: CaseIterable, Sendable {
         case keywords, slots, places, peers, amount, count, flag
 

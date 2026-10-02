@@ -13,7 +13,7 @@ struct DownForPeerAttackTests {
         let request = try await b.start(with: [a.id], rules: DownPhone.rules(activities, avoided: avoided, privateChips: privateChips))
         let opening = try await a.openPSI(to: b.id).0
         try await world.delivered(opening, to: b)
-        try await Simulation.eventually("authenticated peer finished shared-time check") {
+        try await P15.eventually("authenticated peer finished shared-time check") {
             await b.sent(opening.conversation).contains { $0.body.kind == .psi }
         }
         return (request, opening.conversation)
@@ -61,7 +61,7 @@ struct DownForPeerAttackTests {
             .budget: .amount(MoneyAmount(minorUnits: 9999))])
         let offer = try await a.send(.propose(Proposal(round: 0, terms: terms)), to: b.id, in: conversation)
         try await world.delivered(offer, to: b)
-        try await Simulation.eventually("ordinary refusal sent") { await b.sent(conversation).contains { $0.body.kind == .reject } }
+        try await P15.eventually("ordinary refusal sent") { await b.sent(conversation).contains { $0.body.kind == .reject } }
         let sent = await b.sent(conversation)
         let reasons = sent.compactMap { if case .reject(let rejection) = $0.body { rejection.reason } else { nil } }
         #expect(reasons == [.noOverlap])
@@ -81,7 +81,7 @@ struct DownForPeerAttackTests {
         let renewed = try await a.openPSI(to: b.id, conversation: conversation).0
         try await world.delivered(renewed, to: b)
         guard case .psi(let opening) = renewed.body else { Issue.record("Expected fresh PSI step"); return }
-        try await Simulation.eventually("replacement answered fresh PSI session") {
+        try await P15.eventually("replacement answered fresh PSI session") {
             await b.sent(conversation).contains { if case .psi(let reply) = $0.body { reply.session == opening.session } else { false } }
         }
         let before = await b.sent(conversation).filter { $0.body.kind == .answer }.count

@@ -5,7 +5,7 @@ import StarlingFakes
 import StarlingPolicy
 import Testing
 
-@Suite(.timeLimit(.minutes(1))) struct JournalAndRetirementAttackTests {
+@Suite(.timeLimit(.minutes(5))) struct JournalAndRetirementAttackTests {
     static var ordinaryNo: MessageBody { .reject(Rejection(proposal: MessageID(), reason: .noOverlap)) }
 
     @Test func authenticatedFriendsSeeOnlyTheirOwnSequenceProgressAfterReplacement() async throws {
@@ -14,7 +14,7 @@ import Testing
             let alice = try await simulation.addAgent("alice")
             let bob = try await simulation.addAgent("bob")
             let eve = try await simulation.addAgent("eve")
-            try await simulation.waitForMesh()
+            try await P15.waitForMesh(simulation)
             let channel = try #require(alice.secureTransport)
             let ledger = InMemoryConversationLedger()
             let sequences = InMemorySentSequenceStore()
@@ -33,7 +33,7 @@ import Testing
             #expect(toEve.first?.sequence == toBob.sequence)
             #expect(toBobAgain.sequence == toBob.sequence + 1)
             #expect(toEveAgain.sequence == toEve[8].sequence + 1)
-            try await Simulation.eventually("both friends received their final numbered message") {
+            try await P15.eventually("both friends received their final numbered message") {
                 let b = await bob.received.contains(toBobAgain)
                 let e = await eve.received.contains(toEveAgain)
                 return b && e
@@ -56,7 +56,7 @@ import Testing
         do {
             let alice = try await simulation.addAgent("alice")
             let bob = try await simulation.addAgent("bob")
-            try await simulation.waitForMesh(timeout: .seconds(15))
+            try await P15.waitForMesh(simulation)
             let channel = try #require(alice.secureTransport)
             let transport = SendEntryProbe(channel)
             let ledger = InMemoryConversationLedger()
@@ -67,13 +67,13 @@ import Testing
             let withdrawn = ConversationID()
             let first = Task { try await outbox.send(Self.ordinaryNo, to: bob.id, conversation: other) }
             defer { first.cancel() }
-            try await Simulation.eventually("unrelated send entered the secure transport") { await transport.entered.count == 1 }
+            try await P15.eventually("unrelated send entered the secure transport") { await transport.entered.count == 1 }
             let queued = Task {
                 try await outbox.send(.propose(Proposal(round: 0, terms: P15.proposal(1).terms)),
                     to: bob.id, conversation: withdrawn, skill: SampleSkills.downFor.ref, mode: .invite)
             }
             defer { queued.cancel() }
-            try await Simulation.eventually("withdrawn offer entered the secure queue") { await transport.entered.count == 2 }
+            try await P15.eventually("withdrawn offer entered the secure queue") { await transport.entered.count == 2 }
             // Require the injected suspension to be live, rather than treating
             // a send already delivered as evidence about queue cancellation.
             try #require(await transport.completed.isEmpty)
@@ -85,7 +85,7 @@ import Testing
             }
             let delivered = try await first.value
             await #expect(throws: CancellationError.self) { try await queued.value }
-            try await Simulation.eventually("the unrelated conversation still arrives") { await bob.received.contains(delivered) }
+            try await P15.eventually("the unrelated conversation still arrives") { await bob.received.contains(delivered) }
             #expect(await bob.received.filter { $0.conversation == withdrawn }.isEmpty)
             #expect(await transport.completed.map(\.conversation) == [other])
             #expect(await journal.settled.map(\.conversation) == [other])
@@ -147,7 +147,7 @@ import Testing
         let conversation = ConversationID()
         let pending = Task { try await outbox.send(Self.ordinaryNo, to: P15.bob, conversation: conversation) }
         defer { pending.cancel(); Task { await journal.release() } }
-        try await Simulation.eventually("journal note before transport") { await journal.pending.count == 1 }
+        try await P15.eventually("journal note before transport") { await journal.pending.count == 1 }
         #expect(await wire.sent.isEmpty)
         if failingLedger { await ledger.failAll() } else { try await outbox.retire(conversation) }
         await journal.release()
@@ -182,7 +182,7 @@ import Testing
                     context: OutboundContext(interaction: localID), skill: SampleSkills.pickAPlace.ref, mode: .invite)
             }
             defer { pending.cancel(); Task { await journal.release() } }
-            try await Simulation.eventually("durable note before attempted transport") { await journal.pending.count == 1 }
+            try await P15.eventually("durable note before attempted transport") { await journal.pending.count == 1 }
             let note = try #require(await journal.pending.values.first)
             #expect(await wire.captured.isEmpty)
             #expect(note.draft.sequence == 0)
@@ -215,10 +215,10 @@ import Testing
                             observer: journal, sequences: sequences, ledger: ledger, now: { P15.date })
         let first = Task { try await outbox.send(Self.ordinaryNo, to: P15.bob, conversation: conversation) }
         defer { first.cancel(); Task { await wire.release() } }
-        try await Simulation.eventually("first send waits in transport") { await wire.waiting }
+        try await P15.eventually("first send waits in transport") { await wire.waiting }
         let queued = Task { try await outbox.send(Self.ordinaryNo, to: P15.bob, conversation: conversation) }
         defer { queued.cancel() }
-        try await Simulation.eventually("second send cleared its journal") { await journal.pending.count == 2 }
+        try await P15.eventually("second send cleared its journal") { await journal.pending.count == 2 }
         let numbered = sequences.highestSent(in: conversation, to: P15.bob)
         queued.cancel()
         await wire.release()
@@ -287,7 +287,7 @@ import Testing
                                   recipientCard: P15.card([SampleSkills.pickAPlace.ref]))
         } : nil
         defer { blocking?.cancel(); Task { await wire.release(); await journal.release() } }
-        if queued { try await Simulation.eventually("earlier send blocks this friend's queue") { await wire.waiting } }
+        if queued { try await P15.eventually("earlier send blocks this friend's queue") { await wire.waiting } }
         let value = try P15.value(.place)
         let terms = try Terms([.place: value])
         let privateSend = Task {
@@ -295,7 +295,7 @@ import Testing
                 recipientCard: P15.card([SampleSkills.pickAPlace.ref]), skill: SampleSkills.pickAPlace.ref, mode: .invite)
         }
         defer { privateSend.cancel() }
-        try await Simulation.eventually("private send cleared the original policy and consent") {
+        try await P15.eventually("private send cleared the original policy and consent") {
             await journal.pending.count == (queued ? 2 : 1)
         }
         let numbered = sequences.highestSent(in: conversation, to: friend.id)
@@ -333,7 +333,7 @@ import Testing
             Task { try await outbox.send(Self.ordinaryNo, to: peer, conversation: conversation) }
         }
         defer { for send in sends { send.cancel() }; Task { await wire.release() } }
-        try await Simulation.eventually("every scope waits inside transport") { await wire.entered.count == scopes.count }
+        try await P15.eventually("every scope waits inside transport") { await wire.entered.count == scopes.count }
         let numbered = scopes.map { sequences.highestSent(in: $0.0, to: $0.1) }
         await outbox.cancelInFlight()
         await wire.release()

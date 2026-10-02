@@ -19,7 +19,7 @@ struct DownForIntegrationTests {
         _ = try await b.wait(.confirmed, theirs)
         try await a.accept(mine)
         _ = try await a.wait(.planned, mine)
-        try await Simulation.eventually("Down for plan artifact") { (try? await a.events.store.interaction(mine.id)?.plan) != nil }
+        try await P15.eventually("Down for plan artifact") { (try? await a.events.store.interaction(mine.id)?.plan) != nil }
         let parent = try #require(await a.events.store.interaction(mine.id))
         let registry = try SkillRegistry([DownFor.descriptor, PickAPlaceSkill.descriptor])
         let planner = ChainPlanner(registry: registry, me: a.id)
@@ -71,7 +71,7 @@ struct DownForIntegrationTests {
         try await a.accept(mine)
         _ = try await a.wait(.planned, mine)
         _ = try await b.wait(.planned, theirs)
-        try await Simulation.eventually("pair artifacts saved") { (try? await b.events.store.interaction(theirs.id)?.plan) != nil }
+        try await P15.eventually("pair artifacts saved") { (try? await b.events.store.interaction(theirs.id)?.plan) != nil }
         #expect(try await b.events.store.interaction(theirs.id)?.plan?.attendees.peers == [a.id, b.id])
         #expect(await c.phone.agent.received.allSatisfy { $0.body.kind == .hello })
         for phone in [a, b] {
@@ -113,7 +113,7 @@ struct DownForIntegrationTests {
         let (a, b, c) = (world.phones[0], world.phones[1], world.phones[2])
         await a.consent.hold(c.id)
         let cRequest = try await a.start(with: [c.id])
-        try await Simulation.eventually("other friend's PSI consent is held") { await a.consent.requests.contains { $0.recipient == c.id } }
+        try await P15.eventually("other friend's PSI consent is held") { await a.consent.requests.contains { $0.recipient == c.id } }
         let (mine, theirs) = try await world.pair(a, b)
         try await b.accept(theirs)
         _ = try await b.wait(.confirmed, theirs)
@@ -167,7 +167,7 @@ struct DownForIntegrationTests {
         let (a, b, c) = (world.phones[0], world.phones[1], world.phones[2])
         let request = try await a.start(with: [b.id, c.id], mode: .invite, rules: DownPhone.rules(privateChips: true))
         for friend in [b, c] {
-            try await Simulation.eventually("direct invitation reaches friend") { (try? await friend.events.interaction(request.conversation)?.state) == .proposed }
+            try await P15.eventually("direct invitation reaches friend") { (try? await friend.events.interaction(request.conversation)?.state) == .proposed }
             let invite = try #require(await friend.events.interaction(request.conversation))
             #expect(invite.proposal?.participants == [a.id, b.id, c.id])
             #expect(invite.proposal?.terms[.budget] == nil && invite.proposal?.terms[.place] == nil)
@@ -197,7 +197,7 @@ struct DownForIntegrationTests {
         let refs = incompatible ? [SkillRef(.downFor, SkillVersion(2))] : []
         let card = try P15.card(refs)
         let hello = try await b.outbox.send(.hello(card), to: a.id, conversation: ConversationID())
-        try await Simulation.eventually("unsupported hello accepted") { await a.phone.agent.received.contains(hello) }
+        try await P15.eventually("unsupported hello accepted") { await a.phone.agent.received.contains(hello) }
         await a.service.handle(.message(hello))
         let request = try await a.start(with: [b.id])
         _ = try await a.wait(.ended(.unsupported), request)
@@ -214,7 +214,7 @@ struct DownForIntegrationTests {
         let (mine, theirs) = try await world.pair(a, b)
         await b.phone.conversations.gateRetirement(failing: fail)
         try await b.service.answer(theirs.id, with: .pass)
-        try await Simulation.eventually("member retirement held") { await !b.phone.conversations.retiring.isEmpty }
+        try await P15.eventually("member retirement held") { await !b.phone.conversations.retiring.isEmpty }
         #expect(try await b.events.store.interaction(theirs.id)?.state == .proposed)
         await b.phone.conversations.release()
         _ = try await b.wait(.ended(fail ? .failed : .declined), theirs)
@@ -235,7 +235,7 @@ struct DownForIntegrationTests {
             _ = try await b.wait(.ended(.declined), theirs)
         }
         try await b.restart()
-        try await Simulation.eventually("restore retires starter conversation") { (try? await b.phone.conversations.isRetired(mine.conversation)) == true }
+        try await P15.eventually("restore retires starter conversation") { (try? await b.phone.conversations.isRetired(mine.conversation)) == true }
         _ = try await b.start(with: [a.id])
         await a.phone.relay.attach(nil)
         let count = await b.sent(mine.conversation).count
@@ -252,7 +252,7 @@ struct DownForIntegrationTests {
         let (mine, theirs) = try await world.pair(a, b)
         await b.policy.holdAcceptanceDenial()
         try await b.accept(theirs)
-        try await Simulation.eventually("current Down for acceptance suspended") { await b.policy.waiting }
+        try await P15.eventually("current Down for acceptance suspended") { await b.policy.waiting }
         if withdrawn {
             await b.service.withdraw(theirs.id)
             _ = try await b.wait(.ended(.withdrawn), theirs)

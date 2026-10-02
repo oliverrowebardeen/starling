@@ -6,7 +6,7 @@ import StarlingFeatures
 import StarlingPolicy
 import Testing
 
-@Suite(.timeLimit(.minutes(1))) struct PrivacyAndConsentAttackTests {
+@Suite(.timeLimit(.minutes(5))) struct PrivacyAndConsentAttackTests {
     @Test(arguments: SampleSkills.all, PrivacyTopic.allCases.filter(\.allowsNever))
     func neverBlocksEverySkillAndEveryTypedEgressShape(skill: SkillDescriptor, topic: PrivacyTopic) async throws {
         let privacy = try PrivacySettings([topic: .never])
@@ -71,7 +71,7 @@ import Testing
     }
 
     @MainActor @Test func approvalMemoryCannotCrossAChainOrSkillAndOldSheetCannotApproveNewOne() async throws {
-        let consent = ConsentCoordinator(peers: nil, timeout: .seconds(5), now: { P15.date })
+        let consent = ConsentCoordinator(peers: nil, timeout: .seconds(180), now: { P15.date })
         let transport = RecordingTransport(localPeer: P15.alice)
         let observer = RecordingOutboxObserver()
         let outbox = Outbox(transport: transport, policy: DeterministicPolicyEngine(), consent: consent,
@@ -85,7 +85,7 @@ import Testing
         }
         let first = send(root, SampleSkills.downFor.ref)
         defer { first.cancel() }
-        try await Simulation.eventually("initial consent") { await consent.current != nil }
+        try await P15.eventually("initial consent") { consent.current != nil }
         let firstSheet = try #require(consent.current)
         consent.answer(.approved, to: firstSheet.id)
         _ = try await first.value
@@ -100,7 +100,7 @@ import Testing
         ] {
             let next = send(conversation, skill, parent: parent, localID: localID)
             defer { next.cancel() }
-            try await Simulation.eventually("fresh consent for changed scope") { await consent.current != nil }
+            try await P15.eventually("fresh consent for changed scope") { consent.current != nil }
             let sheet = try #require(consent.current)
             #expect(sheet.disclosure.conversation == conversation && sheet.disclosure.skill == skill)
             #expect(sheet.disclosure.interaction == localID)

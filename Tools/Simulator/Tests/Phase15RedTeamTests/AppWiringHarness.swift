@@ -66,6 +66,7 @@ final class AppPhone {
     let location = AppLocation()
     let maps = PlaceTestMaps()
     let staged = StagedCandidates()
+    let clock = PlaceTestClock(now: Date())
     let wire = DownWire()
     var app: AppModel!
     var store: FileInteractionStore!
@@ -91,20 +92,21 @@ final class AppPhone {
         input = continuation
         let choices = OwnerChoices(), id = id, peers = peers, ledger = ledger, store = store!
         let calendar = calendar, staged = staged, maps = maps, downStore = downStore!, matcher = matcher
+        let clock = clock.clock
         let rules = FileRulesStore(url: file("rules.json").url)
         let checkpoints = FileFindATimeCheckpoints(directory: directory.appending(path: "time"))
         let secure = try #require(agent.secureTransport)
         app = AppModel(services: AppServices(skillModel: model.model, registry: Self.registry, flags: flags,
             makeSkills: { outbox in [
                 DownForService(localPeer: id, outbox: outbox, model: matcher.model, psi: InsecurePSIStub(), ledger: ledger,
-                    store: downStore, pairedPeers: peers, timeZone: TimeZone(secondsFromGMT: 0)!,
-                    configuration: DownForConfiguration(retryInterval: .milliseconds(150), maxAttempts: 30, ownerWindow: .seconds(8), maxBackoff: .milliseconds(300))),
+                    store: downStore, pairedPeers: peers, clock: SkillClock(now: clock.now, sleep: clock.sleep), timeZone: TimeZone(secondsFromGMT: 0)!,
+                    configuration: DownForConfiguration(maxAttempts: 30)),
                 FindATimeService(localPeer: id, outbox: outbox, conversations: ledger, pairedPeers: peers,
                     availability: .standard(calendar: calendar, use: { await choices.calendarUse() }), checkpoints: checkpoints,
-                    timeZone: TimeZone(secondsFromGMT: 0)!, configuration: FindATimeConfiguration(dailyFrom: 0, dailyTo: 1440), isTurnedOn: { await choices.isOn(.findATime) },
+                    clock: FindATimeClock(now: clock.now, sleep: clock.sleep), timeZone: TimeZone(secondsFromGMT: 0)!, configuration: FindATimeConfiguration(dailyFrom: 0, dailyTo: 1440), isTurnedOn: { await choices.isOn(.findATime) },
                     standingRules: { await choices.standingConstraints() }),
                 PickAPlaceService(localPeer: id, outbox: outbox, pairedPeers: peers, candidates: staged, maps: maps,
-                    ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty }, ledger: InMemoryPickAPlaceLedger(), conversations: ledger),
+                    ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty }, ledger: InMemoryPickAPlaceLedger(), conversations: ledger, clock: clock),
                 SwapPhotosService(outbox: outbox, ledger: ledger, me: id, planLookup: { try? await store.interaction(conversation: $0)?.plan }),
             ] }, interactions: store, settings: FileOwnerSettingsStore(file: file("settings.json")), rules: rules, peers: peers,
             inboxEvents: events, makePolicy: { rules, only in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: only, pairedPeers: peers) },
@@ -122,7 +124,6 @@ final class AppPhone {
         // bootstrap sequence that would temporarily overwrite the disk card.
         for envelope in latest.values { continuation.yield(.message(envelope)) }
         for peer in try await peers.all() { continuation.yield(.peerAvailable(peer.id)) }
-        try await Task.sleep(for: .milliseconds(75))
         try await appEventually("bootstrap cards applied") {
             latest.allSatisfy { peer, envelope in
                 if case .hello(let card) = envelope.body { self.app.cards.cards[peer] == card } else { false }
@@ -165,8 +166,20 @@ final class AppPhone {
         app.composer.picked = Set(friends)
         app.composer.mode = mode
     }
-    func wait(_ state: InteractionState, _ id: InteractionID) async throws -> Interaction {
-        try await appEventually("app interaction reaches \(state)") { self.app.lifecycle.interaction(id)?.state == state }
+    func wait(_ state: InteractionState, _ id: InteractionID, retrying phones: [AppPhone] = []) async throws -> Interaction {
+        var retryLimits: [Duration] = []
+        for phone in phones { retryLimits.append(await phone.clock.elapsed + .seconds(60)) }
+        try await appEventually("app interaction reaches \(state)") {
+            if self.app.lifecycle.interaction(id)?.state == state { return true }
+            // Replies can cross either phone's send bookkeeping. Drive
+            // retries through one virtual minute, below the owner windows.
+            for (phone, limit) in zip(phones, retryLimits) {
+                if let next = await phone.clock.due.filter({ $0 <= limit }).min() {
+                    await phone.clock.advance(to: next)
+                }
+            }
+            return false
+        }
         return try #require(app.lifecycle.interaction(id))
     }
     func incoming(_ conversation: ConversationID) async throws -> Interaction {
@@ -194,7 +207,7 @@ struct AppWorld {
             phones.append(AppPhone(agent: agent, ingress: ingress, flags: flags))
         }
         phones.sort { $0.id < $1.id }
-        try await simulation.waitForMesh()
+        try await P15.waitForMesh(simulation)
         for phone in phones {
             for other in phones where phone.id != other.id {
                 let key = try #require(await phone.agent.secureTransport?.status(of: other.id).provenKey)
@@ -209,8 +222,13 @@ struct AppWorld {
                 other.input?.yield(.message(hello))
             }
         }
-        try await appEventually("all app support cards") { phones.allSatisfy { $0.app.cards.cards.count == count - 1 && $0.app.friends?.friends.count == count - 1 } }
-        try await Task.sleep(for: .milliseconds(100))
+        try await appEventually("all app support cards") {
+            phones.allSatisfy { phone in
+                phone.app.friends?.friends.count == count - 1 && phones.allSatisfy { other in
+                    phone.id == other.id || phone.app.cards.cards[other.id] == other.app.agentCard
+                }
+            }
+        }
         return Self(simulation: simulation, phones: phones)
     }
     func stop() async { for phone in phones { await phone.stop() }; await simulation.stop() }
@@ -218,11 +236,7 @@ struct AppWorld {
 
 @MainActor
 func appEventually(_ description: String, _ predicate: @MainActor () async throws -> Bool) async throws {
-    for _ in 0..<500 {
-        if try await predicate() { return }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    throw ValidationError("app test timeout", description)
+    try await P15.eventually(description, predicate)
 }
 
 /// Simulation owns the authenticated channel and its sole Inbox across app

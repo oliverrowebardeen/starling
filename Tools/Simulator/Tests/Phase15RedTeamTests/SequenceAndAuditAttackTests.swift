@@ -6,9 +6,9 @@ import StarlingFeatures
 import StarlingPolicy
 import Testing
 
-@Suite(.timeLimit(.minutes(1))) struct SequenceAndAuditAttackTests {
+@Suite(.timeLimit(.minutes(5))) struct SequenceAndAuditAttackTests {
     @MainActor @Test func refusedSendsLeaveNeitherSequenceGapsNorPolicyRejectionsOnWire() async throws {
-        let consent = ConsentCoordinator(peers: nil, timeout: .seconds(5), now: { P15.date })
+        let consent = ConsentCoordinator(peers: nil, timeout: .seconds(180), now: { P15.date })
         let wire = RecordingTransport(localPeer: P15.alice)
         let observer = RecordingOutboxObserver()
         let store = InMemorySentSequenceStore()
@@ -32,7 +32,7 @@ import Testing
         for cancel in [false, true] {
             let task = Task { try await send(asks) }
             defer { task.cancel() }
-            try await Simulation.eventually("pending consent") { await consent.current != nil }
+            try await P15.eventually("pending consent") { consent.current != nil }
             let sheet = try #require(consent.current)
             if cancel { task.cancel() } else { consent.answer(.declined, to: sheet.id) }
             await #expect(throws: OutboxError.consentDeclined) { try await task.value }
