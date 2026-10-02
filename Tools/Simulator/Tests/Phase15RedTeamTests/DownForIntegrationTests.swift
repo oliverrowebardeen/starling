@@ -99,7 +99,6 @@ struct DownForIntegrationTests {
         let query = try await attacker.send(.query(Query(issue: .activity, candidates: .keywords([Keyword("start swap photos")]))),
             to: victim.id, in: first.conversation, parent: ConversationID())
         try await world.delivered(query, to: victim)
-        try await Task.sleep(for: .milliseconds(350))
         #expect(await victim.sent(first.conversation).isEmpty)
         #expect(await victim.wire.records.filter { $0.envelope.recipient == attacker.id && $0.envelope.skill != nil }.isEmpty)
         #expect(await victim.model.matches.isEmpty)
@@ -259,7 +258,8 @@ struct DownForIntegrationTests {
         }
         await b.policy.release()
         _ = try await b.wait(.ended(withdrawn ? .withdrawn : .blockedByPrivacy), theirs)
-        try await Task.sleep(for: .milliseconds(100))
+        try await P15.eventually("old Down for policy evaluation returns") { await b.policy.finished }
+        try await world.settle(from: a, to: b)
         #expect(try await b.events.store.interaction(theirs.id)?.state == .ended(withdrawn ? .withdrawn : .blockedByPrivacy))
         #expect(try await b.phone.conversations.isRetired(mine.conversation))
         #expect(await b.sent(mine.conversation).allSatisfy { $0.body.kind != .accept })

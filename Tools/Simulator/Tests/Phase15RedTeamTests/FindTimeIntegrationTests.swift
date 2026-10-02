@@ -303,11 +303,13 @@ struct FindTimeIntegrationTests {
         if superseded {
             let next = try await propose(slots[1], round: 1, a: a, b: b, conversation: conversation)
             try await world.delivered(next, to: b)
-            _ = try await time.wait(.proposed, in: conversation)
+            try await P15.eventually("new time proposal replaces the suspended acceptance") {
+                try await time.events.interaction(conversation)?.proposal?.terms[.time] == .slots([slots[1]])
+            }
         }
         await policy.release()
         if superseded {
-            try await Task.sleep(for: .milliseconds(100))
+            try await P15.eventually("old time policy evaluation returns") { await policy.finished }
             #expect(try await time.events.interaction(conversation)?.proposal?.terms[.time] == .slots([slots[1]]))
             #expect(try await time.events.interaction(conversation)?.state == .proposed)
             #expect(try await !b.conversations.isRetired(conversation))
@@ -323,12 +325,14 @@ private actor SuspendedTimeDenial: PolicyEngine {
     let base: any PolicyEngine
     private var continuation: CheckedContinuation<Void, Never>?
     private(set) var waiting = false
+    private(set) var finished = false
     init(base: any PolicyEngine) { self.base = base }
     func release() { continuation?.resume(); continuation = nil }
     func evaluate(_ message: OutboundMessage) async -> PolicyDecision {
         if message.envelope.body.kind == .accept {
             waiting = true
             await withCheckedContinuation { continuation = $0 }
+            finished = true
             return .deny(PolicyViolation(rule: "test.current-acceptance", issue: .time))
         }
         return await base.evaluate(message)

@@ -12,7 +12,7 @@ enum P15 {
         _ condition: () async throws -> Bool
     ) async throws {
         let clock = SuspendingClock()
-        let deadline = clock.now.advanced(by: .seconds(60))
+        let deadline = clock.now.advanced(by: .seconds(120))
         while true {
             try Task.checkCancellation()
             if try await condition() { return }

@@ -46,6 +46,7 @@ actor DownBoundaryPolicy: PolicyEngine {
     private var denyAcceptance = false
     private var waiter: CheckedContinuation<Void, Never>?
     private(set) var waiting = false
+    private(set) var finished = false
     init(_ base: any PolicyEngine) { self.base = base }
     func holdAcceptanceDenial() { denyAcceptance = true }
     func release() { waiter?.resume(); waiter = nil }
@@ -53,6 +54,7 @@ actor DownBoundaryPolicy: PolicyEngine {
         if denyAcceptance && message.envelope.body.kind == .accept {
             waiting = true
             await withCheckedContinuation { waiter = $0 }
+            finished = true
             return .deny(PolicyViolation(rule: "test.current-acceptance", issue: .activity))
         }
         return await base.evaluate(message)
@@ -217,7 +219,24 @@ struct DownWorld: Sendable {
         return Self(base: base, phones: phones)
     }
     func stop() async { for phone in phones { await phone.stop() }; await base.stop() }
-    func delivered(_ envelope: Envelope, to phone: DownPhone) async throws { try await base.delivered(envelope, to: phone.phone) }
+    func delivered(_ envelope: Envelope, to phone: DownPhone) async throws {
+        try await base.delivered(envelope, to: phone.phone)
+        let sender = try #require(phones.first { $0.id == envelope.sender })
+        try await settle(from: sender, to: phone)
+    }
+    /// Down for queues each friend's work. A retired-conversation sentinel
+    /// reaches its ledger only after earlier work on that queue completes.
+    /// It travels through the real Outbox/Inbox and cannot open a request.
+    func settle(from sender: DownPhone, to phone: DownPhone) async throws {
+        let marker = ConversationID()
+        try await phone.outbox.retire(marker)
+        let sent = try await sender.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)),
+                                         to: phone.id, in: marker)
+        try await base.delivered(sent, to: phone.phone)
+        try await P15.eventually("Down for drains the friend's preceding work") {
+            await phone.phone.conversations.checked.contains(marker)
+        }
+    }
     func pair(_ a: DownPhone, _ b: DownPhone, rules: OwnerRules? = nil) async throws -> (Interaction, Interaction) {
         let aRequest = try await a.start(with: [b.id], rules: rules)
         let bRequest = try await b.start(with: [a.id], rules: rules)

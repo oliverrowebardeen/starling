@@ -12,8 +12,17 @@ import Testing
 actor PlaceRelay: AgentBehavior {
     var service: (any SkillService)?
     private(set) var handled: Set<MessageID> = []
+    private var loseAnswer = false
+    private(set) var lostAnswers: [MessageID] = []
     func attach(_ service: (any SkillService)?) { self.service = service }
+    func loseNextAnswer() { loseAnswer = true }
     func respond(to envelope: Envelope, in agent: SimulatedAgent) async {
+        if loseAnswer && envelope.body.kind == .answer {
+            loseAnswer = false
+            lostAnswers.append(envelope.id)
+            handled.insert(envelope.id)
+            return
+        }
         await service?.handle(.message(envelope))
         handled.insert(envelope.id)
     }
@@ -113,10 +122,15 @@ actor PlaceConversationLedger: ConversationLedger {
     var fail = false
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var retiring: [ConversationID] = []
+    private(set) var checked: Set<ConversationID> = []
     private(set) var reservations: [(ConversationID, [IssueValue])] = []
     func gateRetirement(failing: Bool) { hold = true; fail = failing }
     func release() { hold = false; for waiter in releaseWaiters { waiter.resume() }; releaseWaiters = [] }
-    func isRetired(_ conversation: ConversationID) async throws -> Bool { try await base.isRetired(conversation) }
+    func isRetired(_ conversation: ConversationID) async throws -> Bool {
+        let result = try await base.isRetired(conversation)
+        checked.insert(conversation)
+        return result
+    }
     func retire(_ conversation: ConversationID) async throws {
         retiring.append(conversation)
         if hold { await withCheckedContinuation { releaseWaiters.append($0) } }
@@ -203,9 +217,19 @@ final class PlacePhone: Sendable {
         try await outbox.send(body, to: peer, conversation: conversation, recipientCard: P15.card([PickAPlaceSkill.ref]),
             context: context, skill: skill, mode: mode, chainedFrom: parent)
     }
-    func wait(_ state: InteractionState, in conversation: ConversationID) async throws -> Interaction {
+    func wait(_ state: InteractionState, in conversation: ConversationID,
+              retrying organizer: PlacePhone? = nil) async throws -> Interaction {
+        // A frozen retry clock can strand a best-effort exchange even when
+        // the host gets arbitrarily long to schedule it. Only explicit
+        // callers drive retries, strictly before the answer window closes.
+        let limit = if let organizer { await organizer.clock.elapsed + Self.configuration.answerWindow - Self.configuration.retryInterval }
+                    else { Duration.zero }
         try await P15.eventually("Pick a place reaches \(state)") {
-            (try? await self.events.interaction(conversation)?.state) == state
+            if try await self.events.interaction(conversation)?.state == state { return true }
+            if let organizer, let next = await organizer.clock.due.filter({ $0 <= limit }).min() {
+                await organizer.clock.advance(to: next)
+            }
+            return false
         }
         return try #require(await events.interaction(conversation))
     }
@@ -262,10 +286,9 @@ struct PlaceWorld: Sendable {
         return PlaceCandidate(choice: choice, facts: PlaceFacts(name: choice.name, priceTier: tier))
     }
     func seed(_ candidates: [PlaceCandidate]) async { for phone in phones { await phone.maps.set(candidates) } }
-    /// Negative observations follow an authenticated delivery barrier and a
-    /// short scheduling allowance. Protocol deadlines use the injected clock.
+    /// This waits for the real service's handle call, not a host-time guess.
+    /// Spawned work needs its own event or send condition at the call site.
     func delivered(_ envelope: Envelope, to phone: PlacePhone) async throws {
         try await P15.eventually("service handled authenticated message") { await phone.relay.handled.contains(envelope.id) }
-        try await Task.sleep(for: .milliseconds(75))
     }
 }
