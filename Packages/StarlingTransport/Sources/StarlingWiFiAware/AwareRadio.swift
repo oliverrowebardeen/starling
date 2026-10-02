@@ -42,6 +42,10 @@ package protocol AwareRadio: Sendable {
     /// Connects to a discovered device and runs `body` with the connection,
     /// closing it when `body` returns. Throws if the device is not discovered.
     func dial(_ device: AwareDeviceID, _ body: @escaping @Sendable (any AwareChannel) async -> Void) async throws
+
+    /// The system's record of a paired device, for its name, or nil if it is
+    /// not paired (any more).
+    func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice?
 }
 
 /// The radio asks for `browse` or `listen` to run again at once, for example

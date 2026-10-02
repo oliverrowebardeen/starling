@@ -40,8 +40,9 @@ extension WASubscribableService {
 extension WiFiAwareTransport {
     /// A transport over the device's Wi-Fi Aware radio, linking to every
     /// device paired through `WiFiAwarePairingView` or `WiFiAwareDevicePicker`.
-    public init(localPeer: PeerID) {
-        self.init(localPeer: localPeer, radio: WiFiAwareRadio())
+    /// `trace` receives one line per link event, for Debug diagnostics.
+    public init(localPeer: PeerID, trace: (@Sendable (String) -> Void)? = nil) {
+        self.init(localPeer: localPeer, radio: WiFiAwareRadio(), trace: trace)
     }
 }
 
@@ -118,6 +119,11 @@ package actor WiFiAwareRadio: AwareRadio {
         guard let endpoint = endpoints[device] else { throw WiFiAwareRadioError.deviceNotDiscovered(device) }
         let connection = NetworkConnection(to: endpoint, using: Self.parameters())
         await body(WiFiAwareChannel(connection: connection))
+    }
+
+    package func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice? {
+        guard let devices = try? await WAPairedDevice.allDevices.current(), let found = devices[device] else { return nil }
+        return WiFiAwarePairedDevice(found)
     }
 
     private func setEndpoints(_ byDevice: [AwareDeviceID: WAEndpoint]) {

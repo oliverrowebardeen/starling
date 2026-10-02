@@ -51,6 +51,7 @@ public actor WiFiAwareTransport: Transport {
     private let continuation: AsyncStream<TransportEvent>.Continuation
     private let radio: any AwareRadio
     private let timing: AwareTiming
+    private let trace: (@Sendable (String) -> Void)?
 
     private var state = State.idle
     private var table: LinkTable
@@ -70,10 +71,11 @@ public actor WiFiAwareTransport: Transport {
     private var browseTask: Task<Void, Never>?
     private var listenTask: Task<Void, Never>?
 
-    package init(localPeer: PeerID, radio: any AwareRadio, timing: AwareTiming = .standard) {
+    package init(localPeer: PeerID, radio: any AwareRadio, timing: AwareTiming = .standard, trace: (@Sendable (String) -> Void)? = nil) {
         self.localPeer = localPeer
         self.radio = radio
         self.timing = timing
+        self.trace = trace
         table = LinkTable(localPeer: localPeer)
         (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
     }
@@ -179,6 +181,15 @@ public actor WiFiAwareTransport: Transport {
         }
     }
 
+    /// The paired device whose link hello last claimed `peer`, with the name
+    /// the system has for it, or nil if no Wi-Fi Aware link has named that
+    /// peer. The name labels a phone; it comes from that phone, so it is
+    /// never a person's name by itself (ADR 0260).
+    public func pairedDevice(for peer: PeerID) async -> WiFiAwarePairedDevice? {
+        guard let device = table.device(for: peer) else { return nil }
+        return await radio.pairedDevice(device)
+    }
+
     private func resolveWaiter(_ id: UUID, for device: AwareDeviceID, with peer: PeerID?) {
         guard let waiter = deviceWaiters[device]?.removeValue(forKey: id) else { return }
         if deviceWaiters[device]?.isEmpty == true { deviceWaiters[device] = nil }
@@ -217,6 +228,7 @@ public actor WiFiAwareTransport: Transport {
     private func discoveryChanged(_ devices: Set<AwareDeviceID>) {
         guard state == .started else { return }
         let appeared = devices.subtracting(discovered)
+        if devices != discovered { log("discovered \(devices.count) paired device(s)") }
         discovered = devices
         // Stop waiting on devices that disappeared, and give them a fresh
         // retry budget for when they come back.
@@ -259,6 +271,7 @@ public actor WiFiAwareTransport: Transport {
     }
 
     private func dial(_ device: AwareDeviceID) {
+        log("dialing device \(device)")
         let radio = radio
         dialTasks[device] = Task { [weak self] in
             do {
@@ -318,9 +331,11 @@ public actor WiFiAwareTransport: Transport {
         let admission = table.admit(id: id, peer: remote, direction: direction, device: device)
         if let device, let learned = table.peersByDevice[device] { resolveWaiters(for: device, with: learned) }
         guard let linkState = admission.state else {
+            log("\(direction) link to \(remote.short) lost to an existing link")
             task.cancel()
             return
         }
+        log("\(direction) link to \(remote.short) is \(linkState == .active ? "active" : "provisional")")
         live[id] = LiveLink(channel: channel, task: task)
         for closed in admission.closed { close(closed) }
         for peer in admission.unavailable { continuation.yield(.peerUnavailable(peer)) }
@@ -394,6 +409,7 @@ public actor WiFiAwareTransport: Transport {
         graceTasks.removeValue(forKey: id)?.cancel()
         guard state == .started, let link = table.current(id) else { return }
         if table.activate(id) {
+            log("link to \(link.peer.short) is active")
             if let device = link.device { retryAttempts[device] = nil }
             continuation.yield(.peerAvailable(link.peer))
         }
@@ -408,6 +424,7 @@ public actor WiFiAwareTransport: Transport {
         graceTasks.removeValue(forKey: id)?.cancel()
         live[id] = nil
         guard let link = table.remove(id), state == .started else { return }
+        log("link to \(link.peer.short) closed")
         if link.state == .active { continuation.yield(.peerUnavailable(link.peer)) }
         // An outgoing link's dial task is still running here, so this is a
         // no-op for it and `finishedDialing` retries instead.
@@ -423,6 +440,7 @@ public actor WiFiAwareTransport: Transport {
     package var linkTable: LinkTable { table }
 
     private func log(_ message: String) {
+        trace?(message)
         #if DEBUG
         print("[WiFiAware \(localPeer.short)] \(message)")
         #endif

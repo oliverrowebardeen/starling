@@ -11,6 +11,11 @@ private let fastTiming = AwareTiming(
     radioRestartDelay: { _ in .milliseconds(20) }
 )
 
+private actor Lines {
+    private(set) var all: [String] = []
+    func add(_ line: String) { all.append(line) }
+}
+
 /// Collects a transport's events, which have a single consumer.
 private actor EventLog {
     private(set) var events: [TransportEvent] = []
@@ -407,6 +412,39 @@ private func frame(_ index: Int) throws -> Frame {
         #expect(await transport.peerID(for: bOnA, waitingUpTo: .seconds(30)) == nil)
     }
 
+    /// The pairing screen labels the phone behind a peer, and offers a name
+    /// from it, with the system's name for the device its hello came from.
+    @Test func namesThePairedDeviceBehindAPeer() async throws {
+        let air = FakeAir()
+        await air.pair("riley", "oliver")
+        let riley = await Phone("riley", air: air)
+        let oliver = await Phone("oliver", air: air)
+        #expect(await oliver.transport.pairedDevice(for: riley.peer) == nil)
+        try await riley.transport.start()
+        try await oliver.transport.start()
+        await eventually("linked") { await oliver.available(riley) == 1 }
+        #expect(await oliver.transport.pairedDevice(for: riley.peer)?.name == "Riley's iPhone")
+        #expect(await riley.transport.pairedDevice(for: oliver.peer)?.name == "Oliver's iPhone")
+        #expect(await oliver.transport.pairedDevice(for: .random()) == nil)
+        await riley.transport.stop()
+        await oliver.transport.stop()
+    }
+
+    /// Debug builds show link events in the pairing log.
+    @Test func traceRecordsLinkEvents() async throws {
+        let air = FakeAir()
+        await air.pair("a", "b")
+        let lines = Lines()
+        let a = WiFiAwareTransport(localPeer: .random(), radio: await air.radio(for: "a"), timing: fastTiming, trace: { line in Task { await lines.add(line) } })
+        let b = WiFiAwareTransport(localPeer: .random(), radio: await air.radio(for: "b"), timing: fastTiming)
+        try await a.start()
+        try await b.start()
+        await eventually("a link is active") { await lines.all.contains { $0.hasSuffix("is active") } }
+        #expect(await lines.all.contains { $0.hasPrefix("dialing device") })
+        await a.stop()
+        await b.stop()
+    }
+
     @Test func keepsOneLinkPerPairedDevice() async throws {
         let air = FakeAir()
         let names = ["a", "b", "c", "d"]
@@ -473,6 +511,7 @@ private func frame(_ index: Int) throws -> Frame {
             func browse(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {}
             func listen(_ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {}
             func dial(_ device: AwareDeviceID, _ body: @escaping @Sendable (any AwareChannel) async -> Void) async throws {}
+            func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice? { nil }
         }
         let transport = WiFiAwareTransport(localPeer: .random(), radio: Broken(), timing: fastTiming)
         await #expect(throws: TransportError.self) { try await transport.start() }

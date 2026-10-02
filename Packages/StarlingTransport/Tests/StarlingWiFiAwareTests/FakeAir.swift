@@ -97,6 +97,13 @@ actor FakeAir {
         publishDiscovery()
     }
 
+    /// The system name `phone` has for the device with `id`: the other
+    /// phone's name plus "'s iPhone", like a real default name.
+    func pairedDevice(_ id: AwareDeviceID, seenBy phone: String) -> WiFiAwarePairedDevice? {
+        guard let target = deviceIDs[phone]?.first(where: { $0.value == id })?.key else { return nil }
+        return WiFiAwarePairedDevice(id: id, name: "\(target.capitalized)'s iPhone")
+    }
+
     func deviceID(of target: String, seenBy phone: String) -> AwareDeviceID? {
         deviceIDs[phone]?[target]
     }
@@ -246,5 +253,9 @@ struct FakeRadio: AwareRadio {
         let channel = try await air.connect(from: phone, to: device)
         await body(channel)
         await channel.close()
+    }
+
+    func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice? {
+        await air.pairedDevice(device, seenBy: phone)
     }
 }
