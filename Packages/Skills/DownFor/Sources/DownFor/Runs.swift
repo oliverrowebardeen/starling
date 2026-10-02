@@ -238,8 +238,6 @@ enum Work: Sendable {
 }
 
 enum Action: Sendable {
-    /// Hub: send the current proposal.
-    case propose
     /// Member: send "I'm in" to the current proposal.
     case accept
     /// Hub: confirm the plan to a member that accepted it.

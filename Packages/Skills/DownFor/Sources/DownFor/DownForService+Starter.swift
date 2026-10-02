@@ -36,7 +36,12 @@ extension DownForService {
         runs[key]?.phase = .proposed
         runs[key]?.proposalEnvelopes = []
         runs[key]?.replies = [:]
-        enqueue(.act(key, .propose), for: key.peer)
+        // The proposal's schedule and the card's window start together, so
+        // the schedule always ends inside the window, however long the
+        // friend's queue takes to send (lane F's #84).
+        guard let proposal = try? Proposal(round: run.rounds, terms: terms) else { return }
+        runs[key]?.rounds += 1
+        startDelivery(proposal, to: key, for: run.request, chainedFrom: run.chainedFrom, mode: run.mode)
         armWindow(run.request, revision: revision)
     }
 
