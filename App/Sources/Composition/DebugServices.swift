@@ -1,6 +1,7 @@
 #if DEBUG
 // Debug builds only. StarlingFakes includes the insecure PSI stub and
 // scripted doubles, so nothing outside `#if DEBUG` may import it (ADR 0140).
+import DownFor
 import FindATime
 import Foundation
 import Observation
@@ -25,16 +26,23 @@ import StarlingTransport
 final class DebugHarness {
     nonisolated static let scriptedModelKey = "dev.scriptedModel"
     nonisolated static let denyPermissionsKey = "dev.denyPermissions"
+    /// Plays Down for... with a scripted service and the demo driver, for a
+    /// walk-through on one phone, instead of lane B's service.
+    nonisolated static let scriptedDownForKey = "dev.scriptedDownFor"
 
     let usesScriptedModel: Bool
+    let usesScriptedDownFor: Bool
     /// Friends that exist only in this Debug session. Never written to the
     /// Keychain.
     let overlay = InMemoryPairedPeerStore()
-    /// The skills whose lanes have not merged, played by scripted services.
-    let skills = [SampleSkills.downFor].map(ScriptedSkillService.init(descriptor:))
-    /// Debug's registry: lanes C, D, and E's real descriptors, and the
-    /// sample one for the skill still scripted.
-    static let registry = try! SkillRegistry([SampleSkills.downFor, FindATimeSkill.descriptor, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
+    /// Skills played by scripted services: Down for... only when the
+    /// Developer section asks for it.
+    let skills: [ScriptedSkillService]
+    /// Debug's registry: every lane's real descriptor, or the sample Down
+    /// for... while it is scripted.
+    var registry: SkillRegistry {
+        try! SkillRegistry([usesScriptedDownFor ? SampleSkills.downFor : DownFor.descriptor, FindATimeSkill.descriptor, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
+    }
     private(set) var driver: DemoDriver?
     private(set) var friends: (any PairedPeerStore)?
     private(set) var localPeer: PeerID?
@@ -44,12 +52,18 @@ final class DebugHarness {
 
     init(defaults: UserDefaults = .standard) {
         usesScriptedModel = defaults.bool(forKey: Self.scriptedModelKey)
+        // The headless self-test walks the demo, so it needs the script.
+        usesScriptedDownFor = defaults.bool(forKey: Self.scriptedDownForKey) || defaults.bool(forKey: "starlingSelfTestLifecycle")
+        skills = usesScriptedDownFor ? [ScriptedSkillService(descriptor: SampleSkills.downFor)] : []
         sampleStart = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 3600).rounded(.up) * 3600)
     }
 
     func services(rules: any RulesStore = LiveServices.rulesStore()) async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
-        let agent: any AgentModel = usesScriptedModel ? Self.scriptedAgent() : FoundationModelsAgent()
+        let model = FoundationModelsAgent()
+        let agent: any AgentModel = usesScriptedModel ? Self.scriptedAgent() : model
+        let skillModel: any SkillModel = usesScriptedModel ? Self.scriptedSkillModel() : model
+        let scriptedDownFor = usesScriptedDownFor
         let friends = OverlayPairedPeerStore(base: KeychainPairedPeerStore(), overlay: overlay)
         let links = SecureLinks.make(identity: identity, friends: friends)
         self.friends = friends
@@ -63,10 +77,13 @@ final class DebugHarness {
 
         return AppServices(
             agent: agent,
-            skillModel: Self.scriptedSkillModel(),
-            registry: Self.registry,
+            skillModel: skillModel,
+            registry: registry,
             makeSkills: { outbox in
-                skills + [
+                // Lane B's service on the insecure PSI stub, which only
+                // Debug may link (ADR 0144).
+                let downFor = scriptedDownFor ? [] : [LiveServices.downFor(me: identity.peerID, outbox: outbox, agent: agent, psi: InsecurePSIStub(), friends: friends, ledger: ledger)]
+                return skills + downFor + [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
@@ -203,7 +220,7 @@ final class DebugHarness {
         try? await overlay.save(friend)
         await app.friends?.load()
         guard let me = localPeer else { return }
-        let card = AgentCard.forBuild(skills: Self.registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
+        let card = AgentCard.forBuild(skills: registry.advertised(in: SkillSettings(flags: .phase1_5)), usesPSI: true, locality: .onDevice)
         if let hello = try? Envelope(conversation: ConversationID(), sender: friend.id, recipient: me, sequence: 0, sentAt: Timestamp(Date()), body: .hello(card)) {
             app.cards.handle(.message(hello))
         }

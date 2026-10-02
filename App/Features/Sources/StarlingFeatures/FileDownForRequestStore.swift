@@ -63,3 +63,14 @@ public actor FileDownForRequestStore: DownForRequestStore {
         cache = records
     }
 }
+
+/// Stands in when the request file cannot even be located: every call
+/// throws, so a Down for... request fails to start rather than run with
+/// nothing to restore it from.
+public struct UnavailableDownForRequestStore: DownForRequestStore {
+    public struct Unavailable: Error {}
+    public init() {}
+    public func save(_ record: DownForRequestRecord) async throws { throw Unavailable() }
+    public func record(for interaction: InteractionID) async throws -> DownForRequestRecord? { throw Unavailable() }
+    public func remove(_ interaction: InteractionID) async throws { throw Unavailable() }
+}

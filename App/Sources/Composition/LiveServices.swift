@@ -1,3 +1,4 @@
+import DownFor
 import FindATime
 import Foundation
 import Network
@@ -17,13 +18,16 @@ import UserNotifications
 extension AppServices {
     /// Release builds: real implementations only, never StarlingFakes
     /// (ADR 0140). Lane E1's identity, pinned friends, pairing, and secure
-    /// links; lane G's policy and audit log; lane E2's Wi-Fi Aware. No skill
-    /// service is in the build until the skill lanes merge (B, C, D, E), so
-    /// New shows each tile as "Not in this build yet" instead of running a
-    /// fake. Permission access APIs arrive with lanes C and D.
+    /// links; lane G's policy and audit log; lane E2's Wi-Fi Aware; Find a
+    /// time, Pick a place, and Swap photos (behind its flag) from lanes C, D,
+    /// and E. Down for... has no service until a private PSI provider exists
+    /// outside StarlingFakes (ADR 0144 decision 3), so its tile says "Not in
+    /// this build yet" instead of running on the insecure stub.
     @MainActor
     static func release() async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
+        // One on-device model for the rules editor, New, and proposal cards.
+        let agent = FoundationModelsAgent()
         let links = SecureLinks.make(identity: identity, friends: KeychainPairedPeerStore())
         let ledger = LiveServices.ledger()
         let rules = LiveServices.rulesStore()
@@ -31,7 +35,8 @@ extension AppServices {
         let interactions = LiveServices.interactionStore()
         let choices = OwnerChoices()
         return AppServices(
-            agent: FoundationModelsAgent(),
+            agent: agent,
+            skillModel: agent,
             registry: LiveServices.registry,
             makeSkills: { outbox in
                 [
@@ -70,26 +75,13 @@ extension AppServices {
 }
 
 enum LiveServices {
-    /// Every Phase 1.5 skill's descriptor: lane C's Find a time, lane D's
-    /// Pick a place, and lane E's Swap photos from their packages; Down for…
-    /// matches StarlingFakes.SampleSkills, which Release cannot link, until
-    /// its package merges. Data only: a descriptor runs nothing without its
-    /// service.
+    /// Every Phase 1.5 skill's descriptor, from each lane's package. Data
+    /// only: a descriptor runs nothing without its service. Down for... has
+    /// no service in Release until a private PSI provider exists outside
+    /// StarlingFakes (ADR 0144 decision 3), so its tile says "Not in this
+    /// build yet".
     static let registry: SkillRegistry = try! SkillRegistry([
-        try! SkillDescriptor(
-            ref: SkillRef(.downFor, SkillVersion(1)),
-            wording: SkillWording(name: "Down for…", summary: "See who's up for something", startAction: "See who's up for it",
-                                  acceptAction: "I'm in", declineAction: "Not tonight", declineNote: "If you pass, they just won't see it."),
-            buildingBlock: .mutualReveal, topicsUsed: [.time, .activity, .place, .budget], topicsRequired: [.time, .activity],
-            accepts: [.timeSlot], produces: [.plan],
-            intent: IntentSchema(slots: [
-                IntentSlot(.activity, required: true, hint: "what they want to do, such as boba or a walk"),
-                IntentSlot(.time, required: false, hint: "when, such as tonight after 7"),
-                IntentSlot(.place, required: false, hint: "where or how far, such as nearby"),
-                IntentSlot(.budget, required: false, hint: "the most they want to spend"),
-            ]),
-            sendModes: [.askQuietly, .invite]
-        ),
+        DownFor.descriptor,
         FindATimeSkill.descriptor,
         PickAPlaceSkill.descriptor,
         SwapPhotos.descriptor,
@@ -134,6 +126,15 @@ enum LiveServices {
     static func places() -> (finder: PlaceFinder, staged: StagedCandidates, location: CoreLocationAccess) {
         let location = CoreLocationAccess()
         return (PlaceFinder(search: MapKitPlaceSearch(), location: location), StagedCandidates(), location)
+    }
+
+    /// Lane B's service over the app's one Outbox and the ledger it
+    /// enforces, with its requests on disk and only paired friends'
+    /// invitations shown (P15-B request 2). `psi` must be private before
+    /// Release may call this (ADR 0144).
+    static func downFor(me: PeerID, outbox: Outbox, agent: any AgentModel, psi: any PSIProvider, friends: any PairedPeerStore, ledger: any ConversationLedger) -> any SkillService {
+        let store: any DownForRequestStore = (try? FileDownForRequestStore.standard()) ?? UnavailableDownForRequestStore()
+        return DownForService(localPeer: me, outbox: outbox, model: agent, psi: psi, ledger: ledger, store: store, pairedPeers: friends)
     }
 
     /// Lane C's service over the app's one Outbox and the same conversation
