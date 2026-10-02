@@ -186,4 +186,34 @@ import Testing
         #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees.peers == [Fixtures.me, Fixtures.jake])
         #expect(planner.parent(plan, updatedBy: link)?.plan?.place == nil)
     }
+
+    @Test func aPlaceUpdateRaisesThePlanRevisionOnce() throws {
+        let plan = try Fixtures.plannedDownFor()
+        #expect(plan.plan?.revision == 0)
+        var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        let updated = try #require(planner.parent(plan, updatedBy: link))
+        #expect(updated.plan?.revision == 1)
+        // Applying the same finished link again changes nothing.
+        #expect(planner.parent(updated, updatedBy: link) == nil)
+    }
+
+    @Test func aFriendsPlaceRequestUpdatesThePlanOnThisPhoneToo() throws {
+        // On Maya's phone: Jake's agent asked to pick a place for the plan.
+        let plan = try Fixtures.plannedDownFor(role: .invitee)
+        var fromJake = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [Fixtures.jake], createdAt: Fixtures.at(minutes: 9))
+        try fromJake.setFriendChainHint(plan.planConversation)
+        for event in [InteractionEvent.proposalReady(SkillProposal(revision: 1, participants: [Fixtures.me, Fixtures.maya, Fixtures.jake],
+                                                                   terms: try Terms([.place: .places([Fixtures.place()])]))),
+                      .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try fromJake.apply(event, at: Fixtures.at(minutes: 10))
+        }
+        fromJake.record(.placeChoice(Fixtures.place()))
+        let updated = try #require(planner.parent(plan, updatedBy: fromJake))
+        #expect(updated.plan?.place == Fixtures.place())
+        #expect(updated.plan?.revision == 1)
+        // A friend's request for another plan does not.
+        let other = try Fixtures.plannedDownFor(role: .invitee)
+        #expect(planner.parent(other, updatedBy: fromJake) == nil)
+    }
 }

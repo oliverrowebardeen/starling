@@ -82,14 +82,17 @@ extension ChainPlanner {
     }
 
     /// The parent with its plan updated by what a finished link agreed:
-    /// the place ("Somewhere else?") and the people who agreed to it. A
+    /// the place ("Somewhere else?") and the people who agreed to it, with
+    /// the plan's revision one higher (ADR 0022). The link is an owner link
+    /// or a friend's request grouped under the plan, so the plan changes the
+    /// same way on every phone. Applying the same link again changes nothing. A
     /// friend who passed on the link drops out of the plan, so no later chain
     /// reaches them (ADR 0020 decision 9.3). A link can only narrow the
     /// roster: attendees outside the plan, or a roster without this phone,
     /// are ignored. Nil if the link is not a planned link of this parent or
     /// agreed nothing new. The app saves the result.
     public func parent(_ parent: Interaction, updatedBy link: Interaction) -> Interaction? {
-        guard link.chain?.parent == parent.id, link.state == .planned || link.state == .done,
+        guard Self.isLink(link, of: parent), link.state == .planned || link.state == .done,
               let plan = parent.plan
         else { return nil }
         let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
@@ -98,13 +101,25 @@ extension ChainPlanner {
            attendees.peers.contains(me), Set(attendees.peers).isSubset(of: plan.attendees.peers) {
             agreed = attendees
         }
-        guard place != nil || (agreed != nil && agreed != plan.attendees) else { return nil }
-        guard let updatedPlan = try? Plan(id: plan.id, origin: plan.origin, attendees: agreed ?? plan.attendees,
-                                          activity: plan.activity, time: plan.time, place: place ?? plan.place)
-        else { return nil }
+        let newPlace = place ?? plan.place
+        let newAttendees = agreed ?? plan.attendees
+        // Already applied (or nothing new): the revision must not rise again.
+        guard newPlace != plan.place || newAttendees != plan.attendees else { return nil }
+        // Through Plan.updating, so the plan's revision rises by one (ADR 0022).
+        guard let updatedPlan = try? plan.updating(attendees: newAttendees, place: .some(newPlace)) else { return nil }
         var updated = parent
         updated.record(.plan(updatedPlan))
         return updated
+    }
+
+    /// Whether `link` continues `parent`'s plan: an owner link, or a friend's
+    /// request the coordinator grouped under the plan by its hint. Both
+    /// update the plan on this phone, so every phone keeps the same plan and
+    /// revision.
+    static func isLink(_ link: Interaction, of parent: Interaction) -> Bool {
+        if link.chain?.parent == parent.id { return true }
+        guard link.role == .invitee, link.chain == nil, let hint = link.friendChainHint else { return false }
+        return hint == parent.planConversation
     }
 
     // MARK: - Helpers
