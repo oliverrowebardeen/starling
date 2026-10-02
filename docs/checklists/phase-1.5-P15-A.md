@@ -1,6 +1,6 @@
 # Device checklist: Phase 1.5 lane A (Shell and IA)
 
-Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both first so first-run behavior shows. Find a time (lane C) and Pick a place (lane D) are the real skills; their own checklists (`phase-1.5-P15-C.md`, `phase-1.5-P15-D.md`) cover them in depth, and the steps below cover how the app wires them. Until lane B merges, Down for… is scripted in Debug builds: a request gets a proposal after about two seconds, made from your own chips (You › Developer says so).
+Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both first so first-run behavior shows. Find a time (lane C) and Pick a place (lane D) are the real skills; their own checklists (`phase-1.5-P15-C.md`, `phase-1.5-P15-D.md`) cover them in depth, and the steps below cover how the app wires them. Down for… (lane B) runs its real service in Debug, on the insecure PSI stub only Debug has; its checklist covers it in depth. Steps 9 to 15 and 27 walk the shell on one phone: turn on You › Developer › "Scripted Down for… (next launch)" and relaunch first, and a request then gets a proposal after about two seconds, made from your own chips. Turn it off again for the Down for… steps that use both phones.
 
 ## First launch, nothing asked
 
@@ -16,14 +16,14 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 7. Phone A: Add friend again and type "maya" (or "Mауa" with a Cyrillic а) for a second pairing. Expect: an orange "You already call another friend Maya" (or "This looks like Maya") warning and the button reads "Pair anyway". Cancel.
 8. Phone A: Friends › Maya. Expect: "What their Starling does" lists Down for…, Find a time, Pick a place as Yes once Phone B has said hello; Close friend switch; Link to a contact; History "Nothing yet".
 
-## New, Home, and It's a plan (scripted skills)
+## New, Home, and It's a plan (scripted Down for…, one phone)
 
 9. Phone A: tap New, type "boba tonight with whoever's free". Expect within 2 seconds: "Starling understood" with a filled "Down for boba" chip, then "Boba", "Tonight after 7 PM" (or the current hour), "Expires in 3 hrs"; Ask on All friends with Maya's symbol; the button "See who's up for it"; under it "If nobody's up for it, nobody sees you asked."
 10. Phone A: tap Edit, delete the time row, Done. Expect: the time chip is gone.
 11. Phone A: tap Cancel. Expect: back on the tab you came from; reopen New: the draft is empty.
 12. Phone A: type "boba tonight" again and tap See who's up for it. Expect: a consent sheet over everything listing what leaves the phone, Maya's symbol at top left; Send. Then "Want a heads-up when friends are up for it?": tap Turn on, then allow the system alert.
 13. Phone A: Home. Expect: "Your agent is working on 1 thing", then within about 2 seconds a Needs you card "You and Maya are both down for boba" with I'm in / Not tonight and "If you pass, they just won't see it."
-14. Phone A: lock the phone before step 13's card appears. Expect: one notification with the same sentence; no notification for anything else.
+14. Phone A: lock the phone before step 13's card appears. Expect: one notification titled "Down for boba" with the card's sentence; no notification for anything else.
 15. Phone A: tap I'm in. Expect: It's a plan opens with the lit logo, "You both said yes", the plan card, Keep it going: Add to Calendar "No permission needed", Somewhere else? (Pick a place), Message the group.
 
 ## Hand-offs
@@ -66,4 +66,11 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 
 ## Release build
 
-36. Archive a Release build (or run the Release scheme). Expect: You has no Developer section, and nothing anywhere says "test build"; New's Down for… tile says "Not in this build yet" until lane B merges, while Find a time and Pick a place start. No Swap photos anywhere (its flag is off).
+36. Archive a Release build (or run the Release scheme). Expect: You has no Developer section, and nothing anywhere says "test build"; New's Down for… tile says "Not in this build yet" (no private PSI provider yet, ADR 0144), while Find a time and Pick a place start, and typing "find a time tomorrow" routes to Find a time (the on-device model). No Swap photos anywhere (its flag is off).
+
+## Down for… with both phones (real service, Debug)
+
+37. Phone A, scripted Down for… off, with Maya and Jake paired: New, "boba tonight with everyone except Jake". Expect: Ask shows Everyone except… with Jake left out, never Jake alone.
+38. Phone A: "boba tonight" to Maya and Jake, Ask quietly, send. Expect: Home's In progress shows one row "Checking with 2 friends". Phones B (Maya) and C (Jake): each send their own "boba tonight" to Phone A, Ask quietly (neither sees Phone A's ask before that). Expect on Phone A: two separate cards, "You and Maya are both down for boba." and "You and Jake are both down for boba.", each with its own I'm in.
+39. Phone A: I'm in on both. Expect: two plans under Coming up and a row "Invite Maya and Jake together". Tap it. Expect: New on Down for… in Invite mode with Maya and Jake and the plan's activity and time; send. Expect: the row is gone.
+40. Phone A: on a new quiet ask's card, tap Not tonight. Expect: the card leaves Home at once; Phone B sees nothing change until the card's window ends (about 15 minutes), then nothing at all.
