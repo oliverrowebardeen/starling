@@ -18,10 +18,12 @@ let package = Package(
         .package(path: "../../Packages/StarlingCore"),
         // Lane E's chaining and audit, lane D's Pick a place (its
         // Foundation-only library; the MapKit half stays in the app), and
-        // lane C's Find a time with its calendar access.
+        // lane C's Find a time with its calendar access, and lane B's Down
+        // for... (its copy, template, and request records).
         .package(path: "../../Packages/StarlingChaining"),
         .package(path: "../../Packages/Skills/PickAPlace"),
         .package(path: "../../Packages/Skills/FindATime"),
+        .package(path: "../../Packages/Skills/DownFor"),
         .package(path: "../../Packages/StarlingAvailability"),
     ],
     targets: [
@@ -32,6 +34,7 @@ let package = Package(
             .product(name: "StarlingChaining", package: "StarlingChaining"),
             .product(name: "PickAPlace", package: "PickAPlace"),
             .product(name: "FindATime", package: "FindATime"),
+            .product(name: "DownFor", package: "DownFor"),
             .product(name: "StarlingAvailability", package: "StarlingAvailability"),
         ]),
         .testTarget(
