@@ -232,8 +232,9 @@ enum Work: Sendable {
     case act(RunKey, Action)
     /// Tell a friend "no plan" after its run ended.
     case notify(Notice, Rejection.Reason)
-    /// One scheduled send of a proposal (`DownForService+Delivery`).
-    case deliver(RunKey)
+    /// One scheduled send of a proposal (`DownForService+Delivery`): which
+    /// delivery, and whether it is the schedule's last.
+    case deliver(RunKey, UUID, last: Bool)
 }
 
 enum Action: Sendable {

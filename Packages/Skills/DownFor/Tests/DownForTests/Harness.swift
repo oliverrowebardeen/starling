@@ -379,3 +379,48 @@ func consentForEverything() -> FixedPolicyEngine {
         ))
     }
 }
+
+/// Virtual time for the service's clock: a sleep returns only when the
+/// test advances past its deadline, so no deadline depends on how busy the
+/// machine is. Wall time stays pinned to the date given to `clock(now:)`.
+actor VirtualTime {
+    private(set) var now: Duration = .zero
+    private var sleepers: [UUID: (at: Duration, continuation: CheckedContinuation<Void, any Error>)] = [:]
+
+    /// When each pending sleep is due, earliest first.
+    var due: [Duration] { sleepers.values.map(\.at).sorted() }
+
+    nonisolated func clock(now date: Date) -> SkillClock {
+        SkillClock(now: { date }, sleep: { try await self.sleep($0) })
+    }
+
+    func sleep(_ duration: Duration) async throws {
+        guard duration > .zero else { return }
+        let id = UUID()
+        let at = now + duration
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    sleepers[id] = (at, continuation)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
+        }
+    }
+
+    private func cancel(_ id: UUID) {
+        sleepers.removeValue(forKey: id)?.continuation.resume(throwing: CancellationError())
+    }
+
+    /// Moves time forward to `time`, waking every sleep due by then.
+    func advance(to time: Duration) {
+        now = max(now, time)
+        for (id, sleeper) in sleepers.sorted(by: { $0.value.at < $1.value.at }) where sleeper.at <= now {
+            sleepers[id] = nil
+            sleeper.continuation.resume()
+        }
+    }
+}
