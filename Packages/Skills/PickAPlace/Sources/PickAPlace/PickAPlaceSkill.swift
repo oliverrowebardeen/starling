@@ -41,7 +41,9 @@ public enum PickAPlaceSkill {
             IntentSlot(.place, required: false, hint: "the kind of place or area, such as dinner near Franklin"),
             IntentSlot(.budget, required: false, hint: "the most they want to spend each"),
             IntentSlot(.diet, required: false, hint: "what they need or can't eat, such as vegetarian or no pork"),
-        ]),
+        // No expiry chip: a place for a plan days away should not lapse in
+        // hours. Compose keeps the request open until the plan starts.
+        ], asksForExpiry: false),
         sendModes: [.invite]
     )
 
