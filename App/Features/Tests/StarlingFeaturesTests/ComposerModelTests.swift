@@ -24,8 +24,8 @@ final class ComposerHarness {
     var localNetworkPrompts = 0
     var model: ComposerModel!
 
-    init(skillModel: (any SkillModel)? = ComposerHarness.bobaModel(), calendarAnswer: PermissionStatus = .granted) async throws {
-        lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down, time], store: InMemoryInteractionStore(), now: clock.closure)
+    init(skillModel: (any SkillModel)? = ComposerHarness.bobaModel(), calendarAnswer: PermissionStatus = .granted, registry: SkillRegistry = SampleSkills.registry) async throws {
+        lifecycle = LifecycleCoordinator(registry: registry, services: [down, time], store: InMemoryInteractionStore(), now: clock.closure)
         settings = SettingsModel(store: InMemoryOwnerSettingsStore(), flags: .phase1_5)
         await settings.load()
         friends = [maya, jake, leo]
@@ -94,6 +94,18 @@ final class ComposerHarness {
     }
 }
 
+/// `descriptor` with `asksForExpiry` off, as lanes C and D set it for Find
+/// a time and Pick a place.
+func withoutExpiry(_ descriptor: SkillDescriptor) throws -> SkillDescriptor {
+    try SkillDescriptor(
+        ref: descriptor.ref, wording: descriptor.wording, buildingBlock: descriptor.buildingBlock,
+        topicsUsed: descriptor.topicsUsed, topicsRequired: descriptor.topicsRequired, permissions: descriptor.permissions,
+        accepts: descriptor.accepts, produces: descriptor.produces,
+        intent: try IntentSchema(slots: descriptor.intent.slots, asksForAudience: descriptor.intent.asksForAudience, asksForExpiry: false),
+        chainTrigger: descriptor.chainTrigger, sendModes: descriptor.sendModes
+    )
+}
+
 /// Date formats put a narrow no-break space before AM and PM.
 func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}", with: " ") }
 
@@ -108,7 +120,11 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.skillChip == "Down for boba")
         // Fixtures.noon is 14:13 UTC; six hours later is 20:13, and the
         // slot runs past 11 PM, so "after".
-        #expect(h.model.chips.map(plain) == ["Boba", "Tonight after 8:13 PM", "Ask quietly", "Expires in 3 hrs"])
+        // The activity is on the skill's chip only, never repeated.
+        #expect(h.model.chips.map(plain) == ["Tonight after 8:13 PM", "Ask quietly", "Open for 3 hrs"])
+        h.model.expiry = .tonight
+        #expect(h.model.expiryChip == "Open until tonight")
+        h.model.expiry = .hours(3)
         // Diet is not a Down for… slot.
         #expect(h.model.constraints.constraints[.diet] == nil)
         #expect(h.model.startLabel == "See who's up for it")
@@ -246,6 +262,89 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(sent.count == 1)
         #expect(sent.first?.intent.mode == .invite)
         #expect(Set(sent.first?.participants ?? []) == [h.maya.id, h.leo.id])
+    }
+
+    /// ADR 0206 decision 12: a skill that does not ask for an expiry stays
+    /// open until the time it asks about starts, at least a day and at most
+    /// a week; a chained one until its plan starts.
+    @Test func aSkillWithoutAnExpiryStaysOpenUntilItsWindowStarts() async throws {
+        let now = Fixtures.noon
+        let day: TimeInterval = 24 * 3600
+        #expect(ComposerModel.openUntil(now: now, windowStart: now.addingTimeInterval(3 * day), planStart: nil) == now.addingTimeInterval(3 * day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: now.addingTimeInterval(3600), planStart: nil) == now.addingTimeInterval(day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: now.addingTimeInterval(30 * day), planStart: nil) == now.addingTimeInterval(7 * day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: nil, planStart: nil) == now.addingTimeInterval(day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: nil, planStart: now.addingTimeInterval(2 * 3600)) == now.addingTimeInterval(2 * 3600))
+
+        let registry = try SkillRegistry([SampleSkills.downFor, try withoutExpiry(SampleSkills.findATime), SampleSkills.pickAPlace, SampleSkills.swapPhotos])
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime), registry: registry)
+        h.model.text = "find a time tonight"
+        await h.model.understand()
+        #expect(h.model.skill == .findATime)
+        #expect(!h.model.chips.contains { $0.hasPrefix("Open") })
+        // The evening asked about starts within a day: open for a day.
+        #expect(h.model.expiresAt == h.clock.now.addingTimeInterval(day))
+        let sending = Task { await h.model.send() }
+        // Find a time's calendar sheet comes first.
+        await eventually { h.permissions.pending != nil }
+        h.permissions.proceed()
+        _ = try #require(await sending.value)
+        #expect(await h.time.started.first?.intent.expiresAt == Timestamp(h.clock.now.addingTimeInterval(day)))
+    }
+
+    /// Oliver's device test (2026-10-02): every chip is applied and
+    /// tappable; optional ones can be removed, required ones only edited.
+    @Test func everyChipIsEditableAndOnlyOptionalOnesRemovable() async throws {
+        let h = try await ComposerHarness()
+        h.model.text = "boba tonight"
+        await h.model.understand()
+        let items = h.model.chipItems
+        #expect(items.map(\.part) == [.skill, .issue(.time), .mode, .expiry])
+        #expect(items[0].editor == .words(.activity, "boba"))
+        #expect(!items[0].isRemovable)
+        #expect(items[1].isRemovable)
+        guard case .time(let slot?) = items[1].editor else { Issue.record("time chip edits a window"); return }
+        #expect(items[2].editor == .mode && !items[2].isRemovable)
+        #expect(items[3].editor == .expiry && !items[3].isRemovable)
+        #expect(items.filter { $0.text.localizedCaseInsensitiveContains("boba") }.count == 1)
+
+        // The activity, in the owner's words, edited in place.
+        #expect(h.model.setWords("movie night", for: .activity))
+        #expect(h.model.skillChip == "Down for movie night")
+        // Required: edited, never emptied.
+        #expect(!h.model.setWords("  ", for: .activity))
+        #expect(h.model.skillChip == "Down for movie night")
+        #expect(!h.model.remove(.issue(.activity)))
+
+        // The time, edited in place, then removed.
+        let later = try TimeSlot(start: slot.start.addingTimeInterval(3600), end: slot.end.addingTimeInterval(3600))
+        #expect(h.model.setTime(later))
+        #expect(h.model.chipItems.first { $0.part == .issue(.time) }?.editor == .time(later))
+        #expect(h.model.remove(.issue(.time)))
+        #expect(!h.model.chipItems.contains { $0.part == .issue(.time) })
+
+        // Who: a narrowed audience removes back to all friends.
+        h.model.toggle(h.maya.id)
+        #expect(h.model.chipItems.contains { $0.part == .audience && $0.isRemovable })
+        #expect(h.model.remove(.audience))
+        #expect(h.model.audience == .allFriends)
+        #expect(!h.model.chipItems.contains { $0.part == .audience })
+        #expect(!h.model.remove(.mode) && !h.model.remove(.expiry) && !h.model.remove(.skill))
+    }
+
+    /// Find a time's range is required: it can be edited but not removed,
+    /// and its activity is an ordinary, removable chip.
+    @Test func findATimesRangeIsRequired() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time tonight for boba"
+        await h.model.understand()
+        let items = h.model.chipItems
+        #expect(items.first?.part == .skill && items.first?.editor == ComposeChip.Editor.none)
+        #expect(items.first { $0.part == .issue(.time) }?.isRemovable == false)
+        #expect(items.first { $0.part == .issue(.activity) }?.isRemovable == true)
+        #expect(!h.model.remove(.issue(.time)))
+        #expect(h.model.remove(.issue(.activity)))
+        #expect(!items.contains { $0.part == .mode })
     }
 
     @Test func sendingStartsTheSkillWithTopicsAsSharingAndClearsTheDraft() async throws {
@@ -425,8 +524,8 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.sendMode == .askQuietly)
         #expect(h.model.footnote == "If nobody's up for it, nobody sees you asked.")
         h.model.mode = .invite
-        #expect(h.model.footnote == "The friends you ask see this as an invite.")
-        #expect(h.model.chips.contains("Invite"))
+        #expect(h.model.footnote == "The friends you ask see that you asked.")
+        #expect(h.model.chips.contains("Ask directly"))
         _ = try #require(await h.model.send())
         #expect(await h.down.started.first?.intent.mode == .invite)
     }
@@ -599,9 +698,13 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
             .activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: [try Keyword("karaoke")]))],
         ])
         #expect(formatter.chips(for: set) == ["Boba", "No karaoke", "Nearby", "Up to $15.00"])
-        #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(3 * 3600)) == "Expires in 3 hrs")
-        #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(3600)) == "Expires in 1 hr")
-        #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(45 * 60)) == "Expires in 45 min")
+        // How long friends can answer, never the plan's own length.
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(3 * 3600)) == "Open for 3 hrs")
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(3600)) == "Open for 1 hr")
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(45 * 60)) == "Open for 45 min")
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(26 * 3600)) == "Open until tomorrow")
+        #expect(Expiry.presets.map(\.label) == ["1 hour", "3 hours", "Until tonight"])
+        #expect(Expiry.controlTitle == "How long friends can answer")
     }
 }
 

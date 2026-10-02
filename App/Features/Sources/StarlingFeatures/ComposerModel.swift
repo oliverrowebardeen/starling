@@ -5,7 +5,7 @@ import PickAPlace
 import StarlingChaining
 import StarlingCore
 
-/// How long a request stays out.
+/// How long friends can answer a request (not how long the plan lasts).
 public enum Expiry: Hashable, Sendable {
     case hours(Int)
     /// Until 11:59 PM today.
@@ -26,10 +26,14 @@ public enum Expiry: Hashable, Sendable {
         }
     }
 
+    /// The control's title: what the choice decides.
+    public static let controlTitle = "How long friends can answer"
+
+    /// "1 hour", "3 hours", "Until tonight".
     public var label: String {
         switch self {
         case .hours(let hours): hours == 1 ? "1 hour" : "\(hours) hours"
-        case .tonight: "Tonight"
+        case .tonight: "Until tonight"
         case .at: "Custom"
         }
     }
@@ -329,22 +333,24 @@ public final class ComposerModel {
 
     /// The chips under "Starling understood", without the skill's own chip.
     public var chips: [String] {
-        var chips = chipFormatter.chips(for: constraints)
-        if let descriptor, descriptor.sendModes.count > 1 { chips.append(Self.modeLabel(sendMode)) }
+        chipItems.filter { $0.part != .skill }.map(\.text)
+    }
+
+    /// Who the request goes to, when not all friends: "With Maya", "Close
+    /// friends", a group's name, "Not Leo".
+    var audienceText: String? {
         switch audience {
         case .pick where !picked.isEmpty:
-            chips.append("With " + PermissionExplanation.names(audienceFriends.filter(\.isIncluded).map(\.name)))
+            "With " + PermissionExplanation.names(audienceFriends.filter(\.isIncluded).map(\.name))
         case .closeFriends:
-            chips.append("Close friends")
+            "Close friends"
         case .group(let id):
-            if let group = settings.audienceBook.groups[id] { chips.append(group.name) }
+            settings.audienceBook.groups[id]?.name
         case .everyoneExcept where !excepted.isEmpty:
-            chips.append("Not " + PermissionExplanation.names(audienceFriends.filter { excepted.contains($0.id) }.map(\.name)))
+            "Not " + PermissionExplanation.names(audienceFriends.filter { excepted.contains($0.id) }.map(\.name))
         default:
-            break
+            nil
         }
-        if descriptor?.intent.asksForExpiry ?? true { chips.append(chipFormatter.expiry(expiresAt)) }
-        return chips
     }
 
     /// "Down for boba", never "Down for…" alone once there is an activity
@@ -362,7 +368,40 @@ public final class ComposerModel {
         return nil
     }
 
-    public var expiresAt: Date { expiry.date(from: now(), timeZone: timeZone) }
+    /// When friends can no longer answer. A skill that asks for it (Down
+    /// for...) uses the owner's choice. One that does not (Find a time,
+    /// Pick a place) stays open until the time it asks about starts (ADR
+    /// 0206 decision 12).
+    public var expiresAt: Date {
+        guard let descriptor, !descriptor.intent.asksForExpiry else { return expiry.date(from: now(), timeZone: timeZone) }
+        return Self.openUntil(now: now(), windowStart: askedWindowStart, planStart: chainPlanStart)
+    }
+
+    /// A chained request stays open until its plan starts. Otherwise until
+    /// the asked-about window starts, but at least a day and at most a week.
+    static func openUntil(now: Date, windowStart: Date?, planStart: Date?) -> Date {
+        if let planStart, planStart > now { return planStart }
+        let day: TimeInterval = 24 * 3600
+        let start = windowStart ?? now.addingTimeInterval(day)
+        return min(max(start, now.addingTimeInterval(day)), now.addingTimeInterval(7 * day))
+    }
+
+    /// The earliest start of the time the request asks about.
+    private var askedWindowStart: Date? {
+        (constraints.constraints[.time] ?? []).compactMap { constraint -> Date? in
+            if case .within(let slots) = constraint.rule { return slots.map(\.start).min() }
+            return nil
+        }.min()
+    }
+
+    /// When the plan a chained request continues starts.
+    private var chainPlanStart: Date? {
+        for input in chain?.inputs ?? [] {
+            if case .plan(let plan) = input, let start = plan.time?.start { return start }
+            if case .timeSlot(let slot) = input { return slot.start }
+        }
+        return nil
+    }
 
     // MARK: Mode
 
@@ -378,11 +417,27 @@ public final class ComposerModel {
     /// with both (ADR 0020 decision 2).
     public var offersModeChoice: Bool { (descriptor?.sendModes.count ?? 0) > 1 }
 
+    /// "Ask quietly" or "Ask directly". Not "Invite", which read as part of
+    /// the activity ("Down for an invite").
     public static func modeLabel(_ mode: SendMode) -> String {
         switch mode {
         case .askQuietly: "Ask quietly"
-        case .invite: "Invite"
+        case .invite: "Ask directly"
         }
+    }
+
+    /// What each mode means for the friends asked.
+    public static func modeNote(_ mode: SendMode) -> String {
+        switch mode {
+        case .askQuietly: "Friends see nothing unless they're up for it too."
+        case .invite: "Friends see that you asked and can say yes or pass."
+        }
+    }
+
+    /// "Open for 3 hrs", "Open until tonight": how long friends can answer.
+    public var expiryChip: String {
+        if expiry == .tonight { return "Open until tonight" }
+        return chipFormatter.open(expiresAt)
     }
 
     // MARK: Audience
@@ -525,7 +580,7 @@ public final class ComposerModel {
         guard descriptor != nil else { return nil }
         return switch sendMode {
         case .askQuietly: DownFor.revealNote
-        case .invite: "The friends you ask see this as an invite."
+        case .invite: "The friends you ask see that you asked."
         }
     }
 

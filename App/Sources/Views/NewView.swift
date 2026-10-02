@@ -13,6 +13,7 @@ struct NewView: View {
     let done: () -> Void
     let cancel: () -> Void
     @State private var editing: RulesDraft?
+    @State private var chipEdit: ChipEdit?
     @FocusState private var typing: Bool
 
     var body: some View {
@@ -47,6 +48,16 @@ struct NewView: View {
             try? await Task.sleep(for: .milliseconds(900))
             guard !Task.isCancelled else { return }
             await composer.understand()
+        }
+        .sheet(item: $chipEdit) { edit in
+            switch edit {
+            case .words(let issue, let text):
+                ChipWordsEditor(title: Self.wordsTitle(issue, formatter: app.services.formatter), text: text) { words in
+                    composer.setWords(words, for: issue)
+                }
+            case .time(let slot):
+                ChipTimeEditor(slot: slot) { composer.setTime($0) }
+            }
         }
         .sheet(item: $editing) { draft in
             ChipEditor(draft: draft, formatter: app.services.formatter) { edited in
@@ -97,30 +108,83 @@ struct NewView: View {
             if composer.isUnderstanding {
                 ProgressView("Reading this on your iPhone...")
             } else {
+                // Every chip is applied; a tap edits it in place, and an
+                // optional one can be removed. Edit opens everything.
                 FlowLayout(spacing: 8) {
-                    if let skillChip = composer.skillChip {
-                        Text(skillChip)
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                            .foregroundStyle(.white)
-                            .background(Color.accentColor, in: .capsule)
-                    }
-                    ForEach(composer.chips, id: \.self) { chip in
-                        Text(chip)
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                            .overlay(Capsule().strokeBorder(.separator))
-                    }
-                }
-                if let descriptor = composer.descriptor, descriptor.intent.asksForExpiry {
-                    Menu {
-                        ForEach(Expiry.presets, id: \.self) { preset in
-                            Button(preset.label) { composer.expiry = preset }
-                        }
-                    } label: {
-                        Label("Change how long it stays out", systemImage: "clock").font(.subheadline)
-                    }
+                    ForEach(composer.chipItems) { chip in chipView(chip) }
                 }
 
             }
+        }
+    }
+
+    @ViewBuilder private func chipView(_ chip: ComposeChip) -> some View {
+        let lead = chip.part == .skill
+        HStack(spacing: 6) {
+            chipAction(chip)
+            if chip.isRemovable {
+                Button {
+                    composer.remove(chip.part)
+                } label: {
+                    Image(systemName: "xmark.circle.fill").imageScale(.medium)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(chip.text)")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .foregroundStyle(lead ? Color.white : Color.accentColor)
+        .background(lead ? Color.accentColor : Color.accentColor.opacity(0.14), in: .capsule)
+    }
+
+    @ViewBuilder private func chipAction(_ chip: ComposeChip) -> some View {
+        switch chip.editor {
+        case .none:
+            Text(chip.text)
+        case .words(let issue, let text):
+            Button(chip.text) { chipEdit = .words(issue, text) }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edit")
+        case .time(let slot):
+            Button(chip.text) { chipEdit = .time(slot) }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edit")
+        case .details:
+            Button(chip.text) { editing = RulesDraft(OwnerRules(constraints: composer.constraints)) }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edit")
+        case .mode:
+            Menu {
+                Picker(chip.text, selection: Binding(get: { composer.sendMode }, set: { composer.mode = $0 })) {
+                    Text(ComposerModel.modeLabel(.askQuietly)).tag(SendMode.askQuietly)
+                    Text(ComposerModel.modeLabel(.invite)).tag(SendMode.invite)
+                }
+            } label: { Text(chip.text) }
+        case .audience:
+            Menu {
+                Picker(chip.text, selection: $composer.audience) {
+                    ForEach(Array(composer.audienceOptions.enumerated()), id: \.offset) { _, option in
+                        Text(option.label).tag(option.choice)
+                    }
+                }
+            } label: { Text(chip.text) }
+        case .expiry:
+            Menu {
+                Section(Expiry.controlTitle) {
+                    ForEach(Expiry.presets, id: \.self) { preset in
+                        Button(preset.label) { composer.expiry = preset }
+                    }
+                }
+            } label: { Text(chip.text) }
+            .accessibilityHint(Expiry.controlTitle)
+        }
+    }
+
+    static func wordsTitle(_ issue: IssueKey, formatter: ValueFormatter) -> String {
+        switch issue {
+        case .activity: "What you want to do"
+        case .place: "Where"
+        default: formatter.issueName(issue)
         }
     }
 
@@ -142,9 +206,7 @@ struct NewView: View {
                     Text(ComposerModel.modeLabel(.invite)).tag(SendMode.invite)
                 }
                 .pickerStyle(.segmented)
-                Text(composer.sendMode == .askQuietly
-                     ? "Friends see nothing unless they're up for it too."
-                     : "Friends see your invite and can say yes or pass.")
+                Text(ComposerModel.modeNote(composer.sendMode))
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if composer.audience == .everyoneExcept {
@@ -239,6 +301,89 @@ struct NewView: View {
         }
         .padding()
         .background(.bar)
+    }
+}
+
+/// One chip being edited in place.
+enum ChipEdit: Identifiable {
+    case words(IssueKey, String)
+    case time(TimeSlot?)
+
+    var id: String {
+        switch self {
+        case .words(let issue, _): "words-\(issue.rawValue)"
+        case .time: "time"
+        }
+    }
+}
+
+/// Edits a chip's words, comma separated, in the owner's own words.
+private struct ChipWordsEditor: View {
+    let title: String
+    @State var text: String
+    /// Returns whether the words applied.
+    let save: (String) -> Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var refused = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField(title, text: $text)
+                    .submitLabel(.done)
+                    .onSubmit(apply)
+                if refused {
+                    Text("Starling can't use that. Try a few plain words.").font(.footnote).foregroundStyle(.orange)
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Done", action: apply) }
+            }
+        }
+        .presentationDetents([.height(220)])
+    }
+
+    private func apply() {
+        if save(text) { dismiss() } else { refused = true }
+    }
+}
+
+/// Edits the time asked about: one window, start and end.
+private struct ChipTimeEditor: View {
+    @State private var start: Date
+    @State private var end: Date
+    let save: (TimeSlot) -> Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(slot: TimeSlot?, save: @escaping (TimeSlot) -> Bool) {
+        let start = slot?.start ?? Date().addingTimeInterval(3600)
+        _start = State(initialValue: start)
+        _end = State(initialValue: slot?.end ?? start.addingTimeInterval(2 * 3600))
+        self.save = save
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                DatePicker("From", selection: $start)
+                DatePicker("Until", selection: $end, in: start...)
+            }
+            .navigationTitle("When")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        if let slot = try? TimeSlot(start: start, end: end), save(slot) { dismiss() }
+                    }
+                    .disabled(end <= start)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

@@ -40,7 +40,17 @@ struct RootView<Developer: View>: View {
         .onChange(of: tab) { old, new in
             if new == .new, old != .new { previousTab = old }
         }
-        .task { await app.start() }
+        .task {
+            await app.start()
+            #if DEBUG
+            // Debug only: `-starlingComposeText "boba tonight"` opens New with
+            // those words, to look at the chips without typing.
+            if let text = UserDefaults.standard.string(forKey: "starlingComposeText") {
+                app.composer.text = text
+                tab = .new
+            }
+            #endif
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { app.foreground() }
         }
