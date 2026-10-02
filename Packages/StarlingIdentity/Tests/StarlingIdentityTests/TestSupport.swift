@@ -50,7 +50,7 @@ actor Recorder<Element: Sendable> {
         }
     }
 
-    private func append(_ value: Element) { values.append(value) }
+    func append(_ value: Element) { values.append(value) }
 }
 
 extension Recorder where Element == TransportEvent {
