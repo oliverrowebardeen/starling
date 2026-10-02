@@ -128,6 +128,9 @@ public final class PairingModel {
     /// Set when the sheet went away, so a session still being created is
     /// cancelled as soon as it exists.
     private var isEnded = false
+    /// This owner ended the last ceremony (Cancel, or "They're different"),
+    /// so the sheet does not rejoin that phone on its own.
+    private var endedHere = false
 
     /// - Parameters:
     ///   - friends: Every paired friend now, for the nickname check.
@@ -153,7 +156,17 @@ public final class PairingModel {
     /// request only comes from a phone whose owner picked this one, and the
     /// code comparison still verifies it, so joining saves the second owner
     /// a pick (ADR 0260).
+    ///
+    /// After a failure, a new request from the same phone is joined too:
+    /// its owner tapped Try again, and this owner should not have to.
     public func refresh() async {
+        if case .failed = phase, !endedHere, let phone, await directory.requests().contains(phone.peer), case .failed = phase {
+            events?.cancel()
+            events = nil
+            session = nil
+            await start(with: phone)
+            return
+        }
         guard phase == .choosing else { return }
         let fresh = await directory.candidates()
         guard phase == .choosing else { return }
@@ -195,6 +208,7 @@ public final class PairingModel {
 
     private func start(with candidate: PairingCandidate) async {
         phone = candidate
+        endedHere = false
         phase = .connecting
         notice = nil
         do {
@@ -219,11 +233,13 @@ public final class PairingModel {
     /// The owner compared the codes on both phones.
     public func confirm(codesMatch: Bool) async {
         guard case .comparing = phase, let session else { return }
+        endedHere = !codesMatch
         phase = .waiting
         await session.confirm(codesMatch: codesMatch)
     }
 
     public func cancel() async {
+        endedHere = true
         guard let session else {
             pickedName = nil
             phase = .choosing

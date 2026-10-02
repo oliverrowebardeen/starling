@@ -118,6 +118,48 @@ final class OfferRecorder {
         #expect(model.phone?.label == "Maya's iPhone")
     }
 
+    /// One owner taps Try again; the other phone, still showing the
+    /// failure, joins without a tap. A different phone's request does not
+    /// pull it into another ceremony.
+    @Test func aFailedSheetJoinsTheSamePhoneTryingAgain() async {
+        let failing = ScriptedDirectory(candidates: [Self.candidate]) { _, _ in TimingOutSession() }
+        let model = PairingModel(directory: failing.directory)
+        await model.choose(Self.candidate)
+        await eventually { model.phase == .failed(.timedOut) }
+        failing.ask(from: PeerID.random())
+        await model.refresh()
+        #expect(model.phase == .failed(.timedOut))
+        failing.ask(from: Self.maya.id)
+        await model.refresh()
+        #expect(failing.starts.count == 2)
+    }
+
+    /// Cancel and "They're different" stick: the sheet does not rejoin.
+    @Test func aFailureThisOwnerChoseIsNotRejoined() async {
+        let directory = Self.scripted()
+        let model = PairingModel(directory: directory.directory)
+        await model.choose(Self.candidate)
+        await eventually { if case .comparing = model.phase { true } else { false } }
+        await model.confirm(codesMatch: false)
+        await eventually { if case .failed = model.phase { true } else { false } }
+        directory.ask(from: Self.maya.id)
+        await model.refresh()
+        #expect(model.phase == .failed(.codeMismatch))
+        #expect(directory.starts.count == 1)
+    }
+
+    actor TimingOutSession: PairingSession {
+        nonisolated let events: AsyncStream<PairingEvent>
+        init() {
+            let (stream, continuation) = AsyncStream.makeStream(of: PairingEvent.self)
+            continuation.yield(.failed(.timedOut))
+            continuation.finish()
+            events = stream
+        }
+        func confirm(codesMatch: Bool) async {}
+        func cancel() async {}
+    }
+
     @Test func requestsAreNotJoinedMidCeremony() async {
         let directory = Self.scripted()
         let model = PairingModel(directory: directory.directory)
