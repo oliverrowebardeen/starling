@@ -362,7 +362,40 @@ public final class ComposerModel {
         return nil
     }
 
-    public var expiresAt: Date { expiry.date(from: now(), timeZone: timeZone) }
+    /// When friends can no longer answer. A skill that asks for it (Down
+    /// for...) uses the owner's choice. One that does not (Find a time,
+    /// Pick a place) stays open until the time it asks about starts (ADR
+    /// 0206 decision 12).
+    public var expiresAt: Date {
+        guard let descriptor, !descriptor.intent.asksForExpiry else { return expiry.date(from: now(), timeZone: timeZone) }
+        return Self.openUntil(now: now(), windowStart: askedWindowStart, planStart: chainPlanStart)
+    }
+
+    /// A chained request stays open until its plan starts. Otherwise until
+    /// the asked-about window starts, but at least a day and at most a week.
+    static func openUntil(now: Date, windowStart: Date?, planStart: Date?) -> Date {
+        if let planStart, planStart > now { return planStart }
+        let day: TimeInterval = 24 * 3600
+        let start = windowStart ?? now.addingTimeInterval(day)
+        return min(max(start, now.addingTimeInterval(day)), now.addingTimeInterval(7 * day))
+    }
+
+    /// The earliest start of the time the request asks about.
+    private var askedWindowStart: Date? {
+        (constraints.constraints[.time] ?? []).compactMap { constraint -> Date? in
+            if case .within(let slots) = constraint.rule { return slots.map(\.start).min() }
+            return nil
+        }.min()
+    }
+
+    /// When the plan a chained request continues starts.
+    private var chainPlanStart: Date? {
+        for input in chain?.inputs ?? [] {
+            if case .plan(let plan) = input, let start = plan.time?.start { return start }
+            if case .timeSlot(let slot) = input { return slot.start }
+        }
+        return nil
+    }
 
     // MARK: Mode
 

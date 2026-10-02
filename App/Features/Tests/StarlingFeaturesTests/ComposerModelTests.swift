@@ -24,8 +24,8 @@ final class ComposerHarness {
     var localNetworkPrompts = 0
     var model: ComposerModel!
 
-    init(skillModel: (any SkillModel)? = ComposerHarness.bobaModel(), calendarAnswer: PermissionStatus = .granted) async throws {
-        lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [down, time], store: InMemoryInteractionStore(), now: clock.closure)
+    init(skillModel: (any SkillModel)? = ComposerHarness.bobaModel(), calendarAnswer: PermissionStatus = .granted, registry: SkillRegistry = SampleSkills.registry) async throws {
+        lifecycle = LifecycleCoordinator(registry: registry, services: [down, time], store: InMemoryInteractionStore(), now: clock.closure)
         settings = SettingsModel(store: InMemoryOwnerSettingsStore(), flags: .phase1_5)
         await settings.load()
         friends = [maya, jake, leo]
@@ -92,6 +92,18 @@ final class ComposerHarness {
             }
         )
     }
+}
+
+/// `descriptor` with `asksForExpiry` off, as lanes C and D set it for Find
+/// a time and Pick a place.
+func withoutExpiry(_ descriptor: SkillDescriptor) throws -> SkillDescriptor {
+    try SkillDescriptor(
+        ref: descriptor.ref, wording: descriptor.wording, buildingBlock: descriptor.buildingBlock,
+        topicsUsed: descriptor.topicsUsed, topicsRequired: descriptor.topicsRequired, permissions: descriptor.permissions,
+        accepts: descriptor.accepts, produces: descriptor.produces,
+        intent: try IntentSchema(slots: descriptor.intent.slots, asksForAudience: descriptor.intent.asksForAudience, asksForExpiry: false),
+        chainTrigger: descriptor.chainTrigger, sendModes: descriptor.sendModes
+    )
 }
 
 /// Date formats put a narrow no-break space before AM and PM.
@@ -246,6 +258,34 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(sent.count == 1)
         #expect(sent.first?.intent.mode == .invite)
         #expect(Set(sent.first?.participants ?? []) == [h.maya.id, h.leo.id])
+    }
+
+    /// ADR 0206 decision 12: a skill that does not ask for an expiry stays
+    /// open until the time it asks about starts, at least a day and at most
+    /// a week; a chained one until its plan starts.
+    @Test func aSkillWithoutAnExpiryStaysOpenUntilItsWindowStarts() async throws {
+        let now = Fixtures.noon
+        let day: TimeInterval = 24 * 3600
+        #expect(ComposerModel.openUntil(now: now, windowStart: now.addingTimeInterval(3 * day), planStart: nil) == now.addingTimeInterval(3 * day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: now.addingTimeInterval(3600), planStart: nil) == now.addingTimeInterval(day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: now.addingTimeInterval(30 * day), planStart: nil) == now.addingTimeInterval(7 * day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: nil, planStart: nil) == now.addingTimeInterval(day))
+        #expect(ComposerModel.openUntil(now: now, windowStart: nil, planStart: now.addingTimeInterval(2 * 3600)) == now.addingTimeInterval(2 * 3600))
+
+        let registry = try SkillRegistry([SampleSkills.downFor, try withoutExpiry(SampleSkills.findATime), SampleSkills.pickAPlace, SampleSkills.swapPhotos])
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime), registry: registry)
+        h.model.text = "find a time tonight"
+        await h.model.understand()
+        #expect(h.model.skill == .findATime)
+        #expect(!h.model.chips.contains { $0.hasPrefix("Open") })
+        // The evening asked about starts within a day: open for a day.
+        #expect(h.model.expiresAt == h.clock.now.addingTimeInterval(day))
+        let sending = Task { await h.model.send() }
+        // Find a time's calendar sheet comes first.
+        await eventually { h.permissions.pending != nil }
+        h.permissions.proceed()
+        _ = try #require(await sending.value)
+        #expect(await h.time.started.first?.intent.expiresAt == Timestamp(h.clock.now.addingTimeInterval(day)))
     }
 
     @Test func sendingStartsTheSkillWithTopicsAsSharingAndClearsTheDraft() async throws {
