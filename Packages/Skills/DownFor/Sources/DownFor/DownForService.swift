@@ -305,21 +305,28 @@ public actor DownForService: SkillService {
     /// ignored rather than opened again.
     public func restore(_ interactions: [Interaction]) async {
         let now = clock.now()
-        for interaction in interactions where interaction.skill.id == DownFor.ref.id && interaction.state.isFinal {
-            retire(interaction.conversation)
-        }
         for interaction in interactions where interaction.skill.id == DownFor.ref.id && requests[interaction.id] == nil {
+            let stored = try? await store.record(for: interaction.id)
+            // A member's card lives in the starter's conversation, which
+            // ends with the interaction however it ends: after a pass
+            // before the restart, or as failed after it (focused review of
+            // PR #56 at e60b3c0).
+            let starter = Self.starterConversation(of: interaction, record: stored)
             switch interaction.state {
+            case let state where state.isFinal:
+                retire(interaction.conversation)
+                if let starter { retire(starter) }
             case .planned:
-                guard let record = try? await store.record(for: interaction.id) ?? Self.placeholder(for: interaction) else { continue }
+                var record = stored ?? Self.placeholder(for: interaction)
+                record.starterConversation = starter
                 let profile = DownForProfile(rules: record.rules, inputs: record.inputs, expiresAt: record.expiresAt.date, timeZone: timeZone)
                 requests[interaction.id] = Request(record: record, profile: profile, mirror: interaction)
                 armCleanup(interaction.id)
             case .negotiating where interaction.role == .initiator:
                 // Runs in flight died with the old process; their peers time
                 // out. Start fresh ones under the same conversation.
-                guard let record = try? await store.record(for: interaction.id), record.expiresAt.date > now else {
-                    requests[interaction.id] = Self.orphan(interaction, timeZone: timeZone)
+                guard let record = stored, record.expiresAt.date > now else {
+                    requests[interaction.id] = Self.orphan(interaction, starter: starter, timeZone: timeZone)
                     endRequest(interaction.id, with: .failed)
                     continue
                 }
@@ -330,12 +337,10 @@ public actor DownForService: SkillService {
                 requests[interaction.id] = restored
                 armExpiry(interaction.id)
                 for peer in record.participants { enqueue(.start(interaction.id), for: peer) }
-            case .done, .ended:
-                continue
             default:
                 // A consent sheet, a card, or a plan in flight cannot be
                 // rebuilt: the sheet is gone, and so is the starter's run.
-                requests[interaction.id] = Self.orphan(interaction, timeZone: timeZone)
+                requests[interaction.id] = Self.orphan(interaction, starter: starter, timeZone: timeZone)
                 endRequest(interaction.id, with: .failed)
             }
         }
@@ -399,12 +404,7 @@ public actor DownForService: SkillService {
             return false
         }
         guard request.mirror.state.isFinal else { return report(id, event) }
-        // Its own conversation (for an invitee, the invitation), and the
-        // starter's conversation of a card it showed.
-        var conversations = [request.conversation]
-        if case .member(let key) = request.engagement, request.mirror.proposal != nil, key.conversation != request.conversation {
-            conversations.append(key.conversation)
-        }
+        let conversations = Self.conversations(of: request)
         requests[id] = request
         discard(id)
         retiring.formUnion(conversations)
@@ -433,7 +433,49 @@ public actor DownForService: SkillService {
         guard let request = requests[id] else { return }
         try? requests[id]?.mirror.apply(event, at: Timestamp(clock.now()))
         discard(id)
-        retire(request.conversation)
+        for conversation in Self.conversations(of: request) { retire(conversation) }
+    }
+
+    /// Every conversation a request ends with: its own (for an invitee, the
+    /// invitation) and, for a member whose card showed, the starter's,
+    /// whether this process saw the card or a restart restored it.
+    static func conversations(of request: Request) -> [ConversationID] {
+        var conversations = [request.conversation]
+        var starter = request.record.starterConversation
+        if case .member(let key) = request.engagement, request.mirror.proposal != nil { starter = starter ?? key.conversation }
+        if let starter, starter != request.conversation { conversations.append(starter) }
+        return conversations
+    }
+
+    /// The starter's conversation of a member's card: as saved with the
+    /// request, or as the saved card's plan names it (its origin).
+    static func starterConversation(of interaction: Interaction, record: DownForRequestRecord?) -> ConversationID? {
+        guard let conversation = record?.starterConversation ?? interaction.proposal?.plan?.origin,
+              conversation != interaction.conversation
+        else { return nil }
+        return conversation
+    }
+
+    /// A member's card showed in `conversation`: keep it with the request,
+    /// so ending the request retires it even after a restart.
+    func rememberStarterConversation(_ id: InteractionID, _ conversation: ConversationID) {
+        guard var request = requests[id], request.record.starterConversation != conversation, conversation != request.conversation else { return }
+        request.record.starterConversation = conversation
+        requests[id] = request
+        saveRecord(of: request)
+    }
+
+    /// Saves an owner's request record, after any save still in flight.
+    /// An invitee's card has no record to keep.
+    func saveRecord(of request: Request) {
+        guard request.mirror.role == .initiator else { return }
+        let record = request.record
+        let store = store
+        let previous = lastSave
+        lastSave = Task {
+            await previous?.value
+            try? await store.save(record)
+        }
     }
 
     /// The policy refused a send for the current step: the owner's privacy
@@ -456,14 +498,7 @@ public actor DownForService: SkillService {
         request.runs[friend] = max(0, request.runs[friend, default: 0] + change)
         request.record.runDebits = request.runs
         requests[id] = request
-        guard request.mirror.role == .initiator else { return }
-        let record = request.record
-        let store = store
-        let previous = lastSave
-        lastSave = Task {
-            await previous?.value
-            try? await store.save(record)
-        }
+        saveRecord(of: request)
     }
 
     /// Ends `conversation` for good through `Outbox.retire(_:)` (ADR 0021):
@@ -572,7 +607,7 @@ public actor DownForService: SkillService {
     private func forgetPlan(_ id: InteractionID) {
         guard let request = requests[id] else { return }
         discard(id)
-        retire(request.conversation)
+        for conversation in Self.conversations(of: request) { retire(conversation) }
     }
 
     // MARK: - Helpers
@@ -584,8 +619,9 @@ public actor DownForService: SkillService {
 
     /// A request rebuilt from its interaction alone, only to report how it
     /// ended.
-    static func orphan(_ interaction: Interaction, timeZone: TimeZone) -> Request {
-        let record = placeholder(for: interaction)
+    static func orphan(_ interaction: Interaction, starter: ConversationID? = nil, timeZone: TimeZone) -> Request {
+        var record = placeholder(for: interaction)
+        record.starterConversation = starter
         let profile = DownForProfile(rules: record.rules, inputs: [], expiresAt: record.expiresAt.date, timeZone: timeZone)
         return Request(record: record, profile: profile, mirror: interaction)
     }

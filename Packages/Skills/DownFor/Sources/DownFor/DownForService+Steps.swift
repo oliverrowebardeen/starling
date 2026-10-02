@@ -359,6 +359,7 @@ extension DownForService {
         // Behind a consent sheet the card cannot show yet; the starter's
         // next resend brings it back.
         guard report(run.request, .proposalReady(card)) else { return }
+        rememberStarterConversation(run.request, key.conversation)
         if let old = run.terms { runs[key]?.replies[.offer(old)] = nil }
         runs[key]?.highestRound = proposal.round
         runs[key]?.terms = terms

@@ -18,6 +18,10 @@ public struct DownForRequestRecord: Hashable, Sendable, Codable {
     /// PSI runs debited per friend, kept with the record so a restart does
     /// not refill a friend's run budget. Nil in a record from before it.
     public internal(set) var runDebits: [PeerID: Int]?
+    /// The starter's conversation a member's card showed in, which is
+    /// retired with the request, a restart included. Nil until a card
+    /// showed, for a starter, and in a record from before it.
+    public internal(set) var starterConversation: ConversationID?
 
     /// The record of an invitee's card: the friend's invitation, which
     /// lasts until the plan it names starts. The invitee's rules are not

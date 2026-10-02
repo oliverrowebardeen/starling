@@ -193,6 +193,13 @@ final class Phone: Sendable {
         try await transport.start()
     }
 
+    /// An abrupt kill, as iOS does to apps routinely: the transport and the
+    /// loops stop, and the service is never shut down.
+    func crash() async {
+        await transport.stop()
+        for task in tasks.withLock({ $0 }) { task.cancel() }
+    }
+
     func stop() async {
         await service.shutdown()
         await transport.stop()

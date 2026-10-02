@@ -96,6 +96,63 @@ import Testing
         return Transcript(kinds: kinds, checks: max(0, sessions.count - 1), proposedAt: proposedAt)
     }
 
+    // MARK: Focused review of e60b3c0: a restart retires the starter's conversation
+
+    /// B's card from Mallory shows; B passes, or never answers; then B's
+    /// app is killed without a shutdown and restored. With a new request
+    /// for Mallory open, Mallory sends a first PSI step in the old
+    /// conversation. B answers neither way: the restored interaction
+    /// retired the starter's conversation, as the pass did.
+    @Test func aRestartRetiresTheStartersConversationAfterAPassOrSilence() async throws {
+        let passed = try await Self.probeAfterARestart(passBeforeRestart: true)
+        let silent = try await Self.probeAfterARestart(passBeforeRestart: false)
+        #expect(passed == silent)
+        #expect(passed.isEmpty, "B answered in the old conversation: \(passed)")
+    }
+
+    static func probeAfterARestart(passBeforeRestart: Bool) async throws -> [MessageBody.Kind] {
+        let store = InMemoryDownForRequestStore()
+        let world = World(1, stores: [store])
+        try await world.start()
+        defer { Task { await world.stop() } }
+        let b = world["A"]
+        let mallory = try Mallory(hub: world.hub)
+        try await mallory.start()
+        defer { Task { await mallory.stop() } }
+        let mine = try await b.down(for: ["boba"], time: [T.slot(19, 21)], with: [], extraParticipants: [mallory.id])
+        let (conversation, firstStep) = try await mallory.openRun(with: b.id)
+        try await mallory.send(.query(try Query(issue: .activity, candidates: .keywords([T.keyword("boba")]))), to: b.id, in: conversation)
+        _ = try await mallory.next(.answer, in: conversation)
+        let plan = try Terms([.time: .slots([T.slot(19.5, 20.5)]), .activity: .keywords([T.keyword("boba")])])
+        try await mallory.send(.propose(try Proposal(round: 0, terms: plan)), to: b.id, in: conversation)
+        try await b.waitForProposal(mine)
+        if passBeforeRestart {
+            try await b.pass(mine)
+            try await b.waitFor(.ended(.declined), mine)
+        }
+        let saved = try #require(await b.lifecycle.interaction(mine))
+
+        // Killed, not shut down; then restored from the same stores.
+        await b.crash()
+        let restarted = Phone(
+            name: "B2", id: b.id, hub: world.hub, model: ScriptedAgentModel(), policy: FixedPolicyEngine(.allow),
+            consent: ScriptedConsentProvider(.approved), psi: InsecurePSIStub(), clock: testClock(), configuration: fastConfiguration,
+            store: store, ledger: b.ledger
+        )
+        await restarted.lifecycle.create(saved)
+        try await restarted.start()
+        defer { Task { await restarted.stop() } }
+        await restarted.service.restore([saved])
+        if !passBeforeRestart { try await restarted.waitFor(.ended(.failed), mine) }
+
+        // A new request for Mallory, then a probe in the old conversation.
+        _ = try await restarted.down(for: ["boba"], time: [T.slot(19, 21)], with: [], extraParticipants: [mallory.id])
+        let before = await mallory.inbox.envelopes.count
+        try await mallory.send(.psi(firstStep), to: b.id, in: conversation)
+        try await Task.sleep(for: .milliseconds(400))
+        return await mallory.inbox.envelopes.dropFirst(before).filter { $0.conversation == conversation }.map(\.body.kind)
+    }
+
     // MARK: Finding 5 (lane part): a restart does not refill the run cap
 
     @Test func aRestartDoesNotRefillTheRunCap() async throws {
