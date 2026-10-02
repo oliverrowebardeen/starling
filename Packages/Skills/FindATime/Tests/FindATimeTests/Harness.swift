@@ -424,11 +424,12 @@ final class Phone: Sendable {
     /// Starts Find a time as the app would: record the draft, then start.
     @discardableResult
     func findATime(
-        with friends: [Phone], range: [TimeSlot] = [T.slot(8, 24)], also: [Constraint] = [], daily: (Int, Int)? = nil,
+        with friends: [Phone], range: [TimeSlot]? = [T.slot(8, 24)], also: [Constraint] = [], daily: (Int, Int)? = nil,
         activity: String? = "stats", expiresIn hours: Double = 48, chainedFrom: ConversationID? = nil, mode: SendMode = .invite
     ) async throws -> InteractionID {
-        var constraints: [IssueKey: [Constraint]] = [.time: [try Constraint(.within(range))] + also]
-        if let daily { constraints[.time]!.append(try Constraint(.dailyWindow(from: daily.0, to: daily.1))) }
+        var constraints: [IssueKey: [Constraint]] = [.time: (try range.map { [try Constraint(.within($0))] } ?? []) + also]
+        if constraints[.time]!.isEmpty && daily == nil { constraints[.time] = nil }
+        if let daily { constraints[.time, default: []].append(try Constraint(.dailyWindow(from: daily.0, to: daily.1))) }
         if let activity { constraints[.activity] = [try Constraint(.prefers(liked: [Keyword(activity)], avoided: []), strength: .soft)] }
         let intent = SkillIntent(
             skill: FindATimeSkill.ref, rules: OwnerRules(constraints: try ConstraintSet(constraints)),
