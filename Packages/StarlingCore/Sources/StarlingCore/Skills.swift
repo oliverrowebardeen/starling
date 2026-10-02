@@ -30,6 +30,9 @@ public struct SkillID: Hashable, Comparable, Sendable, CustomStringConvertible {
     public static let findATime = SkillID(known: "find_a_time")
     public static let pickAPlace = SkillID(known: "pick_a_place")
     public static let swapPhotos = SkillID(known: "swap_photos")
+    /// Change a confirmed plan: its time, place, activity, or who is in it
+    /// (ADR 0022).
+    public static let changePlan = SkillID(known: "change_plan")
 
     public var description: String { rawValue }
     public static func < (lhs: SkillID, rhs: SkillID) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -132,6 +135,9 @@ public enum ChainTrigger: String, Hashable, Sendable, Codable {
     /// Starts by itself when the plan it follows ends (Swap photos), only if
     /// the owner opted in at Confirm.
     case afterPlanEnds
+    /// Started by the owner from the plan's detail, any time after it is
+    /// confirmed and before it ends (Change the plan, ADR 0022).
+    case whilePlanned = "while_planned"
 }
 
 /// One field the model fills from the owner's words for a skill, named by

@@ -73,3 +73,41 @@ import Testing
         if case .peers(let decoded)? = terms.values[.people] { #expect(try Attendees(decoded).peers == roster) }
     }
 }
+
+/// ADR 0022: a confirmed plan can change, and every change raises its revision.
+@Suite struct PlanChangeTests {
+    static func plan() throws -> Plan {
+        try Plan(origin: ConversationID(), attendees: Attendees([Fixtures.alice, Fixtures.bob]),
+                 activity: try Keyword("dinner"), time: try TimeSlot(startMinute: 600, endMinute: 690))
+    }
+
+    @Test func everyAgreedChangeRaisesTheRevisionAndKeepsTheRest() throws {
+        let plan = try Self.plan()
+        #expect(plan.revision == 0)
+        let later = try plan.updating(time: .some(try TimeSlot(startMinute: 630, endMinute: 720)))
+        #expect(later.revision == 1 && later.id == plan.id && later.activity == plan.activity && later.attendees == plan.attendees)
+        let place = try PlaceChoice(name: try PlaceName("Boba Guys"))
+        let placed = later.updating(place: place)
+        #expect(placed.revision == 2 && placed.place == place && placed.time == later.time)
+        let carol = try PeerID(bytes: Data(repeating: 0xCC, count: 32))
+        let bigger = try placed.updating(attendees: try Attendees([Fixtures.alice, Fixtures.bob, carol]))
+        #expect(bigger.revision == 3 && bigger.attendees.peers.contains(carol))
+        // A change cannot leave a plan with neither an activity nor a time.
+        #expect(throws: ValidationError.self) { try plan.updating(activity: .some(nil), time: .some(nil)) }
+    }
+
+    @Test func plansSavedBeforeRevisionsDecodeAtZero() throws {
+        let plan = try Self.plan()
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as! [String: Any]
+        json.removeValue(forKey: "revision")
+        let old = try JSONDecoder().decode(Plan.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(old.revision == 0 && old.id == plan.id)
+        let changed = try plan.updating(time: .some(try TimeSlot(startMinute: 630, endMinute: 720)))
+        #expect(try JSONDecoder().decode(Plan.self, from: JSONEncoder().encode(changed)) == changed)
+    }
+
+    @Test func changingAPlanIsItsOwnSkillAndTrigger() throws {
+        #expect(SkillID.changePlan.rawValue == "change_plan")
+        #expect(ChainTrigger(rawValue: "while_planned") == .whilePlanned)
+    }
+}
