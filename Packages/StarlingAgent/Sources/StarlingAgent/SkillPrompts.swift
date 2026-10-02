@@ -294,11 +294,53 @@ package enum SkillOutputMapping {
     /// own (no digits, day, or part of day). Code then fills in the time and
     /// the place. Dashes become commas (owner norm). Anything else throws,
     /// and the caller shows the skill's template instead.
+    /// Lowercases each word written in capitals (two or more letters, such
+    /// as "YOU"), except words in `keeping`.
+    static func sentenceCase(_ text: String, keeping: Set<String>) -> String {
+        var result = ""
+        var word = ""
+        func flush() {
+            let letters = word.filter(\.isLetter)
+            if letters.count >= 2, letters.allSatisfy(\.isUppercase), !keeping.contains(word) { result += word.lowercased() } else { result += word }
+            word = ""
+        }
+        for character in text {
+            if character.isLetter || character == "'" || character == "’" {
+                word.append(character)
+            } else {
+                flush()
+                result.append(character)
+            }
+        }
+        flush()
+        return result
+    }
+
+    /// Capitalizes the first letter of each sentence: "tonight at 8 PM?"
+    /// after "down for dinner." reads "Tonight at 8 PM?".
+    static func capitalizingSentences(_ text: String) -> String {
+        var result = ""
+        var atStart = true
+        for character in text {
+            if atStart, character.isLetter {
+                result += character.uppercased()
+                atStart = false
+            } else {
+                result.append(character)
+                if ".!?".contains(character) { atStart = true } else if !character.isWhitespace { atStart = false }
+            }
+        }
+        return result
+    }
+
     package static func sentence(_ text: String, facts: ProposalFacts, time: String?) throws -> String {
         var sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
         for dash in [" \u{2014} ", "\u{2014}", " \u{2013} ", "\u{2013}"] { sentence = sentence.replacingOccurrences(of: dash, with: ", ") }
         func reject(_ why: String) -> AgentModelError { .invalidOutput("proposal sentence: \(why)") }
         guard !sentence.isEmpty, sentence.count <= ProposalSentence.maxCharacters, !sentence.contains(where: \.isNewline) else { throw reject("length") }
+        // Sentence case: the model once wrote "YOU and Riley are both down"
+        // (device test 2, 2026-10-02). A friend's name keeps its spelling.
+        sentence = sentenceCase(sentence, keeping: Set(facts.friendNames.flatMap { $0.split(whereSeparator: \.isWhitespace).map(String.init) }))
         let lower = sentence.lowercased()
         for name in facts.friendNames where !lower.contains(name.lowercased()) { throw reject("missing a friend") }
         if let activity = facts.activity {
@@ -323,6 +365,6 @@ package enum SkillOutputMapping {
         if let place = facts.place { sentence = sentence.replacingOccurrences(of: ProposalSentence.placeholder, with: place.rawValue) }
         // Anything left in braces was not a placeholder we gave.
         guard !sentence.contains("{"), !sentence.contains("}") else { throw reject("an unknown placeholder") }
-        return sentence
+        return capitalizingSentences(sentence)
     }
 }

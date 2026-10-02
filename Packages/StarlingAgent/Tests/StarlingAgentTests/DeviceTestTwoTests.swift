@@ -44,4 +44,17 @@ import Testing
             now: quarterPastOne, timeZone: utc
         ).constraints[.time] == [try Constraint(.dailyWindow(from: 17 * 60, to: 24 * 60))])
     }
+
+    // MARK: The sentence
+
+    @Test func theSentenceIsInSentenceCase() throws {
+        let facts = ProposalFacts(skill: SampleSkills.downFor.ref, friendNames: ["Riley"], activity: try Keyword("dinner"), time: nil, place: nil, timeZone: utc)
+        #expect(try SkillOutputMapping.sentence("YOU and Riley are both down for dinner.", facts: facts, time: nil) == "You and Riley are both down for dinner.")
+        // A friend's name keeps the owner's spelling, capitals included.
+        let jj = ProposalFacts(skill: SampleSkills.downFor.ref, friendNames: ["JJ"], activity: try Keyword("dinner"), time: nil, place: nil, timeZone: utc)
+        #expect(try SkillOutputMapping.sentence("you and JJ are both down for dinner.", facts: jj, time: nil) == "You and JJ are both down for dinner.")
+        // A time that starts a sentence starts with a capital.
+        let timed = ProposalFacts(skill: SampleSkills.downFor.ref, friendNames: ["Riley"], activity: try Keyword("dinner"), time: try TimeSlot(start: at(18), end: at(20)), place: nil, timeZone: utc)
+        #expect(try SkillOutputMapping.sentence("You and Riley are both down for dinner. {time}?", facts: timed, time: "tonight at 6 PM") == "You and Riley are both down for dinner. Tonight at 6 PM?")
+    }
 }
