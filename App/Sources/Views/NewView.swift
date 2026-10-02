@@ -107,6 +107,7 @@ struct NewView: View {
             }
             if composer.isUnderstanding {
                 ProgressView("Reading this on your iPhone...")
+                    .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 // Every chip is applied; a tap edits it in place, and an
                 // optional one can be removed. Edit opens everything.
@@ -604,7 +605,7 @@ private struct PlacePickerSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Places to ask about").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+            Text("Places to choose from").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
             TextField("What kind of place, like dinner or boba", text: $picker.what)
                 .textFieldStyle(.roundedBorder)
             Toggle("Near me", isOn: $picker.nearby)

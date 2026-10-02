@@ -503,11 +503,9 @@ public final class ComposerModel {
         }
     }
 
-    /// "Open for 3 hrs", "Open until tonight": how long friends can answer.
-    public var expiryChip: String {
-        if expiry == .tonight { return "Open until tonight" }
-        return chipFormatter.open(expiresAt)
-    }
+    /// "Friends can answer until 4:15 PM": when the request stops taking
+    /// answers, never how long the plan lasts.
+    public var expiryChip: String { chipFormatter.answerUntil(expiresAt) }
 
     // MARK: Audience
 

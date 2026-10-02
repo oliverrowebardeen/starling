@@ -2,7 +2,8 @@ import Foundation
 import StarlingCore
 
 /// Short words for "Starling understood" chips in New (mockup "New"):
-/// "Boba", "Tonight after 7 PM", "Nearby", "Up to $15", "Open for 3 hrs".
+/// "Boba", "Tonight after 7 PM", "Nearby", "Up to $15",
+/// "Friends can answer until 4:15 PM".
 /// The consent sheet and plan detail keep `ValueFormatter`'s full dates;
 /// chips are for the owner's own draft, read at a glance.
 public struct ChipFormatter: Sendable {
@@ -92,15 +93,18 @@ public struct ChipFormatter: Sendable {
         "\(dayWord(slot.start)) at \(hour(slot.start))"
     }
 
-    /// How long friends can answer: "Open for 3 hrs", "Open for 1 hr",
-    /// "Open for 45 min", "Open until Friday".
-    public func open(_ date: Date) -> String {
-        let minutes = max(1, Int((date.timeIntervalSince(now()) / 60).rounded()))
-        if minutes < 60 { return "Open for \(minutes) min" }
-        let hours = Int((Double(minutes) / 60).rounded())
-        if hours < 24 { return hours == 1 ? "Open for 1 hr" : "Open for \(hours) hrs" }
-        let day = dayWord(date)
-        return "Open until \(["Today", "Tonight", "Tomorrow"].contains(day) ? day.lowercased() : day)"
+    /// Until when friends can answer, by its end time, so it never reads
+    /// like the plan's length (device test 2): "Friends can answer until
+    /// 4:15 PM", "until tomorrow at 9 AM", "until Friday at 6 PM".
+    public func answerUntil(_ date: Date) -> String {
+        let today = calendar.startOfDay(for: now())
+        let days = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: date)).day ?? 0
+        let day: String? = switch days {
+        case 0: nil
+        case 1: "tomorrow"
+        default: dayWord(date)
+        }
+        return "Friends can answer until " + (day.map { "\($0) at \(hour(date))" } ?? hour(date))
     }
 
     public func dayWord(_ date: Date) -> String {
