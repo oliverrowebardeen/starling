@@ -42,10 +42,11 @@ struct NewView: View {
             }
         }
         .safeAreaInset(edge: .bottom) { sendBar }
-        .task(id: composer.text) {
-            // Read the words once the owner pauses typing.
+        .task(id: composer.readingKey) {
+            // Read the words once the owner pauses typing, and only when they
+            // changed meaningfully (case and spacing don't count).
             guard composer.chain == nil, !composer.text.isEmpty else { return }
-            try? await Task.sleep(for: .milliseconds(900))
+            try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
             await composer.understand()
         }
@@ -278,8 +279,9 @@ struct NewView: View {
         VStack(spacing: 8) {
             if let notice = composer.notice {
                 Text(notice).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
-            } else if let blocker = composer.blocker, composer.skill != nil {
-                Text(blocker).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            } else if let note = composer.sendNote, !composer.isSending {
+                // Start is never off without saying why (device test 2).
+                Text(note).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             Button {
                 typing = false

@@ -100,20 +100,52 @@ public final class ComposerModel {
     /// finding 5).
     public private(set) var generation: UInt64 = 0
 
-    public var text = "" { didSet { if text != oldValue { generation &+= 1 } } }
+    /// Only a meaningful change counts as an edit: case and spacing don't
+    /// (device test 2, issue #95).
+    public var text = "" { didSet { if Self.readingKey(text) != Self.readingKey(oldValue) { generation &+= 1 } } }
     public private(set) var skill: SkillID?
     /// Whether the model chose the skill (the chip is highlighted).
     public private(set) var routedByModel = false
     public private(set) var isUnderstanding = false
-    public var constraints = ConstraintSet.empty { didSet { if constraints != oldValue { generation &+= 1 } } }
-    public var audience = AudienceChoice.allFriends { didSet { if audience != oldValue { generation &+= 1 } } }
-    public var picked: Set<PeerID> = [] { didSet { if picked != oldValue { generation &+= 1 } } }
+    public var constraints = ConstraintSet.empty {
+        didSet {
+            guard constraints != oldValue else { return }
+            generation &+= 1
+            let keys = Set(constraints.constraints.keys).union(oldValue.constraints.keys)
+            touched(keys.filter { constraints.constraints[$0] != oldValue.constraints[$0] }.map(ComposeChip.Part.issue))
+        }
+    }
+    public var audience = AudienceChoice.allFriends { didSet { if audience != oldValue { generation &+= 1; touched([.audience]) } } }
+    public var picked: Set<PeerID> = [] { didSet { if picked != oldValue { generation &+= 1; touched([.audience]) } } }
     /// Friends left out under Everyone except.
-    public var excepted: Set<PeerID> = [] { didSet { if excepted != oldValue { generation &+= 1 } } }
-    /// Ask quietly or Invite, when the skill offers both; nil means the
-    /// skill's default (ADR 0020).
-    public var mode: SendMode? { didSet { if mode != oldValue { generation &+= 1 } } }
-    public var expiry = Expiry.hours(3) { didSet { if expiry != oldValue { generation &+= 1 } } }
+    public var excepted: Set<PeerID> = [] { didSet { if excepted != oldValue { generation &+= 1; touched([.audience]) } } }
+    /// Ask quietly or Ask directly, when the skill offers both; nil means
+    /// the skill's default (ADR 0020).
+    public var mode: SendMode? { didSet { if mode != oldValue { generation &+= 1; touched([.mode]) } } }
+    public var expiry = Expiry.hours(3) { didSet { if expiry != oldValue { generation &+= 1; touched([.expiry]) } } }
+
+    /// The chips the owner edited or removed since the skill was chosen. A
+    /// re-read of the words never changes them (device test 2).
+    public private(set) var ownerSet: Set<ComposeChip.Part> = []
+    /// True while a reading is applied, so its changes are not the owner's.
+    private var applyingReading = false
+    /// The words last read, compared by `readingKey`.
+    private var lastRead: String?
+    /// Whether the chips shown are a finished reading (or the owner's), so
+    /// Start can stay on while a newer reading runs.
+    private var hasReading = false
+
+    private func touched(_ parts: [ComposeChip.Part]) {
+        guard !applyingReading else { return }
+        ownerSet.formUnion(parts)
+    }
+
+    /// The words as a re-read compares them: case and spacing don't count.
+    public static func readingKey(_ text: String) -> String {
+        text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    public var readingKey: String { Self.readingKey(text) }
     public private(set) var chain: ChainDraft?
     public private(set) var notice: String?
     public private(set) var isSending = false
@@ -213,10 +245,14 @@ public final class ComposerModel {
         mode = nil
         routedByModel = false
         notice = nil
+        // Another skill: its chips start from the words again.
+        ownerSet = []
+        hasReading = true
         if let descriptor, availability(of: skill) == .available, !trimmedText.isEmpty, let skillModel {
+            hasReading = false
             isUnderstanding = true
-            defer { isUnderstanding = false }
-            await fill(from: trimmedText, for: descriptor, model: skillModel, draft: generation)
+            defer { isUnderstanding = false; hasReading = true }
+            await fill(from: trimmedText, for: descriptor, model: skillModel, draft: generation, key: readingKey)
         }
     }
 
@@ -226,9 +262,15 @@ public final class ComposerModel {
 
     /// Routes the text to a skill that can run now and fills its chips
     /// (ADR 0016). Without the model, the owner picks a tile.
+    /// Re-reads only when the words changed meaningfully (case and spacing
+    /// don't count), and keeps every chip the owner edited or removed. While
+    /// a re-read runs, Start stays on with the chips already shown; the new
+    /// reading applies only if the owner has not touched the draft since.
     public func understand() async {
         let words = trimmedText
+        let key = readingKey
         guard !words.isEmpty, chain == nil else { return }
+        if key == lastRead, skill != nil { return }
         guard let skillModel else {
             notice = "Pick what this is below."
             return
@@ -236,8 +278,13 @@ public final class ComposerModel {
         isUnderstanding = true
         defer { isUnderstanding = false }
         notice = nil
-        let available = registry.available(in: settings.skillSettings).filter { lifecycle.skillsInBuild.contains($0.id) }
         let draft = generation
+        // A skill the owner picked from the tiles stays picked.
+        if skill != nil, !routedByModel, let descriptor {
+            await fill(from: words, for: descriptor, model: skillModel, draft: draft, key: key)
+            return
+        }
+        let available = registry.available(in: settings.skillSettings).filter { lifecycle.skillsInBuild.contains($0.id) }
         let routed: SkillID?
         do {
             routed = try await skillModel.route(words, among: available).value
@@ -246,18 +293,24 @@ public final class ComposerModel {
             return
         }
         // The owner changed the draft while the model was reading it.
-        guard draft == generation else { return }
+        guard draft == generation, !isSending else { return }
         // The model can only name a skill that can run; code checks anyway.
         guard let routed, let descriptor = available.first(where: { $0.id == routed }) else {
             notice = "Starling isn't sure what this is. Pick one below."
             return
         }
-        skill = routed
+        if routed != skill {
+            // Another skill: its chips start from the words.
+            skill = routed
+            ownerSet = []
+            hasReading = false
+        }
         routedByModel = true
-        await fill(from: words, for: descriptor, model: skillModel, draft: draft)
+        await fill(from: words, for: descriptor, model: skillModel, draft: draft, key: key)
     }
 
-    private func fill(from words: String, for skill: SkillDescriptor, model: any SkillModel, draft: UInt64) async {
+    private func fill(from words: String, for skill: SkillDescriptor, model: any SkillModel, draft: UInt64, key: String) async {
+        defer { if self.skill == skill.id { hasReading = true } }
         let parsed: ParsedIntent
         do {
             parsed = try await model.intent(from: words, for: skill, now: now(), timeZone: timeZone).value
@@ -266,14 +319,22 @@ public final class ComposerModel {
             return
         }
         // A result for an older draft never overwrites what the owner has
-        // since edited, such as a narrower audience.
-        guard draft == generation, self.skill == skill.id else { return }
+        // since edited, such as a narrower audience, nor a draft being sent.
+        guard draft == generation, !isSending, self.skill == skill.id else { return }
+        applyingReading = true
+        defer { applyingReading = false }
+        lastRead = key
         // Only the skill's own slots: a model answer cannot add an issue
-        // the skill does not ask about.
-        let slots = Set(skill.intent.slots.map(\.issue))
-        constraints = (try? ConstraintSet(parsed.constraints.constraints.filter { slots.contains($0.key) })) ?? .empty
-        if let expires = parsed.expiresAt?.date, expires > now() { expiry = .at(expires) }
-        if let wanted = parsed.mode, skill.sendModes.contains(wanted) { mode = wanted }
+        // the skill does not ask about. A chip the owner edited or removed
+        // stays as the owner left it.
+        var next: [IssueKey: [Constraint]] = [:]
+        for issue in skill.intent.slots.map(\.issue) {
+            next[issue] = ownerSet.contains(.issue(issue)) ? constraints.constraints[issue] : parsed.constraints.constraints[issue]
+        }
+        constraints = (try? ConstraintSet(next)) ?? constraints
+        if !ownerSet.contains(.expiry), let expires = parsed.expiresAt?.date, expires > now() { expiry = .at(expires) }
+        if !ownerSet.contains(.mode), let wanted = parsed.mode, skill.sendModes.contains(wanted) { mode = wanted }
+        guard !ownerSet.contains(.audience) else { return }
         // The model reports names only (P15-B request 2). With "everyone
         // except", they are the friends left out; a name that is one of
         // the owner's groups names that group; otherwise they are who to ask.
@@ -295,6 +356,11 @@ public final class ComposerModel {
             picked = Set(named)
         } else if let audience = parsed.audience {
             apply(audience)
+        } else {
+            // The words no longer name anyone: everyone again.
+            audience = .allFriends
+            picked = []
+            excepted = []
         }
     }
 
@@ -573,7 +639,15 @@ public final class ComposerModel {
         (try? StandingRules.forRequest(intent: constraints, saved: savedRules(), privacy: settings.settings.privacy).constraints) ?? constraints
     }
 
-    public var canSend: Bool { blocker == nil && !isSending && !isUnderstanding }
+    /// Why Start is off, in plain words, every time it is off; nil when it
+    /// is on (device test 2, issue #95). While the first reading of the
+    /// words runs it says so; a re-read leaves Start on.
+    public var sendNote: String? {
+        if isUnderstanding, skill == nil || !hasReading { return "Starling is reading this. One moment." }
+        return blocker
+    }
+
+    public var canSend: Bool { sendNote == nil && !isSending }
 
     /// The skill's own button label: "See who's up for it" for Down for….
     public var startLabel: String { descriptor?.wording.startAction ?? "Start" }
@@ -724,6 +798,9 @@ public final class ComposerModel {
         chain = nil
         inviting = nil
         notice = nil
+        ownerSet = []
+        lastRead = nil
+        hasReading = false
     }
 
     // MARK: One plan from pair plans
