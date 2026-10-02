@@ -69,7 +69,8 @@ extension PickAPlaceService {
         values[.people] = .peers(attendees)
         var organizer = Organizer(
             id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
-            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan, time: nil, activity: nil
+            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan,
+            everyoneMustAgree: Self.changesAPlan(proposal), time: nil, activity: nil
         )
         organizer.phase = .settled
         organizer.proposal = proposal
@@ -80,6 +81,13 @@ extension PickAPlaceService {
         conversationOf[interaction.id] = conversation
         rememberOrganizer(conversation)
         return true
+    }
+
+    /// Whether the stored proposal changes an existing plan: only then is
+    /// its plan's revision above 0, since a plan this service makes from
+    /// the terms alone starts at 0 (ADR 0022, decision 7).
+    static func changesAPlan(_ proposal: SkillProposal) -> Bool {
+        (proposal.plan?.revision ?? 0) > 0
     }
 
     static func attendees(of interaction: Interaction) -> [PeerID]? {
@@ -134,7 +142,8 @@ extension PickAPlaceService {
         let conversation = interaction.conversation
         var organizer = Organizer(
             id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
-            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan, time: time, activity: activity
+            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan,
+            everyoneMustAgree: Self.changesAPlan(proposal), time: time, activity: activity
         )
         organizer.phase = .proposing
         organizer.proposal = proposal

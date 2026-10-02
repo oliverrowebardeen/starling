@@ -18,6 +18,10 @@ struct Organizer {
     /// asked about.
     let ranking: [PlaceChoice]
     let base: Plan?
+    /// A pick on a plan changes that plan, so everyone in it must agree:
+    /// the place is one every friend can do, and every friend says yes, or
+    /// nothing changes (ADR 0022). Nobody is left out of the plan by it.
+    let everyoneMustAgree: Bool
     let time: TimeSlot?
     let activity: Keyword?
     var phase: Phase = .asking
@@ -102,15 +106,6 @@ extension PickAPlaceService {
         guard !ranking.isEmpty else { throw PickAPlaceError.nothingFitsYourLimits }
         guard isNew(request) else { throw PickAPlaceError.alreadyStarted }
 
-        // Friends whose card says they cannot run this skill are left out
-        // before anything is sent; a friend with no card yet is asked, and
-        // an older version answers `unsupported`.
-        var unique: Set<PeerID> = [localPeer]
-        let friends = request.participants
-            .filter { unique.insert($0).inserted }
-            .filter { cards[$0]?.support(for: descriptor.ref).isSupported ?? true }
-            .prefix(ProtocolLimits.maxAttendees - 1)
-
         var base: Plan?
         var time: TimeSlot?
         for input in request.inputs {
@@ -121,13 +116,31 @@ extension PickAPlaceService {
             }
         }
 
+        // Friends whose card says they cannot run this skill are left out
+        // before anything is sent; a friend with no card yet is asked, and
+        // an older version answers `unsupported`. On a plan, only the
+        // plan's people are asked: adding someone is a change of its own.
+        var unique: Set<PeerID> = [localPeer]
+        let named = request.participants
+            .filter { unique.insert($0).inserted }
+            .filter { base?.attendees.peers.contains($0) ?? true }
+        let friends = named
+            .filter { cards[$0]?.support(for: descriptor.ref).isSupported ?? true }
+            .prefix(ProtocolLimits.maxAttendees - 1)
+        // Everyone in the plan must be able to say yes, or the place cannot
+        // change (ADR 0022).
+        let everyoneCanAgree = base.map { plan in
+            Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)
+        } ?? true
+
         let conversation = request.conversation
         conversationOf[request.interaction] = conversation
         organized[conversation] = Organizer(
             id: request.interaction, conversation: conversation, chainedFrom: request.chainedFrom,
-            friends: Array(friends), ranking: ranking, base: base, time: base?.time ?? time, activity: base?.activity
+            friends: Array(friends), ranking: ranking, base: base, everyoneMustAgree: base != nil,
+            time: base?.time ?? time, activity: base?.activity
         )
-        guard !friends.isEmpty else {
+        guard !friends.isEmpty, everyoneCanAgree else {
             organized[conversation]?.phase = .ended
             rememberOrganizer(conversation)
             // Negotiating, so the state machine ends it as unsupported.
@@ -246,12 +259,14 @@ extension PickAPlaceService {
             organizer.passed.insert(sender)
             acknowledge(envelope)
         case (.settled, .reject):
-            acknowledge(envelope)
             // A withdrawal that crossed the confirmation wins: the friend's
             // phone has already ended, so the plan goes on without them.
-            guard organizer.accepted.contains(sender) else { return }
+            guard organizer.accepted.contains(sender) else {
+                acknowledge(envelope)
+                return
+            }
             organized[conversation] = organizer
-            withdrawAfterConfirmation(sender, in: conversation)
+            withdrawAfterConfirmation(envelope, in: conversation)
             return
         case (.ended, _):
             // Retired: nothing more is sent here (ADR 0021).
@@ -281,7 +296,9 @@ extension PickAPlaceService {
     /// Chooses the group's place from the lists so far and proposes it.
     func decide(_ conversation: ConversationID) {
         guard var organizer = organized[conversation], organizer.phase == .asking else { return }
-        guard let choice = GroupChoice.choose(organizer: organizer.ranking, answers: organizer.answers.filter { !$0.value.isEmpty }) else {
+        guard let choice = GroupChoice.choose(organizer: organizer.ranking, answers: organizer.answers.filter { !$0.value.isEmpty }),
+              !organizer.everyoneMustAgree || choice.friends.count == organizer.friends.count
+        else {
             endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
             return
         }
@@ -502,6 +519,13 @@ extension PickAPlaceService {
     func confirmWindowClosed(_ conversation: ConversationID) {
         guard var organizer = organized[conversation], organizer.phase == .proposing else { return }
         let unsettled = organizer.invited.filter { !organizer.accepted.contains($0) && !organizer.timedOut.contains($0) }
+        if organizer.everyoneMustAgree, !unsettled.isEmpty {
+            // Not everyone said yes in time, so the plan stays as it was.
+            // Everyone still waiting, yes or not, hears the ordinary no; a
+            // friend who passed hears nothing more.
+            endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
+            return
+        }
         organizer.timedOut.formUnion(unsettled)
         organized[conversation] = organizer
         let chainedFrom = organizer.chainedFrom
@@ -527,7 +551,7 @@ extension PickAPlaceService {
             !organizer.accepted.contains($0) && !organizer.passed.contains($0) && !organizer.timedOut.contains($0)
                 && !organizer.excluded.contains($0)
         }
-        guard !yes.isEmpty else {
+        guard !yes.isEmpty, !organizer.everyoneMustAgree || yes.count == organizer.invited.count else {
             endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
             return
         }
@@ -577,13 +601,34 @@ extension PickAPlaceService {
 
     /// Takes a friend out of a confirmed plan: everyone left gets the
     /// shortened roster, as a confirmation, and the plan's attendees update.
-    func withdrawAfterConfirmation(_ friend: PeerID, in conversation: ConversationID) {
+    /// The friend's rejection is acknowledged either way.
+    func withdrawAfterConfirmation(_ withdrawal: Envelope, in conversation: ConversationID) {
+        let friend = withdrawal.sender
         guard var organizer = organized[conversation], organizer.phase == .settled, let terms = organizer.finalTerms,
               case .peers(let roster)? = terms[.people]
-        else { return }
+        else {
+            acknowledge(withdrawal)
+            return
+        }
         organizer.accepted.remove(friend)
         organizer.passed.insert(friend)
         let remaining = roster.filter { $0 != friend }
+        if organizer.everyoneMustAgree {
+            // A change to a plan needs everyone, and this friend's phone has
+            // already ended it: the change is off for everyone, and the plan
+            // stays as it was. Leaving the plan is Change the plan's to do.
+            // The acknowledgment goes before the conversation is retired.
+            organizer.phase = .ended
+            organized[conversation] = organizer
+            cancelTasks(conversation)
+            let acknowledgment: (PeerID, MessageBody) = (friend, .reject(Rejection(proposal: withdrawal.id, reason: .noOverlap)))
+            let goodbyes: [(PeerID, MessageBody)] = [acknowledgment] + remaining.filter { $0 != localPeer }.map {
+                ($0, .reject(Rejection(proposal: organizer.lastHeard[$0] ?? MessageID(), reason: .noOverlap)))
+            }
+            finish(conversation, interaction: organizer.id, event: .failed, goodbyes: goodbyes, chainedFrom: organizer.chainedFrom)
+            return
+        }
+        acknowledge(withdrawal)
         guard remaining.count >= 2, let attendees = try? Attendees(remaining) else {
             // Nobody else is left to meet.
             organizer.phase = .ended
