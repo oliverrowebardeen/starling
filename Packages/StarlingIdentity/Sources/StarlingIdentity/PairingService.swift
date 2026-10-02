@@ -261,6 +261,8 @@ public actor PairingService {
     private func finished(_ ceremony: PairingCeremony, peer: PeerID, frames: [Frame], peerAttempt: Data?) {
         guard ceremonies[peer] === ceremony else { return }
         ceremonies[peer] = nil
+        // Hellos heard before or during the ceremony are not a new request.
+        pending[peer] = nil
         guard !frames.isEmpty else { return }
         lingers[peer] = Linger(frames: frames, peerAttempt: peerAttempt, until: now().addingTimeInterval(Self.seconds(configuration.lingerDuration)))
         if lingers.count > Self.maxLingers, let oldest = lingers.min(by: { $0.value.until < $1.value.until })?.key {
