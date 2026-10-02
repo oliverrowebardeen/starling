@@ -11,7 +11,10 @@ struct SkillTests {
         #expect(real.ref == sample.ref)
         #expect(real.wording == sample.wording)
         #expect(real.buildingBlock == .privateQuery)
-        #expect(real.intent == sample.intent)
+        // The same slots, but no expiry chip (device test, 2026-10-02).
+        #expect(real.intent.slots == sample.intent.slots)
+        #expect(real.intent.asksForAudience)
+        #expect(!real.intent.asksForExpiry)
         #expect(real.permissions == [.calendarFullAccess])
         #expect(real.produces == [.timeSlot, .plan])
         #expect(real.topicsRequired == [.time])

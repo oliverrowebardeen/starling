@@ -20,7 +20,13 @@ final class TestClock: Sendable {
 }
 
 /// Retries every 20 ms; deadlines are far away unless a test moves the clock.
-let fastConfiguration = FindATimeConfiguration(retryInterval: .milliseconds(20), maxAttempts: 50)
+/// Most tests pin short waits so a test moves the clock by an hour or two.
+let fastConfiguration = FindATimeConfiguration(
+    retryInterval: .milliseconds(20), maxAttempts: 50,
+    answerWait: .seconds(30 * 60), confirmWait: .seconds(60 * 60), inviteeLifetime: .seconds(6 * 60 * 60)
+)
+/// The shipped waits, with fast retries.
+let shippedWaits = FindATimeConfiguration(retryInterval: .milliseconds(20), maxAttempts: 50)
 
 /// Marker strings planted in calendar events. None may appear anywhere a
 /// peer or a prompt can see.
@@ -308,6 +314,7 @@ final class Phone: Sendable {
     /// What the Outbox and the service use: `conversations`, or a test's
     /// wrapper around it.
     let ledger: any ConversationLedger
+    let configuration: FindATimeConfiguration
     let clock: TestClock
     let standing: ConstraintSet
     private let state: Mutex<(service: FindATimeService?, outbox: Outbox?, coordinator: Coordinator, tasks: [Task<Void, Never>])>
@@ -320,7 +327,8 @@ final class Phone: Sendable {
     init(name: String, hub: LoopbackHub, calendar: FakeCalendarStore, use: CalendarUse = .useMyCalendar,
          policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
          standing: ConstraintSet = .empty, policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil,
-         ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil, clock: TestClock) {
+         ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil,
+         configuration: FindATimeConfiguration = fastConfiguration, clock: TestClock) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
         transport = LossyTransport(LoopbackTransport(localPeer: key.peerID, hub: hub))
@@ -328,6 +336,7 @@ final class Phone: Sendable {
         self.use = Mutex(use)
         self.policy = policyWithFriends?(peers) ?? policy
         self.ledger = ledger?(conversations) ?? conversations
+        self.configuration = configuration
         self.consent = consent
         self.clock = clock
         self.standing = standing
@@ -375,7 +384,7 @@ final class Phone: Sendable {
     }
 
     func start() async throws {
-        makeService()
+        makeService(configuration: configuration)
         let inbox = Inbox(localPeer: id)
         let events = inbox.events(from: transport)
         inboxLoop.withLock {
@@ -388,11 +397,11 @@ final class Phone: Sendable {
 
     /// Simulates quitting and relaunching the app: the old service stops,
     /// a new one restores from the coordinator's store and the checkpoints.
-    func restart(configuration: FindATimeConfiguration = fastConfiguration) async {
+    func restart(configuration: FindATimeConfiguration? = nil) async {
         let old = service
         await old.flushCheckpoints()
         await old.shutdown()
-        makeService(configuration: configuration)
+        makeService(configuration: configuration ?? self.configuration)
         await coordinator.closeDeadSheets()
         await service.restore(await coordinator.all())
     }
@@ -496,10 +505,12 @@ final class World: Sendable {
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent: any ConsentProvider = ScriptedConsentProvider(.approved),
         standing: ConstraintSet = .empty,
         policyWithFriends: (@Sendable (any PairedPeerStore) -> any PolicyEngine)? = nil,
-        ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil
+        ledger: (@Sendable (InMemoryConversationLedger) -> any ConversationLedger)? = nil,
+        configuration: FindATimeConfiguration = fastConfiguration
     ) -> Phone {
         let phone = Phone(name: name, hub: hub, calendar: calendar, use: use, policy: policy, consent: consent,
-                          standing: standing, policyWithFriends: policyWithFriends, ledger: ledger, clock: clock)
+                          standing: standing, policyWithFriends: policyWithFriends, ledger: ledger,
+                          configuration: configuration, clock: clock)
         phones.withLock { $0.append(phone) }
         return phone
     }

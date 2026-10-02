@@ -101,7 +101,8 @@ struct RestoreTests {
         let c = world.phone("Cy")
         try await world.start()
 
-        let started = try await a.findATime(with: [b, c])
+        // From 2 PM, so the clock moves below stay before the proposed time.
+        let started = try await a.findATime(with: [b, c], range: [T.slot(14, 24)])
         _ = try await a.waitForProposal(revision: 1)
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)
@@ -225,7 +226,8 @@ struct CrashWindowTests {
         let b = world.phone("Ben")
         let c = world.phone("Cy")
         try await world.start()
-        let started = try await a.findATime(with: [b, c])
+        // From 2 PM, so the clock moves below stay before the proposed time.
+        let started = try await a.findATime(with: [b, c], range: [T.slot(14, 24)])
         let (bCard, first) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)
         try await b.accept(bCard, revision: 1)
@@ -267,7 +269,8 @@ struct CrashWindowTests {
         let b = world.phone("Ben")
         let c = world.phone("Cy")
         try await world.start()
-        let started = try await a.findATime(with: [b, c])
+        // From 2 PM, so the clock moves below stay before the proposed time.
+        let started = try await a.findATime(with: [b, c], range: [T.slot(14, 24)])
         let (_, first) = try await a.waitForProposal(revision: 1)
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)

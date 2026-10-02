@@ -25,7 +25,10 @@ public enum FindATimeSkill {
         intent: IntentSchema(slots: [
             IntentSlot(.time, required: true, hint: "the range to look in, such as next week"),
             IntentSlot(.activity, required: false, hint: "what it is for, such as stats"),
-        ]),
+        // No expiry chip: "expires in 3 hours" makes no sense for next week
+        // (device test, 2026-10-02). Compose keeps the request open until the
+        // asked-about window starts, from 1 to 7 days.
+        ], asksForExpiry: false),
         // Friends see the request as a card. Asking quietly needs mutual
         // reveal, which Find a time does not use (ADR 0020).
         sendModes: [.invite]

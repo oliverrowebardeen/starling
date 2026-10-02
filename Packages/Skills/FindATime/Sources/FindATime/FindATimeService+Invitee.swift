@@ -49,7 +49,12 @@ extension FindATimeService {
             ),
             asker: envelope.sender,
             chainedFrom: envelope.chainedFrom,
-            expiresAt: Timestamp(now.addingTimeInterval(configuration.inviteeLifetime.timeInterval)),
+            // Open as long as the request may be (days), but never past its
+            // last offered time.
+            expiresAt: min(
+                Timestamp(now.addingTimeInterval(configuration.inviteeLifetime.timeInterval)),
+                Timestamp(candidates.map(\.start).max() ?? now)
+            ),
             candidates: candidates,
             query: query,
             lastQuery: envelope.id,
