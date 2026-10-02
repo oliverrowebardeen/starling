@@ -4,8 +4,8 @@ Not run by the agent. Oliver runs this after the real skills and shell merge.
 Use paired phones and test data. Down for requires Debug until private PSI
 exists; Release shows it as unavailable (ADR 0206). The exclusion checks need a third phone.
 Issue #49 tracks automated evidence and its limits, including wire and timing
-checks that a visual device pass cannot establish. Open findings #76 and #79
-need fixes before their expected behavior can pass.
+checks that a visual device pass cannot establish. The filed service and app
+findings now pass automated regressions; the device checks below are unrun.
 
 1. Phone A: tap New, type "boba tonight", select Phone B, and send with Ask quietly. Expect: the activity and real friend appear; both owners confirm before It's a plan. Repeat with Invite. Expect: B sees a direct invitation. Read the visible and VoiceOver copy as plans with friends.
 2. Phone A: start Find a time, Continue through Starling's explanation, then deny calendar access. Expect: one typed owner question, no repeated alert, and a completed plan after both owners answer. Repeat with Phone B using a calendar containing distinctive private event titles; none appear on Phone A.

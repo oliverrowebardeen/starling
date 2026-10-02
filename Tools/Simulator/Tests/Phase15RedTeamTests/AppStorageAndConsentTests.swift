@@ -186,9 +186,7 @@ struct AppStorageAndConsentTests {
             do { _ = try await b.ledger.isRetired(sent.conversation); return false } catch { return true }
         }
         try await Task.sleep(for: .milliseconds(100))
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/79") {
-            #expect(b.app.lifecycle.interaction(incoming.id)?.state == .ended(.failed))
-        }
+        #expect(b.app.lifecycle.interaction(incoming.id)?.state == .ended(.failed))
         #expect(await b.sent(sent.conversation).isEmpty)
     }
 }

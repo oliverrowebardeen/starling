@@ -26,25 +26,25 @@ for these rules, beyond the Core contracts and lane B's own Loopback tests.
    plans. Hold another friend's consent while the observed pair completes.
    Pair terms and audits must contain neither other friends nor private chips.
 4. Compare starter pass, silence, and another friend's interest using the
-   configured delivery intervals. Down for currently uses Task.sleep directly
-   for delivery and invitation windows, while other timers use SkillClock.
-   Use short real protocol timers, freeze long expiry timers, and report
-   bounded timing tolerances. Do not claim exact deterministic clock coverage.
+   configured delivery intervals. After PR #86, delivery and invitation windows
+   honor SkillClock. This authenticated fixture supplies real sleeps for short
+   protocol timers, freezes long expiry timers, and reports bounded tolerances.
+   Lane B's service and coordinator tests separately control virtual time;
+   do not claim that this wire fixture has exact deterministic clock coverage.
 5. Isolate a lost final resend with an injected willSend suspension, without
-   machine load or packet loss. File the observed defect (#76) and wrap only
-   its exact-count assertion. The other transcript comparisons cover the
-   stable prefix; the whole schedule's count remains unverified until #76 is
-   fixed. The new failure is not evidence of a reliable privacy inference by
-   itself.
+   machine load or packet loss. The observed defect (#76) was fixed by PR #86.
+   Its exact-count assertion is now ordinary: all four scheduled proposals
+   must arrive. The other comparisons still check bounded prefixes; lane B's
+   virtual-time test verifies the complete coordinator schedule. The original
+   lost resend alone did not establish a reliable privacy inference.
 6. Retain request records and the same conversation ledger across service
    replacement. Verify candidate and PSI limits, retirement of both a member's
    request and the starter's conversation, and no card or response on replay.
    The ledger fixture holds multiple concurrent retirements without losing
    continuations. This is retained-state testing, not a phone crash claim.
-7. Keep app wiring cases open: one-interaction-per-friend composition, actual
-   pass hiding, consent cancellation, model mode/audience parsing, on-disk
-   request storage, and coordinator-owned audit attribution. Lane B will also
-   test a starter pass through the real coordinator after PR #73 merges.
+7. Exercise app wiring through ADR 0255: composition, consent cancellation,
+   mode/audience parsing, disk stores, and coordinator-owned audit attribution.
+   PRs #82 and #86 add the native starter-pass transcript through the coordinator.
 
 ## Consequences
 
@@ -70,5 +70,7 @@ to remove another lane's code or the still-used legacy test infrastructure.
 - `Packages/Skills/DownFor/Tests/DownForTests/PrivacyTranscriptTests.swift`
   and `ReviewRegressionTests.swift` at `8c52f25`.
 - `docs/requests/P15-B.md` at `8c52f25`.
+- PR #86 at `29e58fb`, including ADR 0210 decision 13 and the service and
+  coordinator delivery tests.
 - [Integration list](https://github.com/oliverrowebardeen/starling-ios/issues/49)
   and [lost final resend](https://github.com/oliverrowebardeen/starling-ios/issues/76).

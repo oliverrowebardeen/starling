@@ -48,9 +48,10 @@ recovery. Issue #49 requires those integration cases before PR #50 leaves draft.
    Never choice stops an already-journaled send before transport and survives
    reopening. Inject late service events through the actual coordinator to
    check ended records and artifacts stay unchanged.
-7. Keep new failures as narrow issue-linked assertions, with passing controls:
-   #79 is clean withdrawal before failed retirement. Preserve #76's
-   separate final-resend reproduction. These are findings, not passing claims.
+7. Retain the filed reproductions as ordinary assertions after their fixes.
+   PR #87 makes #79's failed retirement report failure through the actual app.
+   PR #86 makes #76's final scheduled resend survive an earlier held send and
+   controls virtual time in the native coordinator transcript for #84.
    PR #78 preserves the journal's interaction ID at `f42cbe1`; assert that ID
    before recovery. PR #83 at `dd830bf` delivers that association through the
    app relay. Both recovery variants now use ordinary assertions for #80.
@@ -80,12 +81,12 @@ and accessibility checks; real-model measurements remain opt-in.
   0210, 0240 to 0242, and 0250 to 0254.
 - `App/Features/Sources/StarlingFeatures/AppModel.swift`,
   `LifecycleCoordinator.swift`, `ComposerModel.swift`, `ConsentCoordinator.swift`,
-  `FileEgressJournal.swift`, and `FileDownForRequestStore.swift` at `b1bc840`.
+  `FileEgressJournal.swift`, and `FileDownForRequestStore.swift` at `ac780da`.
 - `App/Sources/Composition/LiveServices.swift` and `DebugServices.swift` at
   `b1bc840`; their services use the same Outbox and ConversationLedger.
 - `Packages/StarlingCore/Sources/StarlingCore/Outbox.swift` and
   `Packages/StarlingChaining/Sources/StarlingChaining/EgressRecorder.swift` at
-  `f42cbe1`.
+  `ac780da`.
 - [Integration matrix](https://github.com/oliverrowebardeen/starling-ios/issues/49),
   [withdrawal](https://github.com/oliverrowebardeen/starling-ios/issues/79),
   [member audit](https://github.com/oliverrowebardeen/starling-ios/issues/80), and

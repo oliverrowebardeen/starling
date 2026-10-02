@@ -104,8 +104,6 @@ struct DownForTranscriptTests {
         await a.wire.release()
         _ = try await a.wait(.ended(.expired), mine)
         let proposals = await b.phone.agent.received.filter { $0.conversation == mine.conversation && $0.body.kind == .propose }
-        withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/76") {
-            #expect(proposals.count == 4)
-        }
+        #expect(proposals.count == 4)
     }
 }

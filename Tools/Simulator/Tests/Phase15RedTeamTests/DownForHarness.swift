@@ -121,8 +121,8 @@ final class DownPhone: Sendable {
     }
     func boot(restoring: [Interaction]? = nil) async throws {
         let clock = phone.clock
-        // Delivery and invitation windows currently use Task.sleep directly.
-        // Keep short protocol timers real and freeze only long expiry timers.
+        // Delivery and invitation windows now honor SkillClock (PR #86).
+        // Use real short sleeps here and freeze only long expiry timers.
         let fresh = DownForService(localPeer: id, outbox: outbox, model: model.model, psi: InsecurePSIStub(),
             ledger: phone.conversations, store: store, pairedPeers: phone.peers,
             clock: SkillClock(now: { P15.date }, sleep: { duration in
