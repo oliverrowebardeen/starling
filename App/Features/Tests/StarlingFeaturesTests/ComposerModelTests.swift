@@ -530,6 +530,39 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(await h.down.started.first?.intent.mode == .invite)
     }
 
+    /// Device test, 2026-10-02: keyword chips read exactly as the owner
+    /// typed them, never paraphrased, title-cased, or cut off. Lane B's
+    /// grounding makes each keyword a run of the typed words; the chip
+    /// takes the owner's casing from there.
+    @Test func keywordChipsReadAsTheOwnerTypedThem() async throws {
+        let model = ScriptedSkillModel(
+            onRoute: { text, _ in text.hasPrefix("find") ? .findATime : .downFor },
+            onIntent: { text, _ in
+                if text.hasPrefix("find") {
+                    return ParsedIntent(constraints: try ConstraintSet([.activity: [try Constraint(.prefers(liked: [try Keyword("IKEA trip")], avoided: []))]]))
+                }
+                return ParsedIntent(constraints: try ConstraintSet([
+                    .activity: [try Constraint(.prefers(liked: [try Keyword("movie night")], avoided: []))],
+                    .place: [try Constraint(.prefers(liked: [try Keyword("Elm Hall")], avoided: []))],
+                ]))
+            }
+        )
+        let h = try await ComposerHarness(skillModel: model)
+        h.model.text = "movie night tonight in Elm Hall"
+        await h.model.understand()
+        // Down for... shows the activity once, on its own chip.
+        #expect(h.model.skillChip == "Down for movie night")
+        #expect(h.model.chips.map(plain).first == "Elm Hall")
+        #expect(h.model.words(for: .activity) == "movie night")
+        h.model.text = "find a time invite for IKEA trip"
+        await h.model.understand()
+        #expect(h.model.chips.map(plain).first == "IKEA trip")
+        // A keyword the typed words do not have keeps the old form.
+        let formatter = h.model.chipFormatter
+        #expect(formatter.chips(for: .prefers(liked: [try Keyword("boba")], avoided: [try Keyword("sushi")]), issue: .activity, typed: "Boba, no SUSHI") == ["Boba", "No SUSHI"])
+        #expect(formatter.chips(for: .prefers(liked: [try Keyword("tea")], avoided: []), issue: .activity, typed: "boba") == ["Tea"])
+    }
+
     @Test func aSkillWithOneModeOffersNoChoiceAndIgnoresAParsedQuietMode() async throws {
         let model = ScriptedSkillModel(
             onRoute: { _, _ in .findATime },

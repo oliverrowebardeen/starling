@@ -21,9 +21,10 @@ public struct ChipFormatter: Sendable {
     }
 
     /// One chip per rule, in issue order: activity and time first, as the
-    /// mockup reads.
-    public func chips(for constraints: ConstraintSet) -> [String] {
-        orderedIssues(constraints).flatMap { issue in constraints.constraints[issue]!.flatMap { chips(for: $0.rule, issue: issue) } }
+    /// mockup reads. With `typed`, the owner's words, a keyword chip shows
+    /// exactly as the owner typed it ("IKEA trip", "movie night").
+    public func chips(for constraints: ConstraintSet, typed: String? = nil) -> [String] {
+        orderedIssues(constraints).flatMap { issue in constraints.constraints[issue]!.flatMap { chips(for: $0.rule, issue: issue, typed: typed) } }
     }
 
     /// The issues in chip order: what, when, where, then the rest.
@@ -34,10 +35,11 @@ public struct ChipFormatter: Sendable {
         }
     }
 
-    public func chips(for rule: Constraint.Rule, issue: IssueKey) -> [String] {
+    public func chips(for rule: Constraint.Rule, issue: IssueKey, typed: String? = nil) -> [String] {
         switch rule {
         case .prefers(let liked, let avoided):
-            liked.map { $0.value.capitalizedFirstLetter } + avoided.map { "No \($0.value)" }
+            liked.map { Self.spelling(of: $0, in: typed) ?? $0.value.capitalizedFirstLetter }
+                + avoided.map { "No \(Self.spelling(of: $0, in: typed) ?? $0.value)" }
         case .within(let slots):
             slots.sorted().map(slot)
         case .dailyWindow(let from, let to):
@@ -51,6 +53,23 @@ public struct ChipFormatter: Sendable {
         case .countBetween(let min, let max):
             [issue == .partySize ? "\(min) to \(max) people" : "\(min) to \(max)"]
         }
+    }
+
+    /// How the owner typed `keyword`: the run of words in `typed` that it
+    /// is, in the owner's spelling and casing, or nil when there is none
+    /// (lane B's grounding makes every keyword chip such a run, ADR 0212).
+    /// A keyword is stored lowercased, because peers compare it, so the
+    /// owner's casing comes from what they typed.
+    public static func spelling(of keyword: Keyword, in typed: String?) -> String? {
+        guard let typed else { return nil }
+        let words = typed.split { !($0.isLetter || $0.isNumber || "'’-&$".contains($0)) }.map(String.init)
+        let wanted = keyword.value.split(separator: " ").map(String.init)
+        guard !wanted.isEmpty, wanted.count <= words.count else { return nil }
+        for start in 0...(words.count - wanted.count) {
+            let run = Array(words[start..<start + wanted.count])
+            if run.map({ $0.lowercased() }) == wanted { return run.joined(separator: " ") }
+        }
+        return nil
     }
 
     /// "Tonight after 7 PM", "Tomorrow 10 AM to 2 PM", "Friday after 6 PM".

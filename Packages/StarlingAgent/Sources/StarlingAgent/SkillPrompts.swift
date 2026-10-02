@@ -16,7 +16,7 @@ extension PromptRenderer {
 
     package static let intentInstructions = """
         Read what the owner wants from their message. Fill a field only from the owner's own words. \
-        Activities are short lowercase things to do or eat, never days, times, prices, places, or people. \
+        Activities are the owner's own words for what to do, copied whole, never reworded; never a day, time, price, or person. \
         Names are only names of people, never activities, places, or words like whoever or anyone. \
         Audience is everyone for anyone, whoever, or everyone; everyoneExcept when someone is left out. \
         Mode only if the owner says quietly or invite.
@@ -99,9 +99,9 @@ package enum SkillOutputMapping {
         "today", "tonight", "tomorrow", "weekend", "morning", "afternoon", "evening", "night", "now", "later",
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     ]
-    /// Words that make a distance chip ("nothing far") stand for "nearby",
-    /// the word the place slot's hint uses. Not "close" or "around": "close
-    /// friends" and "whoever's around" say who, not where.
+    /// Words that make a distance place chip ("nothing far"), in the
+    /// owner's words. Not "close" or "around": "close friends" and
+    /// "whoever's around" say who, not where.
     static let distanceWords: Set<String> = ["far", "near", "nearby", "walking"]
 
     /// Words that ask quietly, or send an invitation (ADR 0020).
@@ -140,26 +140,30 @@ package enum SkillOutputMapping {
         // Interpretation of a request never sets sharing: privacy topics do
         // that, globally (ADR 0014).
         rules.neverShare = []
-        // A day or a group of people is never something to do.
-        rules.wants = rules.wants.filter { want in
-            let own = Set(Grounding.words(want))
-            return !own.isEmpty && own.isDisjoint(with: timeWords) && own.isDisjoint(with: everyoneWords)
-        }
-        let checked = Grounding.check(rules, against: utterance)
+        var checked = Grounding.check(rules, against: utterance)
+        // Every keyword chip is the owner's words as typed, the whole
+        // phrase, and no word is in two chips (device test, 2026-10-02):
+        // activities first, then what to avoid, then other slots. A day, a
+        // group of people, a price, or a rule word is never one.
+        // A friend's name is never something to do ("hot pot with Sam" once
+        // came back wanting "sam"), and a phrase right after "no" is
+        // something to avoid, wherever the model put it.
+        var own = OwnersWords(utterance, names: grounded(names: raw.names, in: utterance))
+        let wanted = rules.wants.flatMap { own.pick($0, many: true) }
+        let avoided = rules.avoids.flatMap { own.pick($0, many: true) }
+        checked.wants = wanted.filter { !$0.negated }.map(\.text)
+        checked.avoids = (wanted.filter(\.negated) + avoided).map(\.text)
         let context = InterpretationContext(now: now, timeZone: timeZone, issues: skill.intent.slots.map(\.issue))
         var constraints = try OutputMapping.rules(checked, context: context).constraints.constraints.filter { slots.contains($0.key) }
 
         let words = Grounding.words(utterance)
-        let stems = Set(words.map(Grounding.stem))
-        for (issue, phrases) in raw.extras where slots.contains(issue) {
-            let saysDistance = !Set(words).isDisjoint(with: distanceWords)
-            let kept = keywords(phrases.filter { phrase in
-                let own = Grounding.words(phrase).map(Grounding.stem)
-                if saysDistance, own == ["nearby"] { return true }
-                // "close friends" names an audience, not a place.
-                guard Set(Grounding.words(phrase)).isDisjoint(with: everyoneWords) else { return false }
-                return !own.isEmpty && own.contains(where: stems.contains) && !own.allSatisfy { $0.allSatisfy(\.isNumber) }
-            })
+        var chips = checked.wants + checked.avoids
+        for issue in skill.intent.slots.map(\.issue) where ![.time, .activity, .budget].contains(issue) {
+            // A distance ("nothing far") counts for a place, in the owner's
+            // words, not the model's "nearby".
+            let picked = (raw.extras[issue] ?? []).flatMap { own.pick($0, place: issue == .place) }.map(\.text)
+            chips += picked
+            let kept = keywords(picked)
             if !kept.isEmpty { constraints[issue] = [try Constraint(.prefers(liked: kept, avoided: []), strength: .soft)] }
         }
 
@@ -167,7 +171,7 @@ package enum SkillOutputMapping {
         var names: [String] = []
         if skill.intent.asksForAudience {
             // A name is not something the owner wants to do or a place.
-            let taken = Set((raw.rules.wants + raw.rules.avoids + raw.extras.values.flatMap { $0 }).flatMap { Grounding.words($0) })
+            let taken = Set(chips.flatMap { Grounding.words($0) })
             names = grounded(names: raw.names, in: utterance).filter { Set(Grounding.words($0)).isDisjoint(with: taken) }
             let said = Set(words)
             if raw.audience == .everyoneExcept, !names.isEmpty, !said.isDisjoint(with: exceptWords), !said.isDisjoint(with: everyoneWords) {

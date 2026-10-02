@@ -187,3 +187,54 @@ Core v2.1 (ADR 0020) adds send modes and new audience cases, so the chip schema 
 | 4 | beach tomorrow afternoon if anyone's around | place | day +1; 12-17; wants beach; place beach; ask everyone |
 | 6 | pizza friday with close friends, no pineapple | audience | day +3; 0-24; wants pizza; avoids pineapple; ask everyone |
 | 11 | invite the climbing crew to bowling saturday | avoids, audience, names | day +4; 0-24; wants bowling; avoids climbing; ask everyone; mode invite |
+
+## Grounding round: chips in the owner's words (2026-10-02)
+
+Oliver's device test found chips that were not his words: "movie night tonight in Elm Hall" showed the activity "Watch Movie", and "find a time invite for IKEA trip" showed "trip". ADRs 0161 and 0212 require every keyword chip to be the owner's words as typed: a span of the input, the whole phrase, in the owner's casing, never paraphrased, title-cased, or cut off, and never repeated across chips.
+
+**What changed in the sets.**
+- Both phrases and some like them went into the tuning and held-out sets together, before any measurement of them. Tuning added "movie night tonight in Elm Hall", "find a time invite for IKEA trip", "game night friday with Maya", "Costco run tomorrow afternoon", and "find a time for the Yosemite trip". Held-out added "trivia night tonight with Sam", "find a time for our NYC trip", "IHOP breakfast tomorrow morning", "karaoke night saturday", and "find a time for the Tahoe ski trip".
+- Labels may now name a skill, so Find a time phrases are scored with Find a time's slots.
+- Activity, avoid, and place chips are now scored exactly. The old word-subset match counted "trip" as "IKEA trip".
+- A new "own words" chip checks that every keyword chip is a span of the message and that no word is in two chips.
+- Labels that accepted a cut-off or reworded phrase were tightened to the owner's phrase, on both sets, for example "pickup soccer" not "soccer", and "nothing far" not "nearby". So these numbers do not compare with the earlier sections.
+- One tuning label was corrected after the first run: Find a time offers only Invite, so it never shows a mode chip, and the IKEA trip label no longer expects one.
+
+Same Mac, macOS 26.7 (25G229), `apple.system`, greedy sampling. The baseline is the code on main (7d279e4) with the new sets.
+
+| Chips, tuning set (28) | Baseline | Final |
+|---|--:|--:|
+| Activity | 21 | 28 |
+| Avoids | 28 | 28 |
+| Place | 24 | 28 |
+| Own words | 23 | 28 |
+| Mode | 27 (one wrong label) | 28 |
+| Days, times, budget, names | 28 each | 28 each |
+| Audience | 26 | 26 |
+| **All chips** | **16** | **26** |
+
+| Chips, held-out set (17) | Baseline | Final |
+|---|--:|--:|
+| Activity | 11 | 15 |
+| Avoids | 16 | 17 |
+| Place | 14 | 17 |
+| Own words | 15 | 17 |
+| Names | 14 | 16 |
+| Times | 16 | 16 |
+| Audience | 14 | 14 |
+| Days, budget, mode | 17 each | 17 each |
+| **All chips** | **5** | **12** |
+
+- Invented activities: 3 to 0 on tuning, 2 to 1 on held-out. Worst call: 2,046 tokens, within ADR 0002's 2,048.
+- Remaining activity misses, held-out only:
+  - "find a time for our NYC trip": the model gave no activity, and code never adds one.
+  - "invite the climbing crew to bowling saturday": the model filed "climbing" as the activity and dropped the group's name.
+- Audience is still the weakest chip, as before ("who's up for", "close friends").
+- An earlier wording of the prompt asked for "the owner's exact words ..., the whole phrase as typed". It scored 26 / 28 and 12 / 17 too, but its worst call was 2,080 tokens, over the budget, so the shorter wording above was kept. Neither was chosen by held-out results.
+
+| Routing | Before | After |
+|---|--:|--:|
+| Tuning (43, with "movie night tonight in Elm Hall", "Costco run tomorrow afternoon", and "find a time invite for IKEA trip") | 38 / 43 | 38 / 43 |
+| Held-out (22, with "trivia night tonight with Sam" and "find a time for our NYC trip") | 21 / 22 | 21 / 22 |
+
+The routing prompt did not change, and both device-test phrases route right. "Costco run tomorrow afternoon" routes to none: the model sees no plan with friends in it.

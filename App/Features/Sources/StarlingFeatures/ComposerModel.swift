@@ -357,13 +357,16 @@ public final class ComposerModel {
     /// (ADR 0017).
     public var skillChip: String? {
         guard let descriptor else { return nil }
-        if descriptor.id == .downFor, let activity = activity { return "Down for \(activity)" }
+        if descriptor.id == .downFor, let activity = activity {
+            // In the owner's words as typed (device test, 2026-10-02).
+            return "Down for \(ChipFormatter.spelling(of: activity, in: text) ?? activity.value)"
+        }
         return descriptor.wording.name
     }
 
-    private var activity: String? {
+    private var activity: Keyword? {
         for constraint in constraints.constraints[.activity] ?? [] {
-            if case .prefers(let liked, _) = constraint.rule, let first = liked.first { return first.value }
+            if case .prefers(let liked, _) = constraint.rule, let first = liked.first { return first }
         }
         return nil
     }

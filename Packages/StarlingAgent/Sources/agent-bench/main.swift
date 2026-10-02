@@ -52,10 +52,10 @@ if chips {
     let agent = FoundationModelsAgent(timeZone: InterpretationSet.timeZone)
     let labels = heldOut ? ChipSet.heldOut : ChipSet.labels
     FileHandle.standardError.write(Data("Reading chips for \(labels.count) utterances on \(agent.descriptor.identifier)...\n".utf8))
-    let report = await ChipEval(model: agent, skill: SampleSkills.downFor, labels: labels).run { result in
+    let report = await ChipEval(model: agent, skills: SampleSkills.all, labels: labels).run { result in
         FileHandle.standardError.write(Data("  \(result.isExact ? "ok  " : "miss") \(result.label.text)\n".utf8))
     }
-    print(report.markdown(title: heldOut ? "Down for... chip accuracy, held-out set" : "Down for... chip accuracy"))
+    print(report.markdown(title: heldOut ? "Chip accuracy, held-out set" : "Chip accuracy"))
     if let jsonPath { try report.json().write(to: URL(fileURLWithPath: jsonPath)) }
     exit(0)
 }

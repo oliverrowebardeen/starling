@@ -53,7 +53,8 @@ extension ComposerModel {
         }
         for issue in chipFormatter.orderedIssues(constraints) where !(carriesActivity && issue == .activity) {
             let rules = constraints.constraints[issue] ?? []
-            let text = rules.flatMap { chipFormatter.chips(for: $0.rule, issue: issue) }.joined(separator: ", ")
+            // Keyword chips in the owner's words as typed (device test, 2026-10-02).
+            let text = rules.flatMap { chipFormatter.chips(for: $0.rule, issue: issue, typed: self.text) }.joined(separator: ", ")
             guard !text.isEmpty else { continue }
             items.append(ComposeChip(part: .issue(issue), text: text, editor: editor(for: issue, rules: rules), isRemovable: !required.contains(issue)))
         }
@@ -72,7 +73,7 @@ extension ComposerModel {
     /// The liked words of an issue, comma separated.
     func words(for issue: IssueKey) -> String {
         (constraints.constraints[issue] ?? []).flatMap { constraint -> [String] in
-            if case .prefers(let liked, _) = constraint.rule { return liked.map(\.value) }
+            if case .prefers(let liked, _) = constraint.rule { return liked.map { ChipFormatter.spelling(of: $0, in: text) ?? $0.value } }
             return []
         }.joined(separator: ", ")
     }
