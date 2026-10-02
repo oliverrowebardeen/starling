@@ -231,4 +231,38 @@ actor DeliverThenThrowTransport: Transport {
         #expect(await app.egress.unattributed == 0)
         await app.shutdown()
     }
+
+    /// P15-B request 8 for the audit: a Down for... member's send goes in
+    /// the starter's conversation but names its own request, and its record
+    /// lands there instead of waiting for an interaction that never comes.
+    @Test func aMembersSendInTheStartersConversationIsRecordedOnItsOwnRequest() async throws {
+        let maya = PeerID.random()
+        var services = AppModelTests.services()
+        services.makePolicy = { _, _ in
+            FixedPolicyEngine(.allow, explain: { message in
+                Disclosure(recipient: message.envelope.recipient, recipientModel: nil,
+                           items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try! Keyword("boba")]))],
+                           conversation: message.envelope.conversation, skill: message.envelope.skill)
+            })
+        }
+        let app = AppModel(services: services)
+        await app.start()
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: SampleSkills.downFor.ref, rules: .empty, audience: .picked([maya]), mode: .askQuietly,
+                                expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [maya]
+        )
+        let own = try await app.lifecycle.start(request, settings: app.settings.skillSettings)
+
+        let startersConversation = ConversationID()
+        try await #require(app.outbox).send(.propose(try Proposal(round: 0, terms: .empty)), to: maya, conversation: startersConversation,
+                                            context: OutboundContext(interaction: own), skill: SampleSkills.downFor.ref, mode: .askQuietly)
+        await eventually { app.lifecycle.interaction(own)?.egress.count == 1 }
+        #expect(app.lifecycle.interaction(own)?.egress.count == 1)
+        #expect(app.pendingEgress.messages.isEmpty)
+        #expect(await app.egress.waitingForInteraction == 0)
+        #expect(await app.egress.unattributed == 0)
+        await app.shutdown()
+    }
 }

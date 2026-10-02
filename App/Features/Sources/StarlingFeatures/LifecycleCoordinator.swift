@@ -694,7 +694,15 @@ extension LifecycleCoordinator: EgressSink {
     /// same envelope is ignored) and returns once it is saved. Throws when
     /// the save failed, so the recorder keeps the send and retries it.
     public func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
-        guard var current = interaction(conversation: conversation) else { return false }
+        try await appendEgress(record, interaction: nil, skill: nil, conversation: conversation)
+    }
+
+    /// As above, for the interaction the send named
+    /// (`OutboundContext.interaction`) when it belongs to the send's skill,
+    /// like a consent sheet (P15-B request 8): a Down for... member's send
+    /// goes in the starter's conversation but belongs to its own request.
+    public func appendEgress(_ record: EgressRecord, interaction id: InteractionID?, skill: SkillRef?, conversation: ConversationID) async throws -> Bool {
+        guard var current = owner(interaction: id, skill: skill, conversation: conversation) else { return false }
         let before = current
         current.record(record)
         if current != before { replace(current, before: before) }

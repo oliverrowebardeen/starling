@@ -18,6 +18,12 @@ public final class PendingEgress {
         /// the coordinator has not installed yet. A link-level send (a
         /// hello) has none.
         public let isSkill: Bool
+        /// The skill and interaction the send named (`OutboundContext`), so
+        /// its record and its audit go to that interaction even when it was
+        /// sent in another conversation (a Down for... member's send in the
+        /// starter's).
+        public let skill: SkillRef?
+        public let interaction: InteractionID?
     }
 
     public private(set) var messages: [MessageID: Send] = [:]
@@ -27,8 +33,8 @@ public final class PendingEgress {
     /// Conversations whose log may be missing a send right now.
     public var conversations: Set<ConversationID> { Set(messages.values.map(\.conversation)) }
 
-    func announce(_ message: MessageID, in conversation: ConversationID, isSkill: Bool) {
-        messages[message] = Send(conversation: conversation, isSkill: isSkill)
+    func announce(_ message: MessageID, in conversation: ConversationID, skill: SkillRef?, interaction: InteractionID?) {
+        messages[message] = Send(conversation: conversation, isSkill: skill != nil, skill: skill, interaction: interaction)
     }
 
     /// Whether `message` is a skill's send this launch announced.
@@ -47,7 +53,7 @@ struct PendingEgressObserver: OutboxObserver {
 
     func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
         if case .deny = decision { return }
-        await pending.announce(envelope.id, in: envelope.conversation, isSkill: envelope.skill != nil)
+        await pending.announce(envelope.id, in: envelope.conversation, skill: envelope.skill, interaction: context.interaction)
     }
 
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}

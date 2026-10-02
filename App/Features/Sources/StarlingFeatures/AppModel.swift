@@ -497,6 +497,20 @@ public final class AppModel {
         egressRecovered = true
     }
 
+    /// The conversations whose audit may be missing a send right now: each
+    /// pending send's own, and that of the interaction it named, which a
+    /// Down for... member's send in the starter's conversation belongs to.
+    var pendingAuditConversations: Set<ConversationID> {
+        var result = Set<ConversationID>()
+        for send in pendingEgress.messages.values {
+            result.insert(send.conversation)
+            if let id = send.interaction, let owner = lifecycle.owner(interaction: id, skill: send.skill, conversation: send.conversation) {
+                result.insert(owner.conversation)
+            }
+        }
+        return result
+    }
+
     public func refreshAudit() async {
         await egress.retryPending()
         unconfirmedConversations = await egress.unconfirmedConversations
@@ -571,7 +585,7 @@ public final class AppModel {
     public func planDetail(_ root: Interaction) -> PlanDetail {
         syncNames()
         return PlanDetail(root: root, all: lifecycle.interactions, words: words, notes: notes,
-                          unconfirmed: unconfirmedConversations.union(pendingEgress.conversations), auditUnknown: egressJournalUnreadable || !egressRecovered)
+                          unconfirmed: unconfirmedConversations.union(pendingAuditConversations), auditUnknown: egressJournalUnreadable || !egressRecovered)
     }
 
     /// "Keep it going" after a plan: lane E's rows (P15-E request 4.4),
@@ -606,7 +620,8 @@ private final class EgressRelay: EgressSink {
     /// link-level send, which no interaction owns, is cleared unattributed.
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
         guard let lifecycle else { return false }
-        let found = try await lifecycle.appendEgress(record, conversation: conversation)
+        let named = record.message.flatMap { pending.messages[$0] }
+        let found = try await lifecycle.appendEgress(record, interaction: named?.interaction, skill: named?.skill, conversation: conversation)
         if let message = record.message, found || !pending.isSkillSend(message) { pending.recorded(message) }
         return found
     }
