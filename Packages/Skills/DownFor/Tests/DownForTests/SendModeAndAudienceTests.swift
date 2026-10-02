@@ -98,7 +98,10 @@ import Testing
     }
 
     @Test func anInvitationKeepsWhoeverSaidImIn() async throws {
-        let world = World(3)
+        // On virtual time: the invitation's window and C's wait pass without
+        // real time passing.
+        let time = VirtualTime()
+        let world = World(3, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b, c) = (world["A"], world["B"], world["C"])
@@ -113,12 +116,14 @@ import Testing
         #expect(await b.lifecycle.interaction(theirs)?.proposal?.participants == [a.id, b.id, c.id])
         try await b.imIn(theirs)
         // C looks away. At the window, A's card lists A and B only.
-        try await a.waitForProposal(mine)
+        try await eventually("B's I'm in") { await b.lifecycle.state(theirs) == .confirmed }
+        try await time.advanceUntil("A's card") { await a.lifecycle.state(mine) == .proposed }
+        #expect(await time.now == fastConfiguration.ownerWindow)
         #expect(await a.lifecycle.interaction(mine)?.proposal?.participants == [a.id, b.id])
         try await a.imIn(mine)
         try await b.waitFor(.planned, theirs)
         let cs = try #require(await c.lifecycle.invitations.first)
-        try await c.waitFor(.ended(.nobodyUp), cs)
+        try await time.advanceUntil("C's card ends") { await c.lifecycle.reached(.ended(.nobodyUp), cs) }
         await world.expectCleanLifecycles()
     }
 
