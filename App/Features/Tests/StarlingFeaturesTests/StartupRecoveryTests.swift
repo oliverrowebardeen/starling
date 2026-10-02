@@ -232,6 +232,33 @@ actor DeliverThenThrowTransport: Transport {
         await app.shutdown()
     }
 
+    /// Lane E's PR #78: a member's send in the starter's conversation that
+    /// was journaled but not recorded before a crash lands on the member's
+    /// own request at the next launch, by the interaction the journal kept.
+    @Test func aMembersSendRecoveredAfterACrashLandsOnItsOwnRequest() async throws {
+        let maya = PeerID.random()
+        var own = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Date()))
+        try own.apply(.started, at: Timestamp(Date()))
+        let startersConversation = ConversationID()
+        let message = MessageID()
+        let record = EgressRecord(at: Timestamp(Date()), recipient: maya,
+                                  items: [DisclosedItem(category: .terms, issue: .activity, value: .keywords([try Keyword("boba")]))], message: message)
+        let journal = InMemoryEgressJournal()
+        try await journal.remember(EgressJournalEntry(message: message, conversation: startersConversation, record: record,
+                                                      sent: true, skilled: true, interaction: own.id))
+        var services = AppModelTests.services()
+        services.interactions = InMemoryInteractionStore([own])
+        services.egressJournal = journal
+        let app = AppModel(services: services)
+        await app.start()
+
+        #expect(app.lifecycle.interaction(own.id)?.egress.map(\.message) == [message])
+        #expect(await app.egress.waitingForInteraction == 0)
+        #expect(await app.egress.unconfirmedConversations.isEmpty)
+        #expect(try await journal.unresolved().isEmpty)
+        await app.shutdown()
+    }
+
     /// P15-B request 8 for the audit: a Down for... member's send goes in
     /// the starter's conversation but names its own request, and its record
     /// lands there instead of waiting for an interaction that never comes.

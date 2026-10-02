@@ -619,9 +619,21 @@ private final class EgressRelay: EgressSink {
     /// journaled and writes it when `interactionArrived` is called. Only a
     /// link-level send, which no interaction owns, is cleared unattributed.
     func appendEgress(_ record: EgressRecord, conversation: ConversationID) async throws -> Bool {
+        try await appendEgress(record, conversation: conversation, interaction: nil)
+    }
+
+    /// The record goes to the interaction the send named (P15-B request 8):
+    /// the one lane E's recorder kept in its journal, which survives a
+    /// crash, or else the one this launch's observer saw. A recovered entry
+    /// carries no skill, so its interaction is trusted as named: this
+    /// phone's recorder wrote it from its own service's OutboundContext,
+    /// never from a peer.
+    func appendEgress(_ record: EgressRecord, conversation: ConversationID, interaction journaled: InteractionID?) async throws -> Bool {
         guard let lifecycle else { return false }
         let named = record.message.flatMap { pending.messages[$0] }
-        let found = try await lifecycle.appendEgress(record, interaction: named?.interaction, skill: named?.skill, conversation: conversation)
+        let id = journaled ?? named?.interaction
+        let skill = named?.skill ?? journaled.flatMap { lifecycle.interaction($0)?.skill }
+        let found = try await lifecycle.appendEgress(record, interaction: id, skill: skill, conversation: conversation)
         if let message = record.message, found || !pending.isSkillSend(message) { pending.recorded(message) }
         return found
     }
