@@ -136,17 +136,12 @@ struct AppStorageAndConsentTests {
         await a.outbox.cancelInFlight()
         if atJournal {
             await a.wire.release()
-            await withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/81") {
-                await #expect(throws: (any Error).self) { try await send.value }
-                #expect(await b.agent.received.filter { $0.conversation == conversation }.isEmpty)
-            }
+            await #expect(throws: (any Error).self) { try await send.value }
+            #expect(await b.agent.received.filter { $0.conversation == conversation }.isEmpty)
         } else {
             try await Task.sleep(for: .milliseconds(100))
-            withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/81") {
-                #expect(a.app.consent.current == nil)
-            }
-            send.cancel()
-            _ = await send.result
+            #expect(a.app.consent.current == nil)
+            await #expect(throws: (any Error).self) { try await send.value }
         }
     }
 

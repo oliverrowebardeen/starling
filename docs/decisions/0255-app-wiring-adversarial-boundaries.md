@@ -49,12 +49,14 @@ recovery. Issue #49 requires those integration cases before PR #50 leaves draft.
    reopening. Inject late service events through the actual coordinator to
    check ended records and artifacts stay unchanged.
 7. Keep new failures as narrow issue-linked assertions, with passing controls:
-   #79 is clean withdrawal before failed retirement, and #81 is global
-   cancellation missing consent and pre-send observer waits. Preserve #76's
+   #79 is clean withdrawal before failed retirement. Preserve #76's
    separate final-resend reproduction. These are findings, not passing claims.
    PR #78 preserves the journal's interaction ID at `f42cbe1`; assert that ID
    before recovery. PR #83 at `dd830bf` delivers that association through the
    app relay. Both recovery variants now use ordinary assertions for #80.
+   PR #85 at `dd62ad6` reaches consent and observer waits with cancellation;
+   #81's two app variants also use ordinary assertions. A retired in-flight
+   send now throws CancellationError, while a new send still sees conversationRetired.
 
 ## Consequences and limits
 

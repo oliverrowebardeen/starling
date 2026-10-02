@@ -154,7 +154,12 @@ import Testing
         if failingLedger {
             await #expect(throws: InMemoryConversationLedger.Unavailable.self) { try await pending.value }
         } else {
-            await #expect(throws: OutboxError.conversationRetired) { try await pending.value }
+            // Retirement now cancels the entire suspended send (PR #85).
+            // A fresh send still encounters the durable retired record.
+            await #expect(throws: CancellationError.self) { try await pending.value }
+            await #expect(throws: OutboxError.conversationRetired) {
+                try await outbox.send(Self.ordinaryNo, to: P15.bob, conversation: conversation)
+            }
         }
         #expect(await wire.sent.isEmpty)
         #expect(await journal.pending.count == 1)
