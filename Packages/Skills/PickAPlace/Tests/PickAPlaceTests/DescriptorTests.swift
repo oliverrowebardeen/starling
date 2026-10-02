@@ -39,6 +39,13 @@ struct DescriptorTests {
         #expect(descriptor.blockingTopics(in: .defaults).isEmpty)
     }
 
+    @Test func asksForNoExpiry() {
+        // Compose hides the expiry chip and keeps the request open until
+        // the plan's time (Oliver's device test, 2026-10-02).
+        #expect(descriptor.intent.asksForExpiry == false)
+        #expect(descriptor.intent.asksForAudience)
+    }
+
     @Test func sendsOnlyAsAnInvite() {
         #expect(descriptor.sendModes == [.invite])
         #expect(descriptor.defaultSendMode == .invite)

@@ -273,6 +273,26 @@ struct RestoreTests {
         return (try await Group([oliver, maya, jake], hub: hub), oliver, maya, jake)
     }
 
+    /// Compose keeps a Pick a place open until the plan starts, up to a
+    /// week, so the service must take an expiry days away, keep it across
+    /// a restart, and not end the request early.
+    @Test func aWeekLongRequestRunsToAPlanAndKeepsItsExpiry() async throws {
+        let (group, oliver, maya, jake) = try await threeWithWindow(.seconds(1))
+        defer { Task { await group.stop() } }
+        let week: TimeInterval = 7 * 24 * 3_600
+        let before = Date()
+        let request = try await oliver.organize(Venues.all, with: [maya, jake], expiresIn: week)
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: request.conversation)) }
+        let recorded = try #require(try await oliver.ledger.deadlines(for: request.conversation))
+        #expect(abs(recorded.expiresAt.timeIntervalSince(before.addingTimeInterval(week))) < 5)
+
+        await oliver.restart()
+        #expect(await oliver.service.organized[request.conversation]?.expiresAt == recorded.expiresAt)
+        for phone in [maya, jake, oliver] { try await phone.accept(in: request.conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: request.conversation)) }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     @Test func aRestartPastTheConfirmDeadlineEndsTheRequest() async throws {
         let (group, oliver, maya, jake) = try await threeWithWindow(.milliseconds(600))
         defer { Task { await group.stop() } }
