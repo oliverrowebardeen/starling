@@ -15,14 +15,15 @@ struct CandidateAnswers: Hashable, Sendable {
 /// answers.
 enum PairPlanner {
     /// The starter's first liked activity the friend accepts, at the first
-    /// shared half-hour that has not started. The time grows from that
-    /// half-hour while the next one is shared too, up to `maxMinutes`.
+    /// shared half-hour that starts no sooner than `earliest`. The time
+    /// grows from that half-hour while the next one is shared too, up to
+    /// `maxMinutes`.
     ///
     /// - Returns: The terms, with no roster (a pair's roster is the two
     ///   ends of the conversation), or nil when nothing fits.
-    static func plan(liked: [Keyword], answers: CandidateAnswers, maxMinutes: Int64, now: Date) -> Terms? {
+    static func plan(liked: [Keyword], answers: CandidateAnswers, maxMinutes: Int64, earliest: Date) -> Terms? {
         guard let activity = liked.first(where: answers.activities.contains),
-              let first = answers.overlap.filter({ DownForProfile.hasNotStarted($0, now: now) }).sorted().first
+              let first = answers.overlap.filter({ $0.start >= earliest }).sorted().first
         else { return nil }
         var end = first.endMinute
         while end - first.startMinute + SlotTokenSet.slotMinutes <= maxMinutes,

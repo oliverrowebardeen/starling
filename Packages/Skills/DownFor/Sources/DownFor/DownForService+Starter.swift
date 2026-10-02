@@ -18,7 +18,7 @@ extension DownForService {
         else { return }
         let now = clock.now()
         let answers = CandidateAnswers(overlap: overlap, activities: run.activityAnswer ?? [])
-        guard let terms = PairPlanner.plan(liked: request.profile.liked, answers: answers, maxMinutes: configuration.maxPlanMinutes, now: now),
+        guard let terms = PairPlanner.plan(liked: request.profile.liked, answers: answers, maxMinutes: configuration.maxPlanMinutes, earliest: earliestStart(now: now)),
               request.profile.permits(terms, me: localPeer, hub: localPeer, member: key.peer, now: now)
         else {
             enqueue(.notify(run.notice, .noOverlap), for: key.peer)
@@ -43,6 +43,15 @@ extension DownForService {
         runs[key]?.rounds += 1
         startDelivery(proposal, to: key, for: run.request, chainedFrom: run.chainedFrom, mode: run.mode)
         armWindow(run.request, revision: revision)
+    }
+
+    /// The soonest a plan may start: `minimumLead` from now, on the half
+    /// hour. Never the next free half-hour (device test 2: "today at 1:30
+    /// PM" for dinner, proposed at 1:15 PM).
+    func earliestStart(now: Date) -> Date {
+        let step: TimeInterval = 1800
+        let lead = Double(configuration.minimumLead.components.seconds) + Double(configuration.minimumLead.components.attoseconds) / 1e18
+        return Date(timeIntervalSince1970: (now.addingTimeInterval(lead).timeIntervalSince1970 / step).rounded(.up) * step)
     }
 
     /// A starter's run ended without a plan.

@@ -100,8 +100,8 @@ import Testing
     /// Finding 6: the coordinator applies planEnded; the service never
     /// reports it, even after the plan's time is over.
     @Test func theServiceNeverReportsPlanEnded() async throws {
-        // The plan (19:00 to 21:00) ends and its 30 minutes of grace pass
-        // in under a second; the request's expiry (24:00) takes 1.8 s.
+        // The plan (20:00 to 22:00, an hour's notice after 19:00) ends and
+        // its 30 minutes of grace pass in 1.3 s.
         let world = World(2, clock: testClock(speedup: 10_000))
         try await world.start()
         defer { Task { await world.stop() } }
@@ -113,7 +113,7 @@ import Testing
         try await a.imIn(mine)
         try await b.imIn(theirs)
         try await a.waitFor(.planned, mine)
-        try await Task.sleep(for: .milliseconds(1_200))
+        try await Task.sleep(for: .milliseconds(1_700))
         #expect(await !a.lifecycle.lifecycleEvents.contains(.planEnded))
         #expect(await a.lifecycle.state(mine) == .planned)
         // Its request is gone from the service by now, quietly.

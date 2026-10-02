@@ -37,6 +37,10 @@ public struct DownForConfiguration: Hashable, Sendable {
     public var maxBackoff: Duration
     /// Finished conversations remembered so a late retry gets the same reply.
     public var maxFinishedRuns: Int
+    /// The soonest a proposed plan may start, so friends have time to see
+    /// it and get there (device test 2, 2026-10-02). Plans start on the
+    /// half hour.
+    public var minimumLead: Duration
 
     public init(
         retryInterval: Duration = .seconds(5),
@@ -45,7 +49,8 @@ public struct DownForConfiguration: Hashable, Sendable {
         maxRunsPerPeer: Int = 3,
         ownerWindow: Duration = .seconds(15 * 60),
         maxBackoff: Duration = .seconds(60),
-        maxFinishedRuns: Int = 64
+        maxFinishedRuns: Int = 64,
+        minimumLead: Duration = .seconds(3600)
     ) {
         precondition(maxAttempts > 0 && maxPlanMinutes >= 30 && maxRunsPerPeer > 0 && ownerWindow > .zero && maxBackoff >= retryInterval)
         self.retryInterval = retryInterval
@@ -55,6 +60,7 @@ public struct DownForConfiguration: Hashable, Sendable {
         self.ownerWindow = ownerWindow
         self.maxBackoff = maxBackoff
         self.maxFinishedRuns = maxFinishedRuns
+        self.minimumLead = minimumLead
     }
 }
 
