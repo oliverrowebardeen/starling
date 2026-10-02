@@ -4,7 +4,7 @@ Not run by the agent. Oliver runs this after the real skills and shell merge.
 Use paired phones and test data. Down for requires Debug until private PSI
 exists; Release shows it as unavailable (ADR 0206). The exclusion checks need a third phone.
 Issue #49 tracks automated evidence and its limits, including wire and timing
-checks that a visual device pass cannot establish. Open findings #76 and #79 to #81
+checks that a visual device pass cannot establish. Open findings #76, #79, and #81
 need fixes before their expected behavior can pass.
 
 1. Phone A: tap New, type "boba tonight", select Phone B, and send with Ask quietly. Expect: the activity and real friend appear; both owners confirm before It's a plan. Repeat with Invite. Expect: B sees a direct invitation. Read the visible and VoiceOver copy as plans with friends.

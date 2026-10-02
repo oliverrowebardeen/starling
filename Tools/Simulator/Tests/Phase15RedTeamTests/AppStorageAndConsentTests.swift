@@ -116,14 +116,10 @@ struct AppStorageAndConsentTests {
         let restored = try #require(a.app.lifecycle.interaction(owner.id))
         let detail = a.app.planDetail(restored)
         let emptyJournal = try await a.journal.unresolved().isEmpty
-        let check: () -> Void = {
-            #expect(!detail.auditIsComplete)
-            #expect(detail.kept.isEmpty)
-            #expect(restored.egress.contains { $0.message == pending.message && $0.itemsUnknown })
-            #expect(emptyJournal)
-        }
-        if memberConversation { withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/80", check) }
-        else { check() }
+        #expect(!detail.auditIsComplete)
+        #expect(detail.kept.isEmpty)
+        #expect(restored.egress.contains { $0.message == pending.message && $0.itemsUnknown })
+        #expect(emptyJournal)
     }
 
     @Test(arguments: [false, true])
