@@ -116,7 +116,7 @@ struct NewView: View {
                             Button(preset.label) { composer.expiry = preset }
                         }
                     } label: {
-                        Label("Change how long it stays out", systemImage: "clock").font(.subheadline)
+                        Label(Expiry.controlTitle, systemImage: "clock").font(.subheadline)
                     }
                 }
 
@@ -142,9 +142,7 @@ struct NewView: View {
                     Text(ComposerModel.modeLabel(.invite)).tag(SendMode.invite)
                 }
                 .pickerStyle(.segmented)
-                Text(composer.sendMode == .askQuietly
-                     ? "Friends see nothing unless they're up for it too."
-                     : "Friends see your invite and can say yes or pass.")
+                Text(ComposerModel.modeNote(composer.sendMode))
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if composer.audience == .everyoneExcept {

@@ -2,7 +2,7 @@ import Foundation
 import StarlingCore
 
 /// Short words for "Starling understood" chips in New (mockup "New"):
-/// "Boba", "Tonight after 7 PM", "Nearby", "Up to $15", "Expires in 3 hrs".
+/// "Boba", "Tonight after 7 PM", "Nearby", "Up to $15", "Open for 3 hrs".
 /// The consent sheet and plan detail keep `ValueFormatter`'s full dates;
 /// chips are for the owner's own draft, read at a glance.
 public struct ChipFormatter: Sendable {
@@ -62,13 +62,15 @@ public struct ChipFormatter: Sendable {
         "\(dayWord(slot.start)) at \(hour(slot.start))"
     }
 
-    /// "Expires in 3 hrs", "Expires in 1 hr", "Expires in 45 min".
-    public func expiry(_ date: Date) -> String {
+    /// How long friends can answer: "Open for 3 hrs", "Open for 1 hr",
+    /// "Open for 45 min", "Open until Friday".
+    public func open(_ date: Date) -> String {
         let minutes = max(1, Int((date.timeIntervalSince(now()) / 60).rounded()))
-        if minutes < 60 { return "Expires in \(minutes) min" }
+        if minutes < 60 { return "Open for \(minutes) min" }
         let hours = Int((Double(minutes) / 60).rounded())
-        if hours < 24 { return hours == 1 ? "Expires in 1 hr" : "Expires in \(hours) hrs" }
-        return "Expires \(dayWord(date).lowercased())"
+        if hours < 24 { return hours == 1 ? "Open for 1 hr" : "Open for \(hours) hrs" }
+        let day = dayWord(date)
+        return "Open until \(["Today", "Tonight", "Tomorrow"].contains(day) ? day.lowercased() : day)"
     }
 
     public func dayWord(_ date: Date) -> String {

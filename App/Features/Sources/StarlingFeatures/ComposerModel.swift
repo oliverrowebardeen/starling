@@ -5,7 +5,7 @@ import PickAPlace
 import StarlingChaining
 import StarlingCore
 
-/// How long a request stays out.
+/// How long friends can answer a request (not how long the plan lasts).
 public enum Expiry: Hashable, Sendable {
     case hours(Int)
     /// Until 11:59 PM today.
@@ -26,10 +26,14 @@ public enum Expiry: Hashable, Sendable {
         }
     }
 
+    /// The control's title: what the choice decides.
+    public static let controlTitle = "How long friends can answer"
+
+    /// "1 hour", "3 hours", "Until tonight".
     public var label: String {
         switch self {
         case .hours(let hours): hours == 1 ? "1 hour" : "\(hours) hours"
-        case .tonight: "Tonight"
+        case .tonight: "Until tonight"
         case .at: "Custom"
         }
     }
@@ -343,7 +347,7 @@ public final class ComposerModel {
         default:
             break
         }
-        if descriptor?.intent.asksForExpiry ?? true { chips.append(chipFormatter.expiry(expiresAt)) }
+        if descriptor?.intent.asksForExpiry ?? true { chips.append(expiryChip) }
         return chips
     }
 
@@ -411,11 +415,27 @@ public final class ComposerModel {
     /// with both (ADR 0020 decision 2).
     public var offersModeChoice: Bool { (descriptor?.sendModes.count ?? 0) > 1 }
 
+    /// "Ask quietly" or "Ask directly". Not "Invite", which read as part of
+    /// the activity ("Down for an invite").
     public static func modeLabel(_ mode: SendMode) -> String {
         switch mode {
         case .askQuietly: "Ask quietly"
-        case .invite: "Invite"
+        case .invite: "Ask directly"
         }
+    }
+
+    /// What each mode means for the friends asked.
+    public static func modeNote(_ mode: SendMode) -> String {
+        switch mode {
+        case .askQuietly: "Friends see nothing unless they're up for it too."
+        case .invite: "Friends see that you asked and can say yes or pass."
+        }
+    }
+
+    /// "Open for 3 hrs", "Open until tonight": how long friends can answer.
+    public var expiryChip: String {
+        if expiry == .tonight { return "Open until tonight" }
+        return chipFormatter.open(expiresAt)
     }
 
     // MARK: Audience
@@ -558,7 +578,7 @@ public final class ComposerModel {
         guard descriptor != nil else { return nil }
         return switch sendMode {
         case .askQuietly: DownFor.revealNote
-        case .invite: "The friends you ask see this as an invite."
+        case .invite: "The friends you ask see that you asked."
         }
     }
 

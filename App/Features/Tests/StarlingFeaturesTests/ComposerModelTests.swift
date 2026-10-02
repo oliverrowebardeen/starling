@@ -120,7 +120,10 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.skillChip == "Down for boba")
         // Fixtures.noon is 14:13 UTC; six hours later is 20:13, and the
         // slot runs past 11 PM, so "after".
-        #expect(h.model.chips.map(plain) == ["Boba", "Tonight after 8:13 PM", "Ask quietly", "Expires in 3 hrs"])
+        #expect(h.model.chips.map(plain) == ["Boba", "Tonight after 8:13 PM", "Ask quietly", "Open for 3 hrs"])
+        h.model.expiry = .tonight
+        #expect(h.model.expiryChip == "Open until tonight")
+        h.model.expiry = .hours(3)
         // Diet is not a Down for… slot.
         #expect(h.model.constraints.constraints[.diet] == nil)
         #expect(h.model.startLabel == "See who's up for it")
@@ -465,8 +468,8 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(h.model.sendMode == .askQuietly)
         #expect(h.model.footnote == "If nobody's up for it, nobody sees you asked.")
         h.model.mode = .invite
-        #expect(h.model.footnote == "The friends you ask see this as an invite.")
-        #expect(h.model.chips.contains("Invite"))
+        #expect(h.model.footnote == "The friends you ask see that you asked.")
+        #expect(h.model.chips.contains("Ask directly"))
         _ = try #require(await h.model.send())
         #expect(await h.down.started.first?.intent.mode == .invite)
     }
@@ -639,9 +642,13 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
             .activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: [try Keyword("karaoke")]))],
         ])
         #expect(formatter.chips(for: set) == ["Boba", "No karaoke", "Nearby", "Up to $15.00"])
-        #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(3 * 3600)) == "Expires in 3 hrs")
-        #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(3600)) == "Expires in 1 hr")
-        #expect(formatter.expiry(Fixtures.noon.addingTimeInterval(45 * 60)) == "Expires in 45 min")
+        // How long friends can answer, never the plan's own length.
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(3 * 3600)) == "Open for 3 hrs")
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(3600)) == "Open for 1 hr")
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(45 * 60)) == "Open for 45 min")
+        #expect(formatter.open(Fixtures.noon.addingTimeInterval(26 * 3600)) == "Open until tomorrow")
+        #expect(Expiry.presets.map(\.label) == ["1 hour", "3 hours", "Until tonight"])
+        #expect(Expiry.controlTitle == "How long friends can answer")
     }
 }
 
