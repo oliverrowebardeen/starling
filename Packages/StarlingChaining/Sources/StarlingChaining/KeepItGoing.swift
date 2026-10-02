@@ -116,6 +116,10 @@ public struct ChainPlanner: Sendable {
                 let waiting = sameSkill.filter(Self.isWaitingForPlanEnd)
                 guard waiting.count == sameSkill.count else { return nil }
                 scheduled = waiting.first?.id
+            case .whilePlanned:
+                // Change the plan is started from the plan's detail, not
+                // offered under "Keep it going" (ADR 0022).
+                return nil
             }
             return ChainSuggestion(
                 skill: next,

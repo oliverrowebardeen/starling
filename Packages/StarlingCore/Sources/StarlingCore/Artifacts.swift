@@ -134,8 +134,13 @@ public struct Plan: Hashable, Sendable, Codable, Identifiable {
     public let activity: Keyword?
     public let time: TimeSlot?
     public let place: PlaceChoice?
+    /// 0 when the plan is first agreed, then one more for every change the
+    /// group agrees to (ADR 0022). A change names the revision it changes,
+    /// so an answer to an older version of the plan never applies.
+    public let revision: UInt32
 
-    public init(id: PlanID = PlanID(), origin: ConversationID, attendees: Attendees, activity: Keyword?, time: TimeSlot?, place: PlaceChoice? = nil) throws {
+    public init(id: PlanID = PlanID(), origin: ConversationID, attendees: Attendees, activity: Keyword?, time: TimeSlot?,
+                place: PlaceChoice? = nil, revision: UInt32 = 0) throws {
         guard activity != nil || time != nil else { throw ValidationError("Plan", "needs an activity or a time") }
         self.id = id
         self.origin = origin
@@ -143,18 +148,31 @@ public struct Plan: Hashable, Sendable, Codable, Identifiable {
         self.activity = activity
         self.time = time
         self.place = place
+        self.revision = revision
     }
 
     /// The same plan at a newly agreed place (Pick a place, "Somewhere else?").
     public func updating(place: PlaceChoice) -> Plan {
         // Cannot throw: activity or time already satisfied the check.
-        try! Plan(id: id, origin: origin, attendees: attendees, activity: activity, time: time, place: place)
+        try! updating(attendees: attendees, activity: activity, time: time, place: place)
+    }
+
+    /// The same plan after a change the group agreed to (ADR 0022): any of
+    /// who, what, when, and where, with the revision one higher. Throws if
+    /// the result would have neither an activity nor a time, or if the
+    /// revision cannot rise.
+    public func updating(attendees: Attendees? = nil, activity: Keyword?? = nil, time: TimeSlot?? = nil,
+                         place: PlaceChoice?? = nil) throws -> Plan {
+        guard revision < .max else { throw ValidationError("Plan.revision", "cannot rise further") }
+        return try Plan(id: id, origin: origin, attendees: attendees ?? self.attendees,
+                        activity: activity ?? self.activity, time: time ?? self.time,
+                        place: place ?? self.place, revision: revision + 1)
     }
 
     /// When a time-triggered chain (Swap photos) may start.
     public var endsAt: Date? { time?.end }
 
-    private enum CodingKeys: String, CodingKey { case id, origin, attendees, activity, time, place }
+    private enum CodingKeys: String, CodingKey { case id, origin, attendees, activity, time, place, revision }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -164,7 +182,8 @@ public struct Plan: Hashable, Sendable, Codable, Identifiable {
             attendees: c.decode(Attendees.self, forKey: .attendees),
             activity: c.decodeIfPresent(Keyword.self, forKey: .activity),
             time: c.decodeIfPresent(TimeSlot.self, forKey: .time),
-            place: c.decodeIfPresent(PlaceChoice.self, forKey: .place)
+            place: c.decodeIfPresent(PlaceChoice.self, forKey: .place),
+            revision: c.decodeIfPresent(UInt32.self, forKey: .revision) ?? 0
         )
     }
 }
