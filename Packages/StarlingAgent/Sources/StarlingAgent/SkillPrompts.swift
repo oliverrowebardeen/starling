@@ -156,6 +156,12 @@ package enum SkillOutputMapping {
         let context = InterpretationContext(now: now, timeZone: timeZone, issues: skill.intent.slots.map(\.issue))
         var constraints = try OutputMapping.rules(checked, context: context).constraints.constraints.filter { slots.contains($0.key) }
 
+        // No time stated: a meal names its own (device test 2, 2026-10-02).
+        // "dinner" is the evening, never the next free half-hour.
+        if slots.contains(.time), constraints[.time] == nil, let window = mealWindow(for: checked.wants, now: now, timeZone: timeZone) {
+            constraints[.time] = [try Constraint(.within([window]))]
+        }
+
         let words = Grounding.words(utterance)
         var chips = checked.wants + checked.avoids
         for issue in skill.intent.slots.map(\.issue) where ![.time, .activity, .budget].contains(issue) {
@@ -206,6 +212,37 @@ package enum SkillOutputMapping {
             expiresAt = Timestamp(end)
         }
         return ParsedIntent(constraints: try ConstraintSet(constraints), audience: audience, mode: mode, expiresAt: expiresAt, mentionedNames: names)
+    }
+
+    /// When each meal is usually eaten, in hours of the owner's day.
+    static let meals: [String: (from: Double, to: Double)] = [
+        "breakfast": (8, 11), "brunch": (10, 13), "lunch": (11.5, 14), "dinner": (18, 21), "supper": (18, 21),
+    ]
+    /// How long before a plan starts its friends hear about it, at least.
+    static let leadTime: TimeInterval = 3600
+
+    /// The window a meal in the owner's activity names: today's, if it
+    /// still leaves an hour's notice and half an hour of the meal, or else
+    /// tomorrow's, starting no sooner than an hour from now on the half
+    /// hour. Nil when no activity is a meal.
+    static func mealWindow(for activities: [String], now: Date, timeZone: TimeZone) -> TimeSlot? {
+        guard let meal = activities.lazy.flatMap({ Grounding.words($0) }).compactMap({ meals[$0] }).first else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let earliest = halfHourUp(now.addingTimeInterval(leadTime))
+        for days in 0...1 {
+            guard let day = calendar.date(byAdding: .day, value: days, to: calendar.startOfDay(for: now)) else { return nil }
+            let start = max(day.addingTimeInterval(meal.from * 3600), earliest)
+            let end = day.addingTimeInterval(meal.to * 3600)
+            if end.timeIntervalSince(start) >= 1800 { return try? TimeSlot(start: start, end: end) }
+        }
+        return nil
+    }
+
+    /// The next half hour at or after `date`, a friendly time to meet.
+    static func halfHourUp(_ date: Date) -> Date {
+        let step: TimeInterval = 1800
+        return Date(timeIntervalSince1970: (date.timeIntervalSince1970 / step).rounded(.up) * step)
     }
 
     /// The words right after "everyone except" or "everyone but" (and the
