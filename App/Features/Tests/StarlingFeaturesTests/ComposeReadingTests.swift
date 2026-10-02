@@ -175,3 +175,59 @@ actor ReadingCounter {
         #expect(!h.model.setDays(DayRange(from: friday, to: today, eveningsOnly: false)))
     }
 }
+
+/// Device test 2 (issue #95): the Edit sheet holds per-event details only;
+/// standing preferences stay in You › Your rules.
+@MainActor
+@Suite struct EventDetailsTests {
+    @Test func downForsDetailsAreWhatWhenWhereAndSpend() async throws {
+        let h = try await ComposerHarness()
+        h.model.text = "boba tonight"
+        await h.model.understand()
+        var details = h.model.eventDetails
+        #expect(details.fields == [.what, .when, .place, .spendAtMost])
+        #expect(details.what == "boba")
+        #expect(details.window != nil && details.days == nil)
+
+        details.what = "movie night"
+        details.place = "downtown"
+        details.spendAtMost = 20
+        details.currency = "USD"
+        details.window = nil
+        #expect(h.model.apply(details) == nil)
+        #expect(h.model.skillChip == "Down for movie night")
+        #expect(h.model.constraints.constraints[.time] == nil)
+        #expect(h.model.chips.contains("Downtown") || h.model.chips.contains("downtown"))
+        #expect(h.model.chips.contains("Up to $20.00"))
+        // Edited in the sheet, so a re-read keeps them.
+        #expect(h.model.ownerSet.isSuperset(of: [.issue(.activity), .issue(.place), .issue(.budget), .issue(.time)]))
+
+        // Something unusable changes nothing.
+        let before = h.model.constraints
+        details.what = "   "
+        #expect(h.model.apply(details) == "Add what you want to do.")
+        #expect(h.model.constraints == before)
+        details.what = "movie night"
+        details.spendAtMost = nil
+        #expect(h.model.apply(details) == nil)
+        #expect(h.model.constraints.constraints[.budget] == nil)
+    }
+
+    @Test func findATimesWhenIsARangeOfDays() async throws {
+        let h = try await ComposerHarness(skillModel: ComposerHarness.bobaModel(route: .findATime))
+        h.model.text = "find a time for dinner"
+        await h.model.understand()
+        var details = h.model.eventDetails
+        #expect(details.fields == [.what, .when])
+        var range = try #require(details.days)
+        #expect(details.window == nil)
+        range.to = range.from.addingTimeInterval(3 * 24 * 3600)
+        range.eveningsOnly = true
+        details.days = range
+        #expect(h.model.apply(details) == nil)
+        #expect(h.model.dayRange.eveningsOnly)
+        range.to = range.from.addingTimeInterval(-24 * 3600)
+        details.days = range
+        #expect(h.model.apply(details) == "The last day comes before the first.")
+    }
+}

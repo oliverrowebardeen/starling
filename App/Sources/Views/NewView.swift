@@ -12,7 +12,7 @@ struct NewView: View {
     @Bindable var composer: ComposerModel
     let done: () -> Void
     let cancel: () -> Void
-    @State private var editing: RulesDraft?
+    @State private var editingDetails = false
     @State private var chipEdit: ChipEdit?
     @FocusState private var typing: Bool
 
@@ -62,11 +62,8 @@ struct NewView: View {
                 ChipDaysEditor(range: range) { composer.setDays($0) }
             }
         }
-        .sheet(item: $editing) { draft in
-            ChipEditor(draft: draft, formatter: app.services.formatter) { edited in
-                if let rules = try? edited.build() { composer.constraints = rules.constraints }
-                editing = nil
-            }
+        .sheet(isPresented: $editingDetails) {
+            EventDetailsEditor(composer: composer)
         }
     }
 
@@ -104,7 +101,7 @@ struct NewView: View {
                 Text("Starling understood").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
                 Spacer()
                 if composer.skill != nil {
-                    Button("Edit") { editing = RulesDraft(OwnerRules(constraints: composer.constraints)) }
+                    Button("Edit") { editingDetails = true }
                         .font(.subheadline)
                 }
             }
@@ -157,7 +154,7 @@ struct NewView: View {
                 .buttonStyle(.plain)
                 .accessibilityHint("Edit")
         case .details:
-            Button(chip.text) { editing = RulesDraft(OwnerRules(constraints: composer.constraints)) }
+            Button(chip.text) { editingDetails = true }
                 .buttonStyle(.plain)
                 .accessibilityHint("Edit")
         case .mode:
@@ -436,30 +433,117 @@ struct DayRangeFields: View {
     }
 }
 
-/// Edits the chips as rules, with the same review rows as the rules editor.
-private struct ChipEditor: View {
-    @State var draft: RulesDraft
-    let formatter: ValueFormatter
-    let done: (RulesDraft) -> Void
+/// The Edit sheet: this request's details only (device test 2, issue
+/// #95). Daily hours, certain times, likes, and avoids are standing rules
+/// and live in You › Your rules.
+private struct EventDetailsEditor: View {
+    @Bindable var composer: ComposerModel
+    @State private var details: EventDetails
+    @State private var problem: String?
+    @Environment(\.dismiss) private var dismiss
+
+    init(composer: ComposerModel) {
+        self.composer = composer
+        _details = State(initialValue: composer.eventDetails)
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                RulesReviewSections(draft: $draft, flags: [:], problems: draft.problems, formatter: formatter, fromModel: false)
+                if details.fields.contains(.what) {
+                    Section("What") { TextField("Movie night, a walk", text: $details.what) }
+                }
+                if details.fields.contains(.when) { when }
+                if details.fields.contains(.place) {
+                    Section("Where") { TextField("Near Franklin, downtown", text: $details.place) }
+                }
+                if details.fields.contains(.groupSize) { groupSize }
+                if details.fields.contains(.spendAtMost) {
+                    Section("Spend at most") {
+                        TextField("No limit", value: $details.spendAtMost, format: .currency(code: details.currency))
+                            .keyboardType(.decimalPad)
+                    }
+                }
+                Section("Who") {
+                    Picker("Ask", selection: $composer.audience) {
+                        ForEach(Array(composer.audienceOptions.enumerated()), id: \.offset) { _, option in
+                            Text(option.label).tag(option.choice)
+                        }
+                    }
+                }
+                if composer.offersModeChoice {
+                    Section {
+                        Picker("How friends are asked", selection: Binding(get: { composer.sendMode }, set: { composer.mode = $0 })) {
+                            Text(ComposerModel.modeLabel(.askQuietly)).tag(SendMode.askQuietly)
+                            Text(ComposerModel.modeLabel(.invite)).tag(SendMode.invite)
+                        }
+                    } footer: {
+                        Text(ComposerModel.modeNote(composer.sendMode))
+                    }
+                }
+                if composer.descriptor?.intent.asksForExpiry ?? false {
+                    Section {
+                        Picker(Expiry.controlTitle, selection: $composer.expiry) {
+                            ForEach(Expiry.presets, id: \.self) { Text($0.label).tag($0) }
+                        }
+                    }
+                }
+                if let problem {
+                    Section { Text(problem).foregroundStyle(.orange) }
+                }
             }
-            .navigationTitle("Edit details")
+            .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { done(draft) }.disabled(!draft.problems.isEmpty)
+                    Button("Done") {
+                        problem = composer.apply(details)
+                        if problem == nil { dismiss() }
+                    }
                 }
             }
         }
     }
-}
 
-extension RulesDraft: @retroactive Identifiable {
-    public var id: Int { hashValue }
+    @ViewBuilder private var when: some View {
+        if let days = details.days {
+            Section("When") {
+                DatePicker("From", selection: Binding(get: { days.from }, set: { details.days?.from = $0 }), displayedComponents: .date)
+                DatePicker("To", selection: Binding(get: { days.to }, set: { details.days?.to = $0 }),
+                           in: days.from...days.from.addingTimeInterval(13 * 24 * 3600), displayedComponents: .date)
+                Toggle("Evenings only", isOn: Binding(get: { days.eveningsOnly }, set: { details.days?.eveningsOnly = $0 }))
+            }
+        } else {
+            Section("When") {
+                Toggle("Set a time", isOn: Binding(
+                    get: { details.window != nil },
+                    set: { on in
+                        let start = Date().addingTimeInterval(3600)
+                        details.window = on ? (try? TimeSlot(start: start, end: start.addingTimeInterval(2 * 3600))) : nil
+                    }
+                ))
+                if let window = details.window {
+                    DatePicker("From", selection: Binding(get: { window.start }, set: { start in
+                        details.window = try? TimeSlot(start: start, end: max(window.end, start.addingTimeInterval(1800)))
+                    }))
+                    DatePicker("Until", selection: Binding(get: { window.end }, set: { end in
+                        if let slot = try? TimeSlot(start: window.start, end: end) { details.window = slot }
+                    }), in: window.start.addingTimeInterval(60)...)
+                }
+            }
+        }
+    }
+
+    private var groupSize: some View {
+        Section("Group size") {
+            Toggle("Set a group size", isOn: Binding(get: { details.groupSize != nil }, set: { details.groupSize = $0 ? 2...4 : nil }))
+            if let size = details.groupSize {
+                Stepper("At least \(size.lowerBound)", value: Binding(get: { size.lowerBound }, set: { details.groupSize = $0...max($0, size.upperBound) }), in: 2...16)
+                Stepper("At most \(size.upperBound)", value: Binding(get: { size.upperBound }, set: { details.groupSize = min(size.lowerBound, $0)...$0 }), in: 2...16)
+            }
+        }
+    }
 }
 
 /// Lays chips out in rows, wrapping when a row is full.
