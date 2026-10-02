@@ -1,3 +1,4 @@
+import DownFor
 import Foundation
 import Observation
 import PickAPlace
@@ -438,6 +439,8 @@ public final class ComposerModel {
     /// support itself when it starts.
     private func canRun(_ peer: PeerID) -> Bool {
         guard let descriptor else { return true }
+        // Down for... says who can't run it by lane B's own rule.
+        if descriptor.id == .downFor { return DownForService.unsupported(among: [peer], cards: cards.cards).isEmpty }
         return cards.support(of: peer, for: descriptor.ref)?.isSupported ?? true
     }
 
@@ -521,7 +524,7 @@ public final class ComposerModel {
     public var footnote: String? {
         guard descriptor != nil else { return nil }
         return switch sendMode {
-        case .askQuietly: "If nobody's up for it, nobody sees you asked."
+        case .askQuietly: DownFor.revealNote
         case .invite: "The friends you ask see this as an invite."
         }
     }

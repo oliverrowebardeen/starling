@@ -276,7 +276,8 @@ import Testing
         await down.emit(.lifecycle(id, .proposalReady(proposal)))
         await eventually { app.home.needsYou.count == 1 }
         for _ in 0..<2000 where await notifier.posted.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
-        #expect(await notifier.posted.map(\.title) == ["You and Maya are both down for boba"])
+        #expect(await notifier.posted.map(\.title) == ["Down for boba"])
+        #expect(await notifier.posted.map(\.body) == ["You and Maya are both down for boba."])
     }
 
     /// Unpairing forgets the friend's card, contact link, and close-friend mark.

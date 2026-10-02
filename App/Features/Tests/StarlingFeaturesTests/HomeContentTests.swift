@@ -115,16 +115,17 @@ import Testing
         let proposed = try make(SampleSkills.downFor, with: [maya, jake], [.started, .proposalReady(try bobaProposal(place: "Boba Guys"))])
         let facts = try #require(words.facts(proposed))
         #expect(facts.friendNames == ["Maya", "Jake"])
+        // Lane B's template (P15-B request 2) says where and when itself.
         let text = words.template(facts)
-        #expect(text.headline == "You, Maya and Jake are all down for boba")
-        #expect(plain(text.detail ?? "") == "Boba Guys, tonight at 8:13 PM?")
+        #expect(plain(text.headline) == "You, Maya and Jake are all down for boba. Boba Guys tonight at 8:13 PM?")
+        #expect(text.detail == nil)
         #expect(words.summary(proposed)?.tag == "Down for boba")
         #expect(words.summary(proposed)?.title == "Boba with Maya and Jake")
 
         let two = SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("a walk")])]))
         let pair = try make(SampleSkills.downFor, with: [maya], [.started, .proposalReady(two)])
         let pairText = words.template(try #require(words.facts(pair)))
-        #expect(pairText.headline == "You and Maya are both down for a walk")
+        #expect(pairText.headline == "You and Maya are both down for a walk.")
         #expect(pairText.detail == nil)
     }
 
@@ -174,7 +175,8 @@ import Testing
         var proposed = started
         try proposed.apply(.proposalReady(try bobaProposal()), at: at)
         let notice = try #require(LifecycleNotice.make(before: started, after: proposed, words: words))
-        #expect(notice.title == "You, Maya and Jake are all down for boba")
+        #expect(notice.title == "Down for boba")
+        #expect(plain(notice.body) == "You, Maya and Jake are all down for boba. Tonight at 8:13 PM?")
 
         // Nothing for starting, for endings, or for a hidden invitee.
         #expect(LifecycleNotice.make(before: nil, after: started, words: words) == nil)
@@ -202,14 +204,14 @@ import Testing
         try item.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))), at: item.createdAt)
 
         let texts = ProposalTexts(model: ScriptedSkillModel(onProposal: { facts in "Boba with \(facts.friendNames.joined())?" }))
-        #expect(texts.text(for: item, words: words)?.headline == "You and Maya are both down for boba")
+        #expect(texts.text(for: item, words: words)?.headline == "You and Maya are both down for boba.")
         await eventually { texts.text(for: item, words: words)?.headline == "Boba with Maya?" }
         #expect(texts.text(for: item, words: words)?.headline == "Boba with Maya?")
 
         let failing = ProposalTexts(model: ScriptedSkillModel())
         _ = failing.text(for: item, words: words)
         try await Task.sleep(for: .milliseconds(20))
-        #expect(failing.text(for: item, words: words)?.headline == "You and Maya are both down for boba")
+        #expect(failing.text(for: item, words: words)?.headline == "You and Maya are both down for boba.")
     }
 }
 

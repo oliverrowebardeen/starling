@@ -1,3 +1,4 @@
+import DownFor
 import FindATime
 import Foundation
 import PickAPlace
@@ -32,12 +33,15 @@ public struct InteractionWords: Sendable {
     public let formatter: ValueFormatter
     public let chips: ChipFormatter
     private let names: @Sendable () -> [PeerID: String]
+    /// Decides "tonight" or "tomorrow" in a template sentence.
+    let now: @Sendable () -> Date
 
     public init(registry: SkillRegistry, localPeer: PeerID?, formatter: ValueFormatter, names: @escaping @Sendable () -> [PeerID: String], now: @escaping @Sendable () -> Date = { Date() }) {
         self.registry = registry
         self.localPeer = localPeer
         self.formatter = formatter
         self.names = names
+        self.now = now
         chips = ChipFormatter(values: formatter, now: now)
     }
 
@@ -199,6 +203,9 @@ public struct InteractionWords: Sendable {
         // Lane C's own sentence already says when (P15-C request 2): "You
         // and Priya are free Thursday, October 8 at 4:00 PM for stats."
         if facts.skill.id == .findATime { return (FindATimeTemplate.sentence(facts, locale: formatter.locale), nil) }
+        // Lane B's sentence, which also says where and when (P15-B request 2):
+        // "You and Maya are both down for boba. Tonight at 8:30 PM?"
+        if facts.skill.id == .downFor { return (ProposalTemplate.sentence(facts, now: now()), nil) }
         let people = PermissionExplanation.names(["You"] + facts.friendNames)
         let together = facts.friendNames.count == 1 ? "both" : "all"
         let headline: String = switch facts.skill.id {
@@ -292,7 +299,9 @@ public struct LifecycleNotice: Hashable, Sendable {
         case .proposed:
             guard let facts = words.facts(after) else { return nil }
             let text = words.template(facts)
-            return LifecycleNotice(id: id, title: text.headline, body: text.detail ?? "Open Starling to answer.")
+            // A skill's own sentence says when too: the tag is the title.
+            guard let detail = text.detail else { return LifecycleNotice(id: id, title: summary.tag, body: text.headline) }
+            return LifecycleNotice(id: id, title: text.headline, body: detail)
         case .planned:
             return LifecycleNotice(id: id, title: "It's a plan", body: summary.title)
         case .awaitingOwner where after.role == .invitee:
