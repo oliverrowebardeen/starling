@@ -168,11 +168,13 @@ final class AppPhone {
     }
     func wait(_ state: InteractionState, _ id: InteractionID, retrying phones: [AppPhone] = []) async throws -> Interaction {
         var retryLimits: [Duration] = []
-        for phone in phones { retryLimits.append(await phone.clock.elapsed + .seconds(60)) }
+        let budget: Duration = app.lifecycle.interaction(id)?.skill.id == .pickAPlace ? .seconds(300) : .seconds(60)
+        for phone in phones { retryLimits.append(await phone.clock.elapsed + budget) }
         try await appEventually("app interaction reaches \(state)") {
             if self.app.lifecycle.interaction(id)?.state == state { return true }
             // Replies can cross either phone's send bookkeeping. Drive
-            // retries through one virtual minute, below the owner windows.
+            // place retries through five virtual minutes, below its answer
+            // window. Other skills retain their one-minute retry budget.
             for (phone, limit) in zip(phones, retryLimits) {
                 if let next = await phone.clock.due.filter({ $0 <= limit }).min() {
                     await phone.clock.advance(to: next)

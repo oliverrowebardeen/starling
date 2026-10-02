@@ -118,12 +118,12 @@ struct AppAudienceAndIngressTests {
                 recipientCard: b.app.agentCard, skill: skill, mode: mode, chainedFrom: ConversationID())
             try await appEventually("forged envelope accepted by Inbox") { await b.agent.received.contains(sent) }
         }
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(b.app.lifecycle.interactions.isEmpty)
         let valid = try await a.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: b.id, conversation: ConversationID(),
             recipientCard: b.app.agentCard, skill: DownFor.ref, mode: .invite, chainedFrom: ConversationID())
         let invitee = try await b.incoming(valid.conversation)
         _ = try await b.wait(.proposed, invitee.id)
+        // The valid card is the processing control after the forged inputs.
+        #expect(b.app.lifecycle.interactions.map(\.id) == [invitee.id])
         #expect(invitee.chain == nil && invitee.friendChainHint == nil)
         #expect(b.app.permissions.pending == nil && b.app.consent.current == nil)
         #expect(b.calendar.requestCount == 0)

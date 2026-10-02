@@ -42,6 +42,7 @@ struct SwapPhotosIntegrationTests {
         let conversation = ConversationID()
         let good = try await a.send(.propose(valid), to: b.id, conversation: conversation, skill: SwapPhotos.descriptor.ref, parent: parent.conversation)
         try await world.delivered(good, to: b)
+        try await P15.eventually("photo service publishes the invitee proposal") { await log.values.count >= 2 }
         let events = await log.values
         #expect(events.count == 2)
         guard case .incoming(let id, _, _, _) = try #require(events.first),
@@ -116,6 +117,7 @@ struct SwapPhotosIntegrationTests {
         let envelope = try await a.send(.propose(Proposal(round: 0, terms: Terms([.photos: .count(2)]))), to: b.id,
             conversation: conversation, skill: SwapPhotos.descriptor.ref, parent: parent.conversation)
         try await world.delivered(envelope, to: b)
+        try await P15.eventually("photo invitee events reach the store") { await log.values.count >= 2 }
         guard case .incoming(let id, _, _, _) = try #require(await log.values.first) else { Issue.record("Expected incoming"); return }
         await b.conversations.gateRetirement(failing: fail)
         let pass = Task { try await service.answer(id, with: .pass) }

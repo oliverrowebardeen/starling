@@ -66,7 +66,8 @@ struct ChainingIntegrationTests {
         }
     }
 
-    @Test func aShortenedRealPlaceRosterMustCarryIntoTheNextChain() async throws {
+    @Test(arguments: [false, true])
+    func aShortenedRealPlaceRosterMustCarryIntoTheNextChain(losingFirstAnswer: Bool) async throws {
         let world = try await PlaceWorld.make()
         defer { Task { await world.stop() } }
         let (a, b, c) = (world.phones[0], world.phones[1], world.phones[2])
@@ -81,9 +82,14 @@ struct ChainingIntegrationTests {
         try await a.events.add(interaction)
         let candidate = try PlaceWorld.candidate()
         await world.seed([candidate])
+        if losingFirstAnswer { await a.relay.loseNextAnswer() }
         await a.staged.stage([candidate], for: interaction.id)
         try await a.service.start(start.request)
-        let invited = try await c.wait(.proposed, in: interaction.conversation)
+        let invited = try await c.wait(.proposed, in: interaction.conversation, retrying: a)
+        if losingFirstAnswer {
+            #expect(await a.relay.lostAnswers.count == 1)
+            #expect(await a.clock.elapsed > .zero)
+        }
         _ = try await b.wait(.proposed, in: interaction.conversation)
         try await c.service.answer(invited.id, with: .pass)
         try await b.accept(interaction.conversation)
@@ -93,8 +99,10 @@ struct ChainingIntegrationTests {
         try await P15.eventually("organizer received the included friend acceptance") {
             await a.agent.received.contains { $0.conversation == childConversation && $0.sender == b.id && $0.body.kind == .accept }
         }
-        try await a.clock.waitForSleeps([.seconds(30), .seconds(60)])
-        await a.clock.advance(30)
+        let deadline = try #require(await a.ledger.deadlines(for: interaction.conversation)?.confirmDeadline)
+        let confirmAt = Duration.seconds(deadline.timeIntervalSince(P15.date))
+        try await a.clock.waitForSleeps([confirmAt, confirmAt + PlacePhone.configuration.confirmWindow])
+        await a.clock.advance(to: confirmAt)
         _ = try await a.wait(.planned, in: interaction.conversation)
         let conversation = interaction.conversation
         try await P15.eventually("real place service publishes final attendees") {

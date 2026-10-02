@@ -143,8 +143,7 @@ struct AppStorageAndConsentTests {
             await #expect(throws: (any Error).self) { try await send.value }
             #expect(await b.agent.received.filter { $0.conversation == conversation }.isEmpty)
         } else {
-            try await Task.sleep(for: .milliseconds(100))
-            #expect(a.app.consent.current == nil)
+            try await appEventually("global cancellation closes the consent sheet") { a.app.consent.current == nil }
             await #expect(throws: (any Error).self) { try await send.value }
         }
     }
@@ -189,7 +188,9 @@ struct AppStorageAndConsentTests {
         try await appEventually("actual file ledger failure latched") {
             do { _ = try await b.ledger.isRetired(sent.conversation); return false } catch { return true }
         }
-        try await Task.sleep(for: .milliseconds(100))
+        try await appEventually("retirement failure reaches the interaction") {
+            b.app.lifecycle.interaction(incoming.id)?.state == .ended(.failed)
+        }
         #expect(b.app.lifecycle.interaction(incoming.id)?.state == .ended(.failed))
         #expect(await b.sent(sent.conversation).isEmpty)
     }

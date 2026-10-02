@@ -73,6 +73,9 @@ struct PickPlaceFindingTests {
             conversations.append(conversation)
             let sent = try await a.send(.query(PickPlaceIntegrationTests().query([candidate])), to: b.id, conversation: conversation)
             try await world.delivered(sent, to: b)
+            try await P15.eventually("failed admission retires before service replacement") {
+                try await b.conversations.isRetired(conversation)
+            }
             try await b.restart()
         }
         #expect(await ledger.attempts == 5)
