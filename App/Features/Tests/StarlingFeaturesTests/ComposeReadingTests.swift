@@ -114,6 +114,21 @@ actor ReadingCounter {
         #expect(h.model.canSend)
     }
 
+    /// A fresh pairing: a friend whose card has not arrived is still asked,
+    /// and New says it is waiting to hear from them.
+    @Test func aFriendWithoutACardIsAskedAndNewSaysItIsWaiting() async throws {
+        let h = try await ComposerHarness(skillModel: Self.model(ReadingCounter()))
+        h.model.text = "boba tonight"
+        await h.model.understand()
+        h.model.audience = .pick
+        h.model.picked = [h.leo.id]
+        #expect(h.model.participants == [h.leo.id])
+        #expect(h.model.canSend)
+        #expect(h.model.waitingNote == "Waiting to hear from Leo's Starling. Keep both phones nearby.")
+        h.model.picked = [h.maya.id]
+        #expect(h.model.waitingNote == nil)
+    }
+
     /// Start is off only with a line under it saying why.
     @Test func startIsNeverOffWithoutAReason() async throws {
         let h = try await ComposerHarness(skillModel: Self.model(ReadingCounter()))

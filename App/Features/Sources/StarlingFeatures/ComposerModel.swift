@@ -619,8 +619,20 @@ public final class ComposerModel {
         }
         if friends().isEmpty { return "Pair with a friend first, in Friends." }
         if chosenFriends.isEmpty { return "Pick at least one friend to ask." }
-        if participants.isEmpty { return leftOutNote }
+        if participants.isEmpty { return leftOutNote ?? "None of these friends can get this yet." }
         return nil
+    }
+
+    /// Chosen friends whose Starling has not said hello yet, so New cannot
+    /// tell what it does (a fresh pairing). Not a reason to stop: their
+    /// skill checks again when it starts.
+    public var waitingNote: String? {
+        let waiting = audienceFriends.filter { $0.isIncluded && cards.card(for: $0.id) == nil }.map(\.name)
+        guard !waiting.isEmpty else { return nil }
+        let who = PermissionExplanation.names(waiting)
+        return waiting.count == 1
+            ? "Waiting to hear from \(who)'s Starling. Keep both phones nearby."
+            : "Waiting to hear from \(who)'s Starlings. Keep the phones nearby."
     }
 
     static func missingSlotNote(_ issue: IssueKey, _ skill: SkillDescriptor) -> String {

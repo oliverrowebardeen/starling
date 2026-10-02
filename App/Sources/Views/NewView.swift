@@ -246,6 +246,9 @@ struct NewView: View {
             if let note = composer.leftOutNote {
                 Text(note).font(.footnote).foregroundStyle(.secondary)
             }
+            if let note = composer.waitingNote {
+                Text(note).font(.footnote).foregroundStyle(.secondary)
+            }
         }
     }
 
