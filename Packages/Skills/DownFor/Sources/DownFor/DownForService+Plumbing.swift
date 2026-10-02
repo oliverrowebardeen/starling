@@ -47,7 +47,7 @@ extension DownForService {
         case .resend(let key, let token): await resend(key, token: token)
         case .act(let key, let action): await act(action, in: key)
         case .notify(let notice, let reason): await tell(notice, reason)
-        case .deliver(let key): await sendDelivery(key)
+        case .deliver(let key, let generation, let last): await sendDelivery(key, generation, last: last)
         }
     }
 

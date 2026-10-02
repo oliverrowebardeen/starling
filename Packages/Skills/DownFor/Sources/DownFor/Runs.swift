@@ -232,13 +232,12 @@ enum Work: Sendable {
     case act(RunKey, Action)
     /// Tell a friend "no plan" after its run ended.
     case notify(Notice, Rejection.Reason)
-    /// One scheduled send of a proposal (`DownForService+Delivery`).
-    case deliver(RunKey)
+    /// One scheduled send of a proposal (`DownForService+Delivery`): which
+    /// delivery, and whether it is the schedule's last.
+    case deliver(RunKey, UUID, last: Bool)
 }
 
 enum Action: Sendable {
-    /// Hub: send the current proposal.
-    case propose
     /// Member: send "I'm in" to the current proposal.
     case accept
     /// Hub: confirm the plan to a member that accepted it.

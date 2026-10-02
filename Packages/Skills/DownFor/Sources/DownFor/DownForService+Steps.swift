@@ -435,14 +435,6 @@ extension DownForService {
     func act(_ action: Action, in key: RunKey) async {
         guard let run = runs[key], let request = requests[run.request] else { return }
         switch action {
-        case .propose:
-            // Each friend's own rounds, rising with each new plan it is
-            // offered, on a schedule fixed now (final privacy review).
-            guard run.role == .hub, run.phase == .proposed, let terms = run.terms,
-                  let proposal = try? Proposal(round: run.rounds, terms: terms)
-            else { return }
-            runs[key]?.rounds += 1
-            startDelivery(proposal, to: key, for: run.request, chainedFrom: run.chainedFrom, mode: run.mode)
         case .accept:
             guard run.role == .member, run.phase == .accepted, let terms = run.terms, let proposal = run.proposalEnvelopes.last else { return }
             await transmit([.accept(Acceptance(proposal: proposal, terms: terms))], in: key, awaitingReply: true, attemptLimit: silenceLimit, backsOff: true)

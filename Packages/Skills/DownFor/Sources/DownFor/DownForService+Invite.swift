@@ -51,8 +51,8 @@ extension DownForService {
     /// The window for friends to answer an invitation.
     func armInvitationWindow(_ id: InteractionID) {
         let window = configuration.ownerWindow
-        requests[id]?.quiet = Task { [weak self] in
-            try? await Task.sleep(for: window)
+        requests[id]?.quiet = Task { [weak self, clock] in
+            do { try await clock.sleep(window) } catch { return }
             await self?.lockInvitation(id)
         }
     }
