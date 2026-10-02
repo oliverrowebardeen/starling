@@ -38,7 +38,7 @@ let phase15Skills = [SampleSkills.downFor, SampleSkills.findATime, SampleSkills.
         let parsed = ParsedIntent(constraints: try ConstraintSet([
             .activity: [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []), strength: .soft)],
             .time: [try Constraint(.within([tonight]))],
-            .place: [try Constraint(.prefers(liked: [try Keyword("not far")], avoided: []), strength: .soft)],
+            .place: [try Constraint(.prefers(liked: [try Keyword("nothing far")], avoided: []), strength: .soft)],
         ]), audience: .allFriends)
         #expect(ChipScorer.score(label, parsed: parsed, now: now, timeZone: InterpretationSet.timeZone).isExact)
 
@@ -77,7 +77,7 @@ struct LiveSkillModelTests {
     @Test(.timeLimit(.minutes(5)), arguments: [false, true])
     func chipSetScores(heldOut: Bool) async {
         let agent = FoundationModelsAgent(timeZone: InterpretationSet.timeZone)
-        let report = await ChipEval(model: agent, skill: SampleSkills.downFor, labels: heldOut ? ChipSet.heldOut : ChipSet.labels).run()
+        let report = await ChipEval(model: agent, skills: SampleSkills.all, labels: heldOut ? ChipSet.heldOut : ChipSet.labels).run()
         print(report.markdown(title: heldOut ? "Down for... chips, held-out (live)" : "Down for... chips (live)"))
         #expect(report.errors == 0)
         #expect(report.inventedWants == 0)

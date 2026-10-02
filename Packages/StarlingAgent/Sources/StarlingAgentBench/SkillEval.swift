@@ -112,6 +112,9 @@ public struct RoutingReport: Sendable, Codable {
 
 public enum ChipField: String, Hashable, Sendable, Codable, CaseIterable {
     case days, times, wants, avoids, budget, place, audience, names, mode
+    /// Every keyword chip is the owner's words as typed: a span of the
+    /// message, and no word in two chips (ADRs 0161 and 0212).
+    case ownWords = "own words"
 }
 
 public struct ChipResult: Hashable, Sendable, Codable {
@@ -135,15 +138,20 @@ public enum ChipScorer {
         let fields = InterpretedFields(OwnerRules(constraints: parsed.constraints), now: now, timeZone: timeZone)
         let base = InterpretationScorer.score(label.fields, actual: fields, now: now, timeZone: timeZone)
         var correct = Set<ChipField>()
-        let mapping: [(InterpretationField, ChipField)] = [(.days, .days), (.times, .times), (.wants, .wants), (.avoids, .avoids), (.budget, .budget)]
+        let mapping: [(InterpretationField, ChipField)] = [(.days, .days), (.times, .times), (.budget, .budget)]
         for (from, to) in mapping where base.correct.contains(from) { correct.insert(to) }
 
+        // A keyword chip must be exactly the owner's phrase: "trip" for
+        // "IKEA trip" is as wrong as "watch movie" for "movie night".
         let place = parsed.constraints[.place].flatMap { constraint -> [String] in
             if case .prefers(let liked, _) = constraint.rule { return liked.map(\.value) }
             return []
         }
-        let (missing, extra) = InterpretationScorer.compare(expected: label.place, actual: place)
-        if missing.isEmpty, extra.isEmpty { correct.insert(.place) }
+        let wants = fields.wants, avoids = fields.avoids
+        if exactly(label.fields.wants, wants) { correct.insert(.wants) }
+        if exactly(label.fields.avoids, avoids) { correct.insert(.avoids) }
+        if exactly(label.place, place) { correct.insert(.place) }
+        if ownWords(wants + avoids + place, in: label.text) { correct.insert(.ownWords) }
 
         let audience: String? = switch parsed.audience {
         case .allFriends?: "everyone"
@@ -167,6 +175,32 @@ public enum ChipScorer {
         )
     }
 
+    /// Every expected item matches one actual chip exactly (ignoring case
+    /// and spacing), with `|` between accepted spellings, and nothing else.
+    static func exactly(_ expected: [String], _ actual: [String]) -> Bool {
+        func normal(_ text: String) -> String { text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let alternatives = expected.map { Set($0.split(separator: "|").map { normal(String($0)) }) }
+        let got = actual.map(normal)
+        guard got.count == alternatives.count else { return false }
+        return alternatives.allSatisfy { alts in got.contains(where: alts.contains) } && got.allSatisfy { word in alternatives.contains { $0.contains(word) } }
+    }
+
+    /// Each chip is a run of whole words in `text`, and no word of `text`
+    /// is in two chips.
+    static func ownWords(_ chips: [String], in text: String) -> Bool {
+        let tokens = text.lowercased().split { !$0.isLetter && !$0.isNumber && $0 != "'" && $0 != "&" && $0 != "-" }.map(String.init)
+        var used = Set<Int>()
+        for chip in chips {
+            let words = chip.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+            guard !words.isEmpty, let start = tokens.indices.first(where: { start in
+                start + words.count <= tokens.count && Array(tokens[start..<start + words.count]) == words
+                    && used.isDisjoint(with: start..<start + words.count)
+            }) else { return false }
+            used.formUnion(start..<start + words.count)
+        }
+        return true
+    }
+
     public static func failure(_ label: ChipLabel, error: String) -> ChipResult {
         ChipResult(label: label, actual: nil, place: [], audience: nil, names: [], mode: nil, error: error, correct: [], inventedWants: [], usage: nil, latencyMilliseconds: 0)
     }
@@ -174,14 +208,15 @@ public enum ChipScorer {
 
 public struct ChipEval: Sendable {
     public let model: any SkillModel
-    public let skill: SkillDescriptor
+    /// The skills the labels name, by ID.
+    public let skills: [SkillDescriptor]
     public let labels: [ChipLabel]
     public let now: Date
     public let timeZone: TimeZone
 
-    public init(model: any SkillModel, skill: SkillDescriptor, labels: [ChipLabel] = ChipSet.labels, now: Date = InterpretationSet.now, timeZone: TimeZone = InterpretationSet.timeZone) {
+    public init(model: any SkillModel, skills: [SkillDescriptor], labels: [ChipLabel] = ChipSet.labels, now: Date = InterpretationSet.now, timeZone: TimeZone = InterpretationSet.timeZone) {
         self.model = model
-        self.skill = skill
+        self.skills = skills
         self.labels = labels
         self.now = now
         self.timeZone = timeZone
@@ -192,6 +227,7 @@ public struct ChipEval: Sendable {
         for label in labels {
             let result: ChipResult
             do {
+                guard let skill = skills.first(where: { $0.id.rawValue == label.skill }) else { throw AgentModelError.invalidOutput("no skill \(label.skill)") }
                 let output = try await model.intent(from: label.text, for: skill, now: now, timeZone: timeZone)
                 result = ChipScorer.score(label, parsed: output.value, now: now, timeZone: timeZone, usage: output.usage, latencyMilliseconds: milliseconds(output.latency))
             } catch {
