@@ -82,7 +82,7 @@ public struct PlanEndSchedule: Sendable {
     private func check(_ link: Interaction, at now: Date, interactions: [Interaction], settings: SkillSettings, cards: [PeerID: AgentCard]) -> ScheduledChain? {
         guard let chain = link.chain,
               let parent = interactions.first(where: { $0.id == chain.parent }),
-              parent.conversation == chain.parentConversation,
+              parent.planConversation == chain.parentConversation,
               let plan = parent.plan, let end = plan.endsAt
         else { return .cancel(link, .withdrawn) }
         // Only the plan's people as they stand now (ADR 0020 decision 9.3):
