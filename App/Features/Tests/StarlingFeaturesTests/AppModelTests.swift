@@ -224,6 +224,22 @@ import Testing
         #expect(app.cards.card(for: maya.id) == card)
     }
 
+    /// Device test 2 (issue #95): a friend paired after the list loaded may
+    /// say hello before the list shows them; their card is kept.
+    @Test func aFreshlyPairedFriendsFirstHelloIsKept() async throws {
+        let peers = InMemoryPairedPeerStore()
+        let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
+        let app = AppModel(services: Self.services(peers: peers, inbox: inbox))
+        await app.start()
+        let riley = Fixtures.peer("Riley")
+        try await peers.save(riley)
+        let card = AgentCard.forBuild(skills: [SampleSkills.downFor.ref], usesPSI: true, locality: .onDevice)
+        continuation.yield(.message(try Envelope(conversation: ConversationID(), sender: riley.id, recipient: .random(), sequence: 0, sentAt: Timestamp(Date()), body: .hello(card))))
+        await eventually { app.cards.card(for: riley.id) != nil }
+        #expect(app.cards.card(for: riley.id) == card)
+        #expect(app.friends?.friends.map(\.id) == [riley.id])
+    }
+
     /// Lane E1: each PairingService starts after its transport.
     @Test func afterStartRunsOnceTheTransportHasStarted() async {
         let transport = RecordingTransport()

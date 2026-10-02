@@ -2,7 +2,8 @@ import Foundation
 import StarlingCore
 
 /// Short words for "Starling understood" chips in New (mockup "New"):
-/// "Boba", "Tonight after 7 PM", "Nearby", "Up to $15", "Open for 3 hrs".
+/// "Boba", "Tonight after 7 PM", "Nearby", "Up to $15",
+/// "Friends can answer until 4:15 PM".
 /// The consent sheet and plan detail keep `ValueFormatter`'s full dates;
 /// chips are for the owner's own draft, read at a glance.
 public struct ChipFormatter: Sendable {
@@ -43,7 +44,9 @@ public struct ChipFormatter: Sendable {
         case .within(let slots):
             slots.sorted().map(slot)
         case .dailyWindow(let from, let to):
-            ["Between \(values.minutesOfDay(from)) and \(values.minutesOfDay(to))"]
+            DayRange.Hours(from: from, to: to) == .evenings
+                ? ["Evenings"]
+                : ["Between \(clock(minutes: from)) and \(clock(minutes: to))"]
         case .atMost(let amount):
             ["Up to \(values.money(amount))"]
         case .atLeast(let amount):
@@ -74,6 +77,10 @@ public struct ChipFormatter: Sendable {
 
     /// "Tonight after 7 PM", "Tomorrow 10 AM to 2 PM", "Friday after 6 PM".
     public func slot(_ slot: TimeSlot) -> String {
+        // Days, as Find a time asks: "Today to Friday".
+        if slot.end.timeIntervalSince(slot.start) > 24 * 3600 {
+            return "\(dayWord(slot.start)) to \(dayWord(slot.end.addingTimeInterval(-60)))"
+        }
         let day = dayWord(slot.start)
         let lastMinute = slot.end.addingTimeInterval(-60)
         let endsLate = !calendar.isDate(slot.start, inSameDayAs: lastMinute) || calendar.component(.hour, from: lastMinute) >= 23
@@ -85,15 +92,18 @@ public struct ChipFormatter: Sendable {
         "\(dayWord(slot.start)) at \(hour(slot.start))"
     }
 
-    /// How long friends can answer: "Open for 3 hrs", "Open for 1 hr",
-    /// "Open for 45 min", "Open until Friday".
-    public func open(_ date: Date) -> String {
-        let minutes = max(1, Int((date.timeIntervalSince(now()) / 60).rounded()))
-        if minutes < 60 { return "Open for \(minutes) min" }
-        let hours = Int((Double(minutes) / 60).rounded())
-        if hours < 24 { return hours == 1 ? "Open for 1 hr" : "Open for \(hours) hrs" }
-        let day = dayWord(date)
-        return "Open until \(["Today", "Tonight", "Tomorrow"].contains(day) ? day.lowercased() : day)"
+    /// Until when friends can answer, by its end time, so it never reads
+    /// like the plan's length (device test 2): "Friends can answer until
+    /// 4:15 PM", "until tomorrow at 9 AM", "until Friday at 6 PM".
+    public func answerUntil(_ date: Date) -> String {
+        let today = calendar.startOfDay(for: now())
+        let days = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: date)).day ?? 0
+        let day: String? = switch days {
+        case 0: nil
+        case 1: "tomorrow"
+        default: dayWord(date)
+        }
+        return "Friends can answer until " + (day.map { "\($0) at \(hour(date))" } ?? hour(date))
     }
 
     public func dayWord(_ date: Date) -> String {
@@ -105,6 +115,14 @@ public struct ChipFormatter: Sendable {
         case 2...6: return date.formatted(Date.FormatStyle(locale: values.locale, calendar: calendar, timeZone: values.timeZone).weekday(.wide))
         default: return date.formatted(Date.FormatStyle(locale: values.locale, calendar: calendar, timeZone: values.timeZone).month(.abbreviated).day())
         }
+    }
+
+    /// A minute of the day as a clock time: "5 PM", "9:30 PM", "midnight".
+    func clock(minutes: Int) -> String {
+        guard minutes > 0, minutes < 1440,
+              let date = calendar.date(from: DateComponents(year: 2000, month: 1, day: 1, hour: minutes / 60, minute: minutes % 60))
+        else { return "midnight" }
+        return hour(date)
     }
 
     /// "7 PM", or "7:30 PM" when not on the hour.

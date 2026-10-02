@@ -468,14 +468,38 @@ public final class AppModel {
         let cards = cards
         let link = link
         let lifecycle = lifecycle
-        inboxLoop = Task {
+        inboxLoop = Task { [weak self] in
             for await event in events {
+                // A friend paired a moment ago may say hello before the list
+                // shows them: read the list again so their card is kept
+                // (device test 2, issue #95).
+                await self?.reloadFriendsIfNew(event)
                 friends?.handle(event)
                 cards.handle(event)
                 await link?.handle(event)
                 await lifecycle.route(event)
             }
         }
+    }
+
+    /// When the last unknown peer made the friends list reload; at most
+    /// once every 2 seconds, so a stranger cannot make it reload all the time.
+    private var lastFriendsReload: Date?
+
+    private func reloadFriendsIfNew(_ event: InboxEvent) async {
+        guard let friends else { return }
+        let peer: PeerID
+        switch event {
+        case .peerAvailable(let id): peer = id
+        case .message(let envelope): peer = envelope.sender
+        default: return
+        }
+        guard !friends.friends.contains(where: { $0.id == peer }) else { return }
+        let now = Date()
+        if let last = lastFriendsReload, now.timeIntervalSince(last) < 2 { return }
+        lastFriendsReload = now
+        await friends.load()
+        syncNames()
     }
 
     /// A chained Pick a place that agreed on a place moves its parent's plan
