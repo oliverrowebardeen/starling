@@ -30,6 +30,7 @@ let package = Package(
         .package(path: "../../Packages/Skills/SwapPhotos"),
         .package(path: "../../Packages/Skills/FindATime"),
         .package(path: "../../Packages/StarlingAvailability"),
+        .package(path: "../../Packages/Skills/DownFor"),
     ],
     targets: [
         .target(
@@ -77,6 +78,8 @@ let package = Package(
             .product(name: "StarlingSwapPhotos", package: "SwapPhotos"),
             .product(name: "FindATime", package: "FindATime"),
             .product(name: "StarlingAvailabilityFakes", package: "StarlingAvailability"),
+            .product(name: "DownFor", package: "DownFor"),
+            .product(name: "StarlingNegotiation", package: "StarlingNegotiation"),
         ]),
     ]
 )

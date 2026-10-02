@@ -95,15 +95,15 @@ actor PlaceConversationLedger: ConversationLedger {
     let base = InMemoryConversationLedger()
     var hold = false
     var fail = false
-    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var retiring: [ConversationID] = []
     private(set) var reservations: [(ConversationID, [IssueValue])] = []
     func gateRetirement(failing: Bool) { hold = true; fail = failing }
-    func release() { hold = false; releaseWaiter?.resume(); releaseWaiter = nil }
+    func release() { hold = false; for waiter in releaseWaiters { waiter.resume() }; releaseWaiters = [] }
     func isRetired(_ conversation: ConversationID) async throws -> Bool { try await base.isRetired(conversation) }
     func retire(_ conversation: ConversationID) async throws {
         retiring.append(conversation)
-        if hold { await withCheckedContinuation { releaseWaiter = $0 } }
+        if hold { await withCheckedContinuation { releaseWaiters.append($0) } }
         if fail { throw LedgerUnavailable() }
         try await base.retire(conversation)
     }
