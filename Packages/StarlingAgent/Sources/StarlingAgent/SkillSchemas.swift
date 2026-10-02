@@ -100,8 +100,8 @@ package struct IntentGenerationSchema {
         for slot in skill.intent.slots {
             switch slot.issue {
             case .activity:
-                add("wants", "Things the owner asked for: \(slot.hint)", words(Self.maxWords))
-                add("avoids", "Things the owner ruled out", words(Self.maxWords))
+                add("wants", "The owner's words for \(slot.hint)", words(Self.maxWords))
+                add("avoids", "The owner's words for things ruled out", words(Self.maxWords))
             case .time:
                 add("day", "Day the owner named", DynamicGenerationSchema(name: "Day", anyOf: Self.days))
                 add("earliestHour", "Earliest hour the owner named, 0-23, or 0 if none", DynamicGenerationSchema(type: Int.self, guides: [.range(0...23)]))
@@ -110,7 +110,7 @@ package struct IntentGenerationSchema {
             case .budget:
                 add("maxDollars", "Most the owner will spend in whole dollars, or 0 if none", DynamicGenerationSchema(type: Int.self, guides: [.range(0...DecisionSchema.maxDollars)]))
             default:
-                add(Self.extraName(slot.issue), "Words the owner used for \(slot.hint)", words(3))
+                add(Self.extraName(slot.issue), "The owner's words for \(slot.hint)", words(3))
             }
         }
         if skill.intent.asksForAudience {

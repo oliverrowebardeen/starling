@@ -63,7 +63,8 @@ import Testing
         let parsed = try SkillOutputMapping.parsed(raw, utterance: "boba tonight after 7 with whoever's free, nothing far", skill: SampleSkills.downFor, now: now, timeZone: utc)
         #expect(parsed.constraints[.activity] == [try Constraint(.prefers(liked: [try Keyword("boba")], avoided: []), strength: .soft)])
         #expect(parsed.constraints[.time] == [try Constraint(.within([try TimeSlot(start: now.addingTimeInterval(7 * 3600), end: now.addingTimeInterval(12 * 3600))]))])
-        #expect(parsed.constraints[.place] == [try Constraint(.prefers(liked: [try Keyword("not far")], avoided: []), strength: .soft)])
+        // The owner's words, not the model's "not far".
+        #expect(parsed.constraints[.place] == [try Constraint(.prefers(liked: [try Keyword("nothing far")], avoided: []), strength: .soft)])
         #expect(parsed.audience == .allFriends)
         // Expires when the window ends, midnight.
         #expect(parsed.expiresAt == Timestamp(now.addingTimeInterval(12 * 3600)))
