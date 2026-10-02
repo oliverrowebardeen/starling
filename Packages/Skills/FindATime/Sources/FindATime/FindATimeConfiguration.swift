@@ -39,10 +39,15 @@ public struct FindATimeConfiguration: Hashable, Sendable {
     public var maxAttempts: Int
     /// How long the starter waits for friends' answers, and then for their
     /// "That works", before deciding with what it has. Friends without a
-    /// calendar answer only when their owner does, so these are long.
+    /// calendar answer only when their owner opens the app, and a request
+    /// stays open for days (Compose sets no expiry chip for Find a time), so
+    /// these are long. The answer deadline is also never later than halfway
+    /// to the request's end or its last offered time, so there is always
+    /// time to agree; the confirm deadline never passes the proposed time.
     public var answerWait: Duration
     public var confirmWait: Duration
-    /// How long an invitee keeps a request open.
+    /// How long a friend's request stays open here, at most: never past the
+    /// start of its last offered time.
     public var inviteeLifetime: Duration
     /// Open requests from friends, in total and from one friend, so a
     /// friend cannot flood Needs you.
@@ -61,9 +66,9 @@ public struct FindATimeConfiguration: Hashable, Sendable {
         maxCandidateMinutes: Int = 8 * 60,
         retryInterval: Duration = .seconds(5),
         maxAttempts: Int = 6,
-        answerWait: Duration = .seconds(30 * 60),
-        confirmWait: Duration = .seconds(60 * 60),
-        inviteeLifetime: Duration = .seconds(6 * 60 * 60),
+        answerWait: Duration = .seconds(12 * 60 * 60),
+        confirmWait: Duration = .seconds(12 * 60 * 60),
+        inviteeLifetime: Duration = .seconds(7 * 24 * 60 * 60),
         maxOpenInvitations: Int = 32,
         maxOpenInvitationsPerFriend: Int = 4,
         maxRevisions: UInt32 = 8

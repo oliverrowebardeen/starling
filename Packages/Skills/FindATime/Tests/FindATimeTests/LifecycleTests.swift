@@ -20,7 +20,8 @@ struct LifecycleTests {
         let c = world.phone("Cy")
         try await world.start()
 
-        let started = try await a.findATime(with: [b, c])
+        // From 2 PM, so the clock moves below stay before the proposed time.
+        let started = try await a.findATime(with: [b, c], range: [T.slot(14, 24)])
         _ = try await a.waitForProposal(revision: 1)
         let (bCard, _) = try await b.waitForProposal(revision: 1)
         let (cCard, _) = try await c.waitForProposal(revision: 1)
@@ -490,6 +491,75 @@ struct LifecycleTests {
     }
 
     // MARK: Deadlines
+
+    /// Device feedback (2026-10-02): Find a time has no expiry chip, and
+    /// Compose keeps the request open until the asked-about window starts,
+    /// up to 7 days. With the shipped waits, a friend whose owner answers
+    /// 10 hours later still makes the plan.
+    @Test func aWeekLongRequestStaysOpenForSlowFriends() async throws {
+        let world = World()
+        let a = world.phone("Ana", configuration: shippedWaits)
+        let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied), configuration: shippedWaits)
+        try await world.start()
+
+        let started = try await a.findATime(with: [b], range: [T.slot(24 * 7, 24 * 8)], expiresIn: 24 * 7)
+        let (asked, question) = try await b.waitForQuestion()
+        world.clock.advance(hours: 10)
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await b.coordinator.interaction(asked)?.state == .awaitingOwner)
+        #expect(await a.coordinator.interaction(started)?.state == .negotiating)
+
+        try await b.reply(asked, question: question.revision, [question.slots[0]])
+        let (bCard, _) = try await b.waitForProposal()
+        world.clock.advance(hours: 10)
+        try await a.accept(started)
+        try await b.accept(bCard)
+        try await a.waitForState(started, .planned)
+        try await b.waitForState(bCard, .planned)
+        await world.stop()
+    }
+
+    /// However long the request is open, the starter stops collecting
+    /// answers halfway to its end, so there is always time to agree.
+    @Test func aShortRequestLeavesTimeToAgree() async throws {
+        let world = World()
+        let a = world.phone("Ana", configuration: shippedWaits)
+        let b = world.phone("Ben", configuration: shippedWaits)
+        let c = world.phone("Cy", calendar: FakeCalendarStore(status: .denied), configuration: shippedWaits)
+        try await world.start()
+
+        let started = try await a.findATime(with: [b, c], expiresIn: 2)
+        _ = try await c.waitForQuestion()
+        world.clock.advance(hours: 1.1)
+        let (_, proposal) = try await a.waitForProposal()
+        #expect(proposal.plan?.attendees.peers == [a.id, b.id].sorted())
+        let (bCard, _) = try await b.waitForProposal()
+        try await a.accept(started)
+        try await b.accept(bCard)
+        try await a.waitForState(started, .planned)
+        await world.stop()
+    }
+
+    /// A friend's request lasts until its last offered time begins, never
+    /// longer, so an old question does not linger.
+    @Test func aFriendsRequestLastsUntilItsLastTimeBegins() async throws {
+        let world = World()
+        let mallory = world.phone("Mallory", configuration: shippedWaits)
+        let b = world.phone("Ben", calendar: FakeCalendarStore(status: .denied), configuration: shippedWaits)
+        try await world.start()
+
+        // At 8:00, a request offering 9:00, 10:00, and 11:00 today. (A
+        // crafted one, so no starter's deadline interferes.)
+        let query = try Query(issue: .time, candidates: .slots([T.slot(9, 10), T.slot(10, 11), T.slot(11, 12)]))
+        try await mallory.send(.query(query), to: b, conversation: ConversationID())
+        let (asked, _) = try await b.waitForQuestion()
+        world.clock.advance(hours: 2.5)
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(await b.coordinator.interaction(asked)?.state == .awaitingOwner)
+        world.clock.advance(hours: 1)
+        try await b.waitForState(asked, .ended(.expired))
+        await world.stop()
+    }
 
     @Test func theRequestExpiresAndTheFriendsQuestionGoesWithIt() async throws {
         let world = World()

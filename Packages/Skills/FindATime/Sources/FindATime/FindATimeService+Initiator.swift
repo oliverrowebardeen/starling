@@ -125,7 +125,13 @@ extension FindATimeService {
         guard var value = initiating[id] else { return }
         value.phase = .collecting
         value.queryIDs = [:]
-        value.answerDeadline = deadline(after: configuration.answerWait, capped: value.expiresAt)
+        // Halfway to the end (the request's, or its last offered time's), so
+        // there is always time left to propose and agree.
+        let lastStart = value.candidates.map { Timestamp($0.start) }.max() ?? value.expiresAt
+        let end = min(value.expiresAt, lastStart)
+        let now = Timestamp(now())
+        let halfway = Timestamp(millisecondsSince1970: now.millisecondsSince1970 + max(0, end.millisecondsSince1970 - now.millisecondsSince1970) / 2)
+        value.answerDeadline = deadline(after: configuration.answerWait, capped: halfway)
         initiating[id] = value
         resetAttempts(id)
         checkpoint(id)
@@ -272,7 +278,8 @@ extension FindATimeService {
         value.accepted = [:]
         value.ownerAccepted = false
         value.confirmed = []
-        value.confirmDeadline = deadline(after: configuration.confirmWait, capped: value.expiresAt)
+        // A plan cannot be agreed once its time has begun.
+        value.confirmDeadline = deadline(after: configuration.confirmWait, capped: min(value.expiresAt, Timestamp(slot.start)))
         initiating[id] = value
         resetAttempts(id)
         checkpoint(id)
