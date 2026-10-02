@@ -284,12 +284,6 @@ struct NewView: View {
 
     private var sendBar: some View {
         VStack(spacing: 8) {
-            if let notice = composer.notice {
-                Text(notice).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
-            } else if let note = composer.sendNote, !composer.isSending {
-                // Start is never off without saying why (device test 2).
-                Text(note).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }
             Button {
                 typing = false
                 Task {
@@ -304,8 +298,14 @@ struct NewView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(!composer.canSend)
-            if let footnote = composer.footnote {
-                Text(footnote).font(.footnote).foregroundStyle(.secondary)
+            // Right under the button: why it is off, every time it is off
+            // (device test 2), or what went wrong.
+            if let notice = composer.notice {
+                Text(notice).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
+            } else if let note = composer.sendNote, !composer.isSending {
+                Text(note).font(.footnote.weight(.medium)).foregroundStyle(.primary).multilineTextAlignment(.center)
+            } else if let footnote = composer.footnote {
+                Text(footnote).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
         }
         .padding()
