@@ -188,10 +188,12 @@ import Testing
         try await eventually("A's I'm in") { await a.lifecycle.state(mine) == .confirmed }
         // B looks away. Just before the window A is still waiting; at the
         // window its request ends as nobody up.
+        try await time.waitForSleep(at: fastConfiguration.ownerWindow, "A's window")
         await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
         #expect(await a.lifecycle.state(mine) == .confirmed)
-        try await time.advanceUntil("A's request ends") { await a.lifecycle.reached(.ended(.nobodyUp), mine) }
-        #expect(await time.now == fastConfiguration.ownerWindow)
+        // Time stops at the window while A's ending is handled.
+        await time.advance(to: fastConfiguration.ownerWindow)
+        try await a.waitFor(.ended(.nobodyUp), mine)
         // B hears nothing about it: whether A said I'm in is not B's to
         // learn, so B's card ends when its own wait does. That wait starts
         // over with every proposal B receives, so it ends no sooner than an

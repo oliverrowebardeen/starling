@@ -458,14 +458,29 @@ extension VirtualTime {
     /// for a test that waits for a window or a member's deadline to pass,
     /// without waiting for it in real time. Real time only bounds the whole
     /// wait, generously.
-    func advanceUntil(_ what: String, timeout: Duration = .seconds(60), _ condition: @Sendable () async -> Bool) async throws {
+    ///
+    /// Each step moves at most `step` (the longest backoff by default): a
+    /// timer that re-arms a moment after it fires is still in time for the
+    /// next step, so time never jumps past it to a later sleep, such as a
+    /// request's expiry hours away.
+    func advanceUntil(_ what: String, timeout: Duration = .seconds(60), step: Duration = fastConfiguration.maxBackoff, _ condition: @Sendable () async -> Bool) async throws {
         let clock = SuspendingClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
             if await condition() { return }
-            if let next = due.first { advance(to: next) }
+            advance(to: min(due.first ?? now + step, now + step))
             try await clock.sleep(for: .milliseconds(5))
         }
         Issue.record("timed out waiting for \(what)")
+    }
+}
+
+extension VirtualTime {
+    /// Waits until a sleep due at `instant` is registered. A service timer
+    /// is a task that registers its sleep a moment after it starts; moving
+    /// time before then would measure it from the later time and fire it
+    /// late, a race only tests that move time can lose.
+    func waitForSleep(at instant: Duration, _ what: String) async throws {
+        try await eventually(timeout: .seconds(60), what) { await self.due.contains(instant) }
     }
 }

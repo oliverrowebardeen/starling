@@ -116,9 +116,16 @@ import Testing
         #expect(await b.lifecycle.interaction(theirs)?.proposal?.participants == [a.id, b.id, c.id])
         try await b.imIn(theirs)
         // C looks away. At the window, A's card lists A and B only.
-        try await eventually("B's I'm in") { await b.lifecycle.state(theirs) == .confirmed }
-        try await time.advanceUntil("A's card") { await a.lifecycle.state(mine) == .proposed }
-        #expect(await time.now == fastConfiguration.ownerWindow)
+        // B's I'm in has reached A, not only B's own screen, before time
+        // moves.
+        try await eventually("B's I'm in at A") { await a.service.runs.values.contains { $0.key.peer == b.id && $0.accepted } }
+        // Just before the window no card; time stops at the window while it
+        // is shown.
+        try await time.waitForSleep(at: fastConfiguration.ownerWindow, "the invitation's window")
+        await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
+        #expect(await a.lifecycle.state(mine) == .negotiating)
+        await time.advance(to: fastConfiguration.ownerWindow)
+        try await a.waitForProposal(mine)
         #expect(await a.lifecycle.interaction(mine)?.proposal?.participants == [a.id, b.id])
         try await a.imIn(mine)
         try await b.waitFor(.planned, theirs)
