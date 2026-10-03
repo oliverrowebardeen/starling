@@ -40,14 +40,17 @@ struct Organizer {
     /// The proposals sent to each friend, most recent last and bounded. A
     /// yes counts only when it names one of them.
     var proposeIDs: [PeerID: [MessageID]] = [:]
-    /// Friends a query or proposal is on its way to. Outbox returns a sent
+    /// Queries and proposals on their way to each friend, one token per
+    /// send attempt, with the step it was made for. Outbox returns a sent
     /// envelope only after its observer has run, which can be after the
-    /// friend has already replied to it (issue #105).
-    var sending: Set<PeerID> = []
-    /// Replies from a friend in `sending` that named an envelope this
-    /// organizer has not recorded yet, newest last and bounded. They are
-    /// looked at again once that send returns, and count only if they name
-    /// what it sent; the rest are dropped.
+    /// friend has already replied to it, and two sends to one friend can
+    /// be returning at once (issue #105).
+    var pending: [PeerID: [UUID: Step]] = [:]
+    /// Replies that named an envelope this organizer has not recorded yet,
+    /// while a send of the current step to their sender was pending; newest
+    /// last and bounded. Each is judged again when such a send returns, and
+    /// counts only if it names what was sent; it is dropped once no send it
+    /// could name is pending.
     var early: [PeerID: [Envelope]] = [:]
     var accepted: Set<PeerID> = []
     /// Friends who passed or took their yes back. Final: a late or
@@ -179,17 +182,19 @@ extension PickAPlaceService {
         var interval = configuration.retryInterval
         while let organizer = organized[conversation], organizer.phase == .asking, organizer.waitingOn.contains(friend),
               !organizer.excluded.contains(friend) {
-            organized[conversation]?.sending.insert(friend)
+            let token = sendStarting(conversation, to: friend, step: .asking)
             do {
                 let query = try Query(issue: .place, candidates: .places(organizer.ranking))
                 let sent = try await send(.query(query), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
-                organized[conversation]?.queryIDs[friend, default: []].append(sent.id)
-                if let count = organized[conversation]?.queryIDs[friend]?.count, count > Self.maxRememberedProposals {
-                    organized[conversation]?.queryIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
+                if sendEnded(conversation, to: friend, token: token) {
+                    organized[conversation]?.queryIDs[friend, default: []].append(sent.id)
+                    if let count = organized[conversation]?.queryIDs[friend]?.count, count > Self.maxRememberedProposals {
+                        organized[conversation]?.queryIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
+                    }
+                    judgeHeld(conversation, from: friend)
                 }
-                sendReturned(conversation, to: friend)
             } catch {
-                sendReturned(conversation, to: friend)
+                if sendEnded(conversation, to: friend, token: token) { judgeHeld(conversation, from: friend) }
                 guard organizerCanRetry(conversation, after: error, step: .asking, friend: friend) else { return }
             }
             guard let next = await pause(interval) else { return }
@@ -293,7 +298,9 @@ extension PickAPlaceService {
         let proposal = SkillProposal(revision: revision, participants: roster, terms: terms, plan: plan)
         organizer.proposal = proposal
         organizer.phase = .proposing
-        // Replies held for a query are about a step that is over.
+        // Queries still returning, and replies held for them, belong to a
+        // step that is over.
+        organizer.pending = [:]
         organizer.early = [:]
         organizer.out.formUnion(left)
         organizer.out.formUnion(organizer.excluded)
@@ -354,19 +361,21 @@ extension PickAPlaceService {
         while let organizer = organized[conversation], organizer.phase == .proposing, let proposal = organizer.proposal,
               organizer.invited.contains(friend), !organizer.accepted.contains(friend), !organizer.passed.contains(friend),
               !organizer.timedOut.contains(friend), !organizer.excluded.contains(friend) {
-            organized[conversation]?.sending.insert(friend)
+            let token = sendStarting(conversation, to: friend, step: .proposing(proposal.revision))
             do {
                 let round = UInt16(min(proposal.revision - 1, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
                 let sent = try await send(.propose(Proposal(round: round, terms: proposal.terms)), to: friend,
                                           conversation: conversation, chainedFrom: organizer.chainedFrom)
-                organized[conversation]?.lastProposeID[friend] = sent.id
-                organized[conversation]?.proposeIDs[friend, default: []].append(sent.id)
-                if let count = organized[conversation]?.proposeIDs[friend]?.count, count > Self.maxRememberedProposals {
-                    organized[conversation]?.proposeIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
+                if sendEnded(conversation, to: friend, token: token) {
+                    organized[conversation]?.lastProposeID[friend] = sent.id
+                    organized[conversation]?.proposeIDs[friend, default: []].append(sent.id)
+                    if let count = organized[conversation]?.proposeIDs[friend]?.count, count > Self.maxRememberedProposals {
+                        organized[conversation]?.proposeIDs[friend]?.removeFirst(count - Self.maxRememberedProposals)
+                    }
+                    judgeHeld(conversation, from: friend)
                 }
-                sendReturned(conversation, to: friend)
             } catch {
-                sendReturned(conversation, to: friend)
+                if sendEnded(conversation, to: friend, token: token) { judgeHeld(conversation, from: friend) }
                 guard organizerCanRetry(conversation, after: error, step: .proposing(proposal.revision), friend: friend) else { return }
             }
             guard let next = await pause(interval) else { return }
@@ -381,21 +390,69 @@ extension PickAPlaceService {
     /// Replies held per friend while a send to them has not returned.
     static let maxEarlyReplies = 4
 
-    /// A query or proposal to `friend` has returned, sent or not: replies
-    /// held meanwhile are judged now, against the IDs recorded by then.
-    /// One that names nothing this organizer sent that friend is dropped,
-    /// as it would have been on arrival (issue #63).
-    func sendReturned(_ conversation: ConversationID, to friend: PeerID) {
-        organized[conversation]?.sending.remove(friend)
-        guard let held = organized[conversation]?.early.removeValue(forKey: friend) else { return }
-        for envelope in held { organizerReceived(envelope) }
+    /// Notes a query or proposal to `friend` before it is sent, so a reply
+    /// that arrives before the send returns can be held for it.
+    func sendStarting(_ conversation: ConversationID, to friend: PeerID, step: Organizer.Step) -> UUID {
+        let token = UUID()
+        organized[conversation]?.pending[friend, default: [:]][token] = step
+        return token
     }
 
-    /// Holds a reply that names an envelope not recorded yet, if a send to
-    /// its sender may still be returning. Otherwise it is dropped.
+    /// Ends the send `token` names. True if it is still pending: its step
+    /// has not ended since, so it may record what it sent. A stale send
+    /// records nothing and judges nothing.
+    func sendEnded(_ conversation: ConversationID, to friend: PeerID, token: UUID) -> Bool {
+        guard organized[conversation]?.pending[friend]?.removeValue(forKey: token) != nil else { return false }
+        if organized[conversation]?.pending[friend]?.isEmpty == true { organized[conversation]?.pending[friend] = nil }
+        return true
+    }
+
+    /// After a send to `friend` returned, sent or not: a held reply that now
+    /// names something recorded is handled; one that could still name a
+    /// send of the current step that is pending stays held; the rest are
+    /// dropped, as they would have been on arrival (issue #63).
+    func judgeHeld(_ conversation: ConversationID, from friend: PeerID) {
+        guard let organizer = organized[conversation], let held = organizer.early[friend] else { return }
+        var ready: [Envelope] = []
+        var waiting: [Envelope] = []
+        for envelope in held {
+            if Self.namesRecorded(envelope, in: organizer) {
+                ready.append(envelope)
+            } else if Self.mayNamePending(envelope, in: organizer) {
+                waiting.append(envelope)
+            }
+        }
+        organized[conversation]?.early[friend] = waiting.isEmpty ? nil : waiting
+        for envelope in ready { organizerReceived(envelope) }
+    }
+
+    /// Whether a reply names a query or proposal recorded as sent to its
+    /// sender.
+    static func namesRecorded(_ envelope: Envelope, in organizer: Organizer) -> Bool {
+        switch envelope.body {
+        case .answer(let answer): organizer.queryIDs[envelope.sender]?.contains(answer.query) == true
+        case .accept(let acceptance): organizer.proposeIDs[envelope.sender]?.contains(acceptance.proposal) == true
+        default: false
+        }
+    }
+
+    /// Whether a reply is the kind the current step expects, and a send of
+    /// that step to its sender has not returned yet.
+    static func mayNamePending(_ envelope: Envelope, in organizer: Organizer) -> Bool {
+        guard let step = organizer.step else { return false }
+        switch (envelope.body, step) {
+        case (.answer, .asking), (.accept, .proposing): break
+        default: return false
+        }
+        return organizer.pending[envelope.sender]?.values.contains(step) == true
+    }
+
+    /// Holds a reply that names an envelope not recorded yet, if a send of
+    /// the current step to its sender may still be returning. Otherwise it
+    /// is dropped.
     func holdIfEarly(_ envelope: Envelope, in organizer: inout Organizer) {
         let sender = envelope.sender
-        guard organizer.sending.contains(sender) else { return }
+        guard Self.mayNamePending(envelope, in: organizer) else { return }
         var held = organizer.early[sender, default: []]
         held.append(envelope)
         if held.count > Self.maxEarlyReplies { held.removeFirst(held.count - Self.maxEarlyReplies) }
@@ -478,6 +535,7 @@ extension PickAPlaceService {
         values[.people] = .peers([localPeer] + yes)
         organizer.finalTerms = try! Terms(values)
         organizer.phase = .settled
+        organizer.pending = [:]
         organizer.early = [:]
         organized[conversation] = organizer
         cancelTasks(conversation)
@@ -558,6 +616,7 @@ extension PickAPlaceService {
         guard var organizer = organized[conversation], !organizer.isFinished else { return }
         let tell = organizer.stillInvolved
         organizer.phase = .ended
+        organizer.pending = [:]
         organizer.early = [:]
         organized[conversation] = organizer
         cancelTasks(conversation)

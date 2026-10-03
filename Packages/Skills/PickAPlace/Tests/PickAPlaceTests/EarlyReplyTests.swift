@@ -65,6 +65,68 @@ struct EarlyReplyTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// Codex review of #108: sends to one friend can overlap. A late answer
+    /// to query Q1 moves the organizer on while the retry Q2 is still
+    /// returning, and the yes to proposal P1 is held. Q2 returning first is
+    /// stale: it records nothing and leaves the yes held, and P1 returning
+    /// counts it once.
+    @Test func aStaleQueryReturningLeavesAYesHeldForItsProposal() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let maya = Phone("Maya", hub: hub, maps: maps)
+        let group = try await Group([oliver, maya], hub: hub)
+        defer { Task { await oliver.hold.release(); await group.stop() } }
+        // Maya's phone sends nothing itself; she answers by hand.
+        await maya.transport.lose(.max) { _ in true }
+        var sequence: UInt64 = 100
+        func inject(_ body: MessageBody, in conversation: ConversationID) async throws {
+            sequence += 1
+            let envelope = try Envelope(conversation: conversation, sender: maya.id, recipient: oliver.id, sequence: sequence,
+                                        sentAt: Timestamp(Date()), body: body, skill: skill, mode: .invite)
+            try await hub.inject(Frame(EnvelopeCodec().encode(envelope)), claimedSender: maya.id, to: oliver.id)
+        }
+
+        await oliver.hold.hold([.query, .propose])
+        let conversation = try await oliver.organize([Venues.bobaGuys], with: [maya]).conversation
+        // Q1 returns; the retry Q2 stays held.
+        #expect(await eventually { await oliver.hold.held.count == 1 })
+        let q1 = try #require(await oliver.hold.held.first)
+        await oliver.hold.release(q1.id)
+        #expect(await eventually { await oliver.hold.held.filter { $0.body.kind == .query }.count == 2 })
+        let q2 = await oliver.hold.held[1]
+        #expect(await oliver.hold.isHolding(q2.id))
+
+        // Maya's answer to Q1 arrives late. Oliver proposes, and P1 is held.
+        try await inject(.answer(Answer(query: q1.id, issue: .place, status: .answered, acceptable: .places([Venues.bobaGuys.choice]))),
+                         in: conversation)
+        #expect(await oliver.reaches(.proposed, in: conversation))
+        #expect(await eventually { await oliver.hold.held.contains { $0.body.kind == .propose } })
+        let p1 = try #require(await oliver.hold.held.first { $0.body.kind == .propose })
+        guard case .propose(let proposal) = p1.body else { Issue.record("Expected a proposal"); return }
+
+        // Maya's yes to P1 arrives while P1 is still returning.
+        try await inject(.accept(Acceptance(proposal: p1.id, terms: proposal.terms)), in: conversation)
+        #expect(await eventually { await oliver.service.organized[conversation]?.early[maya.id]?.count == 1 })
+
+        // Q2 returns first.
+        await oliver.hold.release(q2.id)
+        try await Task.sleep(for: .milliseconds(200))
+        let between = try #require(await oliver.service.organized[conversation])
+        #expect(between.early[maya.id]?.count == 1)
+        #expect(between.accepted.isEmpty)
+        #expect(between.queryIDs[maya.id] == [q1.id])
+
+        // Then P1: the held yes counts, once.
+        await oliver.hold.release(p1.id)
+        #expect(await eventually { await oliver.service.organized[conversation]?.accepted == [maya.id] })
+        #expect(await oliver.service.organized[conversation]?.early.isEmpty == true)
+        try await oliver.accept(in: conversation)
+        #expect(await oliver.reaches(.planned, in: conversation))
+        #expect(await oliver.attendees(in: conversation) == [oliver.id, maya.id])
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     /// Holding changes when an answer is judged, not what counts: a held
     /// answer naming another friend's query, an unsent query, or a query
     /// from another conversation is dropped once the send returns, and a

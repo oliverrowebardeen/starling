@@ -437,7 +437,7 @@ final class Phone: Sendable {
 actor DidSendHold: OutboxObserver {
     private let inner: RecordingOutboxObserver
     private var kinds: Set<MessageBody.Kind> = []
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [MessageID: CheckedContinuation<Void, Never>] = [:]
     /// Envelopes held so far, in order.
     private(set) var held: [Envelope] = []
 
@@ -450,10 +450,18 @@ actor DidSendHold: OutboxObserver {
     /// that was held.
     func release(holdingOn: Bool = false) {
         if !holdingOn { kinds = [] }
-        let pending = waiters
-        waiters = []
+        let pending = waiters.values
+        waiters = [:]
         for waiter in pending { waiter.resume() }
     }
+
+    /// Lets one held send return; the others stay held.
+    func release(_ id: MessageID) {
+        waiters.removeValue(forKey: id)?.resume()
+    }
+
+    /// Whether the send of `id` is held now.
+    func isHolding(_ id: MessageID) -> Bool { waiters[id] != nil }
 
     func outbox(willSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async throws {
         try await inner.outbox(willSend: envelope, context: context, decision: decision, disclosed: disclosed)
@@ -467,7 +475,7 @@ actor DidSendHold: OutboxObserver {
         await inner.outbox(didSend: envelope, context: context, decision: decision, disclosed: disclosed)
         guard kinds.contains(envelope.body.kind) else { return }
         held.append(envelope)
-        await withCheckedContinuation { waiters.append($0) }
+        await withCheckedContinuation { waiters[envelope.id] = $0 }
     }
 }
 
