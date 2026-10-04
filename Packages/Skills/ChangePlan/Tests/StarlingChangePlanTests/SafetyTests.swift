@@ -44,6 +44,19 @@ actor HeldObserver: OutboxObserver {
     }
 }
 
+/// Holds the next didSend once armed, as a slow audit journal would.
+actor ArmedObserver: OutboxObserver {
+    let gate = Gate()
+    private var armed = false
+    func arm() { armed = true }
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        guard armed else { return }
+        armed = false
+        await gate.pass()
+    }
+}
+
 @Suite struct SafetyTests {
     let alex = Fixtures.alex, maya = Fixtures.maya, jake = Fixtures.jake
 
@@ -252,5 +265,41 @@ actor HeldObserver: OutboxObserver {
         #expect(await maya.changes().isEmpty)
         #expect(await maya.transport.sent.isEmpty)
         await group.network.shutdown()
+    }
+
+    /// Review of PR #111, finding B: a yes that arrives while the owner's
+    /// withdrawal is still going out must not confirm the change.
+    @Test func aYesArrivingDuringAWithdrawalConfirmsNothing() async throws {
+        let observer = ArmedObserver()
+        let group = Group(observer: { person, _ in person == Fixtures.alex ? observer : nil })
+        let network = group.network
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards") {
+            for person in [maya, jake] where await group.openCard(of: person) == nil { return false }
+            return true
+        }
+        try await group.phone(maya).service.answer(try await group.card(of: maya).id, with: .accept(proposal: 1))
+        await network.deliver()
+        // Jake says yes; his yes is still on its way when Alex withdraws.
+        try await group.phone(jake).service.answer(try await group.card(of: jake).id, with: .accept(proposal: 1))
+        var withdrawn = try #require(await group.phone(alex).interaction(link.id))
+        try withdrawn.apply(.withdrawn, at: Timestamp(group.clock.now))
+        try await group.phone(alex).store.save(withdrawn)
+        await observer.arm()
+        let service = group.phone(alex).service
+        let withdrawing = Task { await service.withdraw(link.id) }
+        await observer.gate.arrived()
+        // Jake's yes reaches Alex while the withdrawal is held mid-send.
+        await network.deliver()
+        await observer.gate.open()
+        await withdrawing.value
+        await network.deliver()
+        await network.settle()
+        #expect(!network.transcript.contains("Alex > Maya: accept"))
+        #expect(!network.transcript.contains("Alex > Jake: accept"))
+        for person in [alex, maya, jake] { #expect(await group.phone(person).plan(group.origin)?.revision == 0) }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
     }
 }

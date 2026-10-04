@@ -73,6 +73,8 @@ public actor ChangePlanService: SkillService {
         case deciding(offer: MessageID, proposal: Proposal)
         /// Voter or joiner: said yes; waiting for the suggester's confirmation.
         case accepted(offer: MessageID)
+        /// Withdrawn or settled: nothing more counts while its notices go out.
+        case ending
     }
 
     private struct Session {
@@ -261,10 +263,13 @@ public actor ChangePlanService: SkillService {
     /// cards close. The coordinator records the withdrawal itself.
     public func withdraw(_ interaction: InteractionID) async {
         guard let session = sessions[interaction] else { return }
+        // Before the first suspension (review of PR #111, finding B): from
+        // here no late yes or confirmation counts, and the notices go to
+        // the offers sent so far.
+        let notices = session.role == .suggester && (session.step == .asking || session.step == .inviting) ? session.withdrawals : []
+        sessions[interaction]?.advance(to: .ending)
         cancelSends(of: interaction)
-        if session.role == .suggester, session.step == .asking || session.step == .inviting {
-            _ = await send(session.withdrawals, in: interaction)
-        }
+        if !notices.isEmpty { _ = await send(notices, in: interaction, failureEnds: false) }
         await finish(interaction, with: [])
     }
 
@@ -430,7 +435,7 @@ public actor ChangePlanService: SkillService {
     /// in this conversation; one that arrives before Outbox returned that
     /// offer's ID is held until it does.
     private func vote(_ proposal: MessageID, from peer: PeerID, in id: InteractionID) async {
-        guard var session = sessions[id] else { return }
+        guard var session = sessions[id], session.step == .asking || session.step == .inviting else { return }
         guard let sent = session.offers[peer] else {
             session.early[peer] = proposal
             sessions[id] = session
@@ -568,12 +573,12 @@ public actor ChangePlanService: SkillService {
 
     /// Ends whatever is open for a plan (its people changed), quietly.
     private func settle(planConversation: ConversationID) async {
-        guard let id = openByPlan[planConversation], let session = sessions[id] else { return }
-        if session.role == .suggester {
-            cancelSends(of: id)
-            _ = await send(session.withdrawals, in: id)
-        }
+        guard let id = openByPlan[planConversation], let session = sessions[id], session.step != .ending else { return }
+        let notices = session.role == .suggester ? session.withdrawals : []
+        sessions[id]?.advance(to: .ending)
+        cancelSends(of: id)
         queued[planConversation] = nil
+        if !notices.isEmpty { _ = await send(notices, in: id, failureEnds: false) }
         await finish(id, with: [.noAgreement])
     }
 
