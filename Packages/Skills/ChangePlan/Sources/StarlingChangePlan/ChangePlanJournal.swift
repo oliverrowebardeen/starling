@@ -35,6 +35,8 @@ public struct LeaveDelivery: Hashable, Sendable, Codable {
     /// The owner's leave.
     public let interaction: InteractionID
     public let planConversation: ConversationID
+    /// The plan revision the owner left at, which every notice names.
+    public let revision: UInt32
     public let order: [PeerID]
     /// Who has not acknowledged yet, and every notice sent to each. Each
     /// attempt goes in a fresh conversation, so a friend can close it at once.

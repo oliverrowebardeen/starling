@@ -85,7 +85,7 @@ import Testing
     @Test func aLeaveNoticeLostOnceStillShrinksEveryPlan() async throws {
         let group = Group()
         let network = group.network
-        network.drop("Jake > Maya: reject")
+        network.drop("Jake > Maya: propose")
         try await group.suggest(.leave, by: jake)
         await network.deliver()
         try await network.until("Alex's plan shrank") { await group.phone(alex).plan(group.origin)?.attendees.peers == [alex, maya] }
@@ -103,9 +103,9 @@ import Testing
         #expect(await group.phone(maya).changes().count == entries)
         #expect(await Self.revisions(group, [alex, maya]) == [1, 1])
         #expect(network.transcript == [
-            "Jake > Alex: reject", "Jake > Maya: reject (lost)", "Alex > Jake: accept",
-            "Jake > Maya: reject", "Maya > Jake: accept (lost)",
-            "Jake > Maya: reject", "Maya > Jake: accept",
+            "Jake > Alex: propose", "Jake > Maya: propose (lost)", "Alex > Jake: accept",
+            "Jake > Maya: propose", "Maya > Jake: accept (lost)",
+            "Jake > Maya: propose", "Maya > Jake: accept",
         ])
         // Then Jake owes nothing more.
         let sent = await group.phone(jake).transport.sent.count

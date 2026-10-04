@@ -197,7 +197,7 @@ import Testing
         #expect(await group.phone(jake).interaction(group.roots[jake]!.id)?.state == .ended(.withdrawn))
         #expect(await group.phone(jake).interaction(leave.id)?.state == .ended(.withdrawn))
         // Nothing was disclosed: the notices and acknowledgments carry no values.
-        #expect(network.transcript == ["Jake > Alex: reject", "Jake > Maya: reject", "Alex > Jake: accept", "Maya > Jake: accept"])
+        #expect(network.transcript == ["Jake > Alex: propose", "Jake > Maya: propose", "Alex > Jake: accept", "Maya > Jake: accept"])
         // The others' timelines show it.
         #expect(await group.phone(alex).changes().map(\.state) == [.ended(.withdrawn)])
         #expect(await group.phone(alex).plan(group.origin)?.revision == 1)

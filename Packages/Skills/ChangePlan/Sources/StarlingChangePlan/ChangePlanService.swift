@@ -228,7 +228,7 @@ public actor ChangePlanService: SkillService {
             inviteTerms: nil, step: .asking
         )
         byConversation[request.conversation] = request.interaction
-        let delivery = LeaveDelivery(interaction: request.interaction, planConversation: plan.plan.origin, order: others,
+        let delivery = LeaveDelivery(interaction: request.interaction, planConversation: plan.plan.origin, revision: plan.plan.revision, order: others,
                                      pending: Dictionary(uniqueKeysWithValues: others.map { ($0, []) }), until: resend.end(for: plan.plan, now: now()))
         leaving[request.interaction] = delivery
         await store(.leaving(delivery))
@@ -292,8 +292,13 @@ public actor ChangePlanService: SkillService {
         // answer opens nothing.
         guard (try? await ledger.isRetired(envelope.conversation)) == false else { return }
         switch envelope.body {
+        // A leave is its own message: an offer of nothing, naming the plan's
+        // revision (review of PR #111, finding A).
+        case .propose(let offer) where offer.terms.values.isEmpty: await left(envelope, notice: offer, planConversation: planConversation)
         case .propose(let offer): await offered(envelope, offer: offer, planConversation: planConversation)
-        case .reject: await left(envelope, planConversation: planConversation)
+        // A rejection only ever withdraws an offer it names; one that names
+        // nothing open here is ignored, never taken for a leave.
+        case .reject(let rejection): withdrawQueued(envelope, rejection: rejection, planConversation: planConversation)
         default: return
         }
     }
@@ -356,17 +361,19 @@ public actor ChangePlanService: SkillService {
     /// once, is acknowledged, and its conversation is retired before the
     /// note on the timeline ends. A notice resent after it applied (its
     /// acknowledgment was lost) is just acknowledged again.
-    private func left(_ envelope: Envelope, planConversation: ConversationID) async {
-        guard case .reject(let notice) = envelope.body, envelope.sender != me,
+    private func left(_ envelope: Envelope, notice offer: Proposal, planConversation: ConversationID) async {
+        guard let noticeID = offer.inReplyTo, envelope.sender != me,
               byConversation[envelope.conversation] == nil, !closed.contains(envelope.conversation)
         else { return }
         if departed[planConversation]?[envelope.sender] != nil {
-            await acknowledge(notice.proposal, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
+            await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
             await retire(envelope.conversation)
             return
         }
+        // Bound to this plan, and to a revision this phone has reached: a
+        // leaver ahead of this phone is waited for, as its resends will be.
         guard let current = await planLookup(planConversation), current.plan.origin == planConversation,
-              current.plan.attendees.peers.contains(envelope.sender)
+              current.plan.attendees.peers.contains(envelope.sender), UInt32(offer.round) <= current.plan.revision
         else { return }
         // Anything open for this plan included them: it cannot go through.
         await settle(planConversation: planConversation)
@@ -385,8 +392,15 @@ public actor ChangePlanService: SkillService {
             // Only this phone is left: the plan ends here too.
             emit(current.interaction, .withdrawn)
         }
-        await acknowledge(notice.proposal, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: id)
+        await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: id)
         if await retire(envelope.conversation) { emit(id, .withdrawn) } else { emit(id, .failed) }
+    }
+
+    /// The suggester withdrew an offer that was waiting behind another: it
+    /// leaves the queue. Nothing else changes.
+    private func withdrawQueued(_ envelope: Envelope, rejection: Rejection, planConversation: ConversationID) {
+        queued[planConversation]?.removeAll { $0.conversation == envelope.conversation && $0.sender == envelope.sender && $0.id == rejection.proposal }
+        if queued[planConversation]?.isEmpty == true { queued[planConversation] = nil }
     }
 
     private func receive(_ envelope: Envelope, in id: InteractionID) async {
@@ -658,7 +672,11 @@ public actor ChangePlanService: SkillService {
             let notice = MessageID()
             leaving[id]?.pending[peer]?.append(notice)
             if let current = leaving[id] { await store(.leaving(current)) }
-            _ = try? await outbox.send(.reject(Rejection(proposal: notice, reason: .declinedByOwner)), to: peer, conversation: ConversationID(),
+            // Nothing offered: the plan's origin (chainedFrom) and the
+            // revision left at (round) bind it; inReplyTo is its ID.
+            let round = UInt16(min(delivery.revision, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
+            guard let body = try? Proposal(round: round, terms: Terms.empty, inReplyTo: notice) else { continue }
+            _ = try? await outbox.send(.propose(body), to: peer, conversation: ConversationID(),
                                        recipientCard: cards[peer], context: OutboundContext(interaction: id),
                                        skill: descriptor.ref, mode: .invite, chainedFrom: delivery.planConversation)
         }

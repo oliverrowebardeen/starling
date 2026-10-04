@@ -206,4 +206,51 @@ actor HeldObserver: OutboxObserver {
         await fresh.shutdown()
         await network.shutdown()
     }
+
+    /// Review of PR #111, finding A: withdrawing a suggestion that waited
+    /// behind another must not read as its sender leaving the plan.
+    @Test func withdrawingAQueuedSuggestionRemovesNobody() async throws {
+        let group = Group()
+        let network = group.network
+        // Alex and Maya suggest at once; on Jake's phone Alex's arrives
+        // first and Maya's waits behind it.
+        try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        let mayas = try await group.suggest(.change(time: nil, activity: Fixtures.dinner, adding: nil), by: maya)
+        await network.deliver()
+        try await network.until("Jake's card") { await group.openCard(of: jake) != nil }
+        await network.settle()
+        #expect(await group.phone(jake).changes().count == 1)
+        // Maya withdraws hers: Jake's queue drops it, and nobody leaves.
+        var withdrawn = try #require(await group.phone(maya).interaction(mayas.id))
+        try withdrawn.apply(.withdrawn, at: Timestamp(group.clock.now))
+        try await group.phone(maya).store.save(withdrawn)
+        await group.phone(maya).service.withdraw(mayas.id)
+        await network.deliver()
+        await network.settle()
+        #expect(network.transcript.contains("Maya > Jake: reject"))
+        #expect(await group.phone(jake).plan(group.origin)?.attendees.peers == [alex, maya, jake])
+        #expect(await group.phone(alex).plan(group.origin)?.attendees.peers == [alex, maya, jake])
+        // When Alex's settles, Maya's withdrawn one is not shown.
+        try await group.phone(jake).service.answer(try await group.card(of: jake).id, with: .pass)
+        await network.deliver()
+        await network.settle()
+        #expect(await group.openCard(of: jake) == nil)
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
+    @Test func aRejectionThatNamesNothingOpenChangesNothing() async throws {
+        let group = Group()
+        let maya = group.phone(self.maya)
+        // As if Alex's offer was lost and only its withdrawal arrived.
+        let stray = try Envelope(conversation: ConversationID(), sender: alex, recipient: self.maya, sequence: 0, sentAt: Timestamp(Fixtures.date(minutes: 10)),
+                                 body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner)),
+                                 skill: ChangePlan.descriptor.ref, mode: .invite, chainedFrom: group.origin)
+        await maya.service.handle(.message(stray))
+        await group.network.settle()
+        #expect(await maya.plan(group.origin)?.attendees.peers == [alex, self.maya, jake])
+        #expect(await maya.changes().isEmpty)
+        #expect(await maya.transport.sent.isEmpty)
+        await group.network.shutdown()
+    }
 }
