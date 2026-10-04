@@ -285,7 +285,12 @@ extension PickAPlaceService {
             return
         }
         let revision = invite.revision + 1
-        let plan = Self.plan(base: nil, origin: invite.chainedFrom ?? conversation, roster: roster, terms: proposal.terms, place: place)
+        // A request on a plan names, in its round, the revision the agreed
+        // plan will have, so this phone's plan names it too (ADR 0233). Lane
+        // E applies it only over the revision just before.
+        let planRevision = invite.chainedFrom == nil ? 0 : UInt32(proposal.round)
+        let plan = Self.plan(base: nil, origin: invite.chainedFrom ?? conversation, roster: roster, terms: proposal.terms, place: place,
+                             revision: planRevision)
         let card = SkillProposal(revision: revision, participants: roster, terms: proposal.terms, plan: plan)
         invites[conversation]?.revision = revision
         invites[conversation]?.proposal = card

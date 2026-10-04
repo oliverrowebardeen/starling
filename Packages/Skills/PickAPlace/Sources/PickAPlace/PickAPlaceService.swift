@@ -17,6 +17,9 @@ public enum PickAPlaceError: Error, Hashable, Sendable {
     /// The ledger could not record the request's deadlines, so it was not
     /// sent.
     case ledgerUnavailable
+    /// The plan has changed as many times as a proposal can say (ADR 0233):
+    /// its next revision would not fit in `Proposal.round`.
+    case planRevisionLimit
 }
 
 /// Wall time and timers, injectable so tests run retries in milliseconds.
@@ -435,8 +438,10 @@ public actor PickAPlaceService: SkillService {
     /// On a plan, the same plan at the new place, with its revision one
     /// higher (ADR 0022): with everyone still in it for a change of place,
     /// or with the roster that agreed for its first place.
+    /// Without a base, `revision` is the one the organizer's proposal named:
+    /// a friend's phone does not have the organizer's plan.
     static func plan(base: Plan?, keepingEveryone: Bool = false, origin: ConversationID, roster: [PeerID], terms: Terms,
-                     place: PlaceChoice) -> Plan? {
+                     place: PlaceChoice, revision: UInt32 = 0) -> Plan? {
         if let base {
             if keepingEveryone { return try? base.updating(place: .some(place)) }
             // The people who agreed, in the plan's own order, so the same
@@ -448,6 +453,6 @@ public actor PickAPlaceService: SkillService {
         guard let attendees = try? Attendees(roster) else { return nil }
         let activity: Keyword? = if case .keywords(let list)? = terms[.activity] { list.first } else { nil }
         let time: TimeSlot? = if case .slots(let list)? = terms[.time] { list.first } else { nil }
-        return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place)
+        return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place, revision: revision)
     }
 }

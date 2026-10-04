@@ -57,6 +57,9 @@ struct PlanChangeTests {
         #expect(placed.id == plan.id && placed.revision == plan.revision + 1)
         #expect(placed.place == Self.greenBowl.choice && placed.attendees == plan.attendees)
         #expect(placed.time == plan.time && placed.activity == plan.activity)
+        // Every phone's agreed plan names the same new revision, so each
+        // applies it once, and only over the revision before (ADR 0233).
+        for friend in [maya, jake] { #expect(await friend.interaction(first)?.proposal?.plan?.revision == placed.revision, "\(friend.name)") }
         for phone in everyone { try await phone.accept(in: first) }
         for phone in everyone {
             #expect(await phone.reaches(.planned, in: first), "\(phone.name)")
@@ -75,6 +78,7 @@ struct PlanChangeTests {
         let moved = try #require(await oliver.interaction(second)?.proposal?.plan)
         #expect(moved.id == plan.id && moved.revision == placed.revision + 1)
         #expect(moved.place == Self.veggieCart.choice && moved.attendees == plan.attendees)
+        for friend in [maya, jake] { #expect(await friend.interaction(second)?.proposal?.plan?.revision == moved.revision, "\(friend.name)") }
         for phone in everyone { try await phone.accept(in: second) }
         for phone in everyone {
             #expect(await phone.reaches(.planned, in: second), "\(phone.name)")
@@ -120,9 +124,37 @@ struct PlanChangeTests {
         #expect(placed.id == plan.id && placed.revision == plan.revision + 1 && placed.place == Venues.fancy.choice)
         #expect(Set(placed.attendees.peers) == [oliver.id, jake.id])
         #expect(await oliver.service.organized[conversation]?.everyoneMustAgree == false)
+        #expect(await jake.interaction(conversation)?.proposal?.plan?.revision == placed.revision)
         for phone in [oliver, jake] { try await phone.accept(in: conversation) }
         for phone in [oliver, jake] { #expect(await phone.reaches(.planned, in: conversation), "\(phone.name)") }
         #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, jake.id] })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    /// The revision travels in the proposal's round, which stays below
+    /// `ProtocolLimits.maxNegotiationRounds`: a plan at its last revision
+    /// that fits takes no further place, and nothing is sent.
+    @Test func aPlanAtTheRevisionLimitTakesNoFurtherPlace() async throws {
+        let (group, oliver, maya, jake, _) = try await friends()
+        defer { Task { await group.stop() } }
+        let last = UInt32(ProtocolLimits.maxNegotiationRounds) - 1
+        let base = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        let full = try Plan(id: base.id, origin: base.origin, attendees: base.attendees, activity: base.activity, time: base.time,
+                            place: base.place, revision: last)
+        await #expect(throws: PickAPlaceError.planRevisionLimit) {
+            try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(full)], chainedFrom: base.origin)
+        }
+        #expect(await group.wire.sent(by: oliver.id).isEmpty)
+
+        // One below the limit still works, and the friends' plans name it.
+        let almost = try Plan(id: base.id, origin: base.origin, attendees: base.attendees, activity: base.activity, time: base.time,
+                              place: base.place, revision: last - 1)
+        let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(almost)],
+                                                     chainedFrom: base.origin).conversation
+        for phone in [oliver, maya, jake] {
+            #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)")
+            #expect(await phone.interaction(conversation)?.proposal?.plan?.revision == last, "\(phone.name)")
+        }
         #expect(await group.lifecyclesWereLegal())
     }
 

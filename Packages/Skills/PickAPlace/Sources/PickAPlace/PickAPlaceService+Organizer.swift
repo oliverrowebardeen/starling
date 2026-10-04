@@ -118,6 +118,11 @@ extension PickAPlaceService {
             }
         }
 
+        // The plan's next revision travels in the proposal's round, so every
+        // phone's agreed plan names it (ADR 0233); past what a round can
+        // hold, the plan cannot take another place.
+        if let base, base.revision + 1 >= UInt32(ProtocolLimits.maxNegotiationRounds) { throw PickAPlaceError.planRevisionLimit }
+
         // Friends whose card says they cannot run this skill are left out
         // before anything is sent; a friend with no card yet is asked, and
         // an older version answers `unsupported`. On a plan, only the
@@ -386,7 +391,9 @@ extension PickAPlaceService {
               !organizer.timedOut.contains(friend), !organizer.excluded.contains(friend) {
             let token = sendStarting(conversation, to: friend, step: .proposing(proposal.revision))
             do {
-                let round = UInt16(min(proposal.revision - 1, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
+                // On a plan, the round names the revision the agreed plan will
+                // have, so a friend's phone can name it too (ADR 0233).
+                let round = UInt16(min(proposal.plan?.revision ?? 0, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
                 let sent = try await send(.propose(Proposal(round: round, terms: proposal.terms)), to: friend,
                                           conversation: conversation, chainedFrom: organizer.chainedFrom)
                 if sendEnded(conversation, to: friend, token: token) {
