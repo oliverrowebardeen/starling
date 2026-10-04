@@ -1,0 +1,208 @@
+import Foundation
+import StarlingChaining
+import StarlingChangePlan
+import StarlingCore
+import StarlingFakes
+import StarlingPolicy
+import Testing
+
+/// Holds callers at one point until the test opens it.
+actor Gate {
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var arrivals = 0
+    private var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var isOpen = false
+
+    func pass() async {
+        arrivals += 1
+        let ready = watchers.filter { $0.count <= arrivals }
+        watchers.removeAll { $0.count <= arrivals }
+        for watcher in ready { watcher.continuation.resume() }
+        guard !isOpen else { return }
+        await withCheckedContinuation { held.append($0) }
+    }
+
+    func arrived(_ count: Int = 1) async {
+        guard arrivals < count else { return }
+        await withCheckedContinuation { watchers.append((count, $0)) }
+    }
+
+    func open() {
+        isOpen = true
+        for continuation in held { continuation.resume() }
+        held = []
+    }
+}
+
+/// Holds Outbox's didSend for the first send until the test opens the gate,
+/// as a slow audit journal would (issue #105).
+actor HeldObserver: OutboxObserver {
+    let gate = Gate()
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        await gate.pass()
+    }
+}
+
+@Suite struct SafetyTests {
+    let alex = Fixtures.alex, maya = Fixtures.maya, jake = Fixtures.jake
+
+    /// A suggestion as a friend's phone would send it to Maya.
+    static func offer(from sender: PeerID, origin: ConversationID, round: UInt16 = 0, terms: Terms,
+                      expires: Date = Fixtures.date(minutes: 60)) throws -> Envelope {
+        try Envelope(conversation: ConversationID(), sender: sender, recipient: Fixtures.maya, sequence: 0, sentAt: Timestamp(Fixtures.date(minutes: 10)),
+                     body: .propose(Proposal(round: round, terms: terms, expiresAt: Timestamp(expires))),
+                     skill: ChangePlan.descriptor.ref, mode: .invite, chainedFrom: origin)
+    }
+
+    @Test func aSuggestionMayaCannotTrustOpensNothing() async throws {
+        let group = Group()
+        let maya = group.phone(self.maya)
+        let later = try Terms([.time: .slots([Fixtures.later])])
+        let forged = [
+            // From someone not in the plan.
+            try Self.offer(from: Fixtures.stranger, origin: group.origin, terms: later),
+            // Naming a revision the plan is not at.
+            try Self.offer(from: alex, origin: group.origin, round: 1, terms: later),
+            // For a plan this phone does not hold, without Maya in it.
+            try Self.offer(from: alex, origin: ConversationID(), terms: try Terms([.people: .peers([alex, jake])])),
+            // Removing someone: the roster drops Jake.
+            try Self.offer(from: alex, origin: group.origin, terms: try Terms([.people: .peers([alex, self.maya, Fixtures.sam])])),
+            // Changing the place, which belongs to Pick a place.
+            try Self.offer(from: alex, origin: group.origin, terms: try Terms([.place: .places([try PlaceChoice(name: PlaceName("Elsewhere"))])])),
+            // Changing nothing.
+            try Self.offer(from: alex, origin: group.origin, terms: try Terms([.activity: .keywords([Fixtures.boba])])),
+            // Already past its window.
+            try Self.offer(from: alex, origin: group.origin, terms: later, expires: Fixtures.date(minutes: 5)),
+        ]
+        for envelope in forged { await maya.service.handle(.message(envelope)) }
+        await group.network.settle()
+        #expect(await maya.changes().isEmpty)
+        #expect(await maya.transport.sent.isEmpty)
+        await group.network.shutdown()
+    }
+
+    @Test func aQuietAskIsIgnored() async throws {
+        let group = Group()
+        let maya = group.phone(self.maya)
+        let quiet = try Envelope(conversation: ConversationID(), sender: alex, recipient: self.maya, sequence: 0, sentAt: Timestamp(Fixtures.date(minutes: 10)),
+                                 body: .propose(Proposal(round: 0, terms: try Terms([.time: .slots([Fixtures.later])]))),
+                                 skill: ChangePlan.descriptor.ref, mode: .askQuietly, chainedFrom: group.origin)
+        await maya.service.handle(.message(quiet))
+        await group.network.settle()
+        #expect(await maya.changes().isEmpty)
+        await group.network.shutdown()
+    }
+
+    @Test func crossingSuggestionsShowOneCardAtATimeAndChangeNothing() async throws {
+        let group = Group()
+        let network = group.network
+        // Alex and Maya suggest at the same moment, before either hears of the other.
+        try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex, expiresIn: 30)
+        try await group.suggest(.change(time: nil, activity: Fixtures.dinner, adding: nil), by: maya, expiresIn: 30)
+        await network.deliver()
+        try await network.until("Jake's card") { await group.openCard(of: jake) != nil }
+        await network.settle()
+        // Jake sees one; each suggester's own keeps the other's waiting.
+        #expect(await group.phone(jake).changes().count == 1)
+        #expect(await group.phone(alex).changes().filter { $0.role == .invitee }.isEmpty)
+        #expect(await group.phone(maya).changes().filter { $0.role == .invitee }.isEmpty)
+        try await group.phone(jake).service.answer(try await group.card(of: jake).id, with: .accept(proposal: 1))
+        await network.deliver()
+        group.clock.advance(to: Fixtures.date(minutes: 41))
+        try await network.until("all settled") {
+            for person in [alex, maya, jake] where await group.phone(person).changes().contains(where: { !$0.state.isFinal && $0.state != .planned }) {
+                return false
+            }
+            return true
+        }
+        for person in [alex, maya, jake] {
+            let plan = try #require(await group.phone(person).plan(group.origin))
+            #expect(plan.revision == 0 && plan.time == Fixtures.tonight && plan.activity == Fixtures.boba)
+        }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
+    /// Issue #105: a fast friend's yes arrives while Outbox is still in the
+    /// suggester's didSend, before the offer's ID is known. It is held and
+    /// counted once the ID is, never dropped as unsolicited.
+    @Test func aYesThatArrivesBeforeTheOfferIDIsKnownStillCounts() async throws {
+        let held = HeldObserver()
+        let group = Group(observer: { person, _ in person == Fixtures.alex ? held : nil })
+        let network = group.network
+        let suggesting = Task { try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: Fixtures.alex) }
+        // Maya's offer is on the wire; Alex's didSend for it is held.
+        await held.gate.arrived()
+        await network.deliver()
+        try await network.until("Maya's card") { await group.openCard(of: Fixtures.maya) != nil }
+        try await group.phone(maya).service.answer(try await group.card(of: maya).id, with: .accept(proposal: 1))
+        await network.deliver()
+        #expect(network.transcript == ["Alex > Maya: propose", "Maya > Alex: accept"])
+        // Release: Alex records the offer's ID, counts Maya's yes, asks Jake.
+        await held.gate.open()
+        _ = try await suggesting.value
+        await network.deliver()
+        try await network.until("Jake's card") { await group.openCard(of: jake) != nil }
+        try await group.phone(jake).service.answer(try await group.card(of: jake).id, with: .accept(proposal: 1))
+        await network.deliver()
+        try await network.until("applied") {
+            for person in [alex, maya, jake] where await group.phone(person).plan(group.origin)?.revision != 1 { return false }
+            return true
+        }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
+    @Test func addingAFriendAsksConsentForWhoIsInItAndIsAudited() async throws {
+        let policy = DeterministicPolicyEngine(ownerRules: OwnerRules(constraints: .empty, disclosure: PrivacySettings.defaults.disclosureRules))
+        let journal = InMemoryEgressJournal()
+        let group = Group(extra: [Fixtures.sam],
+                          policy: { $0 == Fixtures.alex ? policy : nil },
+                          observer: { person, store in person == Fixtures.alex ? EgressRecorder(sink: StoreEgressSink(store: store), journal: journal) : nil })
+        let network = group.network
+        let link = try await group.suggest(.change(time: nil, activity: nil, adding: Fixtures.sam), by: alex)
+        await network.deliver()
+        try await network.until("cards") {
+            for person in [maya, jake] where await group.openCard(of: person) == nil { return false }
+            return true
+        }
+        // People defaults to Ask me: the roster leaves only after a sheet.
+        let sheets = await group.phone(alex).consent.requests
+        #expect(sheets.count == 2)
+        #expect(sheets.allSatisfy { $0.items.contains { $0.issue == .people } && $0.interaction == link.id })
+        for person in [maya, jake] {
+            try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
+        }
+        await network.deliver()
+        try await network.until("Sam's card") { await group.openCard(of: Fixtures.sam) != nil }
+        try await group.phone(Fixtures.sam).service.answer(try await group.card(of: Fixtures.sam).id, with: .accept(proposal: 1))
+        await network.deliver()
+        try await network.until("applied") { await group.phone(alex).plan(group.origin)?.attendees.peers.count == 4 }
+        // What left Alex's phone is recorded on the change, under the plan.
+        try await network.until("audited") { await group.phone(alex).interaction(link.id)?.egress.isEmpty == false }
+        let timeline = try #require(PlanTimeline(for: group.roots[alex]!.id, in: await group.phone(alex).all(), registry: Fixtures.registry))
+        #expect(timeline.entries.map(\.id).contains(link.id))
+        #expect(timeline.whatLeft.shared.map(\.topic).contains(.people))
+        await network.shutdown()
+    }
+
+    @Test func anOpenSuggestionDoesNotSurviveARestart() async throws {
+        let group = Group()
+        let network = group.network
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards") { await group.openCard(of: maya) != nil }
+        // Maya's app restarts with her card open.
+        let card = try await group.card(of: maya)
+        let fresh = ChangePlanService(outbox: group.phone(maya).outbox, ledger: group.phone(maya).ledger, me: maya, planLookup: { _ in nil })
+        await fresh.restore([card])
+        #expect(try await group.phone(maya).ledger.isRetired(card.conversation))
+        var events = fresh.events.makeAsyncIterator()
+        #expect(await events.next() == .lifecycle(card.id, .failed))
+        // Alex's suggestion is untouched by it, and still open.
+        #expect(await group.phone(alex).interaction(link.id)?.state == .confirmed)
+        await fresh.shutdown()
+        await network.shutdown()
+    }
+}
