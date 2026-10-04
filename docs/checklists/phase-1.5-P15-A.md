@@ -82,3 +82,15 @@ Two iPhones on iOS 27 with this branch's Debug build. Delete Starling from both 
 43. Phone A: remove the time chip and change the activity chip, then add "tomorrow" to the words. Expect: after the pause, the time stays removed and the activity stays as you set it; chips you did not touch follow the new words.
 44. Phone A: New, type "find a time with Riley for dinner". Expect: the when chip reads "Today to" a day a week out, "Between 5 PM and 9 PM", never "tonight". Tap it. Expect: From (a day), To (a day, up to two weeks), and "Only between 5 PM and 9 PM" switched on. Choose today to Friday and Done. Expect: "Today to Friday, Between 5 PM and 9 PM". With no meal word, switching the hours on offers evenings ("Only evenings").
 45. Phone A: Pick a place. Expect: its list is headed "Places to choose from". While Starling reads, "Reading this on your iPhone" is centered under Starling understood.
+
+## Change the plan (ADR 0022, ADR 0207)
+
+Three phones, A, B, and C, all paired with each other, with a plan for boba tonight at 8 PM that all three are in. Lane E's checklist (steps 13 to 18) covers the protocol; these steps cover what the app shows.
+
+46. Phone A: open the plan. Expect: "Suggest a change" and "Leave this plan" below Keep it going, with the line that a change happens only if everyone says yes.
+47. Phone A: Suggest a change, turn on Change the time, set 8:30 PM, Suggest it. Expect: Home's In progress shows "8:30 PM instead of 8 PM" and "Waiting for everyone to say yes". B and C: a Needs you card "A suggests 8:30 PM instead of 8 PM" with Sounds good and Keep it as is. Phone B: open the plan. Expect: "Suggest a change" is off with "A suggestion for this plan is still open."
+48. B and C: Sounds good. Expect: on all three phones the plan reads 8:30 PM, Home shows one plan (not a second one for the change), and the timeline says "Changed to tonight at 8:30 PM". If the plan was added to Calendar before, its row reads "Update in Calendar" with the note to remove the old event.
+49. Phone A: suggest dinner instead. B: Sounds good. C: Keep it as is. When the window closes, expect on A: the timeline reads "The plan stays as it was", naming nobody. B's and C's cards just close, with nothing on their timelines.
+50. Phone A: suggest adding D (a friend of A's whose Starling can change plans). Expect: the sheet lists D under Add a friend; B and C see "A suggests adding D". After they agree, D sees "A asks you to join boba with B and C, tonight at 8:30 PM"; after D accepts, D's Home shows the plan, and every timeline says "Added D".
+51. Phone C: Leave this plan. Expect: a confirmation ("The others see that you left. Nobody else has to agree."), then C's plan ends. A and B: the timeline says "C left" and the plan lists one fewer person.
+52. Phone A: New. Expect: no Change the plan tile.
