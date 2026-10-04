@@ -67,7 +67,7 @@ actor DownWire: OutboxObserver {
         let envelope: Envelope
         let context: OutboundContext
         let items: [DisclosedItem]?
-        let at: ContinuousClock.Instant
+        let at: SuspendingClock.Instant
     }
     private(set) var records: [Record] = []
     private var proposalCount = 0
@@ -86,7 +86,7 @@ actor DownWire: OutboxObserver {
     }
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) {}
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) {
-        records.append(Record(envelope: envelope, context: context, items: disclosed, at: ContinuousClock.now))
+        records.append(Record(envelope: envelope, context: context, items: disclosed, at: SuspendingClock.now))
     }
 }
 

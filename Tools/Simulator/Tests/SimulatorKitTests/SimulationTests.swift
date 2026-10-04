@@ -1,3 +1,4 @@
+import Scenarios
 import Foundation
 import SimulatorKit
 import StarlingCore
@@ -8,7 +9,7 @@ import Testing
     @Test func agentsExchangeCardsAcrossAMesh() async throws {
         let simulation = Simulation(seed: 1)
         for name in ["a", "b", "c", "d", "e"] { try await simulation.addAgent(name) }
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         for agent in await simulation.agents {
             #expect(await agent.peerCards.count == 4)
         }
@@ -33,7 +34,7 @@ import Testing
         let policy = FixedPolicyEngine(.deny(violation))
         let alice = try await simulation.addAgent("alice", policy: policy)
         let bob = try await simulation.addAgent("bob")
-        try await Simulation.eventually("alice sees bob") { await alice.log.contains { $0.event == .peerAvailable(bob.id) } }
+        try await AwakeWait.eventually("alice sees bob") { await alice.log.contains { $0.event == .peerAvailable(bob.id) } }
 
         await #expect(throws: OutboxError.denied(violation)) {
             try await alice.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: bob.id)

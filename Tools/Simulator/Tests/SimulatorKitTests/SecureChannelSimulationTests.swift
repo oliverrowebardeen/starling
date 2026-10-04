@@ -1,3 +1,4 @@
+import Scenarios
 import Foundation
 import SimulatorKit
 import StarlingCore
@@ -10,7 +11,7 @@ import Testing
     @Test func secureAgentsFormAMeshOverProvenKeys() async throws {
         let simulation = Simulation(security: .secureChannel)
         for name in ["a", "b", "c"] { try await simulation.addAgent(name) }
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         let agents = await simulation.agents
         for agent in agents {
             #expect(await agent.peerCards.count == 2)
@@ -32,7 +33,7 @@ import Testing
             }
             try await group.waitForAll()
         }
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         for agent in await simulation.agents {
             #expect(await agent.peerCards.count == 4)
         }
@@ -43,7 +44,7 @@ import Testing
         let simulation = Simulation(security: .secureChannel)
         let alice = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob")
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         let bobSecure = try #require(bob.secureTransport)
         let receivedBefore = await bob.received.count
         let droppedBefore = await bobSecure.status(of: alice.id).droppedFrames
@@ -57,7 +58,7 @@ import Testing
         )
         try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: alice.id, to: bob.id)
 
-        try await Simulation.eventually("bob's secure channel drops the forgery") {
+        try await AwakeWait.eventually("bob's secure channel drops the forgery") {
             await bobSecure.status(of: alice.id).droppedFrames > droppedBefore
         }
         #expect(await bob.received.count == receivedBefore)

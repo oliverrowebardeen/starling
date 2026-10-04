@@ -95,10 +95,8 @@ struct ChainingIntegrationTests {
         try await b.accept(interaction.conversation)
         _ = try await b.wait(.confirmed, in: interaction.conversation)
         try await a.accept(interaction.conversation)
-        let childConversation = interaction.conversation
-        try await P15.eventually("organizer received the included friend acceptance") {
-            await a.agent.received.contains { $0.conversation == childConversation && $0.sender == b.id && $0.body.kind == .accept }
-        }
+        let acceptance = try #require(await b.sent(interaction.conversation).first { $0.body.kind == .accept })
+        try await world.delivered(acceptance, to: a)
         let deadline = try #require(await a.ledger.deadlines(for: interaction.conversation)?.confirmDeadline)
         let confirmAt = Duration.seconds(deadline.timeIntervalSince(P15.date))
         try await a.clock.waitForSleeps([confirmAt, confirmAt + PlacePhone.configuration.confirmWindow])

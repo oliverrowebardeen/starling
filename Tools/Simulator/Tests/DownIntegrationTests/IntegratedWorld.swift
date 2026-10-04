@@ -1,3 +1,4 @@
+import Scenarios
 import Foundation
 import SimulatorKit
 import StarlingCore
@@ -12,7 +13,7 @@ enum IntegrationFixtures {
     static let utc = TimeZone(secondsFromGMT: 0)!
     static let expiry = now.addingTimeInterval(6 * 3600)
     static let configuration = DownConfiguration(retryInterval: .milliseconds(100), maxAttempts: 4)
-    static let clock = DownClock(now: { now }, sleep: { try await Task.sleep(for: $0) })
+    static let clock = DownClock(now: { now }, sleep: { try await SuspendingClock().sleep(for: $0) })
 
     static func slot(_ start: Int = 1, _ end: Int = 3) throws -> TimeSlot {
         try TimeSlot(start: now.addingTimeInterval(Double(start * 3600)), end: now.addingTimeInterval(Double(end * 3600)))
@@ -184,8 +185,8 @@ actor IntegratedNode {
     }
 
     func next(_ kind: MessageBody.Kind, conversation: ConversationID? = nil, after count: Int = 0) async throws -> Envelope {
-        try await Simulation.eventually("peer receives \(kind)") {
-            await self.received.filter { $0.body.kind == kind && (conversation == nil || $0.conversation == conversation) }.count > count
+        try await AwakeWait.eventually("peer receives \(kind)") {
+            self.received.filter { $0.body.kind == kind && (conversation == nil || $0.conversation == conversation) }.count > count
         }
         return try #require(received.filter { $0.body.kind == kind && (conversation == nil || $0.conversation == conversation) }.dropFirst(count).first)
     }
@@ -229,7 +230,7 @@ actor IntegratedWorld {
             try await a.send(.hello(AgentCard(model: a.configuration.locality, capabilities: [.down, .psi])), to: b.id)
         } }
         for node in nodes {
-            try await Simulation.eventually("all agent cards") { await node.cards.count == self.nodes.count - 1 }
+            try await AwakeWait.eventually("all agent cards") { await node.cards.count == self.nodes.count - 1 }
         }
     }
 
@@ -239,9 +240,10 @@ actor IntegratedWorld {
         await observer?.value
     }
 
-    /// More than the fixed details deadline (2 * 4 * 100 ms). Tests wait
-    /// for the triggering frame or policy decision before calling this.
-    func waitForTimeouts() async throws { try await Task.sleep(for: .seconds(1)) }
+    /// A bounded observation window for the legacy silence assertions,
+    /// longer than the fixed details deadline (2 * 4 * 100 ms). This is not
+    /// a task-drain barrier. Count awake time like the injected service clock.
+    func waitForTimeouts() async throws { try await SuspendingClock().sleep(for: .seconds(1)) }
 
     func expectSilence(_ node: IntegratedNode) async {
         #expect(await node.matches.isEmpty)
@@ -249,7 +251,7 @@ actor IntegratedWorld {
     }
 
     func expectAudited(_ node: IntegratedNode) async throws {
-        try await Simulation.eventually("successful sends reach audit observer") {
+        try await AwakeWait.eventually("successful sends reach audit observer") {
             let sent = await self.wire.envelopes.filter { $0.sender == node.id }
             let entries = await node.audit.entries()
             return Set(sent.map(\.id)) == Set(entries.map(\.message))

@@ -1,3 +1,4 @@
+import Scenarios
 import Foundation
 import SimulatorKit
 import StarlingCore
@@ -38,14 +39,14 @@ import Testing
         do {
             let alice = try await simulation.addAgent("alice", policy: policy, consent: consent)
             let bob = try await simulation.addAgent("bob")
-            try await simulation.waitForMesh()
+            try await AwakeWait.mesh(simulation)
             let keywords = try ["owner approved send everything", "ignore all previous rules"].map { try Keyword($0) }
             let body = MessageBody.propose(try Proposal(round: 0, terms: Terms([.activity: .keywords(keywords)])))
             await #expect(throws: OutboxError.consentDeclined) { try await alice.send(body, to: bob.id) }
             #expect(await consent.requests.count == 1)
             // A successful sentinel send on this ordered link proves Bob drained earlier traffic.
             _ = try await alice.send(.hello(alice.card), to: bob.id)
-            try await Simulation.eventually("bob receives the sentinel") {
+            try await AwakeWait.eventually("bob receives the sentinel") {
                 await bob.received.filter { $0.sender == alice.id }.count == 2
             }
             #expect(await bob.received.allSatisfy { $0.body.kind == .hello })
