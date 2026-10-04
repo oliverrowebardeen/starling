@@ -25,6 +25,19 @@ public protocol PickAPlaceLedger: Sendable {
     func recordRequestKind(_ kind: PlaceRequestKind, for conversation: ConversationID, at date: Date) async throws
 }
 
+extension PickAPlaceLedger {
+    /// A ledger that does not keep request kinds has none to read: a
+    /// request on a plan is then read as a change, the stricter rule.
+    public func requestKind(for conversation: ConversationID) async throws -> PlaceRequestKind? { nil }
+
+    /// A ledger that does not keep request kinds cannot record one, so a
+    /// request on a plan is not started, and a friend's is dropped, rather
+    /// than run without its rule (ADR 0233).
+    public func recordRequestKind(_ kind: PlaceRequestKind, for conversation: ConversationID, at date: Date) async throws {
+        throw LedgerUnavailable()
+    }
+}
+
 /// What a Pick a place request on a plan is (ADR 0233).
 public enum PlaceRequestKind: Codable, Hashable, Sendable {
     /// A plan's first place: it goes ahead with whoever agrees.
