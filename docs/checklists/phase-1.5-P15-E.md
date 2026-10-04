@@ -14,3 +14,12 @@ Run after lane A wires StarlingChaining (requests 4.1 to 4.7 in `docs/requests/P
 10. Wait for the plan to end with Starling open on A. Expect: within a minute, A asks you to pick photos, with no system photo access alert. Pick 2. Expect: B shows "2 photos" under Needs you; B gets no picker and no alert.
 11. Repeat step 9 without turning "Swap photos after" on. Expect: nothing happens on either phone when the plan ends.
 12. Release build: open It's a plan. Expect: no Swap photos row anywhere.
+
+Change the plan (ADR 0022, ADR 0243), three phones A, B, and C in one plan:
+
+13. Phone A: open the plan, tap Suggest a change, pick 9:00. Expect: B and C each show "A suggests 9:00 instead"; nothing changes yet on any phone.
+14. B and C: tap Sounds good. Expect: within 5 seconds the plan reads 9:00 on all three phones, and A's timeline lists the change.
+15. Phone A: suggest dinner instead. B: Sounds good. C: Keep it as is. Wait for the window to close. Expect: A reads "The plan stays as it was" with nobody named; B's card just closes; the plan is still boba on all three.
+16. Phone B: while A's suggestion is open, look for Suggest a change. Expect: it is not offered until A's suggestion settles.
+17. Phone A: suggest adding D, a friend of A's. B and C: Sounds good. Expect: D gets an invite showing the plan and who is in it; after D accepts, all four phones list four people.
+18. Phone C: Leave this plan. Expect: no sheet; C's plan ends; A and B (and D) show C left and list one fewer person.
