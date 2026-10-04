@@ -150,4 +150,37 @@ import Testing
         #expect(await network.problems().isEmpty)
         await network.shutdown()
     }
+
+    /// Codex re-review of PR #111, finding 4: Jake leaves, is added back,
+    /// and leaves again. The second departure is its own, not a resend.
+    @Test func leavingAgainAfterBeingAddedBackShrinksThePlanAgain() async throws {
+        let group = Group()
+        let network = group.network
+        try await group.suggest(.leave, by: jake)
+        await network.deliver()
+        try await network.until("plans shrank") {
+            for person in [alex, maya] where await group.phone(person).plan(group.origin)?.attendees.peers != [alex, maya] { return false }
+            return true
+        }
+        // Jake is added back (as an agreed change would): revision 2 everywhere.
+        for person in [alex, maya, jake] {
+            let phone = group.phone(person)
+            var holder = try Group.root(origin: group.origin, people: [alex, maya, jake], me: person)
+            if let existing = await phone.all().first(where: { $0.id == group.roots[person]!.id && $0.state == .planned }) { holder = existing }
+            let plan = try Plan(id: try #require(holder.plan).id, origin: group.origin, attendees: Attendees([alex, maya, jake]),
+                                activity: Fixtures.boba, time: Fixtures.tonight, revision: 2)
+            holder.record(.plan(plan))
+            try await phone.store.save(holder)
+        }
+        // And leaves again.
+        try await group.suggest(.leave, by: jake)
+        await network.deliver()
+        try await network.until("plans shrank again") {
+            for person in [alex, maya] where await group.phone(person).plan(group.origin)?.revision != 3 { return false }
+            return true
+        }
+        for person in [alex, maya] { #expect(await group.phone(person).plan(group.origin)?.attendees.peers == [alex, maya]) }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
 }

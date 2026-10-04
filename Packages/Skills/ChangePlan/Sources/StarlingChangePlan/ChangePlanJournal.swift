@@ -37,16 +37,22 @@ public struct LeaveDelivery: Hashable, Sendable, Codable {
     public let planConversation: ConversationID
     /// The plan revision the owner left at, which every notice names.
     public let revision: UInt32
+    /// This departure, the same on every attempt to everyone, so a friend
+    /// tells a resent notice from a later departure by the same person
+    /// (review of PR #111). Each attempt goes in a fresh conversation, so a
+    /// friend can close it at once.
+    public let departure: MessageID
     public let order: [PeerID]
-    /// Who has not acknowledged yet, and every notice sent to each. Each
-    /// attempt goes in a fresh conversation, so a friend can close it at once.
-    public var pending: [PeerID: [MessageID]]
+    /// Who has not acknowledged it yet.
+    public var pending: Set<PeerID>
     public let until: Date
 }
 
 /// Someone this phone saw leave a plan, so a resent notice is acknowledged again.
 public struct Departure: Hashable, Sendable, Codable {
     public let id: UUID
+    /// The departure's own ID, which every attempt of its notice names.
+    public let departure: MessageID
     public let planConversation: ConversationID
     public let peer: PeerID
     public let until: Date

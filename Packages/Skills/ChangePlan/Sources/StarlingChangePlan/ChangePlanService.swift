@@ -146,7 +146,8 @@ public actor ChangePlanService: SkillService {
     private var confirmingByConversation: [ConversationID: InteractionID] = [:]
     private var applied: [ConversationID: AppliedConfirmation] = [:]
     private var leaving: [InteractionID: LeaveDelivery] = [:]
-    private var departed: [ConversationID: [PeerID: Departure]] = [:]
+    /// Departures this phone applied, by their ID.
+    private var departed: [MessageID: Departure] = [:]
     /// Resend loops and end-of-window cleanups, by record key.
     private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
     /// Journal writes that failed. Delivery goes on; only a restart could lose it.
@@ -242,8 +243,9 @@ public actor ChangePlanService: SkillService {
             inviteTerms: nil, step: .asking
         )
         byConversation[request.conversation] = request.interaction
-        let delivery = LeaveDelivery(interaction: request.interaction, planConversation: plan.plan.origin, revision: plan.plan.revision, order: others,
-                                     pending: Dictionary(uniqueKeysWithValues: others.map { ($0, []) }), until: resend.end(for: plan.plan, now: now()))
+        // One ID for this departure, registered before any notice is sent.
+        let delivery = LeaveDelivery(interaction: request.interaction, planConversation: plan.plan.origin, revision: plan.plan.revision,
+                                     departure: MessageID(), order: others, pending: Set(others), until: resend.end(for: plan.plan, now: now()))
         leaving[request.interaction] = delivery
         await store(.leaving(delivery))
         await sendLeaveNotices(request.interaction)
@@ -389,7 +391,10 @@ public actor ChangePlanService: SkillService {
         guard let noticeID = offer.inReplyTo, envelope.sender != me,
               byConversation[envelope.conversation] == nil, !closed.contains(envelope.conversation)
         else { return }
-        if departed[planConversation]?[envelope.sender] != nil {
+        // This departure applied already (its acknowledgment was lost): just
+        // acknowledge it again. A later departure by the same person, after
+        // they were added back, has a new ID and applies.
+        if let known = departed[noticeID], known.peer == envelope.sender, known.planConversation == planConversation {
             await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
             await retire(envelope.conversation)
             return
@@ -401,9 +406,9 @@ public actor ChangePlanService: SkillService {
         else { return }
         // Anything open for this plan included them: it cannot go through.
         await settle(planConversation: planConversation)
-        let departure = Departure(id: UUID(), planConversation: planConversation, peer: envelope.sender,
+        let departure = Departure(id: UUID(), departure: noticeID, planConversation: planConversation, peer: envelope.sender,
                                   until: resend.end(for: current.plan, now: now()))
-        departed[planConversation, default: [:]][envelope.sender] = departure
+        departed[noticeID] = departure
         await store(.departed(departure))
         startResending(departure.id)
 
@@ -702,8 +707,8 @@ public actor ChangePlanService: SkillService {
             }
             return true
         }
-        for (id, var delivery) in leaving where delivery.pending[envelope.sender]?.contains(ack.proposal) == true {
-            delivery.pending[envelope.sender] = nil
+        for (id, var delivery) in leaving where delivery.pending.contains(envelope.sender) && ack.proposal == delivery.departure {
+            delivery.pending.remove(envelope.sender)
             leaving[id] = delivery
             await progressDelivery(.leaving(delivery))
             return true
@@ -732,18 +737,15 @@ public actor ChangePlanService: SkillService {
         }
     }
 
-    /// Each leave notice goes in a fresh conversation, under a fresh ID
-    /// registered before the send (#105), so a friend can close it at once.
+    /// Each leave notice goes in a fresh conversation, naming the
+    /// departure's one ID, so a friend can close it at once.
     private func sendLeaveNotices(_ id: InteractionID) async {
         guard let delivery = leaving[id] else { return }
-        for peer in delivery.order where leaving[id]?.pending[peer] != nil {
-            let notice = MessageID()
-            leaving[id]?.pending[peer]?.append(notice)
-            if let current = leaving[id] { await store(.leaving(current)) }
-            // Nothing offered: the plan's origin (chainedFrom) and the
-            // revision left at (round) bind it; inReplyTo is its ID.
-            let round = UInt16(min(delivery.revision, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
-            guard let body = try? Proposal(round: round, terms: Terms.empty, inReplyTo: notice) else { continue }
+        // Nothing offered: the plan's origin (chainedFrom) and the revision
+        // left at (round) bind it; inReplyTo is the departure.
+        let round = UInt16(min(delivery.revision, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
+        guard let body = try? Proposal(round: round, terms: Terms.empty, inReplyTo: delivery.departure) else { return }
+        for peer in delivery.order where leaving[id]?.pending.contains(peer) == true {
             _ = try? await outbox.send(.propose(body), to: peer, conversation: ConversationID(),
                                        recipientCard: cards[peer], context: OutboundContext(interaction: id),
                                        skill: descriptor.ref, mode: .invite, chainedFrom: delivery.planConversation)
@@ -771,10 +773,7 @@ public actor ChangePlanService: SkillService {
         if let delivery = confirming[id] { return delivery.until }
         if let delivery = leaving[id] { return delivery.until }
         if let receipt = applied.values.first(where: { $0.interaction == id }) { return receipt.until }
-        for byPeer in departed.values {
-            if let departure = byPeer.values.first(where: { $0.id == key }) { return departure.until }
-        }
-        return nil
+        return departed.values.first { $0.id == key }?.until
     }
 
     /// Resends on the schedule until everyone acknowledged or the window
@@ -818,10 +817,8 @@ public actor ChangePlanService: SkillService {
             await forget(key)
             await retire(receipt.conversation)
         } else {
-            for (plan, byPeer) in departed {
-                guard let departure = byPeer.values.first(where: { $0.id == key }) else { continue }
-                departed[plan]?[departure.peer] = nil
-                if departed[plan]?.isEmpty == true { departed[plan] = nil }
+            if let departure = departed.values.first(where: { $0.id == key }) {
+                departed[departure.departure] = nil
                 await forget(key)
             }
         }
@@ -846,7 +843,7 @@ public actor ChangePlanService: SkillService {
             case .leaving(let delivery):
                 leaving[delivery.interaction] = delivery
             case .departed(let departure):
-                departed[departure.planConversation, default: [:]][departure.peer] = departure
+                departed[departure.departure] = departure
             }
             if record.until <= now() {
                 await endDelivery(record.key)
