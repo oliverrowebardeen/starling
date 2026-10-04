@@ -199,3 +199,69 @@ import Testing
         #expect(words.changeTimeline(mineLeft, basis: plan.plan) == "You left this plan")
     }
 }
+
+/// "Suggest a change" and "Leave this plan" on a plan's detail (P15-E
+/// request 11).
+@MainActor
+@Suite struct PlanChangeActionTests {
+    let me = PeerID.random()
+    let maya = Fixtures.peer("Maya")
+    let built = AppModelTests.Built()
+
+    func makeApp(withCard: Bool) async throws -> (AppModel, Interaction) {
+        let (inbox, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
+        var services = AppModelTests.services(peers: InMemoryPairedPeerStore([maya]), skills: [SampleSkills.downFor, ChangePlan.descriptor],
+                                              built: built, inbox: inbox, transport: RecordingTransport(localPeer: me))
+        services.registry = try SkillRegistry(SampleSkills.registry.descriptors + [ChangePlan.descriptor])
+        services.flags = SkillFlags(SkillFlags.phase1_5.enabled.union([.changePlan]))
+        var root = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()))
+        let start = Date().addingTimeInterval(3 * 3600)
+        let plan = try Plan(origin: root.conversation, attendees: Attendees([me, maya.id]), activity: Keyword("boba"), time: TimeSlot(start: start, end: start.addingTimeInterval(3600)))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]), plan: plan)
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try root.apply(event, at: Timestamp(Date()))
+        }
+        root.record(.plan(plan))
+        services.interactions = InMemoryInteractionStore([root])
+        let app = AppModel(services: services)
+        await app.start()
+        if withCard {
+            let card = AgentCard.forBuild(skills: [SampleSkills.downFor.ref, ChangePlan.descriptor.ref], usesPSI: true, locality: .onDevice)
+            continuation.yield(.message(try Envelope(conversation: ConversationID(), sender: maya.id, recipient: me, sequence: 0, sentAt: Timestamp(Date()), body: .hello(card))))
+            await eventually { app.cards.card(for: maya.id) != nil }
+        }
+        return (app, root)
+    }
+
+    var changeService: ScriptedSkillService? { built.services.first { $0.descriptor.id == .changePlan } }
+
+    @Test func aSuggestionStartsAndThePlanSaysWhyItCantChangeMeanwhile() async throws {
+        let (app, root) = try await makeApp(withCard: true)
+        #expect(app.changeUnavailableReason(for: root) == nil)
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("dinner"), adding: nil), on: root) == nil)
+        let request = try #require(await changeService?.started.first)
+        #expect(request.chainedFrom == root.planConversation)
+        #expect(request.participants == [maya.id])
+        #expect(try PlanChange.decode(request).change == .change(time: nil, activity: try Keyword("dinner"), adding: nil))
+        let link = try #require(app.lifecycle.interaction(request.interaction))
+        #expect(link.chain?.parent == root.id)
+        #expect(app.changeUnavailableReason(for: root) == "A suggestion for this plan is still open.")
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("tacos"), adding: nil), on: root) == "A suggestion for this plan is still open.")
+        #expect(await changeService?.started.count == 1)
+    }
+
+    @Test func nothingChangesWithoutEveryonesStarlingAndTheSameActivityIsNoChange() async throws {
+        let (app, root) = try await makeApp(withCard: false)
+        #expect(app.changeUnavailableReason(for: root) == "Not everyone's Starling can change plans yet.")
+        let (withCard, plan) = try await makeApp(withCard: true)
+        #expect(await withCard.suggestChange(.change(time: nil, activity: try Keyword("boba"), adding: nil), on: plan) == "That's how the plan is already.")
+    }
+
+    @Test func leavingStartsWithNobodysAgreement() async throws {
+        let (app, root) = try await makeApp(withCard: false)
+        #expect(await app.leavePlan(root) == nil)
+        let request = try #require(await changeService?.started.first)
+        #expect(try PlanChange.decode(request).change == .leave)
+        #expect(request.participants == [maya.id])
+    }
+}
