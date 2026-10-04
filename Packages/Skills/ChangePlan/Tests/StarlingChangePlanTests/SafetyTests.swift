@@ -369,4 +369,36 @@ actor ArmedObserver: OutboxObserver {
         #expect(await network.problems().isEmpty)
         await network.shutdown()
     }
+
+    /// Review of PR #111, finding E: the confirmation overtakes Maya's own
+    /// yes while it is held at Outbox's didSend; she still says yes first,
+    /// then applies, and her card reaches planned.
+    @Test func aConfirmationThatOvertakesTheYesWaitsForIt() async throws {
+        let observer = ArmedObserver()
+        let group = Group(observer: { person, _ in person == Fixtures.maya ? observer : nil })
+        let network = group.network
+        try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards") {
+            for person in [maya, jake] where await group.openCard(of: person) == nil { return false }
+            return true
+        }
+        try await group.phone(jake).service.answer(try await group.card(of: jake).id, with: .accept(proposal: 1))
+        await network.deliver()
+        let card = try await group.card(of: maya)
+        await observer.arm()
+        let service = group.phone(maya).service
+        let accepting = Task { try await service.answer(card.id, with: .accept(proposal: 1)) }
+        await observer.gate.arrived()
+        // Maya's yes is on the wire; Alex confirms before her didSend returns.
+        await network.deliver()
+        #expect(network.transcript.contains("Alex > Maya: accept"))
+        await observer.gate.open()
+        try await accepting.value
+        await network.deliver()
+        try await network.until("Maya applied") { await group.phone(maya).plan(group.origin)?.revision == 1 }
+        try await network.until("Maya's card planned") { await group.phone(maya).interaction(card.id)?.state == .planned }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
 }

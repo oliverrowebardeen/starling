@@ -71,6 +71,8 @@ public actor ChangePlanService: SkillService {
         case inviting
         /// Voter or joiner: the card is up.
         case deciding(offer: MessageID, proposal: Proposal)
+        /// Voter or joiner: the yes is on its way out.
+        case accepting(offer: MessageID)
         /// Voter or joiner: said yes; waiting for the suggester's confirmation.
         case accepted(offer: MessageID)
         /// Withdrawn or settled: nothing more counts while its notices go out.
@@ -105,6 +107,8 @@ public actor ChangePlanService: SkillService {
         var early: [PeerID: MessageID] = [:]
         var step: Step
         var stepID: UInt64 = 0
+        /// A confirmation that arrived while the yes was still going out.
+        var heldConfirmation = false
 
         mutating func advance(to next: Step) {
             step = next
@@ -250,10 +254,15 @@ public actor ChangePlanService: SkillService {
         case (.deciding(let offer, let proposal), .accept(let revision)) where revision == 1:
             guard let suggester = session.suggester else { throw ChangePlanError.unexpectedAnswer(interaction) }
             // Registered before the send: the confirmation names this offer.
-            sessions[interaction]?.advance(to: .accepted(offer: offer))
+            // A fast one that arrives while the yes is still going out is
+            // held until the yes is recorded (review of PR #111, finding E).
+            sessions[interaction]?.advance(to: .accepting(offer: offer))
             guard await send([(.accept(Acceptance(proposal: offer, terms: proposal.terms)), suggester)], in: interaction, accepting: proposal)
             else { return }
             emit(interaction, .ownerAccepted(revision: 1))
+            let held = sessions[interaction]?.heldConfirmation == true
+            sessions[interaction]?.advance(to: .accepted(offer: offer))
+            if held { await applyConfirmation(interaction) }
         case (.deciding, .pass):
             // Silence: the suggester only ever learns the plan stayed as it was.
             await finish(interaction, with: [.ownerPassed])
@@ -420,13 +429,19 @@ public actor ChangePlanService: SkillService {
         case (.suggester, .inviting, .accept(let acceptance)) where envelope.sender == session.friend && acceptance.terms == session.inviteTerms:
             await vote(acceptance.proposal, from: envelope.sender, in: id)
 
+        // Voter or joiner: a confirmation before our yes is recorded waits.
+        case (.voter, .accepting(let offer), .accept(let confirmation)), (.joiner, .accepting(let offer), .accept(let confirmation)):
+            guard envelope.sender == session.suggester, confirmation.proposal == offer, confirmation.terms.values.isEmpty else { return }
+            sessions[id]?.heldConfirmation = true
         // Voter or joiner: the suggester's confirmation, naming our offer.
         case (.voter, .accepted(let offer), .accept(let confirmation)), (.joiner, .accepted(let offer), .accept(let confirmation)):
             guard envelope.sender == session.suggester, confirmation.proposal == offer, confirmation.terms.values.isEmpty else { return }
             await applyConfirmation(id)
         // The suggester withdrew it.
-        case (.voter, .deciding(let offer, _), .reject(let rejection)), (.voter, .accepted(let offer), .reject(let rejection)),
-             (.joiner, .deciding(let offer, _), .reject(let rejection)), (.joiner, .accepted(let offer), .reject(let rejection)):
+        case (.voter, .deciding(let offer, _), .reject(let rejection)), (.voter, .accepting(let offer), .reject(let rejection)),
+             (.voter, .accepted(let offer), .reject(let rejection)),
+             (.joiner, .deciding(let offer, _), .reject(let rejection)), (.joiner, .accepting(let offer), .reject(let rejection)),
+             (.joiner, .accepted(let offer), .reject(let rejection)):
             guard envelope.sender == session.suggester, rejection.proposal == offer else { return }
             await finish(id, with: [.noAgreement])
         default:
