@@ -20,31 +20,37 @@ A request with a `Plan` input runs on that plan. Two cases differ.
 1. **The place must fit everyone.** Only a place on every friend's list is proposed. If there is none, the request ends with no agreement, and no proposal is sent.
 2. **Everyone must say yes.** The change is confirmed only when every friend accepts by the confirm deadline. Otherwise it ends with no agreement at the deadline, and everyone still waiting hears the ordinary no. A pass still looks like silence, as in ADR 0230.
 3. **Everyone must be able to say yes.** If anyone in the plan is not named or cannot run Pick a place, nobody could agree for them, so the request ends as unsupported before anything is sent.
-4. **A yes taken back after the confirmation calls the change off for everyone.**
-   - The organizer ends as failed.
-   - Every other friend hears the ordinary no and ends as withdrawn.
-   - The links that carried the new place are no longer planned, so the plan stays as it was.
-   - Leaving the plan is Change the plan's job, not this skill's.
-5. **The agreed plan is `Plan.updating(place:)`.** It has the same identifier, attendees, time, and activity, and a revision one higher (ADR 0022, decision 7).
+4. **A yes is final once sent** (the Orchestrator's decision on the review of #118, as in Change the plan).
+   - A friend cannot pass or withdraw after their yes has gone (`PickAPlaceError.yesIsFinal`).
+   - A withdrawal that arrives after everyone said yes is ignored.
+   - Nobody calls a confirmed change off, the organizer included.
+   - Someone who changes their mind suggests another change, or leaves the plan through Change the plan. No rollback is needed.
+5. **Every phone checks the change against its own plan.** A friend looks up its own copy of the plan the request names, through the service's `plans` lookup, and records what the request is before answering.
+   - A proposal must name the plan's whole roster and the revision after the plan's own; anything else is not shown.
+   - A confirmation must name the whole roster.
+   - A shorter roster or a call-off after the confirmation changes nothing.
+   - A request naming a plan this phone does not hold changes no plan here.
+6. **The agreed plan is `Plan.updating(place:)`.** It has the same identifier, attendees, time, and activity, and a revision one higher (ADR 0022, decision 7).
 
 **A plan with no place yet: its first place.** This is usually Keep it going after Down for….
 
-6. **The first place works as before.** It goes ahead with the friends it fits and who say yes, and the others drop out of the plan (ADR 0230; lane E's chain rule).
+7. **The first place works as before.** It goes ahead with the friends it fits and who say yes, and the others drop out of the plan (ADR 0230; lane E's chain rule).
    - Nobody is removed by someone else: each person left out either passed, said no, or could not do any of the places.
    - The agreed plan is `Plan.updating(attendees:place:)`, so its revision still rises.
 
 **Both cases.**
 
-7. **Only the plan's people are asked.** Participants who are not in the plan are not asked: adding someone is a Change the plan suggestion.
-8. **A new budget is the owner's limit for this search only.** It comes from the request's intent, as always, filters the candidates on the phone, and never leaves it. Nothing from an earlier pick on the plan carries over.
-9. **Every phone names the plan's new revision.**
+8. **Only the plan's people are asked.** Participants who are not in the plan are not asked: adding someone is a Change the plan suggestion.
+9. **A new budget is the owner's limit for this search only.** It comes from the request's intent, as always, filters the candidates on the phone, and never leaves it. Nothing from an earlier pick on the plan carries over.
+10. **Every phone names the plan's new revision.**
    - The organizer's proposal carries it in `Proposal.round`, as Change the plan does until Core has a field for it (P15-E request 2c).
    - Each phone's agreed plan (`SkillProposal.plan`) has that revision. On the organizer, it is the parent plan updated; on a friend's phone, it is built from the terms.
    - Lane E applies a link only over the revision just before, so it applies once and never over a newer revision.
    - A plan whose next revision would not fit in a round (revision 15 and up) takes no further place, and nothing is sent.
-10. **The rule survives a relaunch.**
-   - Whether everyone must agree is saved with the request's deadlines in the Pick a place ledger, before anything is sent.
-   - A record written before this decodes as a first place, and so does one that cannot be read when a settled request is rebuilt.
+   - The revision a proposal names is part of what it is. The same terms at another revision are a new proposal and need a fresh decision from the owner. A friend's agreed plan stores it, so a relaunch still tells a retry from a new proposal.
+11. **The rule survives a relaunch.**
+   - What a request on a plan is (a first place, or a change with the roster and revision it changes) is saved in the Pick a place ledger before anything is sent or answered, on both sides. It is kept for the request's whole life, 60 days.
+   - A record that is missing or cannot be read is treated as a change, the stricter rule. On a friend's phone, no proposal can match it, so nothing new is shown.
 
 Without a `Plan` input, for example after Find a time or from New, nothing changes: the most-friends rule of ADR 0230 still applies.
 
