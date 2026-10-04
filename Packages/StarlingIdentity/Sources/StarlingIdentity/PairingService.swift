@@ -212,7 +212,10 @@ public actor PairingService {
         // linger that would answer the new ceremony's peer.
         if let previous = ceremonies.removeValue(forKey: peer) { await previous.cancel() }
         lingers[peer] = nil
-        pending[peer] = nil
+        // Answering a request: the ceremony starts bound to the attempt that
+        // asked, so a later hello for a new attempt restarts it (Codex
+        // re-review of #104). Read after the await, so it is the latest.
+        let requested = pending.removeValue(forKey: peer)?.attempt
         let links = links
         let trace = trace
         let ceremony = PairingCeremony(
@@ -220,6 +223,7 @@ public actor PairingService {
             send: { frame in await Self.send(frame, to: peer, over: links) },
             configuration: configuration, now: now,
             revocationEpoch: pins.epoch(of: peer),
+            peerAttempt: requested,
             trace: { step in trace?(PairingTrace(peer: peer, step: step)) }
         )
         ceremonies[peer] = ceremony
@@ -424,9 +428,11 @@ actor PairingCeremony: PairingSession {
         peer: PeerID, nickname: String, identity: IdentityKeyPair, pins: PinAuthority,
         send: @escaping @Sendable (Frame) async -> Bool, configuration: PairingConfiguration,
         now: @escaping @Sendable () -> Date, revocationEpoch: UInt64,
+        peerAttempt: Data? = nil,
         trace: @escaping @Sendable (PairingStep) -> Void = { _ in }
     ) {
         self.revocationEpoch = revocationEpoch
+        self.peerAttempt = peerAttempt
         self.peer = peer
         self.nickname = nickname
         self.identity = identity

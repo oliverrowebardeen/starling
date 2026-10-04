@@ -199,6 +199,28 @@ extension PairingConfiguration {
         _ = try await events.waitForCode()
     }
 
+    /// Codex re-review of #104: a phone that joins a request keeps that
+    /// request's attempt ID. If it did not, and message 3 was lost, the
+    /// initiator starting over only taught the joined phone its new ID
+    /// instead of restarting it, and both waited out the timeout.
+    @Test func aJoinedRequestKeepsItsAttemptSoAnInitiatorRetryRestartsIt() async throws {
+        let hub = LoopbackHub()
+        let (initiator, responder) = try await LossyDevice.pair(hub: hub)
+        await initiator.link.lose(.message3, count: .max)
+        let first = try await initiator.service.pair(with: responder.id, nickname: "Bob")
+        try await eventually("the responder lists the request") { await responder.service.requests() == [initiator.id] }
+        let joined = try await responder.service.pair(with: initiator.id, nickname: "Alice")
+        try await eventually("message 3 was sent and lost") { await initiator.link.sentCount(.message3) >= 1 }
+        await first.cancel()
+        await initiator.link.stopLosing()
+
+        // Only the initiator retries; the responder's joined ceremony runs on.
+        let retry = try await initiator.service.pair(with: responder.id, nickname: "Bob")
+        let (ea, eb) = (await Recorder.recording(retry.events), await Recorder.recording(joined.events))
+        try await confirmBoth(ea, eb, retry, joined)
+        try await expectPaired(ea, eb)
+    }
+
     /// A request is listed only while the other phone keeps asking.
     @Test func aRequestExpiresWhenThePhoneStopsAsking() async throws {
         let hub = LoopbackHub()
