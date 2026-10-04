@@ -1,6 +1,6 @@
 # Phase 1.5 report: from a Down app to an agent interaction platform
 
-- Date: 2026-10-01
+- Date: 2026-10-01, updated 2026-10-03
 - Owner: Orchestrator
 - Status: open. The code is merged, but Phase 1.5 ends only after Oliver's run on two iPhones (Oliver, 2026-10-02).
 
@@ -18,7 +18,7 @@ Adversarial review drove most of the late work:
 
 - **Lane PRs:** every one went through two to five review rounds.
 - **Fixes in Core:** fixes that several lanes needed went into Core once, as ADR 0021's conversation ledger, pre-send audit hook, per-friend numbering, and cancellation.
-- **Red team:** lane F's suite runs 119 adversarial tests against the real services. It filed twelve defects (#63 to #68, #76, #79 to #81, #84). All twelve are fixed and merged, with F's reproductions kept as regressions, and the suite ends with zero known issues.
+- **Red team:** lane F's suite runs 119 adversarial tests against the real services. It filed thirteen defects (#63 to #68, #76, #79 to #81, #84, #105). All thirteen are fixed and merged, with F's reproductions kept as regressions.
 
 ## Exit criteria
 
@@ -39,13 +39,45 @@ The prompt's section 12 is run on two real iPhones. "Ready for device" means the
 
 ## Feedback from Oliver's first device test (2026-10-02, one phone)
 
-Fixes are in progress in lanes A to D.
+All five are fixed and merged (#90, #91, #92, #94).
 
 1. **Only the first chip was active.** Under "Starling understood", only the first chip was highlighted, and the others could be changed only through Edit. Every chip will be applied by default and tappable to edit. Optional chips can be removed (lane A).
 2. **"Change how long it stays out" read like the event's length.** It is how long friends can answer, and the copy will say so (lane A).
 3. **Find a time offered "expires in 3 hours".** The Down for… default was applied to every skill. Find a time and Pick a place will stay open until the asked-about time starts, at least 1 day and at most 7 (lanes A, C, D).
 4. **The mode chip "Invite" next to "Down for…" read oddly.** It will read "Ask quietly" or "Ask directly", and only for Down for… (lane A).
 5. **Chips paraphrased the owner's words.** "movie night" became "Watch Movie" and "IKEA trip" became "trip". Chips will use the owner's own words, without repeats (lane B, ADRs 0161 and 0212).
+
+## Feedback from Oliver's second device test (2026-10-02, two phones, issue #95)
+
+Oliver's iPhone and a friend's, on main 83329f3 or close to it.
+
+**Blocking**
+
+1. **"See who's up for it" was greyed out almost every time.** The button was off while the model read the text, the text was re-read on every edit, and the off state did not say why. Start now always says why it is off, re-reads wait for a 0.8 second pause and skip spacing and case changes, and a re-read keeps every chip the owner edited (lane A, #100; lane B's read cache, #101).
+2. **Pairing failed until about the hundredth try.** Lane G reproduced eight of nine failure causes over Loopback: lost frames stalled the ceremony, a lost final accept left pairing one-sided, a dropped link ended it, and a restarted phone was ignored. Every phone also published and subscribed on Wi-Fi Aware at once, which a developer reports never connects (FB21527009). The ceremony now resends, survives drops, and restarts with fresh keys when the other phone starts over; one phone picks and the other joins; Wi-Fi Aware roles are fixed per pair (lane G, #104, ADR 0260). Status: in review. Two Codex reviews found races between Cancel, retries, and the code on screen, so a confirm could reach a session whose code the owner did not compare. Lane G is binding every code and confirm to its own attempt.
+
+**Wrong behavior**
+
+3. **"YOU and Riley's iPhone are both down" before Riley answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101). Whether that switch was on during the run is still Oliver's to confirm.
+4. **A made-up time: "Today at 1:30 PM" for dinner at 1:15 PM.** Plans now start at least an hour out, and a meal with no time gets its usual window as an editable chip (lane B, #101).
+5. **The friend was named after the device.** Pairing now asks for the name last, prefilled with a first name (lane G, #104).
+6. **"YOU" in capitals.** The sentence is put into sentence case, keeping a friend's capitals (lane B, #101).
+7. **Find a time could not take a range of days.** "dinner" now means the next 7 days of evenings, and the editor takes a day range with optional daily hours (lane C, #97; lane A, #100).
+
+**Copy and layout**
+
+8. The Edit sheet shows only this request's details; standing rules stay in You (lane A, #100).
+9. "Places to ask about" reads "Places to choose from"; the expiry chip shows its end time ("Friends can answer until 5:13 PM"); the pairing and "Reading this" screens are centered (lanes A and G, #100 and #104).
+
+**Asked for during the run**
+
+- **Plans can change after they are confirmed** (ADR 0022). Anyone in the plan can propose a new time, place, budget, or who is coming; everyone must agree; anyone can leave; nobody removes someone else. Core is merged (#96); lanes E, D, A, and F are building the service, the place change, the screens, and the red-team cases.
+- **A notification prompt after the first friend.** Right after a pairing, one Continue button opens the system alert (lane G, #104).
+
+## Found after the second device test
+
+- **A friend's fast answer could be dropped (issue #105).** Lane F confirmed that Pick a place recorded a query's ID only after its send returned, while Outbox runs the audit observer after the transport delivers. A reply that arrived in that window was dropped as unsolicited, and the plan waited for the deadline. Find a time had the same ordering. Both now hold an authenticated early reply only while its own send is in flight, and count it only if it names something sent to that friend in that conversation (#106, #108). Down for… was already safe: each friend's sends and replies run on one serial queue.
+- **Gate failures came from waits that counted wall time.** Waits that measured wall time ran out while the services could not run. Tests now advance virtual time or measure awake time (#110, closes #109).
 
 ## Where reality contradicted the prompt
 
