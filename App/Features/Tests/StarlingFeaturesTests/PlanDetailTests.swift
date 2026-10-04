@@ -53,6 +53,11 @@ import Testing
 
         let notes = PlanNotes(file: nil, now: { Fixtures.noon.addingTimeInterval(180) })
         notes.record(.calendar, for: root.id)
+        // A link's place is never replayed into the plan here: before the
+        // coordinator moved the parent, the plan has no place.
+        #expect(PlanDetail(root: root, all: [unrelated, pick, root], words: words, notes: notes).plan?.place == nil)
+        // The coordinator moved the parent (ChainPlanner.parent).
+        root.record(.plan(try #require(root.plan).updating(place: place)))
         let detail = PlanDetail(root: root, all: [unrelated, pick, root], words: words, notes: notes)
 
         #expect(detail.chain.map(\.id) == [root.id, pick.id])

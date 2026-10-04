@@ -192,11 +192,12 @@ public struct PlanDetail: Hashable, Sendable {
         self.root = root
         self.chain = chain.isEmpty ? [root] : chain
 
-        var plan = root.plan
-        // A chained Pick a place that reached a plan moves the plan there.
-        for link in self.chain where link.id != root.id && (link.state == .planned || link.state == .done) {
-            for case .placeChoice(let choice) in link.artifacts { plan = plan?.updating(place: choice) }
-        }
+        // The plan as stored. A place result reaches it only through the
+        // coordinator, with lane E's ChainPlanner.parent(_:updatedBy:),
+        // which applies it at the parent's next revision and ignores
+        // anything older; nothing here writes a place into it (Codex review
+        // of PR #118).
+        let plan = root.plan
         self.plan = plan
         place = plan?.place
 
