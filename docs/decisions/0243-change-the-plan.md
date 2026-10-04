@@ -25,15 +25,21 @@ Left open for this lane:
 2. **The suggester coordinates** (star, not mesh):
    - **Offer.** The suggester sends each other person one offer with only what changes: time slots, activity keywords, or the new roster under people.
    - **Yes or no.** A yes goes back to the suggester alone: an acceptance of exactly the offered terms, with the offer in `OutboundContext.accepting` (ADR 0019 amendment 10). A no sends nothing, so it looks like silence (ADR 0017).
-   - **Confirmation.** When all have said yes, the suggester sends each one a confirmation that names their offer and carries no values. On receiving it, each phone applies the change to its own plan, revision one higher. The suggester applies it once the confirmations have gone out.
+   - **Confirmation.** When all have said yes, and only if the plan still stands at the suggestion's basis (revision and people), the suggester applies the change and sends each one a confirmation that names their offer and carries no values. A receiver applies it to its own plan, revision one higher, only if its plan still has that basis.
+   - **Delivered until acknowledged** (Orchestrator's review of PR #111). Each receiver acknowledges a confirmation once it has applied it, with a value-free accept naming its offer, and acknowledges a resent one again. The suggester resends to everyone who has not acknowledged: at once, then after 5 seconds doubling to 5 minutes (like Down for's delivery), until all have or the plan's time has passed (at least 15 minutes from the first send; 24 hours for a plan without a time). Applying is idempotent by revision: a confirmation for the revision already applied changes nothing but is acknowledged; one that does not follow the phone's revision is ignored.
+   - **A recipient's own yes comes first.** A confirmation that arrives while the recipient's yes is still going out is held until the yes is recorded (finding E).
+   - **Withdrawing.** The suggester can withdraw. From that moment, before anything is sent, no yes counts; the notices go to everyone asked so far (finding B).
    - **No agreement.** If the window closes first, nothing changes. The suggester's card ends with nobody up, which the app shows as "The plan stays as it was"; everyone else's card just closes (expired).
-3. **The revision travels in `Proposal.round`.** Core has no field for the revision a suggestion changes. A new issue key would raise a consent sheet on every send, because the policy asks about any issue no topic covers. `round` is validated, bounded, and outside every topic.
+3. **The revision travels in `Proposal.round`, and the roster asked in `inReplyTo`.** Core has no field for the revision a suggestion changes. A new issue key would raise a consent sheet on every send, because the policy asks about any issue no topic covers. `round` is validated, bounded, and outside every topic.
    - A receiver ignores an offer whose round is not its plan's revision.
-   - The cost is that a plan can change at most 15 times; `ChainPlanner.changeOffer` stops offering changes at `maxChangeableRevision`.
+   - The cost is that a plan can change at most 15 times; `ChainPlanner.changeOffer` stops offering changes at `maxChangeableRevision`. The Orchestrator accepted this for Phase 1.5 (request 2c stays open).
+   - The offer's `inReplyTo` is `ChangePlanService.rosterDigest`: a digest of the plan's origin, the revision, the suggester, and everyone asked. A receiver computes it from its own plan and ignores an offer put to fewer than everyone else in it. It discloses nothing a receiver does not hold (finding G).
    - `docs/requests/P15-E.md` asks Core for a proper field.
 4. **Plans stay in step on every phone.**
    - **Where the update lands.** The service reports the updated plan as `.produced(planInteraction, .plan(...))` for the interaction that holds the plan on that phone. `planLookup` finds that interaction by `Plan.origin`.
-   - **Place changes too.** `ChainPlanner.parent(_:updatedBy:)` now raises the revision through `Plan.updating`, applies a friend's grouped Pick a place link as well as the owner's own, and changes nothing when applied twice. Otherwise a place agreed on a friend's request would never reach this phone, and revisions would drift apart.
+   - **Place changes too.** `ChainPlanner.parent(_:updatedBy:)` raises the revision through `Plan.updating`, applies a friend's grouped Pick a place link as well as the owner's own, and changes nothing when applied twice (place and roster together, the roster compared as a set; finding F). Otherwise a place agreed on a friend's request would never reach this phone, and revisions would drift apart.
+   - **Grouping is not authority** (finding D). A place result changes the plan only if its roster is the plan's whole current roster; nobody is ever removed by another person's result. Only a person's own leave removes them.
+   - **One basis at a time** (finding C). Before inviting an added friend and before confirming, the suggester re-reads the plan; if another skill moved it, the suggestion ends as "The plan stays as it was" and everyone asked is told. `planDidChange(_:)` lets the coordinator end such a suggestion as soon as it applies another skill's update. Serializing with those updates needs the coordinator to apply a `.plan` only exactly one revision above the stored one (`docs/requests/P15-E.md`).
 5. **One suggestion per plan at a time.**
    - `changeOffer` is not offered while one is open, whether the owner's own or a friend's.
    - A friend's suggestion that arrives while another is open waits (up to four per plan). When the open one settles, it is shown only if its window is still open and the plan's revision has not moved.
@@ -44,7 +50,8 @@ Left open for this lane:
    - **Joining.** When the friend accepts, the suggester confirms to everyone, the friend included, and the roster updates on every phone.
    - **What the friend holds.** On the friend's phone the plan lives in the interaction that brought them in. Its `Plan.origin` is the plan's conversation, so chains link by the plan's origin (`Interaction.planConversation`) rather than by the root's own conversation; for every plan agreed so far the two are the same.
 7. **Leaving needs no agreement and discloses nothing.**
-   - **The notice.** The leaver sends each other person a reject in a fresh conversation chained to the plan, carrying no values, so no consent sheet appears. The leaver's plan ends withdrawn, after its conversation is retired.
+   - **The notice is its own message** (finding A): an offer of nothing, bound to the plan by `chainedFrom` and to the revision the owner left at by `round`, with its ID in `inReplyTo`. It carries no values, so no consent sheet appears. A rejection is never read as a leave: it only withdraws an offer it names, open or queued. The leaver's plan ends withdrawn, after its conversation is retired.
+   - **Delivered until acknowledged.** Each notice attempt goes in a fresh conversation; each receiver applies it once (from someone in its plan, at a revision it has reached), acknowledges it, and acknowledges a resent one again. The leaver resends on the same schedule as confirmations.
    - **The others.** Each other phone shows the leave as an ended entry on the plan's timeline and shrinks its plan, or ends it withdrawn if only that phone is left.
    - **During a suggestion.** Leaving ends any suggestion open for that plan quietly, since its roster changed.
 8. **The rules from ADRs 0011 and 0021 hold throughout.**
@@ -53,7 +60,7 @@ Left open for this lane:
    - Every ending retires the conversation through `Outbox.retire` before any event is published. A refused retirement reports the ending as failed.
    - Incoming requests are checked against the ledger.
    - Every send names its interaction in `OutboundContext`, so the egress journal and the audit record it on the change, which shows on the plan's timeline.
-9. **Restart.** An open suggestion cannot be resumed, since its offers' IDs are not stored. It is retired and reported failed, and the plan stays as it was.
+9. **Restart.** Confirmations and leave notices still owed acknowledgments, what this phone applied, and who it saw leave are kept as typed values in a `ChangePlanJournal` the app keeps on disk, so delivery picks up after a restart on either side. An open suggestion (still asking) cannot be resumed, since its offers' IDs are not stored: it is retired and reported failed, and the plan stays as it was.
 
 ## Consequences
 
@@ -61,10 +68,10 @@ Left open for this lane:
   - It applies `.produced` and `.lifecycle` events that name the plan's interaction.
   - It shows a finished change, which ends planned, on the plan's timeline rather than as a plan of its own.
   - It words a change that ended with nobody up as "The plan stays as it was".
-- **Known limits, best-effort delivery (ARCHITECTURE rule 5):**
-  - A confirmation that never arrives leaves that phone's plan as it was while the others changed.
-  - Two suggestions that cross usually both close without changing anything, and the owner can suggest again.
-  - Both are stated here, and lane F tests them.
+- **Known limits:**
+  - **The suggester is trusted to report that everyone agreed, as the organizer of any group step is** (finding G). Attendees are often not paired with each other, so a phone cannot verify another attendee's yes. What it can check, it does: the offer names everyone asked, and the confirmation is applied only on the basis it was made for. The Orchestrator adds this to the threat model.
+  - Two suggestions that cross usually both close without changing anything; the owner can suggest again (accepted).
+  - A phone that stays unreachable until the plan's time has passed never receives the confirmation or notice and keeps its plan as it was. Resending stops then because the plan is over.
 
 ## Sources
 
