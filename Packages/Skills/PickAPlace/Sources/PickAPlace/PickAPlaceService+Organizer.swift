@@ -121,7 +121,8 @@ extension PickAPlaceService {
         // The plan's next revision travels in the proposal's round, so every
         // phone's agreed plan names it (ADR 0233); past what a round can
         // hold, the plan cannot take another place.
-        if let base, base.revision + 1 >= UInt32(ProtocolLimits.maxNegotiationRounds) { throw PickAPlaceError.planRevisionLimit }
+        // Compared before adding, so no revision can overflow.
+        if let base, base.revision >= UInt32(ProtocolLimits.maxNegotiationRounds - 1) { throw PickAPlaceError.planRevisionLimit }
 
         // Friends whose card says they cannot run this skill are left out
         // before anything is sent; a friend with no card yet is asked, and

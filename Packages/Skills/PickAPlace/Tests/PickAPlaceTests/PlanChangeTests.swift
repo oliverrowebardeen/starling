@@ -133,16 +133,19 @@ struct PlanChangeTests {
 
     /// The revision travels in the proposal's round, which stays below
     /// `ProtocolLimits.maxNegotiationRounds`: a plan at its last revision
-    /// that fits takes no further place, and nothing is sent.
+    /// that fits, or any above it, takes no further place, nothing is sent,
+    /// and nothing overflows (review of #118, finding 4).
     @Test func aPlanAtTheRevisionLimitTakesNoFurtherPlace() async throws {
         let (group, oliver, maya, jake, _) = try await friends()
         defer { Task { await group.stop() } }
         let last = UInt32(ProtocolLimits.maxNegotiationRounds) - 1
         let base = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
-        let full = try Plan(id: base.id, origin: base.origin, attendees: base.attendees, activity: base.activity, time: base.time,
-                            place: base.place, revision: last)
-        await #expect(throws: PickAPlaceError.planRevisionLimit) {
-            try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(full)], chainedFrom: base.origin)
+        for revision in [last, UInt32.max] {
+            let full = try Plan(id: base.id, origin: base.origin, attendees: base.attendees, activity: base.activity, time: base.time,
+                                place: base.place, revision: revision)
+            await #expect(throws: PickAPlaceError.planRevisionLimit, "revision \(revision)") {
+                try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(full)], chainedFrom: base.origin)
+            }
         }
         #expect(await group.wire.sent(by: oliver.id).isEmpty)
 
