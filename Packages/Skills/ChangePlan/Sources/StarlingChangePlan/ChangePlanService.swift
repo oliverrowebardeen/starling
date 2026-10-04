@@ -433,7 +433,9 @@ public actor ChangePlanService: SkillService {
     }
 
     private func receive(_ envelope: Envelope, in id: InteractionID) async {
-        guard let session = sessions[id] else { return }
+        // Every reply is bound to this suggestion's plan as well as its
+        // conversation, sender, and offer (issue #114).
+        guard let session = sessions[id], envelope.chainedFrom == session.planConversation else { return }
         switch (session.role, session.step, envelope.body) {
         // Suggester: a yes from someone asked, naming the offer they got.
         case (.suggester, .asking, .accept(let acceptance)) where session.voters.contains(envelope.sender) && acceptance.terms == session.terms:
@@ -700,6 +702,7 @@ public actor ChangePlanService: SkillService {
     private func acknowledged(_ envelope: Envelope) async -> Bool {
         guard case .accept(let ack) = envelope.body, ack.terms.values.isEmpty else { return false }
         if let id = confirmingByConversation[envelope.conversation], var delivery = confirming[id] {
+            guard envelope.chainedFrom == delivery.planConversation else { return true }
             if delivery.pending[envelope.sender] == ack.proposal {
                 delivery.pending[envelope.sender] = nil
                 confirming[id] = delivery
@@ -707,7 +710,8 @@ public actor ChangePlanService: SkillService {
             }
             return true
         }
-        for (id, var delivery) in leaving where delivery.pending.contains(envelope.sender) && ack.proposal == delivery.departure {
+        for (id, var delivery) in leaving where delivery.pending.contains(envelope.sender) && ack.proposal == delivery.departure
+            && envelope.chainedFrom == delivery.planConversation {
             delivery.pending.remove(envelope.sender)
             leaving[id] = delivery
             await progressDelivery(.leaving(delivery))
@@ -721,6 +725,7 @@ public actor ChangePlanService: SkillService {
     private func reacknowledged(_ envelope: Envelope) async -> Bool {
         guard let receipt = applied[envelope.conversation] else { return false }
         if case .accept(let confirmation) = envelope.body, confirmation.terms.values.isEmpty, envelope.sender == receipt.suggester,
+           envelope.chainedFrom == receipt.planConversation,
            confirmation.proposal == receipt.offer {
             await acknowledge(receipt.offer, to: receipt.suggester, in: receipt.conversation, planConversation: receipt.planConversation,
                               interaction: receipt.interaction)

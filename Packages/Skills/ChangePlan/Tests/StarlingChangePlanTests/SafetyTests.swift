@@ -421,4 +421,28 @@ actor ArmedObserver: OutboxObserver {
         try await group.network.until("card") { await group.openCard(of: self.maya) != nil }
         await group.network.shutdown()
     }
+
+    /// Issue #114: a confirmation naming the right conversation and offer
+    /// but another plan as its parent commits nothing.
+    @Test func aConfirmationForAnotherPlanCommitsNothing() async throws {
+        let group = Group()
+        let network = group.network
+        try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        let offer = try #require(try await group.phone(alex).transport.sent.map { try EnvelopeCodec().decode($0.frame.bytes) }.first { $0.recipient == maya })
+        await network.deliver()
+        try await network.until("Maya's card") { await group.openCard(of: maya) != nil }
+        try await group.phone(maya).service.answer(try await group.card(of: maya).id, with: .accept(proposal: 1))
+        func confirmation(parent: ConversationID) throws -> Envelope {
+            try Envelope(conversation: offer.conversation, sender: alex, recipient: maya, sequence: 99, sentAt: Timestamp(group.clock.now),
+                         body: .accept(Acceptance(proposal: offer.id, terms: try Terms([:]))), skill: ChangePlan.descriptor.ref, mode: .invite,
+                         chainedFrom: parent)
+        }
+        await group.phone(maya).service.handle(.message(try confirmation(parent: ConversationID())))
+        await network.settle()
+        #expect(await group.phone(maya).plan(group.origin)?.revision == 0)
+        // The same confirmation for this plan applies (the control).
+        await group.phone(maya).service.handle(.message(try confirmation(parent: group.origin)))
+        try await network.until("applied") { await group.phone(maya).plan(group.origin)?.revision == 1 }
+        await network.shutdown()
+    }
 }
