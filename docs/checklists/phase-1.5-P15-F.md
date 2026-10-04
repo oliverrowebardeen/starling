@@ -6,7 +6,7 @@ exists; Release shows it as unavailable (ADR 0206). The exclusion checks need a 
 Issue #49 tracks automated evidence and its limits, including wire and timing
 checks that a visual device pass cannot establish. The original Phase 1.5
 service and app findings passed automated regressions. Change the plan checks
-22 to 31 cover ADR 0022 and reliable delivery. Service regressions execute in
+22 to 34 cover ADR 0022 and reliable delivery. Service regressions execute in
 PR #107; A/D integration and all device checks below remain unrun.
 
 1. Phone A: tap New, type "boba tonight", select Phone B, and send with Ask quietly. Expect: the activity and real friend appear; both owners confirm before It's a plan. Repeat with Invite. Expect: B sees a direct invitation. Read the visible and VoiceOver copy as plans with friends.
@@ -42,3 +42,6 @@ PR #107; A/D integration and all device checks below remain unrun.
 29. Phones A and B: agree to a time change, briefly take B offline before its updated plan arrives, then reconnect while the plan is still live. Expect: both phones eventually show the same updated plan once. Automated PC29/PC30 isolate confirmation and ack loss that manual timing cannot guarantee.
 30. Phone B: accept A's change, force-quit before seeing the updated plan, then reopen while the plan is still live. Expect: the confirmed update arrives once and agrees with A. Automated PC34 currently tracks the accepted-recipient recovery failure in #116.
 31. Phone B: go offline during a two-person plan. Phone A: leave. Reconnect B while the plan is still live. Expect: the retried leave notice ends B's remaining one-person plan without naming a declined suggestion.
+32. Phones A, B, and C: B leaves, A suggests adding B again, and C then B accept. B leaves a second time. Expect: A/C remove B again and later chains omit B. Repeat with A/C relaunched after B rejoins. Automated PC36 also replays the old notice, which must not undo the rejoin.
+33. Instrumented test build: pause a confirmed change before its lifecycle and parent-plan events are saved, after its delivery journal is saved. Force-quit that phone and reopen. Expect: the agreed plan recovers once and matches the others. Repeat on the suggester and an accepting friend. Automated PC35 isolates this boundary; ordinary force-quit timing cannot guarantee it.
+34. Phone A: leave an original place request pending, unanimously add a friend to its parent plan, then finish the old place request. Expect: it cannot remove the new friend or overwrite the newer plan. Start a fresh place request; after agreement expect one place/roster update. Automated PC37/PC38 isolate stale results and split artifact delivery.

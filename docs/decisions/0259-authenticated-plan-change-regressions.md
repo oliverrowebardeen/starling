@@ -34,6 +34,17 @@ is an observation barrier, not a restart or radio-recovery claim. Restart cases
 retain the interaction store and journals while replacing the real service;
 actual disk recovery and coordinator write serialization remain A's coverage.
 
+PC35 holds commit publications before the stand-in coordinator persists them,
+then discards those old-process events on service replacement. It requires a
+retained confirming/applied journal record and verifies the older persisted
+parent before crashing. This tests recovery across that publication gap, not
+a disk power-loss claim. PC36 selects the new live root after a rejoin, keeping
+the withdrawn original as history, just as the service's lookup does.
+PC37/PC38 prepare next-revision proposal plans and separately publish their
+place/attendees artifacts to the real ChainPlanner updater. They isolate stale
+basis and event ordering, without claiming coverage of D's producer or A's
+actual coordinator. Both include valid fresh-result/order controls.
+
 Keep the expected invariant even when a service fails it. File the precise
 reproduction and wrap only its failing assertions with the issue number.
 The setup, positive controls, authentication, timer conditions and unrelated
@@ -42,11 +53,11 @@ fixes the finding; an unexpected pass is not silently accepted.
 
 ## Evidence and limits
 
-On lane E `b785f29`, 38 added tests cover service attacks, privacy, delivery and
-Core revision values. The Simulator summary is 209 tests in 39 suites, with
-8 expected assertion failures in 4 tests for #114, #116 and #117. #113's lost
+On lane E `b785f29`, 42 added tests cover service attacks, privacy, delivery and
+Core revision values. The Simulator summary is 213 tests in 41 suites, with
+22 expected assertion failures in 8 tests for #114, #116, #117 and #119. #113's lost
 offer/withdrawal case now passes. Exact cases and remaining matrix subcases
-are in docs/requests/P15-F.md; device steps 22 to 31 remain unrun.
+are in docs/requests/P15-F.md; device steps 22 to 34 remain unrun.
 
 The requested ack/resend behavior is an invariant, not a best-effort exception:
 bounded losses while a plan remains live must recover. The documented limit
@@ -70,3 +81,6 @@ Orchestrator runs #107's gate; F does not rerun it in this increment.
   [#116](https://github.com/oliverrowebardeen/starling-ios/issues/116), and
   [#117](https://github.com/oliverrowebardeen/starling-ios/issues/117): executed
   reproductions and controls from this lane.
+- Issue [#119](https://github.com/oliverrowebardeen/starling-ios/issues/119):
+  four findings already routed by the Orchestrator's re-review, now reproduced
+  as PC35 to PC38 against the same production base.

@@ -79,11 +79,33 @@ final class ChangeClock: Sendable {
     }
 }
 
+/// Models a crash after service journal writes but before the coordinator
+/// persists commit events. The old stream is drained on replacement, and
+/// only its unpublished events are lost. This is not a disk crash simulator.
+actor ChangePublication {
+    private var holding = false
+    private(set) var held: [SkillEvent] = []
+    func holdCommits() { holding = true }
+    func deliver(_ event: SkillEvent, to events: PlaceEvents) async {
+        if holding {
+            switch event {
+            case .lifecycle(_, .everyoneConfirmed), .produced(_, .plan):
+                held.append(event)
+                return
+            default: break
+            }
+        }
+        await events.record(event)
+    }
+    func discard() { held = []; holding = false }
+}
+
 final class ChangePhone: Sendable {
     let agent: SimulatedAgent
     let relay: ChangeRelay
     let clock: ChangeClock
     let events = PlaceEvents(skill: ChangePlan.descriptor.ref)
+    let publication = ChangePublication()
     let ledger = PlaceConversationLedger()
     let journal: any ChangePlanJournal
     let observer = RecordingOutboxObserver()
@@ -116,8 +138,8 @@ final class ChangePhone: Sendable {
             return PlanRef(interaction: root.id, plan: plan)
         }, now: { self.clock.now }, sleep: { try await self.clock.sleep(until: $0) })
         current.withLock { $0 = fresh }
-        let events = events
-        consumers.withLock { $0.append(Task { for await event in fresh.events { await events.record(event) } }) }
+        let events = events, publication = publication
+        consumers.withLock { $0.append(Task { for await event in fresh.events { await publication.deliver(event, to: events) } }) }
         for hello in await agent.received where hello.body.kind == .hello { await fresh.handle(.message(hello)) }
         if restore { await fresh.restore(try await events.store.all()) }
         await relay.attach(fresh)
@@ -126,6 +148,7 @@ final class ChangePhone: Sendable {
         await relay.attach(nil)
         await service.shutdown()
         for task in consumers.withLock({ $0 }) { await task.value }
+        await publication.discard()
         try await boot(restore: true)
     }
     func stop() async {
@@ -136,7 +159,10 @@ final class ChangePhone: Sendable {
     }
     func all() async throws -> [Interaction] { try await events.store.all() }
     func root(_ origin: ConversationID) async throws -> Interaction {
-        try #require(try await all().first { $0.plan?.origin == origin })
+        let roots = try await all().filter { $0.plan?.origin == origin }
+        // Rejoining creates a new live root; the old withdrawn one remains
+        // as history. Match the service's live-plan lookup before falling back.
+        return try #require(roots.first { $0.state == .planned } ?? roots.first)
     }
     func plan(_ origin: ConversationID) async throws -> Plan { try #require(try await root(origin).plan) }
     func wait(_ state: InteractionState, _ conversation: ConversationID) async throws -> Interaction {
