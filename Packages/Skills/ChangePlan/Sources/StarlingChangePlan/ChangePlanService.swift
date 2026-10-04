@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import StarlingCore
 
@@ -223,7 +224,11 @@ public actor ChangePlanService: SkillService {
         emit(request.interaction, .proposalReady(SkillProposal(revision: 1, participants: proposed.attendees.peers, terms: terms, plan: proposed)))
         emit(request.interaction, .ownerAccepted(revision: 1))
 
-        let offer = try Proposal(round: UInt16(basis.revision), terms: terms, expiresAt: request.intent.expiresAt)
+        // The roster asked travels with the offer (finding G), so a phone
+        // applies only a change put to everyone else in its plan.
+        let offer = try Proposal(round: UInt16(basis.revision), terms: terms,
+                                 inReplyTo: Self.rosterDigest(origin: planConversation, revision: basis.revision, suggester: me, asked: others),
+                                 expiresAt: request.intent.expiresAt)
         _ = await send(others.map { (MessageBody.propose(offer), $0) }, in: request.interaction, recordOffers: true)
     }
 
@@ -328,6 +333,8 @@ public actor ChangePlanService: SkillService {
         let plan = current.plan
         guard plan.origin == planConversation, plan.attendees.peers.contains(envelope.sender), plan.attendees.peers.contains(me),
               envelope.sender != me, UInt32(offer.round) == plan.revision,
+              offer.inReplyTo == Self.rosterDigest(origin: planConversation, revision: plan.revision, suggester: envelope.sender,
+                                                   asked: plan.attendees.peers.filter { $0 != envelope.sender }),
               let suggestion = PlanChange.suggestion(from: offer.terms, basis: plan)
         else { return }
         let proposed = suggestion.proposed
@@ -963,6 +970,25 @@ public actor ChangePlanService: SkillService {
 
     private func emit(_ id: InteractionID, _ event: InteractionEvent) {
         continuation.yield(.lifecycle(id, event))
+    }
+}
+
+extension ChangePlanService {
+    /// Names the plan, its revision, the suggester, and everyone asked,
+    /// without disclosing anything a receiver does not already hold. A
+    /// receiver computes it from its own plan; a suggestion put to fewer
+    /// people than everyone else in the plan does not match.
+    public static func rosterDigest(origin: ConversationID, revision: UInt32, suggester: PeerID, asked: [PeerID]) -> MessageID {
+        var hasher = SHA256()
+        hasher.update(data: Data("starling.change_plan.asked.v1".utf8))
+        withUnsafeBytes(of: origin.rawValue.uuid) { hasher.update(bufferPointer: $0) }
+        withUnsafeBytes(of: revision.littleEndian) { hasher.update(bufferPointer: $0) }
+        hasher.update(data: suggester.bytes)
+        for peer in asked.sorted(by: { $0.bytes.lexicographicallyPrecedes($1.bytes) }) { hasher.update(data: peer.bytes) }
+        let digest = Array(hasher.finalize())
+        let uuid = UUID(uuid: (digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+                               digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]))
+        return MessageID(uuid)
     }
 }
 

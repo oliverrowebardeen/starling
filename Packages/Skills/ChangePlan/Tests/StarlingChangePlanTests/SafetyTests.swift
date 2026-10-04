@@ -62,9 +62,13 @@ actor ArmedObserver: OutboxObserver {
 
     /// A suggestion as a friend's phone would send it to Maya.
     static func offer(from sender: PeerID, origin: ConversationID, round: UInt16 = 0, terms: Terms,
-                      expires: Date = Fixtures.date(minutes: 60)) throws -> Envelope {
-        try Envelope(conversation: ConversationID(), sender: sender, recipient: Fixtures.maya, sequence: 0, sentAt: Timestamp(Fixtures.date(minutes: 10)),
-                     body: .propose(Proposal(round: round, terms: terms, expiresAt: Timestamp(expires))),
+                      asked: [PeerID]? = nil, expires: Date = Fixtures.date(minutes: 60)) throws -> Envelope {
+        // By default, everyone else in the three-person plan was asked.
+        let everyone = [Fixtures.alex, Fixtures.maya, Fixtures.jake].filter { $0 != sender }
+        let digest = ChangePlanService.rosterDigest(origin: origin, revision: UInt32(round), suggester: sender, asked: asked ?? everyone)
+        return try Envelope(conversation: ConversationID(), sender: sender, recipient: Fixtures.maya, sequence: 0,
+                            sentAt: Timestamp(Fixtures.date(minutes: 10)),
+                            body: .propose(Proposal(round: round, terms: terms, inReplyTo: digest, expiresAt: Timestamp(expires))),
                      skill: ChangePlan.descriptor.ref, mode: .invite, chainedFrom: origin)
     }
 
@@ -400,5 +404,21 @@ actor ArmedObserver: OutboxObserver {
         try await network.until("Maya's card planned") { await group.phone(maya).interaction(card.id)?.state == .planned }
         #expect(await network.problems().isEmpty)
         await network.shutdown()
+    }
+
+    /// Review of PR #111, finding G (accepted as a limit, partly fixed): an
+    /// offer put to fewer people than everyone else in the plan opens
+    /// nothing, so an honest bug cannot leave phones on different plans.
+    @Test func anOfferPutToFewerThanThePlanOpensNothing() async throws {
+        let group = Group()
+        let maya = group.phone(self.maya)
+        let later = try Terms([.time: .slots([Fixtures.later])])
+        await maya.service.handle(.message(try Self.offer(from: alex, origin: group.origin, terms: later, asked: [self.maya])))
+        await group.network.settle()
+        #expect(await maya.changes().isEmpty)
+        // The same offer put to everyone else is shown (the control).
+        await maya.service.handle(.message(try Self.offer(from: alex, origin: group.origin, terms: later)))
+        try await group.network.until("card") { await group.openCard(of: self.maya) != nil }
+        await group.network.shutdown()
     }
 }
