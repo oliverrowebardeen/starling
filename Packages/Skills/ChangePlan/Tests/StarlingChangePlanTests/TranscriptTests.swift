@@ -46,6 +46,8 @@ import Testing
             "Alex > Maya: propose", "Alex > Jake: propose",
             "Maya > Alex: accept", "Jake > Alex: accept",
             "Alex > Maya: accept", "Alex > Jake: accept",
+            // Each acknowledges the confirmation once applied.
+            "Maya > Alex: accept", "Jake > Alex: accept",
         ])
         // On Alex's phone the change is on the plan's timeline.
         let timeline = try #require(PlanTimeline(for: group.roots[alex]!.id, in: await group.phone(alex).all(), registry: Fixtures.registry))
@@ -151,6 +153,7 @@ import Testing
             "Maya > Alex: accept", "Jake > Alex: accept",
             "Alex > Sam: propose", "Sam > Alex: accept",
             "Alex > Maya: accept", "Alex > Jake: accept", "Alex > Sam: accept",
+            "Maya > Alex: accept", "Jake > Alex: accept", "Sam > Alex: accept",
         ])
         #expect(await network.problems().isEmpty)
         await network.shutdown()
@@ -193,8 +196,8 @@ import Testing
         }
         #expect(await group.phone(jake).interaction(group.roots[jake]!.id)?.state == .ended(.withdrawn))
         #expect(await group.phone(jake).interaction(leave.id)?.state == .ended(.withdrawn))
-        // Nothing was disclosed: the notices carry no values.
-        #expect(network.transcript == ["Jake > Alex: reject", "Jake > Maya: reject"])
+        // Nothing was disclosed: the notices and acknowledgments carry no values.
+        #expect(network.transcript == ["Jake > Alex: reject", "Jake > Maya: reject", "Alex > Jake: accept", "Maya > Jake: accept"])
         // The others' timelines show it.
         #expect(await group.phone(alex).changes().map(\.state) == [.ended(.withdrawn)])
         #expect(await group.phone(alex).plan(group.origin)?.revision == 1)

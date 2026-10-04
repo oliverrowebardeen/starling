@@ -128,6 +128,24 @@ public actor ChangePlanService: SkillService {
     private var unretired: Set<ConversationID> = []
     public private(set) var retireFailures = 0
 
+    // Reliable confirmations and leave notices (ADR 0243): what is owed
+    // acknowledgments, and what this phone applied, mirrored in the journal.
+    private let journal: any ChangePlanJournal
+    private let resend: ResendSchedule
+    private var confirming: [InteractionID: ConfirmationDelivery] = [:]
+    private var confirmingByConversation: [ConversationID: InteractionID] = [:]
+    private var applied: [ConversationID: AppliedConfirmation] = [:]
+    private var leaving: [InteractionID: LeaveDelivery] = [:]
+    private var departed: [ConversationID: [PeerID: Departure]] = [:]
+    /// Resend loops and end-of-window cleanups, by record key.
+    private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
+    /// Journal writes that failed. Delivery goes on; only a restart could lose it.
+    public private(set) var journalFailures = 0
+    /// Friends' cards from their `hello`, passed on every send so the policy
+    /// knows where their model runs (as Pick a place does). Without one, the
+    /// policy asks for consent even for a send that carries no values.
+    private var cards: [PeerID: AgentCard] = [:]
+
     /// At most this many suggestions wait behind an open one, per plan.
     static let maxQueued = 4
 
@@ -135,12 +153,18 @@ public actor ChangePlanService: SkillService {
     ///   - ledger: the app's `ConversationLedger`, the one its Outbox uses.
     ///   - planLookup: the standing plan a conversation names on this phone
     ///     (by `Plan.origin`), with the interaction that holds it.
+    ///   - journal: durable storage for confirmations and leave notices still
+    ///     owed acknowledgments, and for what this phone applied.
+    ///   - resend: how unacknowledged ones are resent.
     ///   - sleep: waits until a date; a suggestion's window closes then.
-    public init(outbox: Outbox, ledger: any ConversationLedger, me: PeerID, planLookup: @escaping @Sendable (ConversationID) async -> PlanRef?,
+    public init(outbox: Outbox, ledger: any ConversationLedger, journal: any ChangePlanJournal, me: PeerID,
+                planLookup: @escaping @Sendable (ConversationID) async -> PlanRef?, resend: ResendSchedule = .standard,
                 now: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (Date) async throws -> Void = { try await Task.sleep(for: .seconds(max(0, $0.timeIntervalSinceNow))) }) {
         self.outbox = outbox
         self.ledger = ledger
+        self.journal = journal
+        self.resend = resend
         self.me = me
         self.planLookup = planLookup
         self.now = now
@@ -195,7 +219,8 @@ public actor ChangePlanService: SkillService {
     }
 
     /// Leaving: tell everyone else, then end this phone's plan. Nothing is
-    /// disclosed but that the owner left.
+    /// disclosed but that the owner left. The notices are resent until each
+    /// person acknowledges them, so every other phone's plan shrinks.
     private func leave(_ request: SkillRequest, plan: PlanRef, others: [PeerID]) async {
         sessions[request.interaction] = Session(
             role: .suggester, conversation: request.conversation, planConversation: plan.plan.origin, planInteraction: plan.interaction,
@@ -203,12 +228,15 @@ public actor ChangePlanService: SkillService {
             inviteTerms: nil, step: .asking
         )
         byConversation[request.conversation] = request.interaction
-        // The notice names no offer; a fresh ID stands in.
-        _ = await send(others.map { (MessageBody.reject(Rejection(proposal: MessageID(), reason: .declinedByOwner)), $0) }, in: request.interaction,
-                       failureEnds: false)
+        let delivery = LeaveDelivery(interaction: request.interaction, planConversation: plan.plan.origin, order: others,
+                                     pending: Dictionary(uniqueKeysWithValues: others.map { ($0, []) }), until: resend.end(for: plan.plan, now: now()))
+        leaving[request.interaction] = delivery
+        await store(.leaving(delivery))
+        await sendLeaveNotices(request.interaction)
         await settle(planConversation: plan.plan.origin)
         await retire(plan.plan.origin)
         await finish(request.interaction, with: [.withdrawn], then: [.lifecycle(plan.interaction, .withdrawn)])
+        startResending(request.interaction.rawValue)
     }
 
     public func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws {
@@ -243,11 +271,19 @@ public actor ChangePlanService: SkillService {
     // MARK: - Receiving
 
     public func handle(_ event: InboxEvent) async {
+        if case .message(let envelope) = event, envelope.recipient == me, case .hello(let card) = envelope.body {
+            cards[envelope.sender] = card
+            return
+        }
         guard case .message(let envelope) = event, let skill = envelope.skill, skill.id == descriptor.id,
               skill.version.isCompatible(with: descriptor.ref.version), envelope.recipient == me,
-              let mode = envelope.mode, descriptor.sendModes.contains(mode), !closed.contains(envelope.conversation),
+              let mode = envelope.mode, descriptor.sendModes.contains(mode),
               let planConversation = envelope.chainedFrom
         else { return }
+        // Acknowledgments, and confirmations resent after this phone applied them.
+        if await acknowledged(envelope) { return }
+        if await reacknowledged(envelope) { return }
+        guard !closed.contains(envelope.conversation) else { return }
         if let id = byConversation[envelope.conversation] {
             await receive(envelope, in: id)
             return
@@ -316,26 +352,41 @@ public actor ChangePlanService: SkillService {
         emit(id, .proposalReady(SkillProposal(revision: 1, participants: plan.attendees.peers, terms: offer.terms, plan: plan)))
     }
 
-    /// Someone left the plan: a notice in a fresh conversation.
+    /// Someone left the plan: a notice in a fresh conversation. It applies
+    /// once, is acknowledged, and its conversation is retired before the
+    /// note on the timeline ends. A notice resent after it applied (its
+    /// acknowledgment was lost) is just acknowledged again.
     private func left(_ envelope: Envelope, planConversation: ConversationID) async {
-        guard let current = await planLookup(planConversation), current.plan.origin == planConversation,
-              current.plan.attendees.peers.contains(envelope.sender), envelope.sender != me,
+        guard case .reject(let notice) = envelope.body, envelope.sender != me,
               byConversation[envelope.conversation] == nil, !closed.contains(envelope.conversation)
+        else { return }
+        if departed[planConversation]?[envelope.sender] != nil {
+            await acknowledge(notice.proposal, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
+            await retire(envelope.conversation)
+            return
+        }
+        guard let current = await planLookup(planConversation), current.plan.origin == planConversation,
+              current.plan.attendees.peers.contains(envelope.sender)
         else { return }
         // Anything open for this plan included them: it cannot go through.
         await settle(planConversation: planConversation)
+        let departure = Departure(id: UUID(), planConversation: planConversation, peer: envelope.sender,
+                                  until: resend.end(for: current.plan, now: now()))
+        departed[planConversation, default: [:]][envelope.sender] = departure
+        await store(.departed(departure))
+        startResending(departure.id)
+
         let id = InteractionID()
         let remaining = current.plan.attendees.peers.filter { $0 != envelope.sender }
-        guard await retire(envelope.conversation) else { return }
         continuation.yield(.incoming(id, conversation: envelope.conversation, from: envelope.sender, chainedFrom: planConversation))
-        emit(id, .withdrawn)
         if remaining.count >= 2, let attendees = try? Attendees(remaining), let smaller = try? current.plan.updating(attendees: attendees) {
             continuation.yield(.produced(current.interaction, .plan(smaller)))
-        } else {
+        } else if await retire(planConversation) {
             // Only this phone is left: the plan ends here too.
-            await retire(planConversation)
             emit(current.interaction, .withdrawn)
         }
+        await acknowledge(notice.proposal, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: id)
+        if await retire(envelope.conversation) { emit(id, .withdrawn) } else { emit(id, .failed) }
     }
 
     private func receive(_ envelope: Envelope, in id: InteractionID) async {
@@ -350,7 +401,7 @@ public actor ChangePlanService: SkillService {
         // Voter or joiner: the suggester's confirmation, naming our offer.
         case (.voter, .accepted(let offer), .accept(let confirmation)), (.joiner, .accepted(let offer), .accept(let confirmation)):
             guard envelope.sender == session.suggester, confirmation.proposal == offer, confirmation.terms.values.isEmpty else { return }
-            await applied(id)
+            await applyConfirmation(id)
         // The suggester withdrew it.
         case (.voter, .deciding(let offer, _), .reject(let rejection)), (.voter, .accepted(let offer), .reject(let rejection)),
              (.joiner, .deciding(let offer, _), .reject(let rejection)), (.joiner, .accepted(let offer), .reject(let rejection)):
@@ -407,32 +458,72 @@ public actor ChangePlanService: SkillService {
         }
     }
 
-    /// Everyone said yes: confirm to each, then apply here.
+    /// Everyone said yes. The change is agreed: it applies here at once, and
+    /// a confirmation goes to each person, resent until each acknowledges it
+    /// (ADR 0243). The suggester's change ends planned, which is not an
+    /// ending, so its conversation stays open for the acknowledgments and is
+    /// retired when the delivery is done.
     private func confirm(_ id: InteractionID) async {
         guard let session = sessions[id] else { return }
-        let confirmations = session.asked.compactMap { peer in
-            session.offers[peer].map { (MessageBody.accept(Acceptance(proposal: $0, terms: Terms.empty)), peer) }
-        }
-        _ = await send(confirmations, in: id, failureEnds: false)
-        var extra: [SkillEvent] = []
-        if let plan = session.planInteraction { extra.append(.produced(plan, .plan(session.proposed))) }
-        await finish(id, with: [.everyoneConfirmed(revision: 1)], then: extra)
+        let order = session.asked.filter { session.offers[$0] != nil }
+        let delivery = ConfirmationDelivery(
+            interaction: id, conversation: session.conversation, planConversation: session.planConversation, order: order,
+            pending: Dictionary(uniqueKeysWithValues: order.map { ($0, session.offers[$0]!) }),
+            until: resend.end(for: session.proposed, now: now())
+        )
+        // What each acknowledgment must name, before any confirmation is sent (#105).
+        confirming[id] = delivery
+        confirmingByConversation[session.conversation] = id
+        await store(.confirming(delivery))
+        close(id)
+        emit(id, .everyoneConfirmed(revision: 1))
+        if let plan = session.planInteraction { continuation.yield(.produced(plan, .plan(session.proposed))) }
+        await resendOnce(id.rawValue)
+        startResending(id.rawValue)
+        await dequeue(session.planConversation)
     }
 
-    /// A voter or joiner got the confirmation: the change applies here.
-    private func applied(_ id: InteractionID) async {
-        guard let session = sessions[id] else { return }
+    /// A voter or joiner got the confirmation. It applies only if it changes
+    /// the plan as it stands (or was already applied); it is then
+    /// acknowledged, and kept so a resent one is acknowledged again. One for
+    /// a revision that does not follow this phone's is ignored.
+    private func applyConfirmation(_ id: InteractionID) async {
+        guard let session = sessions[id], case .accepted(let offer) = session.step, let suggester = session.suggester else { return }
         if let planInteraction = session.planInteraction {
-            // The plan must still be the one the suggestion changed.
-            guard let current = await planLookup(session.planConversation), current.plan.revision == session.basisRevision else {
-                await finish(id, with: [.noAgreement])
+            guard let current = await planLookup(session.planConversation) else { return }
+            if current.plan.revision == session.basisRevision {
+                emit(id, .everyoneConfirmed(revision: 1))
+                continuation.yield(.produced(planInteraction, .plan(session.proposed)))
+            } else if current.plan.revision == session.proposed.revision, current.plan.attendees == session.proposed.attendees,
+                      current.plan.time == session.proposed.time, current.plan.activity == session.proposed.activity {
+                emit(id, .everyoneConfirmed(revision: 1))
+            } else {
                 return
             }
-            await finish(id, with: [.everyoneConfirmed(revision: 1)], then: [.produced(planInteraction, .plan(session.proposed))])
         } else {
             // A friend being added: this interaction now holds the plan.
-            await finish(id, with: [.everyoneConfirmed(revision: 1)], then: [.produced(id, .plan(session.proposed))])
+            emit(id, .everyoneConfirmed(revision: 1))
+            continuation.yield(.produced(id, .plan(session.proposed)))
         }
+        let receipt = AppliedConfirmation(interaction: id, conversation: session.conversation, planConversation: session.planConversation,
+                                          suggester: suggester, offer: offer, until: resend.end(for: session.proposed, now: now()))
+        applied[session.conversation] = receipt
+        await store(.applied(receipt))
+        close(id)
+        await acknowledge(offer, to: suggester, in: session.conversation, planConversation: session.planConversation, interaction: id)
+        startResending(id.rawValue)
+        await dequeue(session.planConversation)
+    }
+
+    /// Ends a session that is settled without an ending (the change applies),
+    /// keeping its conversation open for acknowledgments.
+    private func close(_ id: InteractionID) {
+        cancelSends(of: id)
+        timers.removeValue(forKey: id)?.cancel()
+        deadlines[id] = nil
+        guard let session = sessions.removeValue(forKey: id) else { return }
+        byConversation[session.conversation] = nil
+        if openByPlan[session.planConversation] == id { openByPlan[session.planConversation] = nil }
     }
 
     // MARK: - Windows
@@ -479,6 +570,7 @@ public actor ChangePlanService: SkillService {
     /// it was. Ended ones are retired again, in case the app quit first.
     public func restore(_ interactions: [Interaction]) async {
         await retryRetirements()
+        await recoverJournal()
         for interaction in interactions where interaction.skill.id == descriptor.id {
             if interaction.state.isFinal {
                 await retire(interaction.conversation)
@@ -491,9 +583,192 @@ public actor ChangePlanService: SkillService {
     public func shutdown() async {
         for tasks in inFlight.values { for task in tasks.values { task.cancel() } }
         for timer in timers.values { timer.cancel() }
+        for task in deliveryTasks.values { task.cancel() }
         inFlight = [:]
         timers = [:]
+        deliveryTasks = [:]
         continuation.finish()
+    }
+
+    // MARK: - Reliable confirmations and leave notices (ADR 0243)
+
+    private func store(_ record: ChangePlanRecord) async {
+        do { try await journal.save(record) } catch { journalFailures += 1 }
+    }
+
+    private func forget(_ key: UUID) async {
+        do { try await journal.remove(key) } catch { journalFailures += 1 }
+    }
+
+    /// A value-free acknowledgment that names what it acknowledges.
+    private func acknowledge(_ names: MessageID, to peer: PeerID, in conversation: ConversationID, planConversation: ConversationID,
+                             interaction: InteractionID?) async {
+        _ = try? await outbox.send(.accept(Acceptance(proposal: names, terms: Terms.empty)), to: peer, conversation: conversation,
+                                   recipientCard: cards[peer], context: OutboundContext(interaction: interaction),
+                                   skill: descriptor.ref, mode: .invite, chainedFrom: planConversation)
+    }
+
+    /// An acknowledgment of a confirmation or leave notice this phone sent.
+    /// It counts only if it names what was sent to that person.
+    private func acknowledged(_ envelope: Envelope) async -> Bool {
+        guard case .accept(let ack) = envelope.body, ack.terms.values.isEmpty else { return false }
+        if let id = confirmingByConversation[envelope.conversation], var delivery = confirming[id] {
+            if delivery.pending[envelope.sender] == ack.proposal {
+                delivery.pending[envelope.sender] = nil
+                confirming[id] = delivery
+                await progressDelivery(.confirming(delivery))
+            }
+            return true
+        }
+        for (id, var delivery) in leaving where delivery.pending[envelope.sender]?.contains(ack.proposal) == true {
+            delivery.pending[envelope.sender] = nil
+            leaving[id] = delivery
+            await progressDelivery(.leaving(delivery))
+            return true
+        }
+        return false
+    }
+
+    /// A confirmation resent after this phone applied it: acknowledged again,
+    /// and nothing changes.
+    private func reacknowledged(_ envelope: Envelope) async -> Bool {
+        guard let receipt = applied[envelope.conversation] else { return false }
+        if case .accept(let confirmation) = envelope.body, confirmation.terms.values.isEmpty, envelope.sender == receipt.suggester,
+           confirmation.proposal == receipt.offer {
+            await acknowledge(receipt.offer, to: receipt.suggester, in: receipt.conversation, planConversation: receipt.planConversation,
+                              interaction: receipt.interaction)
+        }
+        return true
+    }
+
+    /// Saves a delivery's progress; one that everyone acknowledged is done.
+    private func progressDelivery(_ record: ChangePlanRecord) async {
+        switch record {
+        case .confirming(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
+        case .leaving(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
+        default: await store(record)
+        }
+    }
+
+    /// Each leave notice goes in a fresh conversation, under a fresh ID
+    /// registered before the send (#105), so a friend can close it at once.
+    private func sendLeaveNotices(_ id: InteractionID) async {
+        guard let delivery = leaving[id] else { return }
+        for peer in delivery.order where leaving[id]?.pending[peer] != nil {
+            let notice = MessageID()
+            leaving[id]?.pending[peer]?.append(notice)
+            if let current = leaving[id] { await store(.leaving(current)) }
+            _ = try? await outbox.send(.reject(Rejection(proposal: notice, reason: .declinedByOwner)), to: peer, conversation: ConversationID(),
+                                       recipientCard: cards[peer], context: OutboundContext(interaction: id),
+                                       skill: descriptor.ref, mode: .invite, chainedFrom: delivery.planConversation)
+        }
+    }
+
+    /// One more round of whatever a record still owes.
+    private func resendOnce(_ key: UUID) async {
+        let id = InteractionID(key)
+        if let delivery = confirming[id] {
+            for peer in delivery.order {
+                guard let offer = confirming[id]?.pending[peer] else { continue }
+                _ = try? await outbox.send(.accept(Acceptance(proposal: offer, terms: Terms.empty)), to: peer, conversation: delivery.conversation,
+                                           recipientCard: cards[peer], context: OutboundContext(interaction: id),
+                                           skill: descriptor.ref, mode: .invite, chainedFrom: delivery.planConversation)
+            }
+        } else if leaving[id] != nil {
+            await sendLeaveNotices(id)
+        }
+    }
+
+    /// When a record's window ends, if it is still here.
+    private func until(_ key: UUID) -> Date? {
+        let id = InteractionID(key)
+        if let delivery = confirming[id] { return delivery.until }
+        if let delivery = leaving[id] { return delivery.until }
+        if let receipt = applied.values.first(where: { $0.interaction == id }) { return receipt.until }
+        for byPeer in departed.values {
+            if let departure = byPeer.values.first(where: { $0.id == key }) { return departure.until }
+        }
+        return nil
+    }
+
+    /// Resends on the schedule until everyone acknowledged or the window
+    /// ends; a record that only waits (applied, departed) just waits.
+    private func startResending(_ key: UUID) {
+        deliveryTasks[key]?.cancel()
+        deliveryTasks[key] = Task { [weak self] in await self?.runDelivery(key) }
+    }
+
+    private func runDelivery(_ key: UUID) async {
+        var wait = resend.firstRetry
+        while !Task.isCancelled, let end = until(key) {
+            let next = min(now().addingTimeInterval(wait), end)
+            do { try await sleep(next) } catch { return }
+            guard until(key) != nil else { return }
+            if now() >= end {
+                // Ending from inside the loop: it must not cancel itself.
+                deliveryTasks[key] = nil
+                await endDelivery(key)
+                return
+            }
+            await resendOnce(key)
+            wait = min(wait * 2, resend.maxBackoff)
+        }
+    }
+
+    /// A record is done (everyone acknowledged) or its window ended: it is
+    /// removed, and a conversation kept open for it is retired. None of
+    /// these is an ending of an interaction, so nothing is announced.
+    private func endDelivery(_ key: UUID) async {
+        let id = InteractionID(key)
+        let task = deliveryTasks.removeValue(forKey: key)
+        if let delivery = confirming.removeValue(forKey: id) {
+            confirmingByConversation[delivery.conversation] = nil
+            await forget(key)
+            await retire(delivery.conversation)
+        } else if leaving.removeValue(forKey: id) != nil {
+            await forget(key)
+        } else if let receipt = applied.values.first(where: { $0.interaction == id }) {
+            applied[receipt.conversation] = nil
+            await forget(key)
+            await retire(receipt.conversation)
+        } else {
+            for (plan, byPeer) in departed {
+                guard let departure = byPeer.values.first(where: { $0.id == key }) else { continue }
+                departed[plan]?[departure.peer] = nil
+                if departed[plan]?.isEmpty == true { departed[plan] = nil }
+                await forget(key)
+            }
+        }
+        task?.cancel()
+    }
+
+    /// At launch: everything still owed or kept comes back, and resending
+    /// picks up where it was (at once, then on the schedule).
+    private func recoverJournal() async {
+        let records: [ChangePlanRecord]
+        do { records = try await journal.records() } catch {
+            journalFailures += 1
+            return
+        }
+        for record in records {
+            switch record {
+            case .confirming(let delivery):
+                confirming[delivery.interaction] = delivery
+                confirmingByConversation[delivery.conversation] = delivery.interaction
+            case .applied(let receipt):
+                applied[receipt.conversation] = receipt
+            case .leaving(let delivery):
+                leaving[delivery.interaction] = delivery
+            case .departed(let departure):
+                departed[departure.planConversation, default: [:]][departure.peer] = departure
+            }
+            if record.until <= now() {
+                await endDelivery(record.key)
+            } else {
+                await resendOnce(record.key)
+                startResending(record.key)
+            }
+        }
     }
 
     // MARK: - Sending
@@ -512,7 +787,7 @@ public actor ChangePlanService: SkillService {
         let task = Task { [weak self] in
             for (body, peer) in messages {
                 try Task.checkCancellation()
-                let envelope = try await outbox.send(body, to: peer, conversation: session.conversation,
+                let envelope = try await outbox.send(body, to: peer, conversation: session.conversation, recipientCard: await self?.card(for: peer),
                                                      context: OutboundContext(interaction: id, accepting: accepting),
                                                      skill: skill, mode: .invite, chainedFrom: session.planConversation)
                 if recordOffers { await self?.recordOffer(envelope, in: id) }
@@ -538,6 +813,8 @@ public actor ChangePlanService: SkillService {
             return false
         }
     }
+
+    private func card(for peer: PeerID) -> AgentCard? { cards[peer] }
 
     private func cancelSends(of id: InteractionID) {
         if let tasks = inFlight.removeValue(forKey: id) { for task in tasks.values { task.cancel() } }

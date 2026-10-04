@@ -97,7 +97,9 @@ final class Phone: Sendable {
     let ledger = InMemoryConversationLedger()
     let store: InMemoryInteractionStore
     let outbox: Outbox
-    let service: ChangePlanService
+    let journal = InMemoryChangePlanJournal()
+    private let box: Mutex<ChangePlanService>
+    var service: ChangePlanService { box.withLock { $0 } }
     let inbox: Inbox
     let problems = Problems()
     let clock: TestClock
@@ -113,18 +115,35 @@ final class Phone: Sendable {
         self.consent = ScriptedConsentProvider(consent)
         outbox = Outbox(transport: transport, policy: policy ?? FixedPolicyEngine(.allow), consent: self.consent,
                         observer: observer?(store) ?? nil, ledger: ledger, now: { clock.now })
-        let store = store
-        service = ChangePlanService(outbox: outbox, ledger: ledger, me: me, planLookup: { conversation in
+        box = Mutex(Self.makeService(outbox: outbox, ledger: ledger, journal: journal, me: me, store: store, clock: clock))
+        inbox = Inbox(localPeer: me, now: { clock.now })
+        let service = box.withLock { $0 }
+        let (store, problems) = (store, problems)
+        consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock) } }
+    }
+
+    private static func makeService(outbox: Outbox, ledger: InMemoryConversationLedger, journal: InMemoryChangePlanJournal, me: PeerID,
+                                    store: InMemoryInteractionStore, clock: TestClock) -> ChangePlanService {
+        ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, me: me, planLookup: { conversation in
             let all = (try? await store.all()) ?? []
             guard let holder = all.first(where: { ($0.state == .planned || $0.state == .done) && $0.plan?.origin == conversation }),
                   let plan = holder.plan
             else { return nil }
             return PlanRef(interaction: holder.id, plan: plan)
         }, now: { clock.now }, sleep: { try await clock.sleep(until: $0) })
-        inbox = Inbox(localPeer: me, now: { clock.now })
-        let service = service
-        let problems = problems
-        consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock) } }
+    }
+
+    /// The app quits and relaunches: a new service over the same journal,
+    /// Outbox, ledger, and store, restored as the coordinator restores it.
+    func restart() async {
+        let old = service
+        await old.shutdown()
+        _ = await consumer.withLock { $0 }?.value
+        let fresh = Self.makeService(outbox: outbox, ledger: ledger, journal: journal, me: me, store: store, clock: clock)
+        box.withLock { $0 = fresh }
+        let (store, problems, clock) = (store, problems, clock)
+        consumer.withLock { $0 = Task { await Self.coordinate(fresh.events, store: store, problems: problems, clock: clock) } }
+        await fresh.restore(await all())
     }
 
     /// The stand-in coordinator.
@@ -184,6 +203,13 @@ final class Network: Sendable {
     let clock: TestClock
     private let delivered = Mutex<[PeerID: Int]>([:])
     private let log = Mutex<[String]>([])
+    /// Frames to lose, as "Alex > Maya: accept", each once, after letting
+    /// `skipping` matching ones through.
+    private let drops = Mutex<[(frame: String, skipping: Int)]>([])
+
+    /// Loses a frame that matches, as an unreliable link would: the next one,
+    /// or the one after `skipping` more go through.
+    func drop(_ frame: String, skipping: Int = 0) { drops.withLock { $0.append((frame, skipping)) } }
 
     init(_ phones: [Phone], clock: TestClock) {
         self.phones = Dictionary(uniqueKeysWithValues: phones.map { ($0.me, $0) })
@@ -208,8 +234,18 @@ final class Network: Sendable {
                 for frame in sent[from...] {
                     moved = true
                     let kind = (try? EnvelopeCodec().decode(frame.frame.bytes)).map { "\($0.body.kind)" } ?? "?"
-                    log.withLock { $0.append("\(Self.names[phone.me] ?? "?") > \(Self.names[frame.peer] ?? "?"): \(kind)") }
-                    guard let to = phones[frame.peer] else { continue }
+                    let line = "\(Self.names[phone.me] ?? "?") > \(Self.names[frame.peer] ?? "?"): \(kind)"
+                    let lost = drops.withLock { drops in
+                        guard let index = drops.firstIndex(where: { $0.frame == line }) else { return false }
+                        if drops[index].skipping > 0 {
+                            drops[index].skipping -= 1
+                            return false
+                        }
+                        drops.remove(at: index)
+                        return true
+                    }
+                    log.withLock { $0.append(lost ? line + " (lost)" : line) }
+                    guard !lost, let to = phones[frame.peer] else { continue }
                     await to.service.handle(await to.inbox.process(.received(frame.frame, from: phone.me)))
                 }
             }

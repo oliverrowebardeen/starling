@@ -195,7 +195,8 @@ actor HeldObserver: OutboxObserver {
         try await network.until("cards") { await group.openCard(of: maya) != nil }
         // Maya's app restarts with her card open.
         let card = try await group.card(of: maya)
-        let fresh = ChangePlanService(outbox: group.phone(maya).outbox, ledger: group.phone(maya).ledger, me: maya, planLookup: { _ in nil })
+        let fresh = ChangePlanService(outbox: group.phone(maya).outbox, ledger: group.phone(maya).ledger, journal: InMemoryChangePlanJournal(),
+                                      me: maya, planLookup: { _ in nil })
         await fresh.restore([card])
         #expect(try await group.phone(maya).ledger.isRetired(card.conversation))
         var events = fresh.events.makeAsyncIterator()
