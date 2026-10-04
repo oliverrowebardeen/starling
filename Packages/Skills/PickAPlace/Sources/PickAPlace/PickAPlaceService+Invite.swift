@@ -135,7 +135,10 @@ extension PickAPlaceService {
             guard Set(candidates) == Set(invites[conversation]?.candidates ?? []) else { return }
             spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
         case .propose(let proposal):
-            if let current = invite.proposal, current.terms == proposal.terms {
+            // A retry repeats the terms and the revision it names; the same
+            // terms at another revision are a new proposal, which needs a
+            // fresh decision from the owner.
+            if let current = invite.proposal, current.terms == proposal.terms, invite.offer?.round == proposal.round {
                 // A retry. If the owner already said yes, say it again.
                 invites[conversation]?.proposeID = envelope.id
                 if invite.accepted { spawnAcceptance(conversation) }
@@ -274,7 +277,7 @@ extension PickAPlaceService {
         // Checked after every await, the limit failure included: a newer
         // proposal decides now.
         guard isCurrent(conversation, generation: generation), let invite = invites[conversation],
-              invite.proposal?.terms != proposal.terms
+              invite.proposal?.terms != proposal.terms || invite.offer?.round != proposal.round
         else { return }
         guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
             // A private limit: an ordinary no, like a list where nothing
@@ -287,8 +290,10 @@ extension PickAPlaceService {
         let revision = invite.revision + 1
         // A request on a plan names, in its round, the revision the agreed
         // plan will have, so this phone's plan names it too (ADR 0233). Lane
-        // E applies it only over the revision just before.
-        let planRevision = invite.chainedFrom == nil ? 0 : UInt32(proposal.round)
+        // E applies it only over the revision just before. Stored with the
+        // card, it also keeps the offer's revision across a restart; a
+        // request on no plan names 0.
+        let planRevision = UInt32(proposal.round)
         let plan = Self.plan(base: nil, origin: invite.chainedFrom ?? conversation, roster: roster, terms: proposal.terms, place: place,
                              revision: planRevision)
         let card = SkillProposal(revision: revision, participants: roster, terms: proposal.terms, plan: plan)

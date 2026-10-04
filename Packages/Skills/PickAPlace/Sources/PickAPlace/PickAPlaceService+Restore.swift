@@ -200,8 +200,10 @@ extension PickAPlaceService {
             invite.revision = proposal.revision
             invite.proposal = proposal
             // The offer itself was not stored; its terms are what a yes
-            // repeats, so they stand for it.
-            invite.offer = try? Proposal(round: 0, terms: proposal.terms)
+            // repeats, and the round it named is the agreed plan's revision,
+            // so they stand for it.
+            let round = UInt16(min(proposal.plan?.revision ?? 0, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
+            invite.offer = try? Proposal(round: round, terms: proposal.terms)
             invite.accepted = Self.step(of: interaction.state) == .confirmed
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
