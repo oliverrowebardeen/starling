@@ -68,6 +68,16 @@ public struct PairingDirectory: Sendable {
     }
 }
 
+/// One code on screen, as the buttons that answer it were rendered: the
+/// attempt and session that produced it, and the code itself. A confirm
+/// carries the token its buttons captured, so it can only answer that
+/// comparison (Codex re-review of #104).
+public struct PairingComparison: Hashable, Sendable {
+    public let code: String
+    let attempt: Int
+    let session: Int
+}
+
 /// After the first pairing, the one-button explanation before iOS's
 /// notification alert (ADR 0013 decision 3, ADR 0260).
 public struct NotificationOffer: Sendable {
@@ -134,9 +144,12 @@ public final class PairingModel {
     /// Bumped by every new attempt, by Cancel, and when the sheet goes away.
     /// A session, event, or stream ending from an older attempt is ignored.
     private var attempt = 0
-    /// The session whose code is on screen, and its attempt. Confirm
-    /// answers only this session.
-    private var shownCode: (attempt: Int, session: any PairingSession)?
+    /// Numbers each installed session, so a comparison names its session.
+    private var sessionSerial = 0
+    /// The comparison on screen. Buttons capture it when they are rendered.
+    public private(set) var comparison: PairingComparison?
+    /// The session that produced `comparison`, the only one Confirm answers.
+    private var comparedSession: (any PairingSession)?
 
     /// - Parameters:
     ///   - friends: Every paired friend now, for the nickname check.
@@ -220,18 +233,26 @@ public final class PairingModel {
         attempt += 1
         events?.cancel()
         events = nil
-        shownCode = nil
+        clearComparison()
         defer { session = nil }
         return session
     }
 
     private func start(with candidate: PairingCandidate) async {
-        if let previous = abandonAttempt() { await previous.cancel() }
+        // The generation and the starting phase are taken before any await,
+        // so a Cancel or another attempt during the old session's cancel
+        // makes this one obsolete instead of handing it their generation
+        // (Codex re-review of #104).
+        let previous = abandonAttempt()
         let mine = attempt
         phone = candidate
         endedHere = false
         phase = .connecting
         notice = nil
+        if let previous {
+            await previous.cancel()
+            guard mine == attempt, !isEnded else { return }
+        }
         do {
             let session = try await directory.pair(candidate.peer, Self.placeholderName)
             // Cancel, the sheet closing, or a newer attempt while the
@@ -243,9 +264,11 @@ public final class PairingModel {
                 return
             }
             self.session = session
+            sessionSerial += 1
+            let serial = sessionSerial
             events = Task { [weak self] in
                 for await event in session.events {
-                    await self?.handle(event, from: session, attempt: mine)
+                    await self?.handle(event, from: session, serial: serial, attempt: mine)
                 }
                 self?.streamEnded(attempt: mine)
             }
@@ -254,13 +277,23 @@ public final class PairingModel {
         }
     }
 
-    /// The owner compared the codes on both phones. The answer goes to the
-    /// session whose code is on screen, and only while its attempt is current.
-    public func confirm(codesMatch: Bool) async {
-        guard case .comparing = phase, let shown = shownCode, shown.attempt == attempt else { return }
+    /// The owner compared the codes on both phones. `rendered` is the
+    /// comparison the tapped button was drawn for; the answer goes to its
+    /// session only if that comparison is still the one on screen, in the
+    /// current attempt. Otherwise nothing happens.
+    public func confirm(codesMatch: Bool, for rendered: PairingComparison) async {
+        guard case .comparing(let code) = phase, let comparison, rendered == comparison,
+              rendered.code == code, rendered.attempt == attempt, let session = comparedSession
+        else { return }
+        clearComparison()
         endedHere = !codesMatch
         phase = .waiting
-        await shown.session.confirm(codesMatch: codesMatch)
+        await session.confirm(codesMatch: codesMatch)
+    }
+
+    private func clearComparison() {
+        comparison = nil
+        comparedSession = nil
     }
 
     public func cancel() async {
@@ -276,6 +309,8 @@ public final class PairingModel {
 
     /// Starts again with the same phone, or goes back to choosing one.
     public func tryAgain() async {
+        // Only from a failure; a retry already running has left it.
+        guard case .failed = phase else { return }
         notice = nil
         isEnded = false
         if let phone {
@@ -303,14 +338,15 @@ public final class PairingModel {
 
     /// Events from an obsolete attempt are dropped, so a cancelled session
     /// can never put its code on screen.
-    func handle(_ event: PairingEvent, from session: any PairingSession, attempt mine: Int) async {
+    func handle(_ event: PairingEvent, from session: any PairingSession, serial: Int, attempt mine: Int) async {
         guard mine == attempt else { return }
         switch event {
         case .confirmCode(let code):
-            shownCode = (mine, session)
+            comparison = PairingComparison(code: code, attempt: mine, session: serial)
+            comparedSession = session
             phase = .comparing(code: code)
         case .paired(let peer):
-            shownCode = nil
+            clearComparison()
             await directory.paired(peer)
             var deviceName = phone?.deviceName
             if deviceName == nil { deviceName = await directory.deviceName(peer.id) }
@@ -318,7 +354,7 @@ public final class PairingModel {
             name = FriendNameSuggestion.from(deviceName: deviceName) ?? ""
             phase = .naming(peer)
         case .failed(let failure):
-            shownCode = nil
+            clearComparison()
             phase = .failed(failure)
         }
     }
@@ -327,7 +363,7 @@ public final class PairingModel {
         guard mine == attempt else { return }
         session = nil
         events = nil
-        shownCode = nil
+        clearComparison()
         switch phase {
         case .connecting, .comparing, .waiting:
             // The session ended without a result.

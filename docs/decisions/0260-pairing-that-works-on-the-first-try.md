@@ -60,6 +60,9 @@ Primary sources checked on 2026-10-02:
      - The code on screen is bound to the session that produced it, and Confirm answers only that session.
 
      Without this, a Cancel while a session was still being created let a later attempt's Confirm reach a session whose code the owner never compared.
+   - A new attempt takes its generation, and shows Connecting, before it waits on the old session's cancel, and checks again afterwards. Try again does nothing unless the sheet shows a failure (Codex re-review of #104).
+   - The code buttons capture the comparison they were drawn for: attempt, session, and code. A tap answers that comparison only, never one that replaced it before the tap ran.
+   - A phone that joins a request starts bound to that request's attempt ID, so the initiator starting over restarts it.
 5. **One service over every link.** The app runs one `PairingService` over the pairing links of every `SecureTransport`, sending each frame on all of them and listening on all of them. The phones meet on whichever link works. `PairingRoute` is removed (ADR 0145 decision 4).
 6. **One Wi-Fi Aware role per paired device** (`WiFiAwareTransport`, replacing ADR 0110 decision 3):
    - The phone whose owner picked in `WiFiAwareDevicePicker` subscribes and dials.

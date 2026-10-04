@@ -29,7 +29,7 @@ struct PairingView: View {
                     Button("Cancel") { Task { await model.cancel() } }
                 }
             case .comparing(let code):
-                compare(code)
+                compare(code, model.comparison)
             case .waiting:
                 Step {
                     StatusMark(state: .negotiating).frame(width: 96, height: 96).accessibilityHidden(true)
@@ -165,7 +165,9 @@ struct PairingView: View {
         }
     }
 
-    private func compare(_ code: String) -> some View {
+    /// The buttons capture `rendered`, the comparison they were drawn for,
+    /// so a tap answers that code and no later one (Codex re-review of #104).
+    private func compare(_ code: String, _ rendered: PairingComparison?) -> some View {
         Step {
             Text(Self.spaced(code))
                 .font(.system(size: 48, weight: .semibold, design: .rounded).monospacedDigit())
@@ -175,9 +177,17 @@ struct PairingView: View {
         } detail: {
             Text("Does \(otherPhone) show the same code?")
         } actions: {
-            Button("They match") { Task { await model.confirm(codesMatch: true) } }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-            Button("They're different", role: .destructive) { Task { await model.confirm(codesMatch: false) } }
+            Button("They match") {
+                guard let rendered else { return }
+                Task { await model.confirm(codesMatch: true, for: rendered) }
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .disabled(rendered == nil)
+            Button("They're different", role: .destructive) {
+                guard let rendered else { return }
+                Task { await model.confirm(codesMatch: false, for: rendered) }
+            }
+            .disabled(rendered == nil)
         }
     }
 

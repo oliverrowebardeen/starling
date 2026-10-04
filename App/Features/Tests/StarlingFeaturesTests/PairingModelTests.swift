@@ -547,9 +547,19 @@ final class FriendActions: @unchecked Sendable {
 
         init() { (events, continuation) = AsyncStream.makeStream(of: PairingEvent.self) }
 
+        /// When set, `cancel()` waits here until released.
+        var cancelGate: Gate?
+
         func show(_ code: String) { continuation.yield(.confirmCode(code)) }
+        /// Fails the session without ending its stream, as a live one would
+        /// before it finishes.
+        func fail(_ failure: PairingFailure) { continuation.yield(.failed(failure)) }
+        func holdCancel(at gate: Gate) { cancelGate = gate }
         func confirm(codesMatch: Bool) async { confirms.append(codesMatch) }
-        func cancel() async { cancels += 1 }
+        func cancel() async {
+            cancels += 1
+            await cancelGate?.wait()
+        }
     }
 
     /// Holds one pair call until released.
@@ -641,11 +651,102 @@ final class FriendActions: @unchecked Sendable {
         #expect(await first.cancels == 1)
     }
 
+    /// Codex re-review of #104 (HIGH): a confirm queued from comparison A's
+    /// buttons must not land on comparison B, which an automatic retry put
+    /// on screen before the queued action ran.
+    @Test func aConfirmFromAnOldComparisonConfirmsNothing() async throws {
+        let first = ControlledSession()
+        let second = ControlledSession()
+        let sessions = [first, second]
+        let counter = Counter()
+        let directory = ScriptedDirectory(candidates: []) { _, _ in sessions[await counter.next()] }
+        let model = PairingModel(directory: directory.directory)
+        let friend = PeerID.random()
+
+        await model.choose(PairingCandidate(peer: friend))
+        await first.show("111111")
+        await eventually { model.phase == .comparing(code: "111111") }
+        let rendered = try #require(model.comparison)
+        #expect(rendered.code == "111111")
+
+        // A fails, the other phone tries again, and B is on screen before
+        // A's queued confirm runs.
+        await first.fail(.timedOut)
+        await eventually { model.phase == .failed(.timedOut) }
+        directory.ask(from: friend)
+        await model.refresh()
+        await second.show("222222")
+        await eventually { model.phase == .comparing(code: "222222") }
+
+        await model.confirm(codesMatch: true, for: rendered)
+        #expect(await first.confirms.isEmpty)
+        #expect(await second.confirms.isEmpty, "B's code was never confirmed")
+        #expect(model.phase == .comparing(code: "222222"))
+
+        await model.confirm(codesMatch: true, for: try #require(model.comparison))
+        #expect(await second.confirms == [true])
+    }
+
+    /// Codex re-review of #104: Try again awaits the old session's cancel.
+    /// A Cancel and an automatic join during that wait must not let the
+    /// suspended retry adopt the newer attempt and pair with the old phone.
+    @Test func aRetryWaitingOnTheOldCancelYieldsToANewerAttempt() async throws {
+        let old = ControlledSession()
+        let joined = ControlledSession()
+        let extra = ControlledSession()
+        let sessions = [old, joined, extra]
+        let counter = Counter()
+        let directory = ScriptedDirectory(candidates: []) { _, _ in sessions[await counter.next()] }
+        let model = PairingModel(directory: directory.directory)
+        let friend = PeerID.random()
+        let other = PeerID.random()
+
+        await model.choose(PairingCandidate(peer: friend))
+        await old.show("111111")
+        await eventually { model.phase == .comparing(code: "111111") }
+        await old.fail(.timedOut)
+        await eventually { model.phase == .failed(.timedOut) }
+
+        let gate = Gate()
+        await old.holdCancel(at: gate)
+        let retrying = Task { await model.tryAgain() }
+        for _ in 0..<2000 where !(await gate.waiting) { try? await Task.sleep(for: .milliseconds(1)) }
+        await model.tryAgain()
+        #expect(await old.cancels == 1, "a second Try again while one runs does nothing")
+
+        // Cancel, then another phone's request is joined, all while the
+        // retry is still waiting on the old cancel.
+        await model.cancel()
+        #expect(model.phase == .choosing)
+        directory.ask(from: other)
+        await model.refresh()
+        await joined.show("222222")
+        await eventually { model.phase == .comparing(code: "222222") }
+
+        await gate.release()
+        await retrying.value
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(directory.starts.map(\.0) == [friend, other], "the stale retry never pairs again")
+        #expect(model.phase == .comparing(code: "222222"))
+        await model.confirm(codesMatch: true, for: try #require(model.comparison))
+        #expect(await joined.confirms == [true])
+        #expect(await extra.confirms.isEmpty)
+    }
+
     actor Counter {
         private var value = 0
         func next() -> Int {
             defer { value += 1 }
             return value
         }
+    }
+}
+
+extension PairingModel {
+    /// For tests: confirm the comparison on screen now, in one main-actor
+    /// turn, as a button rendered for it would.
+    func confirm(codesMatch: Bool) async {
+        guard let comparison else { return }
+        await confirm(codesMatch: codesMatch, for: comparison)
     }
 }
