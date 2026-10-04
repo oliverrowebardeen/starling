@@ -18,12 +18,15 @@ struct Organizer {
     /// asked about.
     let ranking: [PlaceChoice]
     let base: Plan?
+    /// What the request is on a plan; nil when it is not on one.
+    var kind: PlaceRequestKind?
     /// A pick on a plan that already has a place changes that place, so
     /// everyone in the plan must agree: the place is one every friend can
     /// do, and every friend says yes, or nothing changes (ADR 0022, ADR
-    /// 0233). Nobody is left out of the plan by it. The first place for a
-    /// plan still goes ahead with whoever agrees, as a chain does.
-    var everyoneMustAgree: Bool
+    /// 0233). Nobody is left out of the plan by it, and a yes is final
+    /// once the change is confirmed. The first place for a plan still goes
+    /// ahead with whoever agrees, as a chain does.
+    var everyoneMustAgree: Bool { if case .placeChange? = kind { true } else { false } }
     let time: TimeSlot?
     let activity: Keyword?
     var phase: Phase = .asking
@@ -137,7 +140,10 @@ extension PickAPlaceService {
             .prefix(ProtocolLimits.maxAttendees - 1)
         // Changing a plan's place needs everyone in it to be able to say
         // yes (ADR 0022, ADR 0233).
-        let everyoneMustAgree = base?.place != nil
+        let kind: PlaceRequestKind? = base.map { plan in
+            plan.place == nil ? .firstPlace : .placeChange(roster: plan.attendees.peers, revision: plan.revision)
+        }
+        let everyoneMustAgree = if case .placeChange? = kind { true } else { false }
         let everyoneCanAgree = base.map { plan in
             !everyoneMustAgree || Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)
         } ?? true
@@ -146,7 +152,7 @@ extension PickAPlaceService {
         conversationOf[request.interaction] = conversation
         organized[conversation] = Organizer(
             id: request.interaction, conversation: conversation, chainedFrom: request.chainedFrom,
-            friends: Array(friends), ranking: ranking, base: base, everyoneMustAgree: everyoneMustAgree,
+            friends: Array(friends), ranking: ranking, base: base, kind: kind,
             time: base?.time ?? time, activity: base?.activity
         )
         guard !friends.isEmpty, everyoneCanAgree else {
@@ -160,8 +166,11 @@ extension PickAPlaceService {
         // a relaunch keeps it (re-review of PR #55, finding 2).
         let expiry = request.intent.expiresAt.date
         organized[conversation]?.expiresAt = expiry
+        // So is what the request is on a plan, for its whole life: a relaunch
+        // keeps the rule, and a lost record is read as the stricter one.
         do {
-            try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry, everyoneMustAgree: everyoneMustAgree), for: conversation)
+            try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry), for: conversation)
+            if let kind { try await ledger.recordRequestKind(kind, for: conversation, at: clock.now()) }
         } catch {
             organized[conversation] = nil
             conversationOf[request.interaction] = nil
@@ -269,8 +278,10 @@ extension PickAPlaceService {
             acknowledge(envelope)
         case (.settled, .reject):
             // A withdrawal that crossed the confirmation wins: the friend's
-            // phone has already ended, so the plan goes on without them.
-            guard organizer.accepted.contains(sender) else {
+            // phone has already ended, so the plan goes on without them. A
+            // change of place is the exception: every yes is final once
+            // everyone has said it, so the change stands (ADR 0233).
+            guard organizer.accepted.contains(sender), !organizer.everyoneMustAgree else {
                 acknowledge(envelope)
                 return
             }
@@ -351,7 +362,7 @@ extension PickAPlaceService {
         let deadline = clock.now().addingTimeInterval(Self.seconds(configuration.confirmWindow))
         organized[conversation]?.confirmDeadline = deadline
         let record = organizer.expiresAt.map {
-            RequestDeadlines(expiresAt: $0, confirmDeadline: deadline, everyoneMustAgree: organizer.everyoneMustAgree)
+            RequestDeadlines(expiresAt: $0, confirmDeadline: deadline)
         }
         let id = organizer.id
         spawn(conversation) { service in
@@ -627,21 +638,6 @@ extension PickAPlaceService {
         organizer.accepted.remove(friend)
         organizer.passed.insert(friend)
         let remaining = roster.filter { $0 != friend }
-        if organizer.everyoneMustAgree {
-            // A change to a plan needs everyone, and this friend's phone has
-            // already ended it: the change is off for everyone, and the plan
-            // stays as it was. Leaving the plan is Change the plan's to do.
-            // The acknowledgment goes before the conversation is retired.
-            organizer.phase = .ended
-            organized[conversation] = organizer
-            cancelTasks(conversation)
-            let acknowledgment: (PeerID, MessageBody) = (friend, .reject(Rejection(proposal: withdrawal.id, reason: .noOverlap)))
-            let goodbyes: [(PeerID, MessageBody)] = [acknowledgment] + remaining.filter { $0 != localPeer }.map {
-                ($0, .reject(Rejection(proposal: organizer.lastHeard[$0] ?? MessageID(), reason: .noOverlap)))
-            }
-            finish(conversation, interaction: organizer.id, event: .failed, goodbyes: goodbyes, chainedFrom: organizer.chainedFrom)
-            return
-        }
         acknowledge(withdrawal)
         guard remaining.count >= 2, let attendees = try? Attendees(remaining) else {
             // Nobody else is left to meet.

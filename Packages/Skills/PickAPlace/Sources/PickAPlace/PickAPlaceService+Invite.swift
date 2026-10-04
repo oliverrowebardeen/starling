@@ -43,8 +43,14 @@ struct Invite {
     /// resume late can never replace a newer one.
     var proposalGeneration: UInt64 = 0
     var finished = false
+    /// What the request is on this phone's plan, from this phone's own copy
+    /// of it; nil when the request is not chained from a plan.
+    var kind: PlaceRequestKind?
 
     var isFinished: Bool { finished }
+    /// A change of a plan's place: the plan's whole roster must agree, and
+    /// a yes is final once sent (ADR 0233).
+    var isChange: Bool { if case .placeChange? = kind { true } else { false } }
 }
 
 extension PickAPlaceService {
@@ -81,6 +87,13 @@ extension PickAPlaceService {
         spawn(conversation) { service in
             do {
                 try await service.ledger.recordAdmission(sender, at: now)
+                // What the request is on this phone's own plan, recorded for
+                // its whole life before anything is answered (ADR 0233).
+                if let chainedFrom = envelope.chainedFrom {
+                    let kind = Self.kind(of: await service.plans(chainedFrom))
+                    try await service.ledger.recordRequestKind(kind, for: conversation, at: now)
+                    service.invites[conversation]?.kind = kind
+                }
             } catch {
                 service.endInvite(conversation, event: nil, reply: nil)
                 return
@@ -88,6 +101,12 @@ extension PickAPlaceService {
             service.invites[conversation]?.admitted = true
             await service.judgeAndAnswer(conversation, queryID: envelope.id, query: query)
         }
+    }
+
+    /// What a request on `plan` is: nil when this phone holds no such plan.
+    static func kind(of plan: Plan?) -> PlaceRequestKind {
+        guard let plan else { return .planNotHeld }
+        return plan.place == nil ? .firstPlace : .placeChange(roster: plan.attendees.peers, revision: plan.revision)
     }
 
     /// Ends a request the organizer stops answering. An honest organizer
@@ -263,6 +282,13 @@ extension PickAPlaceService {
               let place = validPlace(in: proposal.terms, acceptable: acceptable, organizer: invite.organizer),
               case .peers(let roster)? = proposal.terms[.people]
         else { return }
+        // A change of place asks this phone's plan's whole roster, over the
+        // plan's own revision: anything else is not shown (ADR 0233).
+        if case .placeChange(let everyone, let revision)? = invite.kind {
+            guard Set(roster) == Set(everyone), revision < UInt32(ProtocolLimits.maxNegotiationRounds - 1),
+                  UInt32(proposal.round) == revision + 1
+            else { return }
+        }
         // The owner's limits are checked again before the card is shown:
         // they may have changed since the list was sent (rule 6). After a
         // restart the facts are gone, so they are looked up again rather
@@ -365,6 +391,7 @@ extension PickAPlaceService {
             emit(invite.id, .ownerAccepted(revision: revision))
             spawnWaitForConfirmation(conversation)
         case .pass:
+            guard !(invite.isChange && invite.accepted) else { throw PickAPlaceError.yesIsFinal }
             // After a yes, passing takes the yes back: the state machine
             // calls that withdrawing.
             leave(conversation, event: invite.accepted || invite.accepting ? .withdrawn : .ownerPassed)
@@ -405,7 +432,9 @@ extension PickAPlaceService {
               case .places(let places)? = proposal.terms[.place], let place = places.first,
               Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
               acceptance.terms.values.allSatisfy({ $0.key == .people || $0.value == proposal.terms[$0.key] }),
-              final.count >= 2, final.first == invite.organizer, final.contains(localPeer), Set(final).isSubset(of: proposed)
+              final.count >= 2, final.first == invite.organizer, final.contains(localPeer), Set(final).isSubset(of: proposed),
+              // A change of place is confirmed only with everyone in it.
+              !invite.isChange || Set(final) == Set(proposed)
         else { return }
         invites[conversation]?.finished = true
         invites[conversation]?.finalRoster = final
@@ -421,7 +450,8 @@ extension PickAPlaceService {
     /// A confirmed plan lost someone: the same terms with fewer people,
     /// still including this phone and the organizer.
     func rosterShrank(_ acceptance: Acceptance, in conversation: ConversationID) {
-        guard let invite = invites[conversation], let roster = invite.finalRoster, let proposal = invite.proposal,
+        // A confirmed change of place never loses anyone (ADR 0233).
+        guard let invite = invites[conversation], !invite.isChange, let roster = invite.finalRoster, let proposal = invite.proposal,
               case .peers(let shorter)? = acceptance.terms[.people],
               Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
               acceptance.terms.values.allSatisfy({ $0.key == .people || $0.value == proposal.terms[$0.key] }),
@@ -444,6 +474,8 @@ extension PickAPlaceService {
     ///   (ADR 0020, decision 9).
     func leave(_ conversation: ConversationID, event: InteractionEvent) {
         guard let invite = invites[conversation] else { return }
+        // A yes to a change of place is final once sent (ADR 0233).
+        guard !(invite.isChange && (invite.accepted || invite.finalRoster != nil)) else { return }
         if invite.isFinished {
             // Withdrawing from a confirmed plan takes the yes back like any
             // other: the organizer shortens the roster for everyone left.
@@ -492,7 +524,9 @@ extension PickAPlaceService {
 
     /// The organizer withdrew a confirmed plan: it is over on this phone too.
     func planCalledOff(_ conversation: ConversationID) {
-        guard let invite = invites[conversation], invite.finalRoster != nil else { return }
+        // A confirmed change of place is final; it is not called off
+        // (ADR 0233).
+        guard let invite = invites[conversation], invite.finalRoster != nil, !invite.isChange else { return }
         invites[conversation]?.finalRoster = nil
         finish(conversation, interaction: invite.id, event: .withdrawn)
     }

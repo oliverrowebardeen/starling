@@ -384,4 +384,8 @@ actor FailedAdmissionLedger: PickAPlaceLedger {
     func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws {
         try await base.recordDeadlines(deadlines, for: conversation)
     }
+    func requestKind(for conversation: ConversationID) async throws -> PlaceRequestKind? { try await base.requestKind(for: conversation) }
+    func recordRequestKind(_ kind: PlaceRequestKind, for conversation: ConversationID, at date: Date) async throws {
+        try await base.recordRequestKind(kind, for: conversation, at: date)
+    }
 }

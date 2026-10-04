@@ -5,7 +5,8 @@ import StarlingFakes
 import StarlingTransport
 import Testing
 
-/// A friend's checks on what an organizer sends (review of #118, finding 3).
+/// A friend's phone checks a change of place against its own copy of the
+/// plan, whatever the organizer sends (review of #118, findings 2 and 3).
 /// Mallory organizes by hand, so her messages can be anything.
 @Suite("A friend's checks on a place change", .serialized)
 struct PlanChangeReceiverTests {
@@ -16,6 +17,15 @@ struct PlanChangeReceiverTests {
         let maya = Phone("Maya", hub: hub, maps: maps)
         let jake = Phone("Jake", hub: hub, maps: maps)
         return (try await Group([mallory, maya, jake], hub: hub), mallory, maya, jake)
+    }
+
+    /// A plan for the three of them, at Tea Lab when `placed`, held on
+    /// Maya's phone.
+    func plan(_ people: [Phone], placed: Bool, heldBy holder: Phone) async throws -> Plan {
+        let plan = try Plan(origin: ConversationID(), attendees: Attendees(people.map(\.id)), activity: kw("boba"), time: nil)
+        let held = placed ? try plan.updating(place: .some(Venues.teaLab.choice)) : plan
+        await holder.plans.hold(held)
+        return held
     }
 
     @discardableResult
@@ -41,6 +51,79 @@ struct PlanChangeReceiverTests {
         await group.wire.sent(by: phone.id).contains {
             if case .accept(let acceptance) = $0.body { acceptance.proposal == offer.id } else { false }
         }
+    }
+
+    /// Finding 2: the plan is Mallory, Maya, and Jake, at Tea Lab, revision
+    /// 1. Maya is shown only a proposal to all three over revision 1, is
+    /// confirmed only with all three, and keeps all three afterwards.
+    @Test func aChangeOfPlaceNeedsTheWholePlanOnEveryPhone() async throws {
+        let (group, mallory, maya, jake) = try await mallorysGroup()
+        defer { Task { await group.stop() } }
+        let plan = try await plan([mallory, maya, jake], placed: true, heldBy: maya)
+        let conversation = ConversationID()
+        try await ask(maya, from: mallory, in: conversation, chainedFrom: plan.origin, group)
+        #expect(await maya.service.invites[conversation]?.isChange == true)
+
+        // Without Jake, or over another revision: no card.
+        try await send(.propose(Proposal(round: 2, terms: terms([mallory, maya]))), from: mallory, to: maya, in: conversation, chainedFrom: plan.origin)
+        try await send(.propose(Proposal(round: 3, terms: terms([mallory, maya, jake]))), from: mallory, to: maya, in: conversation,
+                       chainedFrom: plan.origin)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.interaction(conversation)?.proposal == nil)
+
+        // The whole plan over revision 1 is shown, and names revision 2.
+        let everyone = try terms([mallory, maya, jake])
+        let offer = try await send(.propose(Proposal(round: 2, terms: everyone)), from: mallory, to: maya, in: conversation,
+                                   chainedFrom: plan.origin)
+        #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(await maya.interaction(conversation)?.proposal?.plan?.revision == 2)
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+
+        // A confirmation without Jake is not a plan.
+        var shorter = everyone.values
+        shorter[.people] = .peers([mallory.id, maya.id])
+        try await send(.accept(Acceptance(proposal: offer.id, terms: Terms(shorter))), from: mallory, to: maya, in: conversation,
+                       chainedFrom: plan.origin)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.state(in: conversation) == .confirmed)
+
+        try await send(.accept(Acceptance(proposal: offer.id, terms: everyone)), from: mallory, to: maya, in: conversation, chainedFrom: plan.origin)
+        #expect(await maya.reaches(.planned, in: conversation))
+
+        // Afterwards, a shorter roster and a call-off change nothing.
+        try await send(.accept(Acceptance(proposal: offer.id, terms: Terms(shorter))), from: mallory, to: maya, in: conversation,
+                       chainedFrom: plan.origin)
+        try await send(.reject(Rejection(proposal: offer.id, reason: .noOverlap)), from: mallory, to: maya, in: conversation, chainedFrom: plan.origin)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.state(in: conversation) == .planned)
+        #expect(await eventually { await maya.attendees(in: conversation) == [mallory.id, maya.id, jake.id] })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    /// A plan's first place still narrows (ADR 0240, #66): Maya's plan has
+    /// no place yet, and a confirmation without Jake is her plan.
+    @Test func aPlansFirstPlaceStillTakesWhoeverAgreed() async throws {
+        let (group, mallory, maya, jake) = try await mallorysGroup()
+        defer { Task { await group.stop() } }
+        let plan = try await plan([mallory, maya, jake], placed: false, heldBy: maya)
+        let conversation = ConversationID()
+        try await ask(maya, from: mallory, in: conversation, chainedFrom: plan.origin, group)
+        #expect(await maya.service.invites[conversation]?.kind == .firstPlace)
+
+        let everyone = try terms([mallory, maya, jake])
+        let offer = try await send(.propose(Proposal(round: 1, terms: everyone)), from: mallory, to: maya, in: conversation,
+                                   chainedFrom: plan.origin)
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        var shorter = everyone.values
+        shorter[.people] = .peers([mallory.id, maya.id])
+        try await send(.accept(Acceptance(proposal: offer.id, terms: Terms(shorter))), from: mallory, to: maya, in: conversation,
+                       chainedFrom: plan.origin)
+        #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await eventually { await maya.attendees(in: conversation) == [mallory.id, maya.id] })
+        #expect(await group.lifecyclesWereLegal())
     }
 
     /// Finding 3: the same terms at another revision are a new proposal.

@@ -20,6 +20,10 @@ public enum PickAPlaceError: Error, Hashable, Sendable {
     /// The plan has changed as many times as a proposal can say (ADR 0233):
     /// its next revision would not fit in `Proposal.round`.
     case planRevisionLimit
+    /// A yes to a change of a plan's place is final once sent (ADR 0233):
+    /// to change their mind, the owner suggests another change or leaves
+    /// the plan.
+    case yesIsFinal
 }
 
 /// Wall time and timers, injectable so tests run retries in milliseconds.
@@ -133,6 +137,9 @@ public actor PickAPlaceService: SkillService {
     /// service checks it before opening a request and before an ordinary
     /// no, and retires through `Outbox.retire(_:)`.
     let conversations: any ConversationLedger
+    /// This phone's own plan for the plan conversation a chained request
+    /// names, if it holds one.
+    let plans: @Sendable (ConversationID) async -> Plan?
     /// Whether `requestTimes` has been loaded from `admissions` this launch.
     var admissionsLoaded = false
     let clock: PickAPlaceClock
@@ -177,6 +184,10 @@ public actor PickAPlaceService: SkillService {
     ///     (ADR 0021).
     ///   - ledger: What must survive a relaunch (`UserDefaultsPickAPlaceLedger`
     ///     in the app).
+    ///   - plans: This phone's own plan for the plan conversation a friend's
+    ///     chained request names (`Envelope.chainedFrom`), if it holds one.
+    ///     A friend checks a change of place against it: the whole roster
+    ///     must agree, over the plan's own revision (ADR 0233).
     public init(
         localPeer: PeerID,
         outbox: Outbox,
@@ -186,6 +197,7 @@ public actor PickAPlaceService: SkillService {
         ownerLimits: @escaping @Sendable () async -> ConstraintSet,
         ledger: any PickAPlaceLedger,
         conversations: any ConversationLedger,
+        plans: @escaping @Sendable (ConversationID) async -> Plan? = { _ in nil },
         clock: PickAPlaceClock = .system,
         configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
     ) {
@@ -197,6 +209,7 @@ public actor PickAPlaceService: SkillService {
         self.ownerLimits = ownerLimits
         self.ledger = ledger
         self.conversations = conversations
+        self.plans = plans
         self.clock = clock
         self.configuration = configuration
         (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
@@ -219,6 +232,9 @@ public actor PickAPlaceService: SkillService {
         guard let conversation = conversationOf[interaction] else { return }
         if let organizer = organized[conversation] {
             if organizer.phase == .settled {
+                // A confirmed change of place is final: to undo it, the owner
+                // suggests another change (ADR 0233).
+                guard !organizer.everyoneMustAgree else { return }
                 callOff(conversation)
             } else {
                 endOrganizer(conversation, event: .withdrawn, reason: .noOverlap)
@@ -433,6 +449,11 @@ public actor PickAPlaceService: SkillService {
         do { try await clock.sleep(.milliseconds(Int64(seconds * 1_000))) } catch { return false }
         return !Task.isCancelled
     }
+
+    /// What a request on a plan is read as when its record is missing or
+    /// cannot be read: a change of place that no proposal can match, the
+    /// stricter rule (ADR 0233).
+    static let unreadableKind = PlaceRequestKind.placeChange(roster: [], revision: .max)
 
     /// The plan the agreed place would make, when the terms say what or when.
     /// On a plan, the same plan at the new place, with its revision one

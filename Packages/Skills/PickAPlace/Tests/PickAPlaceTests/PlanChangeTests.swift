@@ -37,6 +37,11 @@ struct PlanChangeTests {
         return try place.map { try plan.updating(place: .some($0.choice)) } ?? plan
     }
 
+    /// Each phone holds its own copy of the plan, as after agreeing it.
+    func share(_ plan: Plan, with phones: [Phone]) async {
+        for phone in phones { await phone.plans.hold(plan) }
+    }
+
     func places(sentBy phone: Phone, in conversation: ConversationID, _ group: Group) async -> [[PlaceChoice]] {
         await group.wire.sent(by: phone.id).filter { $0.conversation == conversation }.compactMap {
             if case .query(let query) = $0.body, case .places(let list) = query.candidates { list } else { nil }
@@ -48,6 +53,7 @@ struct PlanChangeTests {
         defer { Task { await group.stop() } }
         let everyone = [oliver, maya, jake]
         let plan = try dinner(everyone)
+        await share(plan, with: everyone)
 
         // The first pick puts the plan at Green Bowl.
         let first = try await oliver.organize([Self.greenBowl, Self.veggieCart], with: [maya, jake], inputs: [.plan(plan)],
@@ -66,7 +72,9 @@ struct PlanChangeTests {
             #expect(await eventually { await phone.agreedPlace(in: first) == Self.greenBowl.choice })
         }
 
-        // "Somewhere else?" on the updated plan, with a new $10 limit.
+        // "Somewhere else?" on the updated plan, with a new $10 limit. Each
+        // phone holds the plan at Green Bowl now.
+        await share(placed, with: everyone)
         let second = try await oliver.organize([Self.greenBowl, Self.veggieCart], with: [maya, jake], limits: limits(budget: 10),
                                                inputs: [.plan(placed)], chainedFrom: plan.origin).conversation
         for phone in everyone { #expect(await phone.reaches(.proposed, in: second), "\(phone.name)") }
@@ -95,6 +103,7 @@ struct PlanChangeTests {
         let (group, oliver, maya, jake, _) = try await friends()
         defer { Task { await group.stop() } }
         let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
 
         let conversation = try await oliver.organize([Venues.fancy], with: [maya, jake], inputs: [.plan(plan)],
                                                      chainedFrom: plan.origin).conversation
@@ -116,6 +125,7 @@ struct PlanChangeTests {
         defer { Task { await group.stop() } }
         let plan = try dinner([oliver, maya, jake])
         #expect(plan.place == nil)
+        await share(plan, with: [oliver, maya, jake])
 
         let conversation = try await oliver.organize([Venues.fancy], with: [maya, jake], inputs: [.plan(plan)],
                                                      chainedFrom: plan.origin).conversation
@@ -152,6 +162,7 @@ struct PlanChangeTests {
         // One below the limit still works, and the friends' plans name it.
         let almost = try Plan(id: base.id, origin: base.origin, attendees: base.attendees, activity: base.activity, time: base.time,
                               place: base.place, revision: last - 1)
+        await share(almost, with: [oliver, maya, jake])
         let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(almost)],
                                                      chainedFrom: base.origin).conversation
         for phone in [oliver, maya, jake] {
@@ -161,17 +172,6 @@ struct PlanChangeTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
-    /// The rule is kept with the request's deadlines, so a relaunch keeps
-    /// it; a record saved before it existed reads as a first place.
-    @Test func deadlinesSavedBeforeTheRuleReadAsAFirstPlace() throws {
-        let saved = RequestDeadlines(expiresAt: Date(timeIntervalSince1970: 1_790_000_000), everyoneMustAgree: true)
-        #expect(try JSONDecoder().decode(RequestDeadlines.self, from: JSONEncoder().encode(saved)) == saved)
-        var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
-        old.removeValue(forKey: "everyoneMustAgree")
-        let read = try JSONDecoder().decode(RequestDeadlines.self, from: JSONSerialization.data(withJSONObject: old))
-        #expect(!read.everyoneMustAgree && read.expiresAt == saved.expiresAt)
-    }
-
     /// Everyone is shown Green Bowl, and Jake passes. A pass looks like
     /// silence, so the change ends at the confirm deadline, and nobody's
     /// plan moves.
@@ -179,6 +179,7 @@ struct PlanChangeTests {
         let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
         defer { Task { await group.stop() } }
         let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
 
         let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
                                                      chainedFrom: plan.origin).conversation
@@ -194,28 +195,41 @@ struct PlanChangeTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
-    /// Maya takes her yes back, and it crosses the confirmation. Without a
-    /// plan, Oliver and Jake would keep it for two; a change needs
-    /// everyone, so it is off for everyone.
-    @Test func aYesTakenBackAfterTheConfirmationCallsTheChangeOff() async throws {
+    /// The Orchestrator's decision on the review of #118: a yes to a change
+    /// of place is final once sent. Maya cannot pass or withdraw after it;
+    /// a withdrawal that arrives after everyone said yes is ignored; and
+    /// nobody, the organizer included, can call a confirmed change off.
+    @Test func aYesToAPlaceChangeIsFinal() async throws {
         let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
         defer { Task { await group.stop() } }
         let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
         let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
                                                      chainedFrom: plan.origin).conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
         try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        await #expect(throws: PickAPlaceError.yesIsFinal) { try await maya.pass(in: conversation) }
+        let mayas = try #require(await maya.interaction(conversation)?.id)
+        await maya.service.withdraw(mayas)
+        #expect(await maya.state(in: conversation) == .confirmed)
+
         try await jake.accept(in: conversation)
-        #expect(await eventually { await oliver.service.organized[conversation]?.accepted == [maya.id, jake.id] })
-
-        await maya.transport.lose(3) { $0.body.kind == .reject }
-        try await maya.pass(in: conversation)
-        #expect(await maya.reaches(.ended(.withdrawn), in: conversation))
         try await oliver.accept(in: conversation)
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation), "\(phone.name)") }
 
-        #expect(await oliver.reaches(.ended(.failed), in: conversation))
-        #expect(await jake.reaches(.ended(.withdrawn), in: conversation))
-        #expect(await eventually { await maya.service.pendingWithdrawals.isEmpty })
+        // A no from Maya after the confirmation, as a crossing withdrawal
+        // would arrive, and withdrawals on both sides: nothing changes.
+        _ = try await maya.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: oliver.id,
+                                       conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite, chainedFrom: plan.origin)
+        await maya.service.withdraw(mayas)
+        let olivers = try #require(await oliver.interaction(conversation)?.id)
+        await oliver.service.withdraw(olivers)
+        try await Task.sleep(for: .milliseconds(300))
+        for phone in [oliver, maya, jake] {
+            #expect(await phone.state(in: conversation) == .planned, "\(phone.name)")
+            #expect(await phone.attendees(in: conversation).map(Set.init) == Set(plan.attendees.peers), "\(phone.name)")
+        }
         #expect(await group.lifecyclesWereLegal())
     }
 
@@ -227,6 +241,7 @@ struct PlanChangeTests {
         defer { Task { await group.stop() } }
         let sam_ = try #require(sam)
         let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
 
         let outside = try await oliver.organize([Self.greenBowl], with: [maya, jake, sam_], inputs: [.plan(plan)],
                                                 chainedFrom: plan.origin).conversation
@@ -239,6 +254,7 @@ struct PlanChangeTests {
         let (others, oliver2, maya2, jake2, _) = try await friends(jakeSkills: [])
         defer { Task { await others.stop() } }
         let plan2 = try dinner([oliver2, maya2, jake2], at: Venues.bobaGuys)
+        await share(plan2, with: [oliver2, maya2, jake2])
         let blocked = try await oliver2.organize([Self.greenBowl], with: [maya2, jake2], inputs: [.plan(plan2)],
                                                  chainedFrom: plan2.origin).conversation
         #expect(await oliver2.reaches(.ended(.unsupported), in: blocked))
@@ -246,23 +262,67 @@ struct PlanChangeTests {
         #expect(await others.lifecyclesWereLegal())
     }
 
+    enum Record: String, CaseIterable, Sendable { case kept, missing, unreadable }
+
+    /// Makes `phone`'s record of the request's kind kept, missing, or
+    /// unreadable, before it restarts.
+    func prepare(_ record: Record, on phone: Phone, for conversation: ConversationID) async {
+        switch record {
+        case .kept: break
+        case .missing: await phone.ledger.forgetRequestKind(for: conversation)
+        case .unreadable: await phone.ledger.setFailing(true)
+        }
+    }
+
     /// After a restart, an organizer that was changing a plan still needs
-    /// everyone: Jake never answers, so there is no plan for two.
-    @Test func aRestoredChangeStillNeedsEveryone() async throws {
+    /// everyone, even when its record of that is gone (review of #118,
+    /// finding 1): Jake never answers, so there is no plan for two.
+    @Test(arguments: [Record.kept, .missing])
+    func aRestoredChangeStillNeedsEveryone(record: Record) async throws {
         let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
         defer { Task { await group.stop() } }
         let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
         let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
                                                      chainedFrom: plan.origin).conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
         try await maya.accept(in: conversation)
         #expect(await eventually { await oliver.service.organized[conversation]?.accepted == [maya.id] })
 
+        await prepare(record, on: oliver, for: conversation)
         await oliver.restart()
         #expect(await oliver.service.organized[conversation]?.everyoneMustAgree == true)
         try await oliver.accept(in: conversation)
         #expect(await oliver.reaches(.ended(.nobodyUp), in: conversation))
         #expect(await oliver.agreedPlace(in: conversation) == nil)
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    /// A confirmed change restored with its record kept, missing, or
+    /// unreadable is still a change: a withdrawal that arrives afterwards
+    /// changes nothing.
+    @Test(arguments: Record.allCases)
+    func aRestoredConfirmedChangeStaysFinal(record: Record) async throws {
+        let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
+        defer { Task { await group.stop() } }
+        let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
+        let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
+                                                     chainedFrom: plan.origin).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
+        for phone in [maya, jake, oliver] { try await phone.accept(in: conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation), "\(phone.name)") }
+        #expect(await eventually { await oliver.attendees(in: conversation).map(Set.init) == Set(plan.attendees.peers) })
+
+        await prepare(record, on: oliver, for: conversation)
+        await oliver.restart()
+        #expect(await oliver.service.organized[conversation]?.everyoneMustAgree == true)
+        _ = try await maya.outbox.send(.reject(Rejection(proposal: MessageID(), reason: .noOverlap)), to: oliver.id,
+                                       conversation: conversation, skill: PickAPlaceSkill.ref, mode: .invite, chainedFrom: plan.origin)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await oliver.state(in: conversation) == .planned)
+        #expect(await oliver.attendees(in: conversation).map(Set.init) == Set(plan.attendees.peers))
+        #expect(await jake.attendees(in: conversation).map(Set.init) == Set(plan.attendees.peers))
         #expect(await group.lifecyclesWereLegal())
     }
 }
