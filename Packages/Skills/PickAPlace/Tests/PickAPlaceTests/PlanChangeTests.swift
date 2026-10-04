@@ -6,8 +6,9 @@ import StarlingTransport
 import Testing
 
 /// "Somewhere else?": Pick a place on a confirmed plan changes the plan's
-/// place, and a new budget is a limit for that search. Everyone in the plan
-/// must agree; otherwise the plan stays as it was (ADR 0022).
+/// place, and a new budget is a limit for that search. Once the plan has a
+/// place, everyone in it must agree to a new one; otherwise the plan stays
+/// as it was (ADR 0022, ADR 0233).
 @Suite("Changing a plan's place", .serialized)
 struct PlanChangeTests {
     static let greenBowl = candidate("Green Bowl", id: "I.greenbowl", tier: .two, diets: ["vegetarian"], kinds: ["restaurant"])
@@ -100,6 +101,40 @@ struct PlanChangeTests {
             #expect(await phone.interaction(conversation)?.proposal == nil, "\(phone.name)")
         }
         #expect(await group.lifecyclesWereLegal())
+    }
+
+    /// A plan from Down for... has no place yet. Its first place still goes
+    /// ahead with whoever it fits, as a chain does (ADR 0233): Le Fancy
+    /// breaks Maya's budget, so the plan moves on with Oliver and Jake, and
+    /// its revision still rises.
+    @Test func theFirstPlaceForAPlanGoesAheadWithWhoeverItFits() async throws {
+        let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
+        defer { Task { await group.stop() } }
+        let plan = try dinner([oliver, maya, jake])
+        #expect(plan.place == nil)
+
+        let conversation = try await oliver.organize([Venues.fancy], with: [maya, jake], inputs: [.plan(plan)],
+                                                     chainedFrom: plan.origin).conversation
+        for phone in [oliver, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
+        let placed = try #require(await oliver.interaction(conversation)?.proposal?.plan)
+        #expect(placed.id == plan.id && placed.revision == plan.revision + 1 && placed.place == Venues.fancy.choice)
+        #expect(Set(placed.attendees.peers) == [oliver.id, jake.id])
+        #expect(await oliver.service.organized[conversation]?.everyoneMustAgree == false)
+        for phone in [oliver, jake] { try await phone.accept(in: conversation) }
+        for phone in [oliver, jake] { #expect(await phone.reaches(.planned, in: conversation), "\(phone.name)") }
+        #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, jake.id] })
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    /// The rule is kept with the request's deadlines, so a relaunch keeps
+    /// it; a record saved before it existed reads as a first place.
+    @Test func deadlinesSavedBeforeTheRuleReadAsAFirstPlace() throws {
+        let saved = RequestDeadlines(expiresAt: Date(timeIntervalSince1970: 1_790_000_000), everyoneMustAgree: true)
+        #expect(try JSONDecoder().decode(RequestDeadlines.self, from: JSONEncoder().encode(saved)) == saved)
+        var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
+        old.removeValue(forKey: "everyoneMustAgree")
+        let read = try JSONDecoder().decode(RequestDeadlines.self, from: JSONSerialization.data(withJSONObject: old))
+        #expect(!read.everyoneMustAgree && read.expiresAt == saved.expiresAt)
     }
 
     /// Everyone is shown Green Bowl, and Jake passes. A pass looks like

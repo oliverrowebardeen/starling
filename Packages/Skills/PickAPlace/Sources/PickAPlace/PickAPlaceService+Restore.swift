@@ -33,7 +33,7 @@ extension PickAPlaceService {
             case .planned:
                 // A confirmed plan stays open for a shorter roster or a
                 // call-off; one this phone cannot rebuild is retired.
-                let rebuilt = interaction.role == .initiator ? resumeSettled(interaction) : resumePlannedInvite(interaction)
+                let rebuilt = interaction.role == .initiator ? await resumeSettled(interaction) : resumePlannedInvite(interaction)
                 if !rebuilt { try? await outbox.retire(interaction.conversation) }
                 continue
             case .done, .ended:
@@ -60,8 +60,13 @@ extension PickAPlaceService {
     /// A settled organizer that can repeat its confirmation, from the stored
     /// proposal and the attendees it produced.
     @discardableResult
-    private func resumeSettled(_ interaction: Interaction) -> Bool {
+    private func resumeSettled(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
+        // Read before anything is checked, so nothing changes between the
+        // checks and the rebuild. A change of place stays one that needs
+        // everyone, so a yes taken back still calls it off; unreadable, it
+        // is treated as a first place, which leaves the others in the plan.
+        let everyoneMustAgree = (try? await ledger.deadlines(for: conversation))?.everyoneMustAgree ?? false
         guard organized[conversation] == nil, let proposal = interaction.proposal, let (place, roster) = Self.parts(of: proposal),
               roster.first == localPeer, let attendees = Self.attendees(of: interaction)
         else { return false }
@@ -70,7 +75,7 @@ extension PickAPlaceService {
         var organizer = Organizer(
             id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
             friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan,
-            everyoneMustAgree: Self.changesAPlan(proposal), time: nil, activity: nil
+            everyoneMustAgree: everyoneMustAgree, time: nil, activity: nil
         )
         organizer.phase = .settled
         organizer.proposal = proposal
@@ -81,13 +86,6 @@ extension PickAPlaceService {
         conversationOf[interaction.id] = conversation
         rememberOrganizer(conversation)
         return true
-    }
-
-    /// Whether the stored proposal changes an existing plan: only then is
-    /// its plan's revision above 0, since a plan this service makes from
-    /// the terms alone starts at 0 (ADR 0022, decision 7).
-    static func changesAPlan(_ proposal: SkillProposal) -> Bool {
-        (proposal.plan?.revision ?? 0) > 0
     }
 
     static func attendees(of interaction: Interaction) -> [PeerID]? {
@@ -143,7 +141,7 @@ extension PickAPlaceService {
         var organizer = Organizer(
             id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
             friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan,
-            everyoneMustAgree: Self.changesAPlan(proposal), time: time, activity: activity
+            everyoneMustAgree: false, time: time, activity: activity
         )
         organizer.phase = .proposing
         organizer.proposal = proposal
@@ -163,6 +161,7 @@ extension PickAPlaceService {
         }
         organized[conversation]?.confirmDeadline = confirmDeadline
         organized[conversation]?.expiresAt = deadlines.expiresAt
+        organized[conversation]?.everyoneMustAgree = deadlines.everyoneMustAgree
         startProposing(conversation)
         spawnExpiry(conversation, at: deadlines.expiresAt)
         return true

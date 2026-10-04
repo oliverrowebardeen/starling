@@ -18,10 +18,12 @@ struct Organizer {
     /// asked about.
     let ranking: [PlaceChoice]
     let base: Plan?
-    /// A pick on a plan changes that plan, so everyone in it must agree:
-    /// the place is one every friend can do, and every friend says yes, or
-    /// nothing changes (ADR 0022). Nobody is left out of the plan by it.
-    let everyoneMustAgree: Bool
+    /// A pick on a plan that already has a place changes that place, so
+    /// everyone in the plan must agree: the place is one every friend can
+    /// do, and every friend says yes, or nothing changes (ADR 0022, ADR
+    /// 0233). Nobody is left out of the plan by it. The first place for a
+    /// plan still goes ahead with whoever agrees, as a chain does.
+    var everyoneMustAgree: Bool
     let time: TimeSlot?
     let activity: Keyword?
     var phase: Phase = .asking
@@ -127,17 +129,18 @@ extension PickAPlaceService {
         let friends = named
             .filter { cards[$0]?.support(for: descriptor.ref).isSupported ?? true }
             .prefix(ProtocolLimits.maxAttendees - 1)
-        // Everyone in the plan must be able to say yes, or the place cannot
-        // change (ADR 0022).
+        // Changing a plan's place needs everyone in it to be able to say
+        // yes (ADR 0022, ADR 0233).
+        let everyoneMustAgree = base?.place != nil
         let everyoneCanAgree = base.map { plan in
-            Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)
+            !everyoneMustAgree || Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)
         } ?? true
 
         let conversation = request.conversation
         conversationOf[request.interaction] = conversation
         organized[conversation] = Organizer(
             id: request.interaction, conversation: conversation, chainedFrom: request.chainedFrom,
-            friends: Array(friends), ranking: ranking, base: base, everyoneMustAgree: base != nil,
+            friends: Array(friends), ranking: ranking, base: base, everyoneMustAgree: everyoneMustAgree,
             time: base?.time ?? time, activity: base?.activity
         )
         guard !friends.isEmpty, everyoneCanAgree else {
@@ -152,7 +155,7 @@ extension PickAPlaceService {
         let expiry = request.intent.expiresAt.date
         organized[conversation]?.expiresAt = expiry
         do {
-            try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry), for: conversation)
+            try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry, everyoneMustAgree: everyoneMustAgree), for: conversation)
         } catch {
             organized[conversation] = nil
             conversationOf[request.interaction] = nil
@@ -311,7 +314,8 @@ extension PickAPlaceService {
         if let activity = organizer.activity { values[.activity] = .keywords([activity]) }
         let terms = try! Terms(values)
         let revision = (organizer.proposal?.revision ?? 0) + 1
-        let plan = Self.plan(base: organizer.base, origin: organizer.chainedFrom ?? conversation, roster: roster, terms: terms, place: choice.place)
+        let plan = Self.plan(base: organizer.base, keepingEveryone: organizer.everyoneMustAgree, origin: organizer.chainedFrom ?? conversation,
+                             roster: roster, terms: terms, place: choice.place)
         let proposal = SkillProposal(revision: revision, participants: roster, terms: terms, plan: plan)
         organizer.proposal = proposal
         organizer.phase = .proposing
@@ -340,7 +344,9 @@ extension PickAPlaceService {
         // the proposal goes out, so a relaunch keeps it.
         let deadline = clock.now().addingTimeInterval(Self.seconds(configuration.confirmWindow))
         organized[conversation]?.confirmDeadline = deadline
-        let record = organizer.expiresAt.map { RequestDeadlines(expiresAt: $0, confirmDeadline: deadline) }
+        let record = organizer.expiresAt.map {
+            RequestDeadlines(expiresAt: $0, confirmDeadline: deadline, everyoneMustAgree: organizer.everyoneMustAgree)
+        }
         let id = organizer.id
         spawn(conversation) { service in
             if let record { try? await service.ledger.recordDeadlines(record, for: conversation) }

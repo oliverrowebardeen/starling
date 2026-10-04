@@ -433,10 +433,12 @@ public actor PickAPlaceService: SkillService {
 
     /// The plan the agreed place would make, when the terms say what or when.
     /// On a plan, the same plan at the new place, with its revision one
-    /// higher and everyone still in it (ADR 0022).
-    static func plan(base: Plan?, origin: ConversationID, roster: [PeerID], terms: Terms, place: PlaceChoice) -> Plan? {
-        if let base { return try? base.updating(place: .some(place)) }
+    /// higher (ADR 0022): with everyone still in it for a change of place,
+    /// or with the roster that agreed for its first place.
+    static func plan(base: Plan?, keepingEveryone: Bool = false, origin: ConversationID, roster: [PeerID], terms: Terms,
+                     place: PlaceChoice) -> Plan? {
         guard let attendees = try? Attendees(roster) else { return nil }
+        if let base { return try? base.updating(attendees: keepingEveryone ? nil : attendees, place: .some(place)) }
         let activity: Keyword? = if case .keywords(let list)? = terms[.activity] { list.first } else { nil }
         let time: TimeSlot? = if case .slots(let list)? = terms[.time] { list.first } else { nil }
         return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place)

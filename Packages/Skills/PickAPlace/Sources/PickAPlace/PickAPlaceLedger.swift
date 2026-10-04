@@ -26,10 +26,24 @@ public protocol PickAPlaceLedger: Sendable {
 public struct RequestDeadlines: Codable, Hashable, Sendable {
     public var expiresAt: Date
     public var confirmDeadline: Date?
+    /// The request changes a plan's place, so everyone in the plan must
+    /// agree (ADR 0233). Kept here so a relaunch keeps the rule; records
+    /// written before it decode as false.
+    public var everyoneMustAgree: Bool
 
-    public init(expiresAt: Date, confirmDeadline: Date? = nil) {
+    public init(expiresAt: Date, confirmDeadline: Date? = nil, everyoneMustAgree: Bool = false) {
         self.expiresAt = expiresAt
         self.confirmDeadline = confirmDeadline
+        self.everyoneMustAgree = everyoneMustAgree
+    }
+
+    private enum CodingKeys: String, CodingKey { case expiresAt, confirmDeadline, everyoneMustAgree }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        expiresAt = try c.decode(Date.self, forKey: .expiresAt)
+        confirmDeadline = try c.decodeIfPresent(Date.self, forKey: .confirmDeadline)
+        everyoneMustAgree = try c.decodeIfPresent(Bool.self, forKey: .everyoneMustAgree) ?? false
     }
 }
 
