@@ -437,8 +437,15 @@ public actor PickAPlaceService: SkillService {
     /// or with the roster that agreed for its first place.
     static func plan(base: Plan?, keepingEveryone: Bool = false, origin: ConversationID, roster: [PeerID], terms: Terms,
                      place: PlaceChoice) -> Plan? {
+        if let base {
+            if keepingEveryone { return try? base.updating(place: .some(place)) }
+            // The people who agreed, in the plan's own order, so the same
+            // people compare equal to the plan's roster.
+            let kept = base.attendees.peers.filter(roster.contains)
+            guard let attendees = try? Attendees(Set(kept) == Set(roster) ? kept : roster) else { return nil }
+            return try? base.updating(attendees: attendees, place: .some(place))
+        }
         guard let attendees = try? Attendees(roster) else { return nil }
-        if let base { return try? base.updating(attendees: keepingEveryone ? nil : attendees, place: .some(place)) }
         let activity: Keyword? = if case .keywords(let list)? = terms[.activity] { list.first } else { nil }
         let time: TimeSlot? = if case .slots(let list)? = terms[.time] { list.first } else { nil }
         return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place)
