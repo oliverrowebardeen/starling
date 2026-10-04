@@ -24,6 +24,8 @@ let package = Package(
         .package(path: "../../Packages/Skills/PickAPlace"),
         .package(path: "../../Packages/Skills/FindATime"),
         .package(path: "../../Packages/Skills/DownFor"),
+        // Lane E's Change the plan (ADR 0022, ADR 0243).
+        .package(path: "../../Packages/Skills/ChangePlan"),
         .package(path: "../../Packages/StarlingAvailability"),
     ],
     targets: [
@@ -35,6 +37,7 @@ let package = Package(
             .product(name: "PickAPlace", package: "PickAPlace"),
             .product(name: "FindATime", package: "FindATime"),
             .product(name: "DownFor", package: "DownFor"),
+            .product(name: "StarlingChangePlan", package: "ChangePlan"),
             .product(name: "StarlingAvailability", package: "StarlingAvailability"),
         ]),
         .testTarget(

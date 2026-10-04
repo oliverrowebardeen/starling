@@ -30,6 +30,8 @@ packages:
     path: ../Packages/StarlingIdentity
   # Lane B's Down for..., lane C's Find a time and calendar access, lane D's
   # Pick a place, lane E's chaining and audit, and its Swap photos.
+  ChangePlan:
+    path: ../Packages/Skills/ChangePlan
   DownFor:
     path: ../Packages/Skills/DownFor
   FindATime:
@@ -97,6 +99,8 @@ targets:
         product: StarlingFeatures
       - package: StarlingDesign
         product: StarlingDesign
+      - package: ChangePlan
+        product: StarlingChangePlan
       - package: DownFor
         product: DownFor
       - package: FindATime
