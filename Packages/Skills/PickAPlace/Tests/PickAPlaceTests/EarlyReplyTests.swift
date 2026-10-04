@@ -123,7 +123,8 @@ struct EarlyReplyTests {
         #expect(await oliver.service.organized[conversation]?.early.isEmpty == true)
         try await oliver.accept(in: conversation)
         #expect(await oliver.reaches(.planned, in: conversation))
-        #expect(await oliver.attendees(in: conversation) == [oliver.id, maya.id])
+        // The roster follows the confirmation as its own event.
+        #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, maya.id] })
         #expect(await group.lifecyclesWereLegal())
     }
 
