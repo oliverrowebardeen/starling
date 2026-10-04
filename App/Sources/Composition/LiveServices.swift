@@ -203,10 +203,13 @@ enum LiveServices {
 
     /// Lane E's Change the plan over the app's one Outbox and the ledger it
     /// enforces, finding each plan by its origin (P15-E request 10), and
-    /// sharing the holds with Pick a place (ADR 0023).
+    /// sharing the holds with Pick a place (ADR 0023). Its journal of
+    /// confirmations and leave notices still owed an acknowledgment is on
+    /// disk, so a restart keeps resending them.
     static func changePlan(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, plans: StandingPlans,
                            holds: any PlanChangeHolding) -> any SkillService {
-        ChangePlanService(outbox: outbox, ledger: ledger, journal: InMemoryChangePlanJournal(), holds: holds, me: me, planLookup: { conversation in
+        let journal: any ChangePlanJournal = (try? FileChangePlanJournal.standard()) ?? UnavailableChangePlanJournal()
+        return ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, holds: holds, me: me, planLookup: { conversation in
             await plans.standing(origin: conversation)
         })
     }
