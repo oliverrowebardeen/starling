@@ -251,7 +251,13 @@ public struct HomeContent: Hashable, Sendable {
     ///   one request; each match shows as its own card.
     public init(_ interactions: [Interaction], words: InteractionWords, groups: [InteractionID: UUID] = [:]) {
         groupInvites = Self.groupInvites(interactions, groups: groups, words: words)
-        let visible = interactions.filter(words.isVisible).compactMap(words.summary)
+        // A change to a plan lives on that plan's timeline, never as a plan
+        // of its own (P15-E request 13); while it is open it shows as itself.
+        let visible = interactions.filter(words.isVisible).compactMap { item -> InteractionSummary? in
+            guard item.skill.id == .changePlan else { return words.summary(item) }
+            if item.state.homeSection == .comingUp, InteractionWords.isChange(item, among: interactions) { return nil }
+            return words.changeSummary(item, basis: InteractionWords.basis(of: item, among: interactions))
+        }
         needsYou = visible.filter { $0.interaction.state.homeSection == .needsYou }
             .sorted { $0.interaction.updatedAt > $1.interaction.updatedAt }
         inProgress = Self.grouped(visible.filter { $0.interaction.state.homeSection == .inProgress }, groups: groups, words: words)
@@ -327,9 +333,14 @@ public struct LifecycleNotice: Hashable, Sendable {
     public let title: String
     public let body: String
 
-    public static func make(before: Interaction?, after: Interaction, words: InteractionWords) -> LifecycleNotice? {
+    public static func make(before: Interaction?, after: Interaction, words: InteractionWords, basis: Plan? = nil) -> LifecycleNotice? {
         guard before?.state != after.state, words.isVisible(after), let summary = words.summary(after) else { return nil }
         let id = "interaction-\(after.id)"
+        if after.skill.id == .changePlan {
+            // A friend's suggestion, in the change's own words; nothing else.
+            guard after.state == .proposed, let text = words.suggestionCard(after, basis: basis) else { return nil }
+            return LifecycleNotice(id: id, title: summary.skill.wording.name, body: text)
+        }
         switch after.state {
         case .proposed:
             guard let facts = words.facts(after) else { return nil }
@@ -374,8 +385,13 @@ public final class ProposalTexts {
     }
 
     /// The headline and detail for the interaction's current proposal.
-    public func text(for interaction: Interaction, words: InteractionWords) -> (headline: String, detail: String?)? {
+    /// - Parameter basis: for a Change the plan card, the plan it would
+    ///   change on this phone (nil for a friend being added).
+    public func text(for interaction: Interaction, words: InteractionWords, basis: Plan? = nil) -> (headline: String, detail: String?)? {
         if interaction.skill.id == .pickAPlace { return placeText(for: interaction, words: words) }
+        // Change the plan's own words, never the model's: they quote the
+        // plan as it stands on this phone.
+        if interaction.skill.id == .changePlan { return words.suggestionCard(interaction, basis: basis).map { ($0, nil) } }
         guard let facts = words.facts(interaction), let revision = interaction.proposalRevision else { return nil }
         let template = words.template(facts)
         let key = Key(interaction: interaction.id, revision: revision)

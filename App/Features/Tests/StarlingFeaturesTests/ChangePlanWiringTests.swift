@@ -94,3 +94,108 @@ import Testing
         #expect(!h.model.tiles.contains { $0.id == .changePlan })
     }
 }
+
+/// Change the plan's words (ADR 0022, P15-E request 13): cards from the
+/// owner's own nicknames, changes on the plan's timeline, and nobody named
+/// when one does not go through.
+@MainActor
+@Suite struct ChangePlanWordsTests {
+    let me = PeerID.random()
+    let maya = PeerID.random()
+    let jake = PeerID.random()
+    let at = Timestamp(Fixtures.noon)
+
+    var words: InteractionWords {
+        let names = [maya: "Maya", jake: "Jake"]
+        return InteractionWords(
+            registry: try! SkillRegistry(SampleSkills.registry.descriptors + [ChangePlan.descriptor]), localPeer: me,
+            formatter: ValueFormatter(timeZone: Fixtures.utc, locale: Locale(identifier: "en_US"), referenceDate: { Fixtures.noon }),
+            names: { names }, now: { Fixtures.noon }
+        )
+    }
+
+    func eight() throws -> TimeSlot {
+        let start = Fixtures.noon.addingTimeInterval(5 * 3600 + 47 * 60) // 8 PM UTC
+        return try TimeSlot(start: start, end: start.addingTimeInterval(3600))
+    }
+
+    func root() throws -> Interaction {
+        var item = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: at)
+        let plan = try Plan(origin: item.conversation, attendees: Attendees([me, maya]), activity: Keyword("boba"), time: eight())
+        let proposal = SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]), plan: plan)
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try item.apply(event, at: at)
+        }
+        item.record(.plan(plan))
+        return item
+    }
+
+    func suggestion(from friend: PeerID, terms: Terms, on root: Interaction) throws -> Interaction {
+        var item = Interaction(skill: ChangePlan.descriptor.ref, role: .invitee, participants: [friend], createdAt: at)
+        try item.setFriendChainHint(root.planConversation)
+        try item.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, friend], terms: terms)), at: at)
+        return item
+    }
+
+    @Test func aFriendsSuggestionReadsAsWhatChanges() throws {
+        let plan = try root()
+        let basis = try #require(plan.plan)
+        let later = try TimeSlot(start: try eight().start.addingTimeInterval(1800), end: try eight().end.addingTimeInterval(1800))
+        let time = try suggestion(from: maya, terms: try Terms([.time: .slots([later])]), on: plan)
+        #expect(InteractionWords.basis(of: time, among: [plan, time]) == basis)
+        #expect(plain(words.suggestionCard(time, basis: basis) ?? "") == "Maya suggests 8:30 PM instead of 8 PM")
+        let dinner = try suggestion(from: maya, terms: try Terms([.activity: .keywords([try Keyword("dinner")])]), on: plan)
+        #expect(words.suggestionCard(dinner, basis: basis) == "Maya suggests dinner instead of boba")
+        let adding = try suggestion(from: maya, terms: try Terms([.people: .peers([me, maya, jake])]), on: plan)
+        #expect(words.suggestionCard(adding, basis: basis) == "Maya suggests adding Jake")
+        let texts = ProposalTexts(model: nil)
+        #expect(texts.text(for: dinner, words: words, basis: basis)?.headline == "Maya suggests dinner instead of boba")
+    }
+
+    @Test func aFriendBeingAddedIsAskedToJoinThePlan() throws {
+        let plan = try Plan(origin: ConversationID(), attendees: Attendees([maya, jake, me]), activity: Keyword("boba"), time: eight(), revision: 1)
+        var invite = Interaction(skill: ChangePlan.descriptor.ref, role: .invitee, participants: [maya], createdAt: at)
+        try invite.apply(.proposalReady(SkillProposal(revision: 1, participants: plan.attendees.peers, terms: try Terms([.people: .peers(plan.attendees.peers)]), plan: plan)), at: at)
+        #expect(plain(words.suggestionCard(invite, basis: nil) ?? "") == "Maya asks you to join boba with Jake, tonight at 8 PM")
+    }
+
+    @Test func homeShowsAChangeOnlyWhileItIsOpen() throws {
+        let plan = try root()
+        var mine = Interaction(skill: ChangePlan.descriptor.ref, role: .initiator, participants: [maya], createdAt: at,
+                               chain: ChainLink(parent: plan.id, parentConversation: plan.planConversation, consumed: [.plan], trigger: .whilePlanned, optedInAt: at))
+        try mine.apply(.started, at: at)
+        try mine.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("dinner")])]))), at: at)
+        try mine.apply(.ownerAccepted(revision: 1), at: at)
+        let waiting = HomeContent([plan, mine], words: words)
+        #expect(waiting.inProgress.map(\.title) == ["Dinner instead of boba"])
+        #expect(waiting.inProgress.first?.status == "Waiting for everyone to say yes")
+
+        try mine.apply(.everyoneConfirmed(revision: 1), at: at)
+        let done = HomeContent([plan, mine], words: words)
+        #expect(done.comingUp.map(\.id) == [plan.id], "the change is on the plan's timeline, not a plan of its own")
+        #expect(words.changeTimeline(mine, basis: plan.plan) == "Changed to dinner")
+    }
+
+    @Test func theTimelineNamesNobodyWhenAChangeDoesNotGoThrough() throws {
+        let plan = try root()
+        var mine = Interaction(skill: ChangePlan.descriptor.ref, role: .initiator, participants: [maya], createdAt: at,
+                               chain: ChainLink(parent: plan.id, parentConversation: plan.planConversation, consumed: [.plan], trigger: .whilePlanned, optedInAt: at))
+        try mine.apply(.started, at: at)
+        try mine.apply(.proposalReady(SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("dinner")])]))), at: at)
+        try mine.apply(.ownerAccepted(revision: 1), at: at)
+        var closed = mine
+        try closed.apply(.noAgreement, at: at)
+        #expect(words.changeTimeline(closed, basis: plan.plan) == "The plan stays as it was")
+
+        var theirs = try suggestion(from: maya, terms: try Terms([.activity: .keywords([try Keyword("dinner")])]), on: plan)
+        try theirs.apply(.expired, at: at)
+        #expect(words.changeTimeline(theirs, basis: plan.plan) == nil)
+
+        var left = Interaction(skill: ChangePlan.descriptor.ref, role: .invitee, participants: [maya], createdAt: at)
+        try left.apply(.withdrawn, at: at)
+        #expect(words.changeTimeline(left, basis: plan.plan) == "Maya left")
+        var mineLeft = Interaction(skill: ChangePlan.descriptor.ref, role: .initiator, participants: [maya], createdAt: at)
+        try mineLeft.apply(.withdrawn, at: at)
+        #expect(words.changeTimeline(mineLeft, basis: plan.plan) == "You left this plan")
+    }
+}

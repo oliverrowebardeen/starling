@@ -226,8 +226,16 @@ public struct PlanDetail: Hashable, Sendable {
 
     @MainActor
     static func timeline(_ chain: [Interaction], entries: [PlanTimeline.Entry], words: InteractionWords, notes: PlanNotes) -> [TimelineEntry] {
+        let basis = chain.first?.plan
         var rows: [TimelineEntry] = chain.compactMap { link in
             guard let summary = words.summary(link) else { return nil }
+            // Change the plan: what changed, who left, or "The plan stays as
+            // it was"; a friend's suggestion that closed is left off.
+            if link.skill.id == .changePlan, link.id != chain.first?.id {
+                guard let text = words.changeTimeline(link, basis: basis) else { return nil }
+                return TimelineEntry(id: link.id.description, tag: summary.skill.wording.name, text: text, at: link.updatedAt.date,
+                                     isDone: link.state.isFinal || link.state == .planned)
+            }
             let entry = entries.first { $0.id == link.id }
             // An after-plan-ends link the owner opted into, still waiting.
             if let startsAfter = entry?.startsAfter {

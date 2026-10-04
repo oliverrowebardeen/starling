@@ -324,7 +324,8 @@ public final class AppModel {
             }
             // A card the owner passed stays quiet until its skill ends it.
             if self?.lifecycle.passed.contains(after.id) == true { return }
-            guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
+            let basis = self.map { InteractionWords.basis(of: after, among: $0.lifecycle.interactions) } ?? nil
+            guard let notice = LifecycleNotice.make(before: before, after: after, words: words, basis: basis) else { return }
             Task { await notifier.post(notice) }
         }
     }
@@ -531,6 +532,12 @@ public final class AppModel {
         lastFriendsReload = now
         await friends.load()
         syncNames()
+    }
+
+    /// The plan a Change the plan interaction is about on this phone, for its
+    /// card's words.
+    public func changeBasis(for item: Interaction) -> Plan? {
+        InteractionWords.basis(of: item, among: lifecycle.interactions)
     }
 
     /// A chained Pick a place that agreed on a place moves its parent's plan
