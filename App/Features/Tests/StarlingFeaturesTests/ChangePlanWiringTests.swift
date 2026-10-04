@@ -176,6 +176,19 @@ import Testing
         #expect(words.changeTimeline(mine, basis: plan.plan) == "Changed to dinner")
     }
 
+    /// ADR 0022 decision 8: after a change, Add to Calendar offers the new
+    /// details again.
+    @Test func aChangedPlanOffersUpdateInCalendar() throws {
+        var plan = try root()
+        let notes = PlanNotes(file: nil)
+        notes.record(.calendar, for: plan.id, revision: 0)
+        #expect(!PlanDetail(root: plan, all: [plan], words: words, notes: notes).calendarIsOutdated)
+        plan.record(.plan(try #require(plan.plan).updating(activity: .some(try Keyword("dinner")))))
+        #expect(PlanDetail(root: plan, all: [plan], words: words, notes: notes).calendarIsOutdated)
+        notes.record(.calendar, for: plan.id, revision: 1)
+        #expect(!PlanDetail(root: plan, all: [plan], words: words, notes: notes).calendarIsOutdated)
+    }
+
     @Test func theTimelineNamesNobodyWhenAChangeDoesNotGoThrough() throws {
         let plan = try root()
         var mine = Interaction(skill: ChangePlan.descriptor.ref, role: .initiator, participants: [maya], createdAt: at,

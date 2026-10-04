@@ -11,10 +11,15 @@ public struct HandOffRecord: Hashable, Sendable, Codable {
 
     public let kind: Kind
     public let at: Timestamp
+    /// The plan's revision when the hand-off was made, so a later change
+    /// can offer it again ("Update in Calendar", ADR 0022). Nil in records
+    /// from before plans could change, which count as revision 0.
+    public let revision: UInt32?
 
-    public init(kind: Kind, at: Timestamp) {
+    public init(kind: Kind, at: Timestamp, revision: UInt32? = nil) {
         self.kind = kind
         self.at = at
+        self.revision = revision
     }
 }
 
@@ -88,8 +93,8 @@ public final class PlanNotes {
         save()
     }
 
-    public func record(_ kind: HandOffRecord.Kind, for plan: InteractionID) {
-        handOffs[plan, default: []].append(HandOffRecord(kind: kind, at: Timestamp(now())))
+    public func record(_ kind: HandOffRecord.Kind, for plan: InteractionID, revision: UInt32? = nil) {
+        handOffs[plan, default: []].append(HandOffRecord(kind: kind, at: Timestamp(now()), revision: revision))
         save()
     }
 
@@ -165,6 +170,9 @@ public struct PlanDetail: Hashable, Sendable {
     /// v2.1, `EgressRecord.itemsUnknown`).
     public let auditIsComplete: Bool
     public let calendar: CalendarDraft?
+    /// The plan changed after it was added to the calendar: offer "Update
+    /// in Calendar" (ADR 0022 decision 8).
+    public let calendarIsOutdated: Bool
     public let message: MessageDraft
     public let place: PlaceChoice?
 
@@ -207,6 +215,8 @@ public struct PlanDetail: Hashable, Sendable {
         auditIsComplete = !auditUnknown && whatLeft.unconfirmed.isEmpty
         (shared, kept) = Self.audit(whatLeft, complete: auditIsComplete, words: words)
 
+        let added = notes.handOffs[root.id]?.last { $0.kind == .calendar }
+        calendarIsOutdated = added.map { ($0.revision ?? 0) < (plan?.revision ?? 0) } ?? false
         if let plan, let time = plan.time {
             calendar = CalendarDraft(title: title, start: time.start, end: time.end, location: plan.place?.name.rawValue)
         } else {

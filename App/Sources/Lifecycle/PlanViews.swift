@@ -103,16 +103,20 @@ struct KeepItGoingList: View {
             if let draft = detail.calendar {
                 HStack {
                     VStack(alignment: .leading) {
-                        Text("Add to Calendar")
-                        Text("No permission needed").font(.subheadline).foregroundStyle(.secondary)
+                        // After a change, the event added before is out of
+                        // date (ADR 0022). Without calendar access Starling
+                        // can't edit it, only add the new details.
+                        Text(detail.calendarIsOutdated ? "Update in Calendar" : "Add to Calendar")
+                        Text(detail.calendarIsOutdated ? "Adds the new details. Remove the old event in Calendar." : "No permission needed")
+                            .font(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Add") { addingToCalendar = true }.buttonStyle(.bordered)
+                    Button(detail.calendarIsOutdated ? "Update" : "Add") { addingToCalendar = true }.buttonStyle(.bordered)
                 }
                 .sheet(isPresented: $addingToCalendar) {
                     CalendarEventEditor(draft: draft) { saved in
                         addingToCalendar = false
-                        if saved { app.notes.record(.calendar, for: root.id) }
+                        if saved { app.notes.record(.calendar, for: root.id, revision: detail.plan?.revision) }
                     }
                     .ignoresSafeArea()
                 }
