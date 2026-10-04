@@ -43,7 +43,7 @@ Core v2 leaves four things open:
 8. **Plans change, and chains follow the plan's origin** (ADR 0022, ADR 0243).
    - A link names the plan by its origin conversation (`Interaction.planConversation`, which is `Plan.origin`), so a friend added later, whose plan lives in another interaction, chains within the same plan.
    - `parent(_:updatedBy:)` raises the plan's revision, accepts a friend's grouped link as well as the owner's own, and changes nothing when applied twice.
-   - A linked result changes the plan only if its roster is the plan's whole current roster, and never removes anyone (Codex review of PR #111, finding D). This replaces the narrowing in decision 2 from issue #66: a place agreed by fewer than the whole plan changes nothing; only a person's own leave removes them.
+   - Who a place result may narrow the plan to (Orchestrator's decision on issue #66 and the Codex review of PR #111, finding D): this phone's own link narrows the roster to those who accepted, as decision 2 says; a friend's grouped link applies only with the plan's whole current roster and never removes anyone. Known limit until Pick a place carries the asked-roster digest: when a friend organized the place step and someone passed, this phone's plan does not take that place.
    - Change the plan is never under "Keep it going": `changeOffer`, `beginChange`, and `beginLeave` are its entry points.
 
 ## Consequences

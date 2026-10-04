@@ -38,7 +38,9 @@ Left open for this lane:
 4. **Plans stay in step on every phone.**
    - **Where the update lands.** The service reports the updated plan as `.produced(planInteraction, .plan(...))` for the interaction that holds the plan on that phone. `planLookup` finds that interaction by `Plan.origin`.
    - **Place changes too.** `ChainPlanner.parent(_:updatedBy:)` raises the revision through `Plan.updating`, applies a friend's grouped Pick a place link as well as the owner's own, and changes nothing when applied twice (place and roster together, the roster compared as a set; finding F). Otherwise a place agreed on a friend's request would never reach this phone, and revisions would drift apart.
-   - **Grouping is not authority** (finding D). A place result changes the plan only if its roster is the plan's whole current roster; nobody is ever removed by another person's result. Only a person's own leave removes them.
+   - **Who a place result may narrow the plan to** (Orchestrator's decision on issue #66 and finding D).
+     - This phone's own place link (it organized the step and saw who accepted) applies the place and narrows the roster to those who accepted. Nobody is removed by someone else: each person left out was asked and did not accept.
+     - A friend's place link, grouped under the plan only by its hint, applies only if its roster is the plan's whole current roster, and never removes anyone: grouping is not authority to change the plan.
    - **One basis at a time** (finding C). Before inviting an added friend and before confirming, the suggester re-reads the plan; if another skill moved it, the suggestion ends as "The plan stays as it was" and everyone asked is told. `planDidChange(_:)` lets the coordinator end such a suggestion as soon as it applies another skill's update. Serializing with those updates needs the coordinator to apply a `.plan` only exactly one revision above the stored one (`docs/requests/P15-E.md`).
 5. **One suggestion per plan at a time.**
    - `changeOffer` is not offered while one is open, whether the owner's own or a friend's.
@@ -72,6 +74,7 @@ Left open for this lane:
   - **The suggester is trusted to report that everyone agreed, as the organizer of any group step is** (finding G). Attendees are often not paired with each other, so a phone cannot verify another attendee's yes. What it can check, it does: the offer names everyone asked, and the confirmation is applied only on the basis it was made for. The Orchestrator adds this to the threat model.
   - Two suggestions that cross usually both close without changing anything; the owner can suggest again (accepted).
   - A phone that stays unreachable until the plan's time has passed never receives the confirmation or notice and keeps its plan as it was. Resending stops then because the plan is over.
+  - When a friend organized a place step and someone passed, this phone's plan does not take that place, so its plan can differ from the organizer's. The follow-up after this PR: Pick a place carries the asked-roster digest (decision 3) on requests chained from a plan, and a friend's narrowed result is accepted when that digest equals this phone's whole roster, trusting the organizer for who accepted, as above.
 
 ## Sources
 
