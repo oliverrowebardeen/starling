@@ -40,6 +40,11 @@ Core v2 leaves four things open:
 6. **`chainedFrom` is enforced on the way out.** `ChainedFromPolicy` wraps the app's `PolicyEngine`. For a conversation whose stored interaction has a `ChainLink`, an envelope whose `chainedFrom` is missing or names another conversation is denied (`chain.chained_from_mismatch`) before the wrapped policy or any consent sheet sees it. A store failure denies (`chain.store_unavailable`). Other conversations pass through unchanged, so privacy topics still decide egress. The app must save a link's interaction before calling its service's `start`.
 7. **A peer's `chainedFrom` only groups.** `IncomingChain.timelineParent` accepts a hint only if it names a conversation on this phone that became a plan (planned or done) and the sender is one of that plan's final attendees; someone who was asked but is not in the plan does not count (issue #67). The coordinator keeps an accepted hint with `Interaction.setFriendChainHint` (Core v2.1), which only an invitee can carry, and `PlanTimeline` groups it on the plan's timeline as a friend's request (`PlanTimeline.Entry.Origin.friend`). A hint is never turned into a `ChainLink`, never enters the schedule, and the package has no path from an incoming envelope to `begin`, `optIn`, or a permission.
 
+8. **Plans change, and chains follow the plan's origin** (ADR 0022, ADR 0243).
+   - A link names the plan by its origin conversation (`Interaction.planConversation`, which is `Plan.origin`), so a friend added later, whose plan lives in another interaction, chains within the same plan.
+   - `parent(_:updatedBy:)` raises the plan's revision, accepts a friend's grouped link as well as the owner's own, and changes nothing when applied twice.
+   - Change the plan is never under "Keep it going": `changeOffer`, `beginChange`, and `beginLeave` are its entry points.
+
 ## Consequences
 
 - Lane A wires: the "Keep it going" list from `suggestions`; the link consent sheet from `ChainSuggestion.adds`; `begin`/`optIn` on the tap; `ChainedFromPolicy` around its policy; `PlanEndScheduler` with the cancel events applied; a notification at `nextEnd`; and the friend hint (see `docs/requests/P15-E.md`).
