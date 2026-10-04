@@ -302,4 +302,71 @@ actor ArmedObserver: OutboxObserver {
         #expect(await network.problems().isEmpty)
         await network.shutdown()
     }
+
+    /// Another skill (Pick a place) moves every phone's plan to a new place,
+    /// revision 0 to 1, while a time change is open.
+    static func movePlace(_ group: Group, on people: [PeerID]) async throws {
+        for person in people {
+            let phone = group.phone(person)
+            var root = try #require(await phone.interaction(group.roots[person]!.id))
+            let plan = try #require(root.plan)
+            root.record(.plan(try plan.updating(place: .some(try PlaceChoice(name: PlaceName("Boba Guys"))))))
+            try await phone.store.save(root)
+        }
+    }
+
+    /// Review of PR #111, finding C: the suggester re-reads the plan before
+    /// confirming, and a change whose basis moved never commits a stale plan.
+    @Test func aChangeWhoseBasisMovedEndsWithThePlanAsItIs() async throws {
+        let group = Group()
+        let network = group.network
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards") {
+            for person in [maya, jake] where await group.openCard(of: person) == nil { return false }
+            return true
+        }
+        try await Self.movePlace(group, on: [alex, maya, jake])
+        for person in [maya, jake] {
+            try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
+        }
+        await network.deliver()
+        try await network.until("ended") { await group.phone(alex).interaction(link.id)?.state.isFinal == true }
+        #expect(await group.phone(alex).interaction(link.id)?.state == .ended(.nobodyUp))
+        await network.deliver()
+        try await network.until("cards closed") {
+            for person in [maya, jake] where await group.phone(person).changes().contains(where: { !$0.state.isFinal }) { return false }
+            return true
+        }
+        // Every phone keeps the moved plan; nothing was confirmed.
+        for person in [alex, maya, jake] {
+            let plan = try #require(await group.phone(person).plan(group.origin))
+            #expect(plan.revision == 1 && plan.time == Fixtures.tonight && plan.place?.name.rawValue == "Boba Guys")
+        }
+        #expect(!network.transcript.contains("Alex > Maya: accept"))
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
+    @Test func theCoordinatorEndsASuggestionWhenAnotherSkillMovesThePlan() async throws {
+        let group = Group()
+        let network = group.network
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards") {
+            for person in [maya, jake] where await group.openCard(of: person) == nil { return false }
+            return true
+        }
+        try await Self.movePlace(group, on: [alex, maya, jake])
+        // The coordinator tells the skill after applying the place.
+        await group.phone(alex).service.planDidChange(group.origin)
+        try await network.until("ended") { await group.phone(alex).interaction(link.id)?.state == .ended(.nobodyUp) }
+        await network.deliver()
+        try await network.until("cards closed") {
+            for person in [maya, jake] where await group.openCard(of: person) != nil { return false }
+            return true
+        }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
 }

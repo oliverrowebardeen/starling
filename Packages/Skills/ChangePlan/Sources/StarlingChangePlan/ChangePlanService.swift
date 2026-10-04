@@ -86,6 +86,9 @@ public actor ChangePlanService: SkillService {
         /// whose plan this interaction will hold.
         let planInteraction: InteractionID?
         let basisRevision: UInt32
+        /// The plan as it stood when the suggestion was made or shown; nil
+        /// for a friend being added, who had none.
+        let basis: Plan?
         let proposed: Plan
         /// Voter or joiner: who suggested it.
         let suggester: PeerID?
@@ -205,7 +208,7 @@ public actor ChangePlanService: SkillService {
         // Everything a reply is matched against, before any send (#105).
         sessions[request.interaction] = Session(
             role: .suggester, conversation: request.conversation, planConversation: planConversation, planInteraction: current.interaction,
-            basisRevision: basis.revision, proposed: proposed, suggester: nil, voters: others, friend: friend, terms: terms,
+            basisRevision: basis.revision, basis: basis, proposed: proposed, suggester: nil, voters: others, friend: friend, terms: terms,
             inviteTerms: friend == nil ? nil : try PlanChange.inviteTerms(for: proposed), step: .asking
         )
         byConversation[request.conversation] = request.interaction
@@ -226,7 +229,7 @@ public actor ChangePlanService: SkillService {
     private func leave(_ request: SkillRequest, plan: PlanRef, others: [PeerID]) async {
         sessions[request.interaction] = Session(
             role: .suggester, conversation: request.conversation, planConversation: plan.plan.origin, planInteraction: plan.interaction,
-            basisRevision: plan.plan.revision, proposed: plan.plan, suggester: nil, voters: others, friend: nil, terms: Terms.empty,
+            basisRevision: plan.plan.revision, basis: plan.plan, proposed: plan.plan, suggester: nil, voters: others, friend: nil, terms: Terms.empty,
             inviteTerms: nil, step: .asking
         )
         byConversation[request.conversation] = request.interaction
@@ -332,7 +335,7 @@ public actor ChangePlanService: SkillService {
         let id = InteractionID()
         sessions[id] = Session(
             role: .voter, conversation: envelope.conversation, planConversation: planConversation, planInteraction: current.interaction,
-            basisRevision: plan.revision, proposed: proposed, suggester: envelope.sender, voters: [], friend: nil, terms: offer.terms,
+            basisRevision: plan.revision, basis: plan, proposed: proposed, suggester: envelope.sender, voters: [], friend: nil, terms: offer.terms,
             inviteTerms: nil, step: .deciding(offer: envelope.id, proposal: offer)
         )
         byConversation[envelope.conversation] = id
@@ -353,7 +356,7 @@ public actor ChangePlanService: SkillService {
         let id = InteractionID()
         sessions[id] = Session(
             role: .joiner, conversation: envelope.conversation, planConversation: planConversation, planInteraction: nil,
-            basisRevision: UInt32(offer.round), proposed: plan, suggester: envelope.sender, voters: [], friend: nil, terms: offer.terms,
+            basisRevision: UInt32(offer.round), basis: nil, proposed: plan, suggester: envelope.sender, voters: [], friend: nil, terms: offer.terms,
             inviteTerms: nil, step: .deciding(offer: envelope.id, proposal: offer)
         )
         byConversation[envelope.conversation] = id
@@ -461,6 +464,9 @@ public actor ChangePlanService: SkillService {
         guard let session = sessions[id], session.role == .suggester else { return }
         switch session.step {
         case .asking where Set(session.voters).isSubset(of: session.yes):
+            // The plan must still be the one the suggestion changes, before
+            // the friend is invited or anything is confirmed (finding C).
+            guard await basisStands(id) else { return }
             if let friend = session.friend, let inviteTerms = session.inviteTerms {
                 sessions[id]?.advance(to: .inviting)
                 guard let invite = try? Proposal(round: UInt16(session.basisRevision), terms: inviteTerms,
@@ -471,6 +477,7 @@ public actor ChangePlanService: SkillService {
                 await confirm(id)
             }
         case .inviting where session.friend.map(session.yes.contains) == true:
+            guard await basisStands(id) else { return }
             await confirm(id)
         default:
             return
@@ -510,7 +517,7 @@ public actor ChangePlanService: SkillService {
         guard let session = sessions[id], case .accepted(let offer) = session.step, let suggester = session.suggester else { return }
         if let planInteraction = session.planInteraction {
             guard let current = await planLookup(session.planConversation) else { return }
-            if current.plan.revision == session.basisRevision {
+            if current.plan.revision == session.basisRevision, current.plan.attendees == session.basis?.attendees {
                 emit(id, .everyoneConfirmed(revision: 1))
                 continuation.yield(.produced(planInteraction, .plan(session.proposed)))
             } else if current.plan.revision == session.proposed.revision, current.plan.attendees == session.proposed.attendees,
@@ -580,6 +587,40 @@ public actor ChangePlanService: SkillService {
         queued[planConversation] = nil
         if !notices.isEmpty { _ = await send(notices, in: id, failureEnds: false) }
         await finish(id, with: [.noAgreement])
+    }
+
+    /// Whether the plan still stands as the suggestion's basis. If another
+    /// skill changed it (Pick a place moved it on a revision), the
+    /// suggestion ends as "The plan stays as it was" and everyone asked is
+    /// told. False also if the suggestion moved on while the plan was read.
+    private func basisStands(_ id: InteractionID) async -> Bool {
+        guard let session = sessions[id], let basis = session.basis else { return false }
+        let step = session.stepID
+        let current = await planLookup(session.planConversation)
+        guard sessions[id]?.stepID == step else { return false }
+        if let current, current.plan.revision == basis.revision, current.plan.attendees == basis.attendees { return true }
+        await abandon(id)
+        return false
+    }
+
+    /// Ends an open suggestion or card quietly, the plan as it was: the
+    /// suggester tells everyone asked (from a snapshot taken before any
+    /// suspension) and its card reads "The plan stays as it was".
+    private func abandon(_ id: InteractionID) async {
+        guard let session = sessions[id], session.step != .ending else { return }
+        let notices = session.role == .suggester ? session.withdrawals : []
+        sessions[id]?.advance(to: .ending)
+        cancelSends(of: id)
+        if !notices.isEmpty { _ = await send(notices, in: id, failureEnds: false) }
+        await finish(id, with: [.noAgreement])
+    }
+
+    /// Another skill changed the plan (the coordinator calls this after it
+    /// applies any plan update): a suggestion or card open for it whose
+    /// basis no longer stands ends at once (review of PR #111, finding C).
+    public func planDidChange(_ planConversation: ConversationID) async {
+        guard let id = openByPlan[planConversation], let session = sessions[id], session.step != .ending, session.basis != nil else { return }
+        _ = await basisStands(id)
     }
 
     // MARK: - Restart
