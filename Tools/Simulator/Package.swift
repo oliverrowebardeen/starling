@@ -49,7 +49,7 @@ let package = Package(
         ),
         .executableTarget(name: "starling-sim", dependencies: ["SimulatorKit", "Scenarios"]),
         .testTarget(name: "SimulatorKitTests", dependencies: [
-            "SimulatorKit",
+            "SimulatorKit", "Scenarios",
             .product(name: "StarlingIdentity", package: "StarlingIdentity"),
         ]),
         .testTarget(name: "ScenarioTests", dependencies: ["Scenarios", "SimulatorKit"]),
@@ -59,7 +59,7 @@ let package = Package(
             .product(name: "StarlingAgent", package: "StarlingAgent"),
         ], resources: [.copy("Results")]),
         .testTarget(name: "DownIntegrationTests", dependencies: [
-            "SimulatorKit",
+            "SimulatorKit", "Scenarios",
             .product(name: "StarlingCore", package: "StarlingCore"),
             .product(name: "StarlingFakes", package: "StarlingCore"),
             .product(name: "StarlingTransport", package: "StarlingTransport"),

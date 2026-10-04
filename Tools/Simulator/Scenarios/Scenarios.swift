@@ -85,7 +85,7 @@ public enum ScenarioRunner {
 
     static func helloMesh(_ simulation: Simulation, count: Int) async throws -> ScenarioOutcome {
         for index in 0..<count { try await simulation.addAgent("agent\(index)") }
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         var accepted: [Envelope] = []
         for agent in await simulation.agents { accepted += await agent.received }
         return ScenarioOutcome(transcript: await simulation.transcript(), accepted: accepted, dropped: [])
@@ -94,11 +94,11 @@ public enum ScenarioRunner {
     static func proposeAccept(_ simulation: Simulation) async throws -> ScenarioOutcome {
         let alice = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob", behavior: AcceptEverything())
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
 
         let terms = try Terms([.activity: .keywords([try Keyword("boba")])])
         try await alice.send(.propose(try Proposal(round: 0, terms: terms)), to: bob.id)
-        try await Simulation.eventually("alice receives accept") {
+        try await AwakeWait.eventually("alice receives accept") {
             await alice.received.contains { $0.body.kind == .accept }
         }
         return try await outcome(simulation, target: alice)
@@ -108,7 +108,7 @@ public enum ScenarioRunner {
         let deliveries = await simulation.hub.deliveries()
         let alice = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob")
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
 
         let terms = try Terms([.budget: .amount(try MoneyAmount(minorUnits: 1500))])
         let sent = try await alice.send(.propose(try Proposal(round: 0, terms: terms)), to: bob.id)
@@ -116,14 +116,14 @@ public enum ScenarioRunner {
             (try? EnvelopeCodec().decode(delivery.frame.bytes))?.id == sent.id
         }
         try await simulation.hub.inject(captured.frame, claimedSender: alice.id, to: bob.id)
-        try await Simulation.eventually("bob drops the replay") { await !bob.dropped.isEmpty }
+        try await AwakeWait.eventually("bob drops the replay") { await !bob.dropped.isEmpty }
         return try await outcome(simulation, target: bob)
     }
 
     static func senderMismatch(_ simulation: Simulation) async throws -> ScenarioOutcome {
         let alice = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob")
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
 
         let mallory = PeerID.random()
         let forged = try Envelope(
@@ -132,14 +132,14 @@ public enum ScenarioRunner {
             body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner))
         )
         try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: mallory, to: bob.id)
-        try await Simulation.eventually("bob drops the relayed envelope") { await !bob.dropped.isEmpty }
+        try await AwakeWait.eventually("bob drops the relayed envelope") { await !bob.dropped.isEmpty }
         return try await outcome(simulation, target: bob)
     }
 
     static func impersonation(_ simulation: Simulation) async throws -> ScenarioOutcome {
         let alice = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob")
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         let droppedBefore = await bob.secureTransport?.status(of: alice.id).droppedFrames ?? 0
 
         let forged = try Envelope(
@@ -148,7 +148,7 @@ public enum ScenarioRunner {
             body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner))
         )
         try await simulation.hub.inject(Frame(EnvelopeCodec().encode(forged)), claimedSender: alice.id, to: bob.id)
-        try await Simulation.eventually("bob's secure channel drops the forgery") {
+        try await AwakeWait.eventually("bob's secure channel drops the forgery") {
             let dropped = await bob.secureTransport?.status(of: alice.id).droppedFrames ?? 0
             return dropped > droppedBefore
         }
@@ -159,7 +159,7 @@ public enum ScenarioRunner {
         let terms = try Terms([.activity: .keywords([try Keyword("boba")])])
         let genuine = try await alice.send(.propose(try Proposal(round: 0, terms: terms)),
                                            to: bob.id, conversation: forged.conversation)
-        try await Simulation.eventually("bob receives Alice's genuine proposal") {
+        try await AwakeWait.eventually("bob receives Alice's genuine proposal") {
             await bob.received.contains { $0.id == genuine.id }
         }
         let status = await bob.secureTransport?.status(of: alice.id)
@@ -173,9 +173,9 @@ public enum ScenarioRunner {
     static func garbage(_ simulation: Simulation) async throws -> ScenarioOutcome {
         _ = try await simulation.addAgent("alice")
         let bob = try await simulation.addAgent("bob")
-        try await simulation.waitForMesh()
+        try await AwakeWait.mesh(simulation)
         try await simulation.hub.inject(Frame(Data("{\"not\":\"an envelope\"}".utf8)), claimedSender: PeerID.random(), to: bob.id)
-        try await Simulation.eventually("bob drops garbage") { await !bob.dropped.isEmpty }
+        try await AwakeWait.eventually("bob drops garbage") { await !bob.dropped.isEmpty }
         return try await outcome(simulation, target: bob)
     }
 

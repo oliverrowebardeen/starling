@@ -1,3 +1,4 @@
+import Scenarios
 import Foundation
 import SimulatorKit
 import StarlingCore
@@ -16,7 +17,7 @@ import Testing
             let a = world.nodes[0], b = world.nodes[1]
             try await a.want(level)
             try await b.want()
-            try await Simulation.eventually("both real negotiators match") {
+            try await AwakeWait.eventually("both real negotiators match") {
                 let aCount = await a.matches.count
                 let bCount = await b.matches.count
                 return aCount == 1 && bCount == 1
@@ -35,7 +36,7 @@ import Testing
             for envelope in accepts {
                 try await world.hub.inject(Frame(EnvelopeCodec().encode(envelope)), claimedSender: envelope.sender, to: envelope.recipient)
             }
-            try await Simulation.eventually("acceptance replays dropped") {
+            try await AwakeWait.eventually("acceptance replays dropped") {
                 let aDrops = await a.dropped.count
                 let bDrops = await b.dropped.count
                 return aDrops + bDrops == accepts.count
@@ -52,7 +53,7 @@ import Testing
         let disjoint = try NodeConfiguration(rules: IntegrationFixtures.rules(time: IntegrationFixtures.slot(4, 5)))
         try await withIntegratedWorld([overlap, overlap, disjoint]) { world in
             for node in world.nodes { try await node.want(.maybe) }
-            try await Simulation.eventually("overlapping peers match") {
+            try await AwakeWait.eventually("overlapping peers match") {
                 let a = await world.nodes[0].matches.count
                 let b = await world.nodes[1].matches.count
                 return a == 1 && b == 1
@@ -91,7 +92,7 @@ import Testing
             let a = world.nodes[0], b = world.nodes[1]
             try await a.want(.maybe)
             try await b.want()
-            try await Simulation.eventually("real policy refuses \(issue)") {
+            try await AwakeWait.eventually("real policy refuses \(issue)") {
                 await a.policy.entries.contains { $0.decision == .deny(PolicyViolation(rule: PolicyRuleID.never, issue: issue)) }
             }
             try await world.waitForTimeouts()
@@ -112,7 +113,7 @@ import Testing
             let a = world.nodes[0], b = world.nodes[1]
             try await a.want(.maybe)
             try await b.want()
-            try await Simulation.eventually("PSI disclosure reaches consent") { await !consent.requests.isEmpty }
+            try await AwakeWait.eventually("PSI disclosure reaches consent") { await !consent.requests.isEmpty }
             try await world.waitForTimeouts()
             #expect(await world.wire.sent(by: a.id).isEmpty)
             #expect(await a.audit.entries().allSatisfy { $0.kind == .hello })
@@ -129,7 +130,7 @@ import Testing
         let b = NodeConfiguration(rules: rules, locality: .thirdPartyCloud(provider: "malicious"))
         try await withIntegratedWorld([a, b]) { world in
             for node in world.nodes { try await node.want() }
-            try await Simulation.eventually("cloud recipient denied") {
+            try await AwakeWait.eventually("cloud recipient denied") {
                 await world.nodes[0].policy.entries.contains { $0.decision == .deny(PolicyViolation(rule: PolicyRuleID.onDeviceOnly)) }
             }
             try await world.waitForTimeouts()
@@ -145,7 +146,7 @@ import Testing
         try await withIntegratedWorld([NodeConfiguration(rules: rules, consent: consent), NodeConfiguration(rules: rules)]) { world in
             let a = world.nodes[0]
             try await a.want(.maybe)
-            try await Simulation.eventually("PSI consent suspended") { await consent.pending == 1 }
+            try await AwakeWait.eventually("PSI consent suspended") { await consent.pending == 1 }
             await a.down?.clearIntent()
             await consent.resolve(.approved)
             try await world.waitForTimeouts()
@@ -162,12 +163,12 @@ import Testing
         try await withIntegratedWorld([NodeConfiguration(rules: rules, consent: consent), NodeConfiguration(rules: rules)]) { world in
             let a = world.nodes[0], b = world.nodes[1]
             try await a.want()
-            try await Simulation.eventually("first PSI send awaits consent") { await consent.pending == 1 }
+            try await AwakeWait.eventually("first PSI send awaits consent") { await consent.pending == 1 }
             await world.hub.partition(a.id, b.id)
             await consent.resolve(.approved)
             // A second request proves the first approved send failed at the
             // partition and was retried, rather than never being attempted.
-            try await Simulation.eventually("lost PSI is retried") { await consent.pending == 1 }
+            try await AwakeWait.eventually("lost PSI is retried") { await consent.pending == 1 }
             try await world.waitForTimeouts()
             for node in world.nodes {
                 #expect(await node.matches.isEmpty)

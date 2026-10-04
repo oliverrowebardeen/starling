@@ -1,3 +1,4 @@
+import Scenarios
 import Foundation
 import SimulatorKit
 import StarlingCore
@@ -67,7 +68,7 @@ private actor MatchInputs {
             default: payload = Data("{not json".utf8)
             }
             let sent = try await sendPSI(payload, from: attacker, to: victim)
-            try await Simulation.eventually("victim receives hostile PSI") { await victim.received.contains { $0.id == sent.id } }
+            try await AwakeWait.eventually("victim receives hostile PSI") { await victim.received.contains { $0.id == sent.id } }
             try await world.waitForTimeouts()
             #expect(await world.wire.sent(by: victim.id).isEmpty)
             #expect(await victim.policy.entries.allSatisfy { $0.message.envelope.body.kind == .hello })
@@ -84,7 +85,7 @@ private actor MatchInputs {
             _ = try await sendPSI(payload, from: attacker, to: victim, conversation: conversation, step: step)
             let query = try await attacker.send(.query(Query(issue: .activity, candidates: .keywords([Keyword("food")]))),
                                                to: victim.id, conversation: conversation)
-            try await Simulation.eventually("out-of-order query delivered") { await victim.received.contains { $0.id == query.id } }
+            try await AwakeWait.eventually("out-of-order query delivered") { await victim.received.contains { $0.id == query.id } }
             try await world.waitForTimeouts()
             #expect(await world.wire.sent(by: victim.id).isEmpty)
             // Positive control: the same conversation can start with step zero.
@@ -109,7 +110,7 @@ private actor MatchInputs {
                                             body: .psi(PSIFrame(session: UUID(), step: 0, payload: payload)))
                 try await world.hub.inject(Frame(EnvelopeCodec().encode(envelope)), claimedSender: attacker.id, to: victim.id)
             }
-            try await Simulation.eventually("old and future frames dropped") { await victim.dropped.count == 2 }
+            try await AwakeWait.eventually("old and future frames dropped") { await victim.dropped.count == 2 }
             #expect(await victim.dropped == [.stale, .fromFuture])
             _ = try await sendPSI(payload, from: attacker, to: victim, conversation: conversation)
             _ = try await attacker.next(.psi, conversation: conversation)
@@ -145,7 +146,7 @@ private actor MatchInputs {
             try await attacker.send(.accept(Acceptance(proposal: second.id, terms: IntegrationFixtures.withLevel(current.terms))),
                                     to: victim.id, conversation: conversation)
             _ = try await attacker.next(.accept, conversation: conversation)
-            try await Simulation.eventually("only genuine acceptance matches") { await victim.matches.count == 1 }
+            try await AwakeWait.eventually("only genuine acceptance matches") { await victim.matches.count == 1 }
             #expect(await victim.matches.first?.terms == current.terms)
             #expect(await victim.matches.first?.bothDown == false)
             try await world.expectSafeMatches()
@@ -203,7 +204,7 @@ private actor MatchInputs {
             #expect(await victim.matches.isEmpty)
             try await attacker.send(.accept(Acceptance(proposal: offer.id, terms: IntegrationFixtures.withLevel(plan))),
                                     to: victim.id, conversation: conversation)
-            try await Simulation.eventually("safe alternative confirmed") { await victim.matches.count == 1 }
+            try await AwakeWait.eventually("safe alternative confirmed") { await victim.matches.count == 1 }
             #expect(await victim.matches.first?.terms == plan)
             let evaluated = await victim.policy.entries
             #expect(evaluated.allSatisfy { entry in
@@ -225,7 +226,7 @@ private actor MatchInputs {
             let victim = world.nodes[0], attacker = world.nodes[1]
             try await victim.want(.maybe)
             let sent = try await sendPSI(request(), from: attacker, to: victim)
-            try await Simulation.eventually("unpaired PSI delivered") { await victim.received.contains { $0.id == sent.id } }
+            try await AwakeWait.eventually("unpaired PSI delivered") { await victim.received.contains { $0.id == sent.id } }
             try await world.waitForTimeouts()
             #expect(await consent.requests.isEmpty)
             #expect(await world.wire.sent(by: victim.id).isEmpty)

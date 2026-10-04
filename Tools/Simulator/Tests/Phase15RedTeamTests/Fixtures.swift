@@ -1,4 +1,5 @@
 import Foundation
+import Scenarios
 import SimulatorKit
 import StarlingCore
 import StarlingFakes
@@ -11,14 +12,8 @@ enum P15 {
         isolation: isolated (any Actor)? = #isolation,
         _ condition: () async throws -> Bool
     ) async throws {
-        let clock = SuspendingClock()
-        let deadline = clock.now.advanced(by: .seconds(120))
-        while true {
-            try Task.checkCancellation()
-            if try await condition() { return }
-            guard clock.now < deadline else { throw SimulationError.timedOut(description) }
-            try await clock.sleep(for: .milliseconds(10))
-        }
+        try await AwakeWait.eventually(timeout: .seconds(120), polling: .milliseconds(10),
+                                       description, isolation: isolation, condition)
     }
 
     static func waitForMesh(_ simulation: Simulation) async throws {

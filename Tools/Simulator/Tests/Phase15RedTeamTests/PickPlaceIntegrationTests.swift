@@ -34,6 +34,10 @@ struct PickPlaceIntegrationTests {
         await world.seed([candidate])
         let request = try await a.organize([candidate], participants: [b.id, c.id])
         try await P15.eventually("included friend answered") { await b.sent(request.conversation).contains { $0.body.kind == .answer } }
+        let answer = try #require(await b.sent(request.conversation).first { $0.body.kind == .answer })
+        // Sending is not receipt. Let the organizer handle B's answer before
+        // moving its answer window to the deadline for the silent friend.
+        try await world.delivered(answer, to: a)
         try await a.clock.waitForSleeps([.seconds(20)])
         #expect(try await a.events.interaction(request.conversation)?.proposal == nil)
         await a.clock.advance(19)
@@ -134,6 +138,8 @@ struct PickPlaceIntegrationTests {
         _ = try await b.wait(.confirmed, in: request.conversation)
         try await a.accept(request.conversation)
         let deadline = try #require(await a.ledger.deadlines(for: request.conversation)?.confirmDeadline)
+        let acceptance = try #require(await b.sent(request.conversation).first { $0.body.kind == .accept })
+        try await world.delivered(acceptance, to: a)
         let confirmAt = Duration.seconds(deadline.timeIntervalSince(P15.date))
         try await a.clock.waitForSleeps([confirmAt, confirmAt + PlacePhone.configuration.confirmWindow])
         await a.clock.advance(to: confirmAt - .seconds(1))

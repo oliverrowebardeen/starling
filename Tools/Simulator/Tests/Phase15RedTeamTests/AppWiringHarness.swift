@@ -147,7 +147,7 @@ final class AppPhone {
         Task { @MainActor in
             while !Task.isCancelled {
                 if let request = app.consent.current { app.consent.answer(.approved, to: request.id) }
-                try? await Task.sleep(for: .milliseconds(5))
+                try? await SuspendingClock().sleep(for: .milliseconds(5))
             }
         }
     }
