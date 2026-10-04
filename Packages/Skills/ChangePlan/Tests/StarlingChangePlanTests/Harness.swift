@@ -88,6 +88,49 @@ actor Problems {
     func add(_ problem: String) { all.append(problem) }
 }
 
+/// A journal that can fail or hold the saves a test picks (issue #117,
+/// review of PR #111 finding 2), over an in-memory one.
+actor TestJournal: ChangePlanJournal {
+    struct Unavailable: Error {}
+    private let stored = InMemoryChangePlanJournal()
+    private var failing: @Sendable (ChangePlanRecord) -> Bool = { _ in false }
+    private var holding: @Sendable (ChangePlanRecord) -> Bool = { _ in false }
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    /// Saves that match fail from now on.
+    func fail(when matches: @escaping @Sendable (ChangePlanRecord) -> Bool) { failing = matches }
+    /// Saves that match wait for `release()`.
+    func hold(when matches: @escaping @Sendable (ChangePlanRecord) -> Bool) { holding = matches }
+    var held: Int { waiting.count }
+    func release() {
+        holding = { _ in false }
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+
+    func save(_ record: ChangePlanRecord) async throws {
+        if holding(record) { await withCheckedContinuation { waiting.append($0) } }
+        if failing(record) { throw Unavailable() }
+        try await stored.save(record)
+    }
+    func remove(_ key: UUID) async throws { try await stored.remove(key) }
+    func records() async throws -> [ChangePlanRecord] { try await stored.records() }
+}
+
+final class Flag: Sendable {
+    private let value = Mutex(false)
+    var isSet: Bool { value.withLock { $0 } }
+    func set(_ on: Bool) { value.withLock { $0 = on } }
+}
+
+extension ChangePlanRecord {
+    var isAccepted: Bool { if case .accepted = self { true } else { false } }
+    var isConfirming: Bool { if case .confirming = self { true } else { false } }
+    var isApplied: Bool { if case .applied = self { true } else { false } }
+    var isLeaving: Bool { if case .leaving = self { true } else { false } }
+    var isDeparted: Bool { if case .departed = self { true } else { false } }
+}
+
 /// One phone: its Outbox, ledger, store, and Change the plan service, with a
 /// stand-in lifecycle coordinator that applies every service event to a real
 /// `Interaction`, as lane A's does.
@@ -97,7 +140,10 @@ final class Phone: Sendable {
     let ledger = InMemoryConversationLedger()
     let store: InMemoryInteractionStore
     let outbox: Outbox
-    let journal = InMemoryChangePlanJournal()
+    let journal = TestJournal()
+    /// While set, the coordinator loses the plan updates it is given, as an
+    /// app that quits before saving them would.
+    let losingUpdates = Flag()
     private let box: Mutex<ChangePlanService>
     var service: ChangePlanService { box.withLock { $0 } }
     let inbox: Inbox
@@ -119,10 +165,11 @@ final class Phone: Sendable {
         inbox = Inbox(localPeer: me, now: { clock.now })
         let service = box.withLock { $0 }
         let (store, problems) = (store, problems)
-        consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock) } }
+        let losing = losingUpdates
+        consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock, losing: losing) } }
     }
 
-    private static func makeService(outbox: Outbox, ledger: InMemoryConversationLedger, journal: InMemoryChangePlanJournal, me: PeerID,
+    private static func makeService(outbox: Outbox, ledger: InMemoryConversationLedger, journal: TestJournal, me: PeerID,
                                     store: InMemoryInteractionStore, clock: TestClock) -> ChangePlanService {
         ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, me: me, planLookup: { conversation in
             let all = (try? await store.all()) ?? []
@@ -141,13 +188,15 @@ final class Phone: Sendable {
         _ = await consumer.withLock { $0 }?.value
         let fresh = Self.makeService(outbox: outbox, ledger: ledger, journal: journal, me: me, store: store, clock: clock)
         box.withLock { $0 = fresh }
-        let (store, problems, clock) = (store, problems, clock)
-        consumer.withLock { $0 = Task { await Self.coordinate(fresh.events, store: store, problems: problems, clock: clock) } }
+        let (store, problems, clock, losing) = (store, problems, clock, losingUpdates)
+        losing.set(false)
+        consumer.withLock { $0 = Task { await Self.coordinate(fresh.events, store: store, problems: problems, clock: clock, losing: losing) } }
         await fresh.restore(await all())
     }
 
     /// The stand-in coordinator.
-    private static func coordinate(_ events: AsyncStream<SkillEvent>, store: InMemoryInteractionStore, problems: Problems, clock: TestClock) async {
+    private static func coordinate(_ events: AsyncStream<SkillEvent>, store: InMemoryInteractionStore, problems: Problems, clock: TestClock,
+                                   losing: Flag) async {
         for await event in events {
             let at = Timestamp(clock.now)
             do {
@@ -166,6 +215,7 @@ final class Phone: Sendable {
                     try interaction.apply(lifecycle, at: at)
                     try await store.save(interaction)
                 case .produced(let id, let artifact):
+                    if losing.isSet { continue }
                     guard var interaction = try await store.interaction(id) else {
                         await problems.add("no interaction for \(artifact)")
                         continue

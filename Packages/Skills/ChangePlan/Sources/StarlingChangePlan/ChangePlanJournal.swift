@@ -5,12 +5,37 @@ import StarlingCore
 // confirmations and leave notices not yet acknowledged, and what this phone
 // already applied, so a resent one is acknowledged again. All typed values.
 
-/// Confirmations on their way from the suggester to everyone who said yes.
+/// A yes this phone gave, kept from before it is sent until the change
+/// applies or delivery ends, so a confirmation that comes late, or after a
+/// restart, still applies (review of PR #111, finding 1).
+public struct AcceptedOffer: Hashable, Sendable, Codable {
+    /// The card.
+    public let interaction: InteractionID
+    public let conversation: ConversationID
+    public let planConversation: ConversationID
+    /// A friend being added, whose card will hold the plan.
+    public let joining: Bool
+    public let suggester: PeerID
+    public let offer: MessageID
+    /// The plan the suggestion changes (nil for a friend being added), and the plan it agreed.
+    public let basis: Plan?
+    public let proposed: Plan
+    /// Where the plan lives on this phone; nil for a friend being added.
+    public let planInteraction: InteractionID?
+    public let until: Date
+}
+
+/// Confirmations on their way from the suggester to everyone who said yes,
+/// with the agreed plan, journaled before it is published so a restart
+/// can finish the commit (finding 3).
 public struct ConfirmationDelivery: Hashable, Sendable, Codable {
     /// The suggester's change.
     public let interaction: InteractionID
     public let conversation: ConversationID
     public let planConversation: ConversationID
+    /// The agreed plan, and the interaction that holds the plan here.
+    public let plan: Plan
+    public let planInteraction: InteractionID?
     /// Who is owed one, in plan order.
     public let order: [PeerID]
     /// Who has not acknowledged yet, and the offer their confirmation and
@@ -20,13 +45,19 @@ public struct ConfirmationDelivery: Hashable, Sendable, Codable {
     public let until: Date
 }
 
-/// A confirmation this phone applied, kept so a resent one is acknowledged again.
+/// A confirmation this phone applied, with the plan it applied, kept so a
+/// resent one is acknowledged again, and so a restart can replay the
+/// update if it never became durable (finding 3).
 public struct AppliedConfirmation: Hashable, Sendable, Codable {
     public let interaction: InteractionID
     public let conversation: ConversationID
     public let planConversation: ConversationID
     public let suggester: PeerID
     public let offer: MessageID
+    public let plan: Plan
+    /// Where the plan lives; nil when the card itself holds it (a friend added).
+    public let planInteraction: InteractionID?
+    public let basisRevision: UInt32
     public let until: Date
 }
 
@@ -55,10 +86,14 @@ public struct Departure: Hashable, Sendable, Codable {
     public let departure: MessageID
     public let planConversation: ConversationID
     public let peer: PeerID
+    /// The revision it applied to, so a restart replays it only onto that
+    /// plan (never onto one they were added back to).
+    public let revision: UInt32
     public let until: Date
 }
 
 public enum ChangePlanRecord: Hashable, Sendable, Codable {
+    case accepted(AcceptedOffer)
     case confirming(ConfirmationDelivery)
     case applied(AppliedConfirmation)
     case leaving(LeaveDelivery)
@@ -67,6 +102,7 @@ public enum ChangePlanRecord: Hashable, Sendable, Codable {
     /// When it is no longer kept.
     public var until: Date {
         switch self {
+        case .accepted(let offer): offer.until
         case .confirming(let delivery): delivery.until
         case .applied(let applied): applied.until
         case .leaving(let delivery): delivery.until
@@ -77,6 +113,7 @@ public enum ChangePlanRecord: Hashable, Sendable, Codable {
     /// One record per key: a later save replaces it.
     public var key: UUID {
         switch self {
+        case .accepted(let offer): offer.interaction.rawValue
         case .confirming(let delivery): delivery.interaction.rawValue
         case .applied(let applied): applied.interaction.rawValue
         case .leaving(let delivery): delivery.interaction.rawValue

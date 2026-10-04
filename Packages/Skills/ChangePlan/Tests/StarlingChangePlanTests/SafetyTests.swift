@@ -128,6 +128,7 @@ actor ArmedObserver: OutboxObserver {
         await network.deliver()
         group.clock.advance(to: Fixtures.date(minutes: 41))
         try await network.until("all settled") {
+            await network.deliver()
             for person in [alex, maya, jake] where await group.phone(person).changes().contains(where: { !$0.state.isFinal && $0.state != .planned }) {
                 return false
             }

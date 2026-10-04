@@ -18,10 +18,7 @@ import Testing
         let network = group.network
         let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: Fixtures.alex)
         await network.deliver()
-        try await network.until("cards up") {
-            for person in [Fixtures.maya, Fixtures.jake] where await group.openCard(of: person) == nil { return false }
-            return true
-        }
+        try await network.until("cards up") { await cardsUp(group) }
         for person in [Fixtures.maya, Fixtures.jake] {
             try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
         }
@@ -29,6 +26,11 @@ import Testing
         for (frame, skipping) in frames { network.drop(frame, skipping: skipping) }
         await network.deliver()
         return link
+    }
+
+    static func cardsUp(_ group: Group) async -> Bool {
+        for person in [Fixtures.maya, Fixtures.jake] where await group.openCard(of: person) == nil { return false }
+        return true
     }
 
     /// Moves the clock on by `seconds` and waits for `phone` to send `count`
