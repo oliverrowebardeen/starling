@@ -154,37 +154,31 @@ import Testing
         #expect(planner.parent(other, updatedBy: link) == nil)
     }
 
-    @Test func theRosterAPlaceLinkAgreedCarriesIntoThePlanAndLaterChains() throws {
-        // Issue #66: Jake passed on the place; Maya and you agreed.
+    @Test func aPlaceAgreedByFewerThanThePlanChangesNothing() throws {
+        // Jake passed on the place; Maya and you agreed. The plan keeps its
+        // place and its people: nobody is removed by someone else's link.
         let plan = try Fixtures.plannedDownFor()
         var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
         link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
         link.record(.attendees(try Attendees([Fixtures.me, Fixtures.maya])))
-        let updated = try #require(planner.parent(plan, updatedBy: link))
-        #expect(updated.plan?.attendees.peers == [Fixtures.me, Fixtures.maya])
-        #expect(updated.plan?.place == Fixtures.place("Boba Guys on Franklin"))
-        #expect(updated.plan?.id == plan.plan?.id)
-        // The next chain goes only to Maya.
-        let swapOn = SkillSettings(flags: Fixtures.flagsWithSwapPhotos)
-        let row = try #require(planner.suggestions(after: updated.id, in: [updated, link], settings: swapOn, cards: Fixtures.cards()).first { $0.id == .swapPhotos })
-        #expect(row.participants == [Fixtures.maya])
+        #expect(planner.parent(plan, updatedBy: link) == nil)
+        // A roster with someone the plan never had changes nothing either.
+        link.record(.attendees(try Attendees([Fixtures.me, Fixtures.maya, Fixtures.jake, Fixtures.stranger])))
+        #expect(planner.parent(plan, updatedBy: link) == nil)
     }
 
-    @Test func aLinkCanOnlyNarrowTheRoster() throws {
+    @Test func aPlaceEveryoneAgreedAppliesOnceInAnyRosterOrder() throws {
         let plan = try Fixtures.plannedDownFor()
-        // A roster with someone the plan never had, or without this phone, is ignored.
-        for roster in [[Fixtures.me, Fixtures.maya, Fixtures.stranger], [Fixtures.maya, Fixtures.jake]] {
-            var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
-            link.record(.attendees(try Attendees(roster)))
-            #expect(planner.parent(plan, updatedBy: link) == nil)
-            link.record(.placeChoice(Fixtures.place()))
-            #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees == plan.plan?.attendees)
-        }
-        // A narrower roster alone, with no new place, still updates the plan.
         var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
-        link.record(.attendees(try Attendees([Fixtures.me, Fixtures.jake])))
-        #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees.peers == [Fixtures.me, Fixtures.jake])
-        #expect(planner.parent(plan, updatedBy: link)?.plan?.place == nil)
+        link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        // The organizer first: the same people, in another order.
+        link.record(.attendees(try Attendees([Fixtures.maya, Fixtures.me, Fixtures.jake])))
+        let updated = try #require(planner.parent(plan, updatedBy: link))
+        #expect(updated.plan?.place == Fixtures.place("Boba Guys on Franklin"))
+        #expect(updated.plan?.attendees == plan.plan?.attendees)
+        #expect(updated.plan?.revision == 1)
+        // Once: not again, whatever arrives later.
+        #expect(planner.parent(updated, updatedBy: link) == nil)
     }
 
     @Test func aPlaceUpdateRaisesThePlanRevisionOnce() throws {
@@ -209,6 +203,10 @@ import Testing
             try fromJake.apply(event, at: Fixtures.at(minutes: 10))
         }
         fromJake.record(.placeChoice(Fixtures.place()))
+        // A friend's request changes nothing until it names its roster, and
+        // then only if that is the whole plan (review of PR #111, finding D).
+        #expect(planner.parent(plan, updatedBy: fromJake) == nil)
+        fromJake.record(.attendees(try Attendees([Fixtures.jake, Fixtures.me, Fixtures.maya])))
         let updated = try #require(planner.parent(plan, updatedBy: fromJake))
         #expect(updated.plan?.place == Fixtures.place())
         #expect(updated.plan?.revision == 1)

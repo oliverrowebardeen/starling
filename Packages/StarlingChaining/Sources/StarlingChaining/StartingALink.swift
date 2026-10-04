@@ -85,32 +85,38 @@ extension ChainPlanner {
         return waiting.id
     }
 
-    /// The parent with its plan updated by what a finished link agreed:
-    /// the place ("Somewhere else?") and the people who agreed to it, with
-    /// the plan's revision one higher (ADR 0022). The link is an owner link
-    /// or a friend's request grouped under the plan, so the plan changes the
-    /// same way on every phone. Applying the same link again changes nothing. A
-    /// friend who passed on the link drops out of the plan, so no later chain
-    /// reaches them (ADR 0020 decision 9.3). A link can only narrow the
-    /// roster: attendees outside the plan, or a roster without this phone,
-    /// are ignored. Nil if the link is not a planned link of this parent or
-    /// agreed nothing new. The app saves the result.
+    /// The parent with its plan moved to the place a finished link agreed
+    /// ("Somewhere else?"), with the plan's revision one higher (ADR 0022).
+    /// The link is an owner link or a friend's request grouped under the
+    /// plan, so the plan changes the same way on every phone.
+    ///
+    /// Grouping is not authority (review of PR #111, finding D): a place
+    /// result changes the plan only if everyone in the plan agreed to it,
+    /// that is, its roster is the plan's whole current roster, compared as
+    /// a set. A result agreed by fewer people changes nothing, and nobody
+    /// is ever removed here: only that person's own leave removes them. A
+    /// friend's request must name its roster; an owner link without one is
+    /// taken as the plan's own people.
+    ///
+    /// The result applies once, place and roster together (finding F):
+    /// applying it again, or after its other artifact arrives, changes
+    /// nothing. Nil if the link is not a planned link of this parent or
+    /// changes nothing. The app saves the result.
     public func parent(_ parent: Interaction, updatedBy link: Interaction) -> Interaction? {
         guard Self.isLink(link, of: parent), link.state == .planned || link.state == .done,
-              let plan = parent.plan
+              let plan = parent.plan,
+              let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
         else { return nil }
-        let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
-        var agreed: Attendees?
-        if let attendees = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).first,
-           attendees.peers.contains(me), Set(attendees.peers).isSubset(of: plan.attendees.peers) {
-            agreed = attendees
+        let roster = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).first
+        if let roster {
+            guard Set(roster.peers) == Set(plan.attendees.peers) else { return nil }
+        } else if link.chain?.parent != parent.id {
+            return nil
         }
-        let newPlace = place ?? plan.place
-        let newAttendees = agreed ?? plan.attendees
-        // Already applied (or nothing new): the revision must not rise again.
-        guard newPlace != plan.place || newAttendees != plan.attendees else { return nil }
-        // Through Plan.updating, so the plan's revision rises by one (ADR 0022).
-        guard let updatedPlan = try? plan.updating(attendees: newAttendees, place: .some(newPlace)) else { return nil }
+        // Already applied: the revision must not rise again.
+        guard place != plan.place else { return nil }
+        // Through Plan.updating, so the plan's revision rises by one.
+        guard let updatedPlan = try? plan.updating(place: .some(place)) else { return nil }
         var updated = parent
         updated.record(.plan(updatedPlan))
         return updated
