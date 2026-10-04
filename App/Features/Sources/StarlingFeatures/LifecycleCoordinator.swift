@@ -262,7 +262,9 @@ public final class LifecycleCoordinator {
             insert(invitee)
         case .lifecycle(let id, let lifecycle):
             guard let current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
-            guard current.skill.id == skill.id else { return drop(event, id, skill.id, .wrongSkill) }
+            guard current.skill.id == skill.id || Self.changesThePlan(skill.id, current, lifecycle: lifecycle) else {
+                return drop(event, id, skill.id, .wrongSkill)
+            }
             if case .awaitingConsent = current.state, Self.waitsForConsent(lifecycle) {
                 deferred[id, default: []].append(lifecycle)
                 return
@@ -270,12 +272,27 @@ public final class LifecycleCoordinator {
             apply(lifecycle, to: id, reportedAs: event, skill: skill.id)
         case .produced(let id, let artifact):
             guard var current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
-            guard current.skill.id == skill.id else { return drop(event, id, skill.id, .wrongSkill) }
+            guard current.skill.id == skill.id || Self.changesThePlan(skill.id, current, artifact: artifact) else {
+                return drop(event, id, skill.id, .wrongSkill)
+            }
             if case .ended = current.state { return drop(event, id, skill.id, .afterEnd) }
             let before = current
             current.record(artifact)
             replace(current, before: before)
         }
+    }
+
+    /// Change the plan updates the plan where it lives: the interaction of
+    /// the skill that made it (P15-E request 12, ADR 0243 decision 4). Only
+    /// that skill, only a standing plan, and only these: a newer revision
+    /// of the same plan, or `withdrawn` when the owner left it or is the
+    /// last one in it. Any other skill naming another's interaction is
+    /// still dropped.
+    static func changesThePlan(_ skill: SkillID, _ target: Interaction, lifecycle: InteractionEvent? = nil, artifact: Artifact? = nil) -> Bool {
+        guard skill == .changePlan, target.state == .planned, let plan = target.plan else { return false }
+        if let lifecycle { return lifecycle == .withdrawn }
+        guard case .plan(let updated)? = artifact else { return false }
+        return updated.origin == target.planConversation && updated.revision > plan.revision
     }
 
     // MARK: Owner steps

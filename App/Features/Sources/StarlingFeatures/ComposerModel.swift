@@ -214,8 +214,10 @@ public final class ComposerModel {
         return registry.availability(of: skill, in: settings.skillSettings)
     }
 
+    /// Skills New can start: not ones that only run on a plan (Change the
+    /// plan starts from the plan's detail; Swap photos after it ends).
     public var tiles: [Tile] {
-        registry.inBuild(settings.flags).map { skill in
+        registry.inBuild(settings.flags).filter { $0.chainTrigger == .atConfirm }.map { skill in
             let availability = availability(of: skill.id)
             return Tile(skill: skill, canStart: availability.isAvailable, subtitle: Self.subtitle(skill, availability))
         }
@@ -302,7 +304,8 @@ public final class ComposerModel {
             await fill(from: words, for: descriptor, model: skillModel, draft: draft, key: key)
             return
         }
-        let available = registry.available(in: settings.skillSettings).filter { lifecycle.skillsInBuild.contains($0.id) }
+        let available = registry.available(in: settings.skillSettings)
+            .filter { lifecycle.skillsInBuild.contains($0.id) && $0.chainTrigger == .atConfirm }
         let routed: SkillID?
         do {
             routed = try await skillModel.route(words, among: available).value

@@ -48,6 +48,9 @@ public struct AppServices: Sendable {
     /// The owner's live choices, for skill services built in `makeSkills`.
     /// `AppModel` attaches itself; nil when no service needs them.
     public var choices: OwnerChoices?
+    /// The plans on this phone by origin, for skill services built in
+    /// `makeSkills`. `AppModel` attaches its coordinator.
+    public var plans: StandingPlans?
     /// Lane E's journal of sends whose egress record is not yet confirmed,
     /// on disk in the app (ADR 0021 decision 4).
     public var egressJournal: any EgressJournal
@@ -96,6 +99,7 @@ public struct AppServices: Sendable {
         placeFinder: PlaceFinder? = nil,
         stagedPlaces: StagedCandidates? = nil,
         choices: OwnerChoices? = nil,
+        plans: StandingPlans? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -129,6 +133,7 @@ public struct AppServices: Sendable {
         self.placeFinder = placeFinder
         self.stagedPlaces = stagedPlaces
         self.choices = choices
+        self.plans = plans
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -285,6 +290,7 @@ public final class AppModel {
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
 
         services.choices?.attach(self)
+        services.plans?.attach(lifecycle)
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
         settings.beforeSave = { [weak self] interim in
             guard let self else { return }

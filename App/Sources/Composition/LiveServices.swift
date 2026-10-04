@@ -1,5 +1,6 @@
 import DownFor
 import FindATime
+import StarlingChangePlan
 import Foundation
 import Network
 import PickAPlace
@@ -37,16 +38,19 @@ extension AppServices {
         // One change to a plan at a time (ADR 0023): every skill that
         // changes a plan shares these.
         let holds = PlanChangeHolds()
+        let plans = StandingPlans()
         return AppServices(
             agent: agent,
             skillModel: agent,
             registry: LiveServices.registry,
+            flags: LiveServices.flags,
             makeSkills: { outbox in
                 [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger,
                                             interactions: interactions, holds: holds),
-                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans),
+                    LiveServices.changePlan(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans, holds: holds),
                 ]
             },
             interactions: interactions,
@@ -65,6 +69,7 @@ extension AppServices {
             placeFinder: places.finder,
             stagedPlaces: places.staged,
             choices: choices,
+            plans: plans,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
@@ -89,7 +94,12 @@ enum LiveServices {
         FindATimeSkill.descriptor,
         PickAPlaceSkill.descriptor,
         SwapPhotos.descriptor,
+        ChangePlan.descriptor,
     ])
+
+    /// The build's skills: Phase 1.5's, and Change the plan (ADR 0022),
+    /// until Core's `SkillFlags.phase1_5` lists it (docs/requests/P15-A.md).
+    static let flags = SkillFlags(SkillFlags.phase1_5.enabled.union([.changePlan]))
 
     /// The app's one EventKit store: the permission sheet asks through it,
     /// and Find a time reads busy times from it (P15-C request 1).
@@ -183,9 +193,21 @@ enum LiveServices {
     /// conversation ledger it enforces (P15-E request 4.8). An offer is
     /// checked against the plan saved on this phone. Runs only while its
     /// flag is on (AppModel drops a flagged-off service).
-    static func swapPhotos(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, interactions: any InteractionStore) -> any SkillService {
+    static func swapPhotos(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, plans: StandingPlans) -> any SkillService {
+        // By the plan's origin, so a friend added later is part of it too
+        // (P15-E request 14).
         SwapPhotosService(outbox: outbox, ledger: ledger, me: me, planLookup: { conversation in
-            try? await interactions.interaction(conversation: conversation)?.plan
+            await plans.plan(origin: conversation)
+        })
+    }
+
+    /// Lane E's Change the plan over the app's one Outbox and the ledger it
+    /// enforces, finding each plan by its origin (P15-E request 10), and
+    /// sharing the holds with Pick a place (ADR 0023).
+    static func changePlan(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, plans: StandingPlans,
+                           holds: any PlanChangeHolding) -> any SkillService {
+        ChangePlanService(outbox: outbox, ledger: ledger, journal: InMemoryChangePlanJournal(), holds: holds, me: me, planLookup: { conversation in
+            await plans.standing(origin: conversation)
         })
     }
 

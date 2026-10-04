@@ -3,6 +3,7 @@
 // scripted doubles, so nothing outside `#if DEBUG` may import it (ADR 0140).
 import DownFor
 import FindATime
+import StarlingChangePlan
 import Foundation
 import Observation
 import PickAPlace
@@ -44,7 +45,7 @@ final class DebugHarness {
     /// Debug's registry: every lane's real descriptor, or the sample Down
     /// for... while it is scripted.
     var registry: SkillRegistry {
-        try! SkillRegistry([usesScriptedDownFor ? SampleSkills.downFor : DownFor.descriptor, FindATimeSkill.descriptor, PickAPlaceSkill.descriptor, SwapPhotos.descriptor])
+        try! SkillRegistry([usesScriptedDownFor ? SampleSkills.downFor : DownFor.descriptor, FindATimeSkill.descriptor, PickAPlaceSkill.descriptor, SwapPhotos.descriptor, ChangePlan.descriptor])
     }
     private(set) var driver: DemoDriver?
     private(set) var friends: (any PairedPeerStore)?
@@ -80,11 +81,13 @@ final class DebugHarness {
         // One change to a plan at a time (ADR 0023), shared by every skill
         // that changes a plan.
         let holds = PlanChangeHolds()
+        let plans = StandingPlans()
 
         return AppServices(
             agent: agent,
             skillModel: skillModel,
             registry: registry,
+            flags: LiveServices.flags,
             makeSkills: { outbox in
                 // Lane B's service on the insecure PSI stub, which only
                 // Debug may link (ADR 0144).
@@ -93,7 +96,8 @@ final class DebugHarness {
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger,
                                             interactions: interactions, holds: holds),
-                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans),
+                    LiveServices.changePlan(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans, holds: holds),
                 ]
             },
             interactions: interactions,
@@ -112,6 +116,7 @@ final class DebugHarness {
             placeFinder: places.finder,
             stagedPlaces: places.staged,
             choices: choices,
+            plans: plans,
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,
