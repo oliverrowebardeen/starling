@@ -87,7 +87,6 @@ final class DebugHarness {
             agent: agent,
             skillModel: skillModel,
             registry: registry,
-            flags: LiveServices.flags,
             makeSkills: { outbox in
                 // Lane B's service on the insecure PSI stub, which only
                 // Debug may link (ADR 0144).

@@ -43,7 +43,6 @@ extension AppServices {
             agent: agent,
             skillModel: agent,
             registry: LiveServices.registry,
-            flags: LiveServices.flags,
             makeSkills: { outbox in
                 [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
@@ -96,10 +95,6 @@ enum LiveServices {
         SwapPhotos.descriptor,
         ChangePlan.descriptor,
     ])
-
-    /// The build's skills: Phase 1.5's, and Change the plan (ADR 0022),
-    /// until Core's `SkillFlags.phase1_5` lists it (docs/requests/P15-A.md).
-    static let flags = SkillFlags(SkillFlags.phase1_5.enabled.union([.changePlan]))
 
     /// The app's one EventKit store: the permission sheet asks through it,
     /// and Find a time reads busy times from it (P15-C request 1).

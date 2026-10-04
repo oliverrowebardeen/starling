@@ -13,7 +13,7 @@ ADR 0022 lets a confirmed plan change, and ADR 0243 says how lane E's `StarlingC
 
 1. **The plan's own interaction takes Change the plan's updates.** The service reports an agreed change as the updated plan, and a leave as `withdrawn`, on the interaction that holds the plan, which belongs to the skill that made it. The coordinator accepts exactly these from Change the plan, and only for a standing plan: the next revision of the same plan (same `Plan.origin`), or `withdrawn`. Any other skill naming another's interaction is still dropped. For every skill, a plan is recorded only as the next revision of the one stored, or the same plan again, a compare-and-set that serializes changes from different skills (P15-E request 15), and after any plan update the app tells Change the plan (`planDidChange`), so an open suggestion checks its basis still stands. Its delivery journal is on disk (`FileChangePlanJournal`).
 2. **Plans are found by origin.** `StandingPlans` reads the coordinator's interactions and finds a plan by `Plan.origin`. Change the plan's lookup and Swap photos' both use it, so a friend added later, who holds the plan in their Change the plan interaction, is part of it.
-3. **Change the plan starts only from a plan's detail.** It is never a tile in New or a routing choice. Core's `SkillFlags.phase1_5` does not list it yet, so the app's compositions add it to the build's flags (`docs/requests/P15-A.md` item 7).
+3. **Change the plan starts only from a plan's detail.** It is never a tile in New or a routing choice. Core's `SkillFlags.phase1_5` lists it (PR #115), so the build's flags include it.
 4. **The words are the app's, from the owner's nicknames.** Cards read "Maya suggests 8:30 PM instead of 8 PM", "dinner instead of boba", or "adding Jake", and an added friend reads "Maya asks you to join boba with Jake, tonight at 8 PM". The model never writes them, since they quote the plan as it stands on this phone.
 5. **A change lives on its plan's timeline.**
    - **Agreed:** shown as "Changed to dinner" or "Added Jake", never as a plan of its own on Home.
@@ -27,7 +27,6 @@ ADR 0022 lets a confirmed plan change, and ADR 0243 says how lane E's `StarlingC
 
 ## Consequences
 
-- When Core lists Change the plan in `SkillFlags.phase1_5`, the compositions' own flags can go.
 - **Known limits are lane E's (ADR 0243):** a lost confirmation leaves one phone's plan as it was, and two suggestions that cross both close without changing anything.
 
 ## Sources
