@@ -63,6 +63,27 @@ import Testing
         #expect(lifecycle.interaction(plan.id)?.state == .ended(.withdrawn))
     }
 
+    /// P15-E request 15: a plan is recorded only as the next revision, from
+    /// any skill, so two changes can't both land on the same revision.
+    @Test func aPlanRevisionOutOfTurnIsDropped() async throws {
+        let plan = try planned()
+        let lifecycle = await coordinator([plan])
+        let current = try #require(plan.plan)
+        let next = try current.updating(activity: .some(try Keyword("dinner")))
+        let skipped = try next.updating(activity: .some(try Keyword("tacos")))
+        await lifecycle.handle(.produced(plan.id, .plan(skipped)), from: ChangePlan.descriptor)
+        await lifecycle.handle(.produced(plan.id, .plan(skipped)), from: SampleSkills.downFor)
+        #expect(lifecycle.interaction(plan.id)?.plan == current)
+        var stale = try #require(lifecycle.interaction(plan.id))
+        stale.record(.plan(skipped))
+        lifecycle.update(stale)
+        #expect(lifecycle.interaction(plan.id)?.plan == current)
+        var fine = try #require(lifecycle.interaction(plan.id))
+        fine.record(.plan(next))
+        lifecycle.update(fine)
+        #expect(lifecycle.interaction(plan.id)?.plan == next)
+    }
+
     /// P15-E requests 10 and 14: a plan is found by its origin; the skill
     /// that agreed it holds it, or a friend's Change the plan when they were
     /// added later.

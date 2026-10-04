@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import PickAPlace
 import StarlingChaining
+import StarlingChangePlan
 import StarlingCore
 
 /// Everything the app's features are built from. The app target assembles
@@ -316,6 +317,12 @@ public final class AppModel {
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
+            // Any plan update: an open suggestion checks its basis still
+            // stands (P15-E request 15).
+            if let plan = after.plan, before?.plan != plan, let change = self?.lifecycle.service(for: .changePlan) as? ChangePlanService {
+                let origin = plan.origin
+                Task { await change.planDidChange(origin) }
+            }
             // A friend's request just installed: write any send its skill
             // made before the coordinator saw it (lane E's recorder).
             if before == nil, let egress = self?.egress {

@@ -276,6 +276,7 @@ public final class LifecycleCoordinator {
                 return drop(event, id, skill.id, .wrongSkill)
             }
             if case .ended = current.state { return drop(event, id, skill.id, .afterEnd) }
+            guard Self.isNextPlan(artifact, after: current) else { return drop(event, id, skill.id, .other("plan revision out of turn")) }
             let before = current
             current.record(artifact)
             replace(current, before: before)
@@ -292,7 +293,16 @@ public final class LifecycleCoordinator {
         guard skill == .changePlan, target.state == .planned, let plan = target.plan else { return false }
         if let lifecycle { return lifecycle == .withdrawn }
         guard case .plan(let updated)? = artifact else { return false }
-        return updated.origin == target.planConversation && updated.revision > plan.revision
+        return updated.origin == target.planConversation && updated.revision == plan.revision + 1
+    }
+
+    /// A plan is recorded only as the next revision of the one stored, or
+    /// as the same plan again: a compare-and-set that serializes changes to
+    /// one plan from different skills (P15-E request 15, Codex review of
+    /// PR #111 finding C). The first plan of an interaction is always taken.
+    static func isNextPlan(_ artifact: Artifact, after current: Interaction) -> Bool {
+        guard case .plan(let incoming) = artifact, let stored = current.plan else { return true }
+        return incoming == stored || incoming.revision == stored.revision + 1
     }
 
     // MARK: Owner steps
@@ -612,6 +622,8 @@ public final class LifecycleCoordinator {
     public func update(_ changed: Interaction) {
         guard let current = interaction(changed.id), current != changed,
               current.state == changed.state, current.conversation == changed.conversation else { return }
+        // A changed plan must be the next revision (P15-E request 15).
+        if let plan = changed.plan, !Self.isNextPlan(.plan(plan), after: current) { return }
         replace(changed, before: current)
     }
 
