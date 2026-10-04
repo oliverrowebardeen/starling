@@ -19,7 +19,8 @@ import Testing
         try await a.waitForProposal(mine)
         try await b.waitForProposal(theirs)
         try await b.imIn(theirs)
-        try await Task.sleep(for: .milliseconds(100))
+        // B's I'm in has reached A before the link goes.
+        try await eventually("B's I'm in at A") { await !world.wire.envelopes.filter { $0.sender == b.id && $0.body.kind == .accept }.isEmpty }
 
         // A confirms while B cannot hear it, then withdraws the plan.
         await world.hub.partition(a.id, b.id)
@@ -54,11 +55,17 @@ import Testing
             if let conversation = try? await mallory.startRun(with: b.id) { started.insert(conversation) }
             try await Task.sleep(for: .milliseconds(30))
         }
-        try await Task.sleep(for: .milliseconds(300))
         // B's own run toward Mallory gives way to Mallory's first, and is
-        // the only run handed back to the cap.
-        let answered = Set(await mallory.inbox.envelopes.filter { $0.body.kind == .psi && started.contains($0.conversation) }.map(\.conversation))
-        #expect(answered.count == fastConfiguration.maxRunsPerPeer, "answered \(answered.count)")
+        // the only run handed back to the cap: B answers exactly the cap,
+        // however long the answers take, and nothing more comes.
+        let runs = started
+        @Sendable func answered() async -> Set<ConversationID> {
+            Set(await mallory.inbox.envelopes.filter { $0.body.kind == .psi && runs.contains($0.conversation) }.map(\.conversation))
+        }
+        try await eventually("B's answers") { await answered().count >= fastConfiguration.maxRunsPerPeer }
+        try await Task.sleep(for: .milliseconds(300))
+        let count = await answered().count
+        #expect(count == fastConfiguration.maxRunsPerPeer, "answered \(count)")
     }
 
     /// Finding 5: an older round in a fresh envelope never replaces the
@@ -113,11 +120,11 @@ import Testing
         try await a.imIn(mine)
         try await b.imIn(theirs)
         try await a.waitFor(.planned, mine)
-        try await Task.sleep(for: .milliseconds(1_700))
+        // Its request goes from the service once the plan and its grace are
+        // over, quietly: no planEnded, and the coordinator's copy stays.
+        try await eventually("the plan's cleanup") { await a.service.requests[mine] == nil }
         #expect(await !a.lifecycle.lifecycleEvents.contains(.planEnded))
         #expect(await a.lifecycle.state(mine) == .planned)
-        // Its request is gone from the service by now, quietly.
-        #expect(await a.service.requests[mine] == nil)
         await world.expectCleanLifecycles()
     }
 }

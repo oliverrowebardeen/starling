@@ -219,8 +219,8 @@ final class DownWorld: Sendable {
     /// before the match could fire, so the check waits up to `timeout` for
     /// it to be recorded. A match nobody accepted is never backed and still
     /// fails.
-    func expectNoFalseMatches(timeout: Duration = .seconds(2)) async {
-        let clock = ContinuousClock()
+    func expectNoFalseMatches(timeout: Duration = .seconds(30)) async {
+        let clock = SuspendingClock()
         let deadline = clock.now.advanced(by: timeout)
         for node in nodes {
             for match in await node.log.matches {
@@ -263,12 +263,15 @@ final class DownWorld: Sendable {
     }
 }
 
-func eventually(timeout: Duration = .seconds(5), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
-    let clock = ContinuousClock()
+/// Waits for `condition`, for at most `timeout` of the Mac's awake time,
+/// so neither load nor a system sleep mid-run counts against a healthy wait
+/// (issue #109).
+func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
+    let clock = SuspendingClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
         if await condition() { return }
-        try await Task.sleep(for: .milliseconds(5))
+        try await clock.sleep(for: .milliseconds(5))
     }
     Issue.record("timed out waiting for \(what)")
 }

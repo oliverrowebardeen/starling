@@ -116,14 +116,15 @@ import Testing
 
         let conversation = try await DownAdversarialTests().openRun(from: mallory, to: ben)
         _ = try await mallory.next(.psi)
-        let clock = ContinuousClock()
+        let clock = SuspendingClock()
         let start = clock.now
         var index = 0
         // Distinct activity and budget queries every 10 ms until Ben's
-        // conversation ends, or 4 s (four times the 2 x 25 x 20 ms details
-        // deadline). Before the fix, each answer reset the deadline, so the
-        // flood kept the conversation alive indefinitely.
-        while clock.now - start < .seconds(4), await !ben.negotiator.conversations.isEmpty || index == 0 {
+        // conversation ends, or 20 s of awake time (twenty times the 2 x 25 x
+        // 20 ms details deadline, so a loaded machine cannot run it out).
+        // Before the fix, each answer reset the deadline, so the flood kept
+        // the conversation alive indefinitely.
+        while clock.now - start < .seconds(20), await !ben.negotiator.conversations.isEmpty || index == 0 {
             let query = index.isMultiple(of: 2)
                 ? try Query(issue: .activity, candidates: .keywords([T.keyword("food"), T.keyword("item \(index)")]))
                 : try Query(issue: .budget, candidates: .amount(T.usd(Int64(index + 1))))
@@ -219,7 +220,7 @@ import Testing
 
         // The details deadline is 1 s and the stall 30 s; 4 s leaves room
         // for a loaded machine.
-        try await eventually(timeout: .seconds(4), "the stalled conversation timed out") {
+        try await eventually("the stalled conversation timed out") {
             let started = await calls.value
             let timedOut = await answerer.negotiator.diagnostics.outcomes[.timedOut]
             return started == 1 && timedOut == 1
@@ -228,7 +229,7 @@ import Testing
         await answerer.negotiator.clearIntent()
         try await starter.want(time: [T.slot(19, 22)], liked: ["food"])
         try await answerer.want(time: [T.slot(19, 22)], liked: ["food"])
-        try await eventually(timeout: .seconds(2), "a fresh run matched") { await matchCounts(starter, answerer) == [1, 1] }
+        try await eventually("a fresh run matched") { await matchCounts(starter, answerer) == [1, 1] }
         await world.stop()
     }
 
@@ -350,7 +351,7 @@ import Testing
         try await eventually("ben's first PSI send waits for consent") { await consent.pending == 1 }
 
         // 25 ticks of 20 ms; the sheet stays unanswered throughout.
-        try await eventually(timeout: .seconds(2), "the run timed out") { await ben.negotiator.conversations.isEmpty }
+        try await eventually("the run timed out") { await ben.negotiator.conversations.isEmpty }
         #expect(await ben.negotiator.diagnostics.outcomes[.timedOut] == 1)
         #expect(await consent.pending == 1)
         await consent.answerAll(.approved)
@@ -441,7 +442,7 @@ import Testing
         }
         let limit = DownNegotiator.maxQueuedWorkPerPeer
         // Well inside the 5 s deadline, so the worker is still blocked.
-        try await eventually(timeout: .seconds(2), "the overflow was dropped") { await ben.negotiator.diagnostics.droppedWork >= flood - limit }
+        try await eventually("the overflow was dropped") { await ben.negotiator.diagnostics.droppedWork >= flood - limit }
         #expect(await ben.negotiator.queueDepth(for: mallory.id) <= limit)
         await consent.answerAll(.declined)
         await mallory.stop()

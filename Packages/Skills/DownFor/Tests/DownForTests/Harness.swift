@@ -6,11 +6,14 @@ import StarlingTransport
 import Synchronization
 import Testing
 
-/// Retries every 20 ms and gives up on an automatic step after 2 s, so a
-/// loaded machine (six lanes share this Mac) does not time out healthy
-/// flows. A proposal waits 2 s for people.
+/// Retries every 20 ms and gives up on an automatic step after about 6 s,
+/// and a proposal waits 10 s for people, so a loaded machine (load
+/// averages above 50 with every lane testing at once) does not time out
+/// healthy flows on real time. A test that waits for a window or a
+/// deadline to pass runs on `VirtualTime` instead, so it never waits for
+/// either in real time.
 let fastConfiguration = DownForConfiguration(
-    retryInterval: .milliseconds(20), maxAttempts: 100, ownerWindow: .seconds(2), maxBackoff: .milliseconds(200)
+    retryInterval: .milliseconds(20), maxAttempts: 300, ownerWindow: .seconds(10), maxBackoff: .milliseconds(200)
 )
 
 /// Wall time pinned to `T.now`; timers are real, except sleeps of ten
@@ -18,7 +21,11 @@ let fastConfiguration = DownForConfiguration(
 /// faster: by default a request that expires in 5 hours does so in 18 s.
 func testClock(speedup: Int = 1_000, now: @escaping @Sendable () -> Date = { T.now }) -> SkillClock {
     SkillClock(now: now, sleep: { duration in
-        try await Task.sleep(for: duration >= .seconds(600) ? duration / speedup : duration)
+        // Awake time: a Mac that sleeps mid-run (a test machine entered
+        // clamshell, maintenance, and thermal emergency sleep during lane
+        // F's gate of 2026-10-02, issue #109) does not run a test's windows
+        // down while it sleeps.
+        try await Task.sleep(for: duration >= .seconds(600) ? duration / speedup : duration, clock: .suspending)
     })
 }
 
@@ -341,12 +348,14 @@ final class World: Sendable {
     }
 }
 
+/// Waits for `condition`, for at most `timeout` of the Mac's awake time,
+/// so a system sleep mid-run never counts against the wait (issue #109).
 func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
-    let clock = ContinuousClock()
+    let clock = SuspendingClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
         if await condition() { return }
-        try await Task.sleep(for: .milliseconds(5))
+        try await clock.sleep(for: .milliseconds(5))
     }
     Issue.record("timed out waiting for \(what)")
 }
@@ -441,5 +450,37 @@ extension VirtualTime {
             counts.append(await count())
         }
         return counts
+    }
+}
+
+extension VirtualTime {
+    /// Moves time forward one due sleep at a time until `condition` holds:
+    /// for a test that waits for a window or a member's deadline to pass,
+    /// without waiting for it in real time. Real time only bounds the whole
+    /// wait, generously.
+    ///
+    /// Each step moves at most `step` (the longest backoff by default): a
+    /// timer that re-arms a moment after it fires is still in time for the
+    /// next step, so time never jumps past it to a later sleep, such as a
+    /// request's expiry hours away.
+    func advanceUntil(_ what: String, timeout: Duration = .seconds(60), step: Duration = fastConfiguration.maxBackoff, _ condition: @Sendable () async -> Bool) async throws {
+        let clock = SuspendingClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if await condition() { return }
+            advance(to: min(due.first ?? now + step, now + step))
+            try await clock.sleep(for: .milliseconds(5))
+        }
+        Issue.record("timed out waiting for \(what)")
+    }
+}
+
+extension VirtualTime {
+    /// Waits until a sleep due at `instant` is registered. A service timer
+    /// is a task that registers its sleep a moment after it starts; moving
+    /// time before then would measure it from the later time and fire it
+    /// late, a race only tests that move time can lose.
+    func waitForSleep(at instant: Duration, _ what: String) async throws {
+        try await eventually(timeout: .seconds(60), what) { await self.due.contains(instant) }
     }
 }

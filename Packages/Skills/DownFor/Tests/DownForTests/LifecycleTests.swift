@@ -22,14 +22,14 @@ import Testing
         let theirs = try await b.down(for: ["boba"], with: [a])
 
         // Approve every sheet as it comes, until both cards show.
-        try await eventually(timeout: .seconds(10), "both cards") {
+        try await eventually("both cards") {
             await consent.answerAll(.approved)
             let cards = (await a.lifecycle.state(mine), await b.lifecycle.state(theirs))
             return cards == (.proposed, .proposed)
         }
         try await a.imIn(mine)
         try await b.imIn(theirs)
-        try await eventually(timeout: .seconds(10), "both planned") {
+        try await eventually("both planned") {
             await consent.answerAll(.approved)
             let planned = (await a.lifecycle.reached(.planned, mine), await b.lifecycle.reached(.planned, theirs))
             return planned == (true, true)
@@ -51,10 +51,10 @@ import Testing
         let mine = try await a.down(for: ["boba"], with: [b])
         try await eventually("A's sheet") { await a.lifecycle.state(mine) == .awaitingConsent(resume: .negotiating) }
         await consent.answerAll(.declined)
-        try await Task.sleep(for: .milliseconds(300))
         // The coordinator applies the pass; the service adds nothing and
         // sends nothing more, retries included.
-        #expect(await a.lifecycle.state(mine) == .ended(.declined))
+        try await a.waitFor(.ended(.declined), mine)
+        try await Task.sleep(for: .milliseconds(300))
         #expect(await a.lifecycle.lifecycleEvents.isEmpty)
         #expect(await world.wire.sent(by: a.id).isEmpty)
         #expect(await consent.requests == 1)
@@ -173,7 +173,10 @@ import Testing
     }
 
     @Test func aFriendWhoNeverAnswersIsLeftOutAfterTheWindow() async throws {
-        let world = World(2)
+        // On virtual time: the window and B's wait pass without real time
+        // passing, however busy the machine is.
+        let time = VirtualTime()
+        let world = World(2, clock: time.clock(now: T.now))
         try await world.start()
         defer { Task { await world.stop() } }
         let (a, b) = (world["A"], world["B"])
@@ -182,11 +185,26 @@ import Testing
         try await a.waitForProposal(mine)
         try await b.waitForProposal(theirs)
         try await a.imIn(mine)
-        // B looks away. After the 2 s window A's request ends as nobody up.
-        // B hears nothing about it: whether A said I'm in is not B's to
-        // learn, so B's card ends when its own wait does.
+        try await eventually("A's I'm in") { await a.lifecycle.state(mine) == .confirmed }
+        // B looks away. Just before the window A is still waiting; at the
+        // window its request ends as nobody up.
+        try await time.waitForSleep(at: fastConfiguration.ownerWindow, "A's window")
+        await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
+        #expect(await a.lifecycle.state(mine) == .confirmed)
+        // Time stops at the window while A's ending is handled.
+        await time.advance(to: fastConfiguration.ownerWindow)
         try await a.waitFor(.ended(.nobodyUp), mine)
-        try await b.waitFor(.ended(.nobodyUp), theirs)
+        // B hears nothing about it: whether A said I'm in is not B's to
+        // learn, so B's card ends when its own wait does. That wait starts
+        // over with every proposal B receives, so it ends no sooner than an
+        // owner window after A's last one (issue #109: the deadline is B's
+        // own, never early, and runs on the service's clock).
+        #expect(await b.lifecycle.state(theirs) == .proposed)
+        let lastProposal = try #require(DownForService.deliverySchedule(
+            window: fastConfiguration.ownerWindow, first: fastConfiguration.retryInterval, cap: fastConfiguration.maxBackoff
+        ).last)
+        try await time.advanceUntil("B's card ends") { await b.lifecycle.reached(.ended(.nobodyUp), theirs) }
+        #expect(await time.now >= lastProposal + fastConfiguration.ownerWindow)
         #expect(await world.wire.envelopes.filter { $0.sender == a.id && $0.body.kind == .reject }.isEmpty)
         await world.expectCleanLifecycles()
     }
@@ -203,12 +221,12 @@ import Testing
 
         // Cut the link just as A confirms; B's accept keeps coming back.
         try await b.imIn(theirs)
-        try await Task.sleep(for: .milliseconds(50))
+        // B's I'm in has reached A before the link goes.
+        try await eventually("B's I'm in at A") { await !world.wire.envelopes.filter { $0.sender == b.id && $0.body.kind == .accept }.isEmpty }
         await world.hub.partition(a.id, b.id)
         try await a.imIn(mine)
         try await a.waitFor(.planned, mine)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(await b.lifecycle.state(theirs) == .confirmed)
+        try await eventually("B's own I'm in") { await b.lifecycle.state(theirs) == .confirmed }
         await world.hub.heal(a.id, b.id)
         try await b.waitFor(.planned, theirs)
         await world.expectCleanLifecycles()

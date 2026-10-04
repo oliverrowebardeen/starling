@@ -154,6 +154,7 @@ import Testing
             try await b.waitFor(.ended(.declined), theirs)
         }
         try await eventually("A's I'm in") { await a.lifecycle.state(mine) == .confirmed }
+        try await time.waitForSleep(at: fastConfiguration.ownerWindow, "A's window")
         await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
         let openBeforeWindow = await a.lifecycle.state(mine) == .confirmed
         await time.advance(to: fastConfiguration.ownerWindow)

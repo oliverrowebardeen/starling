@@ -260,6 +260,7 @@ import Testing
         let proposalsByInstant = try await time.proposalsAtEachInstant {
             await world.wire.envelopes.filter { $0.sender == a.id && $0.recipient == b.id && $0.body.kind == .propose }.count
         }
+        try await time.waitForSleep(at: fastConfiguration.ownerWindow, "A's window")
         await time.advance(to: fastConfiguration.ownerWindow)
         try await a.waitFor(starterPasses ? .ended(.declined) : .ended(.expired), mine, timeout: .seconds(60))
         #expect(await !b.lifecycle.reached(.planned, theirs))
@@ -348,6 +349,7 @@ import Testing
         }
         #expect(proposalsByInstant == Array(1...proposalsByInstant.count))
         // Just before the window: not reported, not retired.
+        try await time.waitForSleep(at: fastConfiguration.ownerWindow, "A's window")
         await time.advance(to: fastConfiguration.ownerWindow - .milliseconds(1))
         #expect(await a.lifecycle.state(mine) == .proposed)
         #expect(try await !a.ledger.isRetired(conversation))
