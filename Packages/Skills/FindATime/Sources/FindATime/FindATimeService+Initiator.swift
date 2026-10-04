@@ -124,6 +124,7 @@ extension FindATimeService {
     private func beginCollecting(_ id: ConversationID) {
         guard var value = initiating[id] else { return }
         value.phase = .collecting
+        dropEarly(id)
         value.queryIDs = [:]
         // Halfway to the end (the request's, or its last offered time's), so
         // there is always time left to propose and agree.
@@ -147,21 +148,17 @@ extension FindATimeService {
         let chainedFrom = value.chainedFrom
         spawn(for: id) {
             for peer in targets {
-                let outcome = await self.send(.query(query), to: peer, conversation: id, chainedFrom: chainedFrom)
+                let outcome = await self.send(.query(query), to: peer, conversation: id, chainedFrom: chainedFrom, record: .query)
                 await self.querySent(id, to: peer, outcome)
             }
         }
     }
 
     private func querySent(_ id: ConversationID, to peer: PeerID, _ outcome: SendOutcome) {
-        guard var value = initiating[id], value.phase == .collecting, value.answers[peer] == nil else { return }
+        guard let value = initiating[id], value.phase == .collecting, value.answers[peer] == nil else { return }
         switch outcome {
-        case .sent(let envelope):
-            value.contacted.insert(peer)
-            value.queryIDs[peer, default: []].insert(envelope.id)
-            initiating[id] = value
-            checkpoint(id)
-        case .failed:
+        case .sent, .failed:
+            // A sent query was recorded by `send` already (recordQuery).
             return
         case .declined, .denied, .refused:
             initiatorRefused(id, outcome)
@@ -195,7 +192,11 @@ extension FindATimeService {
         guard value.answers[envelope.sender] == nil else { return ignore("duplicate answer") }
         // Only an answer to a query this phone sent that friend in this step
         // counts: not a made-up ID, nor a stale answer relabelled (#68).
-        guard value.queryIDs[envelope.sender]?.contains(answer.query) == true else { return ignore("answer to a query never sent") }
+        guard value.queryIDs[envelope.sender]?.contains(answer.query) == true else {
+            // Its query may have left without Outbox having returned it yet.
+            if holdEarly(envelope, step: "query") { return }
+            return ignore("answer to a query never sent")
+        }
         guard answer.issue == .time else { return ignore("answer for another issue") }
         switch answer.status {
         case .answered:
@@ -225,7 +226,10 @@ extension FindATimeService {
         case .proposing: value.proposalIDs[envelope.sender] ?? []
         default: []
         }
-        guard named.contains(rejection.proposal) else { return ignore("rejection of nothing sent") }
+        guard named.contains(rejection.proposal) else {
+            if holdEarly(envelope, step: value.phase == .collecting ? "query" : nil) { return }
+            return ignore("rejection of nothing sent")
+        }
         switch value.phase {
         case .collecting where value.answers[envelope.sender] == nil:
             value.answers[envelope.sender] = []
@@ -274,6 +278,7 @@ extension FindATimeService {
         else { return endWithoutPlan(id, .noAgreement) }
         value.draft = Draft(revision: revision, slot: slot, members: members, terms: terms, plan: plan)
         value.phase = .proposing
+        dropEarly(id)
         value.proposalIDs = [:]
         value.accepted = [:]
         value.ownerAccepted = false
@@ -291,6 +296,7 @@ extension FindATimeService {
         guard var value = initiating[id] else { return }
         value.draft = draft
         value.phase = .proposing
+        dropEarly(id)
         initiating[id] = value
         resetAttempts(id)
         sendProposals(id, revision: draft.revision, to: draft.members.filter { value.accepted[$0] == nil }, announce: true)
@@ -309,9 +315,9 @@ extension FindATimeService {
         spawn(for: id) {
             var refusal: SendOutcome?
             for peer in targets {
-                let outcome = await self.send(.propose(proposal), to: peer, conversation: id, chainedFrom: chainedFrom)
+                let outcome = await self.send(.propose(proposal), to: peer, conversation: id, chainedFrom: chainedFrom, record: .proposal(revision: revision))
                 switch outcome {
-                case .sent(let envelope): await self.proposalSent(id, revision: revision, to: peer, envelope.id)
+                case .sent: continue
                 case .declined, .denied, .refused: refusal = outcome
                 case .failed: continue
                 }
@@ -321,11 +327,23 @@ extension FindATimeService {
         }
     }
 
-    private func proposalSent(_ id: ConversationID, revision: UInt32, to peer: PeerID, _ message: MessageID) {
+    /// A query to `peer` left: record it, then check any reply that arrived
+    /// before Outbox returned.
+    func recordQuery(_ id: ConversationID, to peer: PeerID, _ message: MessageID) {
+        guard var value = initiating[id], value.phase == .collecting, value.answers[peer] == nil else { return }
+        value.contacted.insert(peer)
+        value.queryIDs[peer, default: []].insert(message)
+        initiating[id] = value
+        checkpoint(id)
+        recheckEarly(id, from: peer)
+    }
+
+    func recordProposal(_ id: ConversationID, revision: UInt32, to peer: PeerID, _ message: MessageID) {
         guard var value = initiating[id], value.draft?.revision == revision else { return }
         value.proposalIDs[peer, default: []].insert(message)
         initiating[id] = value
         checkpoint(id)
+        recheckEarly(id, from: peer)
     }
 
     private func proposalsDone(_ id: ConversationID, revision: UInt32, announce: Bool, refusal: SendOutcome?) {
@@ -344,7 +362,10 @@ extension FindATimeService {
         guard var value = initiating[id], let draft = value.draft, draft.members.contains(peer) else {
             return ignore("acceptance from a non-member")
         }
-        guard acceptance.terms == draft.terms, value.proposalIDs[peer]?.contains(acceptance.proposal) == true else {
+        guard acceptance.terms == draft.terms else { return ignore("acceptance of other terms") }
+        guard value.proposalIDs[peer]?.contains(acceptance.proposal) == true else {
+            // Its proposal may have left without Outbox having returned it yet.
+            if holdEarly(envelope, step: nil) { return }
             return ignore("acceptance of other terms")
         }
         switch value.phase {
