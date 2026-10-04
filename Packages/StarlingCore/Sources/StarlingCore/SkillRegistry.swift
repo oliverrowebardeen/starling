@@ -13,9 +13,10 @@ public struct SkillFlags: Hashable, Sendable {
 
     public init(_ enabled: Set<SkillID>) { self.enabled = enabled }
 
-    /// Phase 1.5 ships Down for…, Find a time, and Pick a place. Swap photos
+    /// Phase 1.5 ships Down for…, Find a time, Pick a place, and Change the
+    /// plan (ADR 0022), which runs only from a confirmed plan. Swap photos
     /// exists only far enough to prove the time-triggered chain hook.
-    public static let phase1_5 = SkillFlags([.downFor, .findATime, .pickAPlace])
+    public static let phase1_5 = SkillFlags([.downFor, .findATime, .pickAPlace, .changePlan])
 }
 
 /// The owner's skill choices plus the build's flags: what decides whether a

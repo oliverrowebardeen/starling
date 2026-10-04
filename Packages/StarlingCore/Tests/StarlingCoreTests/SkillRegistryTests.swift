@@ -29,6 +29,13 @@ import Testing
         #expect(registry.advertised(in: settings).map(\.id) == [.downFor, .findATime, .pickAPlace])
     }
 
+    @Test func phaseOneFiveShipsChangeThePlan() {
+        // Without the flag, a phone neither offers "Suggest a change" nor
+        // advertises the skill on its card, so no friend could offer one either.
+        #expect(SkillFlags.phase1_5.enabled.contains(.changePlan))
+        #expect(!SkillFlags.phase1_5.enabled.contains(.swapPhotos))
+    }
+
     @Test func ownerSwitchesAndPrivacyExplainWhyASkillCannotRun() throws {
         let registry = try Self.registry()
         var privacy = PrivacySettings.defaults
