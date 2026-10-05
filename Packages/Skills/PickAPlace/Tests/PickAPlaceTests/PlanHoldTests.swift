@@ -313,4 +313,22 @@ struct PlanHoldTests {
         #expect(await eventually { await gate.waiting >= 1 })
         #expect(await eventually { await oliver.holds.holder(of: plan.origin) == nil })
     }
+
+    /// Item 4: Maya's phone finds the plan under a conversation other than
+    /// its origin. Her yes holds it by the plan's origin, as the organizer
+    /// and Change the plan do, so the two skills share one hold.
+    @Test func aFriendHoldsThePlanByItsOrigin() async throws {
+        let (group, oliver, maya, jake) = try await friends()
+        defer { Task { await group.stop() } }
+        let plan = try await plan([oliver, maya, jake])
+        let elsewhere = ConversationID()
+        for phone in [oliver, maya, jake] { await phone.plans.hold(plan, under: elsewhere) }
+        let conversation = try await oliver.organize([PlanChangeTests.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
+                                                     chainedFrom: elsewhere).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        #expect(await maya.holds.holder(of: plan.origin) == conversation)
+        #expect(await maya.holds.holder(of: elsewhere) == nil)
+        #expect(await oliver.holds.holder(of: plan.origin) == conversation)
+    }
 }

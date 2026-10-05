@@ -46,6 +46,9 @@ struct Invite {
     /// What the request is on this phone's plan, from this phone's own copy
     /// of it; nil when the request is not chained from a plan.
     var kind: PlaceRequestKind?
+    /// The origin of this phone's own plan the request names, which keys
+    /// its hold, as on the organizer's side (ADR 0023, decision 3).
+    var planOrigin: ConversationID?
     /// The newest proposal that arrived while this phone's own list or yes
     /// was still on its way, handled once that send returns. The organizer
     /// may send it the moment it has the list or yes, before this phone's
@@ -66,7 +69,7 @@ struct Invite {
     /// phone holds, a first place too (ADR 0023).
     var holdKey: ConversationID? {
         switch kind {
-        case .firstPlace?, .placeChange?: chainedFrom
+        case .firstPlace?, .placeChange?: planOrigin ?? chainedFrom
         case .planNotHeld?, nil: nil
         }
     }
@@ -109,9 +112,11 @@ extension PickAPlaceService {
                 // What the request is on this phone's own plan, recorded for
                 // its whole life before anything is answered (ADR 0233).
                 if let chainedFrom = envelope.chainedFrom {
-                    let kind = Self.kind(of: await service.plans(chainedFrom))
+                    let plan = await service.plans(chainedFrom)
+                    let kind = Self.kind(of: plan)
                     try await service.ledger.recordRequestKind(kind, for: conversation, at: now)
                     service.invites[conversation]?.kind = kind
+                    service.invites[conversation]?.planOrigin = plan?.origin
                 }
             } catch {
                 service.endInvite(conversation, event: nil, reply: nil)

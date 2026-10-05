@@ -511,6 +511,9 @@ actor PlanBook {
     private var plans: [ConversationID: Plan] = [:]
 
     func hold(_ plan: Plan) { plans[plan.origin] = plan }
+    /// Holds `plan` under another conversation, as when a request names the
+    /// plan by a conversation other than its origin.
+    func hold(_ plan: Plan, under conversation: ConversationID) { plans[conversation] = plan }
     func plan(for conversation: ConversationID) -> Plan? { plans[conversation] }
 }
 

@@ -100,6 +100,13 @@ extension PickAPlaceService {
         invite.proposeID = yes.proposals.last
     }
 
+    /// The origin of this phone's own plan a friend's request names, which
+    /// keys its hold (ADR 0023, decision 3); nil if this phone holds none.
+    func planOrigin(of interaction: Interaction) async -> ConversationID? {
+        guard let hint = interaction.friendChainHint else { return nil }
+        return await plans(hint)?.origin
+    }
+
     /// What a friend's request is on this phone's plan: none when it was
     /// not chained from one; otherwise the recorded kind, and a missing or
     /// unreadable one is read as a change of place no proposal can match
@@ -129,6 +136,7 @@ extension PickAPlaceService {
     private func resumePlannedInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
         let kind = await friendKind(of: interaction)
+        let origin = await planOrigin(of: interaction)
         let yes = try? await ledger.yes(for: conversation)
         guard invites[conversation] == nil, let proposal = interaction.proposal, let (place, _) = Self.parts(of: proposal),
               let roster = Self.attendees(of: interaction), let organizer = roster.first, organizer != localPeer, roster.contains(localPeer)
@@ -144,6 +152,7 @@ extension PickAPlaceService {
         invite.finished = true
         invite.finalRoster = roster
         invite.kind = kind
+        invite.planOrigin = origin
         Self.restore(yes, into: &invite, for: proposal)
         invites[conversation] = invite
         conversationOf[interaction.id] = conversation
@@ -217,6 +226,7 @@ extension PickAPlaceService {
     private func resumeInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
         let kind = await friendKind(of: interaction)
+        let origin = await planOrigin(of: interaction)
         let yes = try? await ledger.yes(for: conversation)
         guard invites[conversation] == nil else { return false }
         switch Self.step(of: interaction.state) {
@@ -233,6 +243,7 @@ extension PickAPlaceService {
             invite.admitted = true
             invite.revision = interaction.proposalRevision ?? 0
             invite.kind = kind
+            invite.planOrigin = origin
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
             spawnInviteDeadline(conversation)
@@ -256,6 +267,7 @@ extension PickAPlaceService {
             let round = UInt16(min(proposal.plan?.revision ?? 0, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
             invite.offer = try? Proposal(round: round, terms: proposal.terms)
             invite.kind = kind
+            invite.planOrigin = origin
             Self.restore(yes, into: &invite, for: proposal)
             // A yes recorded for this card went out, even if the app stopped
             // before the interaction showed it (review of #118, round 2):
