@@ -97,8 +97,11 @@ struct WithdrawalTests {
             return .needsConsent(Disclosure(recipient: envelope.recipient, recipientModel: nil, items: [],
                                             conversation: envelope.conversation, skill: envelope.skill))
         })
-        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: askingForConfirmation, gate: gate, configuration: quick)
-        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        // The standard windows, so Maya's request (answer window and three
+        // confirm windows, 12 seconds) cannot expire while a busy host runs
+        // the steps below.
+        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: askingForConfirmation, gate: gate)
+        let maya = Phone("Maya", hub: hub, maps: maps)
         let group = try await Group([oliver, maya], hub: hub)
         defer { Task { await oliver.events.release(); await group.stop() } }
         let request = try await oliver.organize(Venues.all, with: [maya])
