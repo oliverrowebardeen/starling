@@ -173,7 +173,11 @@ final class ChangePhone: Sendable {
     }
     func waitRevision(_ revision: UInt32, origin: ConversationID) async throws {
         try await P15.eventually("plan artifact reaches revision \(revision)") {
-            try await self.plan(origin).revision == revision
+            // A joining friend has no root until its produced plan arrives.
+            // Missing that artifact is an unmet condition, not an assertion.
+            try await self.all().contains {
+                $0.state == .planned && $0.plan?.origin == origin && $0.plan?.revision == revision
+            }
         }
     }
     func accept(_ conversation: ConversationID) async throws {

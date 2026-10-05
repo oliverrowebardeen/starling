@@ -95,11 +95,19 @@ struct ChangePlanDeliveryTests {
         let change = try await agree(world)
         try await P15.eventually("confirmation is awaiting B") { try await delivery(a)?.pending.count == 1 }
         let offer = try #require(await world.offers(change.conversation).first { $0.recipient == b.id })
+        let accepted = try await b.journal.records()
+        #expect(accepted.count == 1)
+        #expect(accepted.contains {
+            if case .accepted(let yes) = $0 {
+                yes.offer == offer.id && yes.planConversation == world.origin && yes.suggester == a.id
+            } else { false }
+        })
         let empty = MessageBody.accept(Acceptance(proposal: offer.id, terms: try Terms([:])))
         _ = try await x.send(empty, to: a, conversation: change.conversation, parent: world.origin)
         _ = try await x.send(empty, to: b, conversation: change.conversation, parent: world.origin)
         #expect(try await delivery(a)?.pending[b.id] == offer.id)
-        #expect(try await b.journal.records().isEmpty)
+        #expect(try await b.journal.records() == accepted)
+        #expect(try await b.plan(world.origin).revision == 0)
         try await advance(world, seconds: 5)
         _ = try await b.wait(.planned, change.conversation)
         try await P15.eventually("real friend's acknowledgment settles delivery") { try await delivery(a) == nil }
@@ -136,10 +144,8 @@ struct ChangePlanDeliveryTests {
         }
         await b.stop()
         let recovered = try await b.plan(world.origin)
-        withKnownIssue("#116: an accepted recipient cannot recover after its answer window or restart") {
-            #expect(recovered.revision == 1)
-            #expect(recovered.activity == ChangeWorld.changedActivity)
-        }
+        #expect(recovered.revision == 1)
+        #expect(recovered.activity == ChangeWorld.changedActivity)
         await world.checkHealthy()
         await world.stop()
     }
@@ -160,10 +166,8 @@ struct ChangePlanDeliveryTests {
         }
         await b.stop()
         let recovered = try await b.plan(world.origin)
-        withKnownIssue("#116: an accepted recipient cannot recover after its answer window or restart") {
-            #expect(recovered.revision == 1)
-            #expect(recovered.activity == ChangeWorld.changedActivity)
-        }
+        #expect(recovered.revision == 1)
+        #expect(recovered.activity == ChangeWorld.changedActivity)
         await world.checkHealthy()
         await world.stop()
     }

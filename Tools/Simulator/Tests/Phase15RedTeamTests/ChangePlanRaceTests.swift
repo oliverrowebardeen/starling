@@ -117,11 +117,9 @@ extension ChangePlanRaceTests {
         let parent = try await a.plan(world.origin)
         let card = try #require(try await a.events.interaction(change.conversation))
         let sent = await a.sent(change.conversation)
-        withKnownIssue("#117: a failed delivery-journal write still commits and sends confirmations") {
-            #expect(parent.revision == 0)
-            #expect(card.state != .planned)
-            #expect(sent.allSatisfy { $0.body.kind != .accept })
-        }
+        #expect(parent.revision == 0)
+        #expect(card.state != .planned)
+        #expect(sent.allSatisfy { $0.body.kind != .accept })
         await world.checkHealthy()
         await world.stop()
     }

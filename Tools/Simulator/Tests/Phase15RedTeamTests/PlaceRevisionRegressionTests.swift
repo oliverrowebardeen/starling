@@ -38,9 +38,7 @@ struct PlaceRevisionRegressionTests {
         var current = original
         current.record(.plan(try #require(original.plan).updating(attendees: Attendees([P15.alice, P15.bob, P15.eve]))))
         #expect(current.plan?.revision == 1)
-        withKnownIssue("#119 PC37: a stale owner place link removes a newly added friend") {
-            #expect(planner.parent(current, updatedBy: stale) == nil)
-        }
+        #expect(planner.parent(current, updatedBy: stale) == nil)
         // A fresh owner link that asked the new roster may still narrow it.
         var fresh = try finishedLink(current, agreeing: Attendees([P15.alice, P15.bob]), place: place)
         fresh.record(.placeChoice(place))
@@ -64,13 +62,7 @@ struct PlaceRevisionRegressionTests {
             link.record(artifact)
             if let update = planner.parent(current, updatedBy: link) { current = update }
         }
-        if placeFirst {
-            withKnownIssue("#119 PC38: place-first publication counts one result as two revisions") {
-                #expect(current.plan?.revision == 1)
-            }
-        } else {
-            #expect(current.plan?.revision == 1)
-        }
+        #expect(current.plan?.revision == 1)
         #expect(current.plan?.place == place)
         #expect(current.plan?.attendees == roster)
         #expect(planner.parent(current, updatedBy: link) == nil)

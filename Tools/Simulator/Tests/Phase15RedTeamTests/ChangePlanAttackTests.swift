@@ -11,14 +11,24 @@ struct ChangePlanAttackTests {
         let a = world.phones[0], b = world.phones[1]
         let offer = try await a.send(.propose(world.proposal()), to: b, parent: world.origin)
         try await b.accept(offer.conversation)
+        _ = try await b.wait(.confirmed, offer.conversation)
+        let accepted = try await b.journal.records()
+        let yes = try #require(accepted.first)
+        guard case .accepted(let record) = yes else {
+            Issue.record("A yes must be journaled before it is sent")
+            await world.stop()
+            return
+        }
+        #expect(accepted.count == 1)
+        #expect(record.offer == offer.id && record.planConversation == world.origin && record.suggester == a.id)
+        let before = try await b.plan(world.origin)
         let confirmation = MessageBody.accept(Acceptance(proposal: offer.id, terms: try Terms([:])))
         _ = try await a.send(confirmation, to: b, conversation: offer.conversation, parent: ConversationID())
-        // The receipt is saved before handle returns. It must not exist
-        // until a confirmation bound to the right parent has been accepted.
-        let prematureReceipts = try await b.journal.records()
-        withKnownIssue("#114: a confirmation with another parent commits the pending suggestion") {
-            #expect(prematureReceipts.isEmpty)
-        }
+        // An accepted offer already exists. A confirmation for another
+        // parent must not replace it with an applied receipt or change the plan.
+        #expect(try await b.journal.records() == accepted)
+        #expect(try await b.plan(world.origin) == before)
+        #expect(try await b.events.interaction(offer.conversation)?.state == .confirmed)
         _ = try await a.send(confirmation, to: b, conversation: offer.conversation, parent: world.origin)
         _ = try await b.wait(.planned, offer.conversation)
         try await P15.eventually("legitimate confirmation commits") { try await b.plan(world.origin).revision == 1 }

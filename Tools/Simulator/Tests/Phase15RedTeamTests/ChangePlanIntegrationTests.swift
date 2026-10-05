@@ -52,7 +52,19 @@ struct ChangePlanIntegrationTests {
         for (index, phone) in [a, b, c].enumerated() {
             #expect(try await phone.plan(world.origin) == before[index])
         }
-        #expect(await a.sent(change.conversation).map(\.body.kind) == [.propose, .propose])
+        // At the same deadline in both runs, the suggester closes every
+        // offered card, including the friend whose yes awaits confirmation.
+        let transcript = await a.sent(change.conversation)
+        #expect(transcript.map(\.body.kind) == [.propose, .propose, .reject, .reject])
+        let offers = transcript.filter { $0.body.kind == .propose }
+        let withdrawals = transcript.filter { $0.body.kind == .reject }
+        #expect(withdrawals.map(\.recipient) == [b.id, c.id])
+        for notice in withdrawals {
+            let offer = try #require(offers.first { $0.recipient == notice.recipient })
+            #expect(notice.body == .reject(Rejection(proposal: offer.id, reason: .declinedByOwner)))
+            #expect(notice.chainedFrom == world.origin)
+            #expect(notice.sentAt == Timestamp(P15.date.addingTimeInterval(300)))
+        }
         #expect(await b.sent(change.conversation).map(\.body.kind) == [.accept])
         #expect(await c.sent(change.conversation).isEmpty)
         await world.checkHealthy()

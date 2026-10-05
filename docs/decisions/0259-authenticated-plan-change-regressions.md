@@ -53,16 +53,32 @@ fixes the finding; an unexpected pass is not silently accepted.
 
 ## Evidence and limits
 
-On lane E `b785f29`, 42 added tests cover service attacks, privacy, delivery and
-Core revision values. The Simulator summary is 213 tests in 41 suites, with
-22 expected assertion failures in 8 tests for #114, #116, #117 and #119. #113's lost
-offer/withdrawal case now passes. Exact cases and remaining matrix subcases
-are in docs/requests/P15-F.md; device steps 22 to 34 remain unrun.
+On lane E `e8892a1`, the targeted change-plan/updater rerun passes 38 tests in
+8 suites with zero known issues. All assertions for #114, #116, #117 and #119
+are ordinary regressions again; PC06 and #113 also pass. PC04/PC32 distinguish
+a durable accepted offer from an applied receipt and require the journal to
+stay unchanged after forged confirmation. PC08 requires the intended
+window-close withdrawals to name the original offers at the same deadline,
+while the declining phone still sends nothing.
+
+The stacked branch's standalone Simulator run has three failures in two older
+place integration tests because E's new updater needs the next-revision
+proposal plan supplied by #118. Main `500599e` contains #118; an isolated merge
+validates the combined code without rebasing #107 before #111 merges. The
+integration assertions remain unchanged. A `waitRevision` predicate treats a
+joining friend's absent plan artifact as pending rather than throwing an
+assertion before the event arrives. Intermittent older app/place cases remain
+tracked in #121; the final integrated Simulator run still times out in the
+unchanged shortened-place-roster test, so full-suite verification is not green.
+See the request log for every failed run and the passing targeted checks.
+Exact evidence and remaining matrix
+subcases are in docs/requests/P15-F.md; device steps 22 to 34 remain unrun.
 
 The requested ack/resend behavior is an invariant, not a best-effort exception:
 bounded losses while a plan remains live must recover. The documented limit
-for a phone unreachable until the plan ends does not explain #116, whose
-confirmations reach the service at virtual second 315 or 5 before plan end.
+for a phone unreachable until the plan ends never excused #116: its
+confirmations reach the service at virtual second 315 or 5 before plan end,
+and now recover the accepted revision.
 The accepted trust in the suggester's claim of unanimity remains ADR 0243's
 limit; a public roster digest is correlation data, not cryptographic proof of
 other people's votes.
@@ -74,13 +90,15 @@ Orchestrator runs #107's gate; F does not rerun it in this increment.
 ## Sources
 
 - ADR 0022, accepted product behavior, read 2026-10-03.
-- ADR 0243 and PR #111 at b785f29, including the delivery journal, retry schedule,
-  roster digest and Orchestrator's place-roster decision, read 2026-10-03.
+- ADR 0243 and PR #111 at e8892a1, including AcceptedOffer, recovery ordering,
+  window-close withdrawals, and the plan updater, read 2026-10-05.
+- The Orchestrator's 2026-10-05 instructions: update PC04/PC08/PC32 for those
+  intended changes; keep #107 draft and rebase onto main after #111 merges.
 - Issues [#113](https://github.com/oliverrowebardeen/starling-ios/issues/113),
   [#114](https://github.com/oliverrowebardeen/starling-ios/issues/114),
   [#116](https://github.com/oliverrowebardeen/starling-ios/issues/116), and
   [#117](https://github.com/oliverrowebardeen/starling-ios/issues/117): executed
   reproductions and controls from this lane.
 - Issue [#119](https://github.com/oliverrowebardeen/starling-ios/issues/119):
-  four findings already routed by the Orchestrator's re-review, now reproduced
-  as PC35 to PC38 against the same production base.
+  four findings already routed by the Orchestrator's re-review, reproduced
+  as PC35 to PC38 on b785f29 and passing without wrappers on e8892a1.

@@ -43,10 +43,8 @@ struct ChangePlanReviewRegressionTests {
         let recovered = try await crashed.plan(world.origin)
         let expected = try before.updating(activity: .some(ChangeWorld.changedActivity))
         let state = try await crashed.events.interaction(change.conversation)?.state
-        withKnownIssue("#119 PC35: durable delivery records do not recover unpublished commits") {
-            #expect(recovered == expected)
-            #expect(state == .planned)
-        }
+        #expect(recovered == expected)
+        #expect(state == .planned)
         await world.checkHealthy()
         await world.stop()
     }
@@ -88,10 +86,8 @@ struct ChangePlanReviewRegressionTests {
         for phone in [a, c] {
             await phone.stop()
             let remaining = try await phone.plan(world.origin)
-            withKnownIssue("#119 PC36: a rejoined friend's second departure is suppressed") {
-                #expect(remaining.revision == 3)
-                #expect(remaining.attendees.peers == [a.id, c.id])
-            }
+            #expect(remaining.revision == 3)
+            #expect(remaining.attendees.peers == [a.id, c.id])
         }
         await world.checkHealthy()
         await world.stop()
