@@ -554,6 +554,11 @@ final class FriendActions: @unchecked Sendable {
         /// Fails the session without ending its stream, as a live one would
         /// before it finishes.
         func fail(_ failure: PairingFailure) { continuation.yield(.failed(failure)) }
+        /// Saves the friend, as a ceremony past its commit point does.
+        func save(_ peer: PairedPeer) {
+            continuation.yield(.paired(peer))
+            continuation.finish()
+        }
         func holdCancel(at gate: Gate) { cancelGate = gate }
         func confirm(codesMatch: Bool) async { confirms.append(codesMatch) }
         func cancel() async {
@@ -753,6 +758,46 @@ final class FriendActions: @unchecked Sendable {
 
         await model.tryAgain()
         #expect(directory.starts.count == 3, "the owner's tap still works")
+    }
+
+    /// Review round 3 of #104 (low): past the point where both owners
+    /// confirmed, the ceremony saves the friend even if Cancel is tapped
+    /// (ADR 0101). The sheet keeps following that session and goes on to
+    /// the name step instead of showing a failure over a saved friend.
+    @Test func cancelWhileWaitingStillNamesAFriendTheCeremonySaved() async throws {
+        let session = ControlledSession()
+        let directory = ScriptedDirectory(candidates: []) { _, _ in session }
+        let model = PairingModel(directory: directory.directory)
+        let friend = Fixtures.peer("Phone")
+        await model.choose(PairingCandidate(peer: friend.id, deviceName: "Riley's iPhone"))
+        await session.show("111111")
+        await eventually { model.phase == .comparing(code: "111111") }
+        await model.confirm(codesMatch: true, for: try #require(model.comparison))
+        #expect(model.phase == .waiting)
+
+        await model.cancel()
+        #expect(await session.cancels == 1)
+        await session.save(try PairedPeer(publicKey: friend.publicKey, nickname: PairingModel.placeholderName, pairedAt: friend.pairedAt))
+        await eventually { if case .naming = model.phase { true } else { false } }
+        guard case .naming = model.phase else { Issue.record("expected the name step, got \(model.phase)"); return }
+        #expect(model.name == "Riley")
+        await model.saveName()
+        #expect(directory.renames.map(\.1) == ["Riley"])
+    }
+
+    /// And when the ceremony had not saved yet, Cancel on Waiting ends it.
+    @Test func cancelWhileWaitingEndsACeremonyThatHadNotSaved() async throws {
+        let session = ControlledSession()
+        let directory = ScriptedDirectory(candidates: []) { _, _ in session }
+        let model = PairingModel(directory: directory.directory)
+        await model.choose(PairingCandidate(peer: PeerID.random()))
+        await session.show("111111")
+        await eventually { model.phase == .comparing(code: "111111") }
+        await model.confirm(codesMatch: true, for: try #require(model.comparison))
+        await model.cancel()
+        await session.fail(.cancelled)
+        await eventually { model.phase == .failed(.cancelled) }
+        #expect(model.phase == .failed(.cancelled))
     }
 
     actor Counter {

@@ -97,9 +97,12 @@ struct PairingView: View {
         .onDisappear { Task { await model.end() } }
     }
 
+    /// No Close while waiting either: both owners may have confirmed, and
+    /// the ceremony then saves the friend, so the sheet stays to name them.
+    /// Waiting keeps its own Cancel.
     private var showsClose: Bool {
         switch model.phase {
-        case .naming, .notifications, .done: false
+        case .waiting, .naming, .notifications, .done: false
         default: true
         }
     }

@@ -307,6 +307,15 @@ public final class PairingModel {
     public func cancel() async {
         endedHere = true
         pickedName = nil
+        // This owner already confirmed. If the other owner did too, the
+        // ceremony is past its commit point and saves the friend whatever
+        // happens (ADR 0101 decision 2), so the sheet asks it to stop and
+        // keeps following it: a saved friend goes on to the name step, any
+        // other ending shows as usual (review round 3 of #104).
+        if case .waiting = phase, let session {
+            await session.cancel()
+            return
+        }
         if let current = abandonAttempt() {
             phase = .failed(.cancelled)
             await current.cancel()
