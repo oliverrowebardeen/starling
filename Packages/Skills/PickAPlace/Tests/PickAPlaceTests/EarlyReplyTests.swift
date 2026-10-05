@@ -3,6 +3,7 @@ import Foundation
 import StarlingCore
 import StarlingFakes
 import StarlingTransport
+import Synchronization
 import Testing
 
 /// Issue #105 (lane F): Outbox returns a sent envelope only after its
@@ -211,7 +212,9 @@ struct FriendEarlyReplyTests {
         // returned, so the proposal reaches her while she is answering.
         #expect(await oliver.reaches(.proposed, in: conversation))
         #expect(await jake.reaches(.proposed, in: conversation))
-        #expect(await eventually { await group.wire.sent(to: maya.id).contains { $0.conversation == conversation && $0.body.kind == .propose } })
+        // Released only once Maya's service holds the proposal, so the
+        // ordering is built, not hoped for (review of #124).
+        #expect(await eventually { await maya.service.invites[conversation]?.waitingProposal != nil })
         await maya.hold.release()
         #expect(await maya.reaches(.proposed, in: conversation))
         #expect(await group.wire.sent(by: oliver.id).filter { $0.conversation == conversation && $0.body.kind == .propose && $0.recipient == maya.id }.count == 1)
@@ -231,10 +234,76 @@ struct FriendEarlyReplyTests {
         await maya.hold.hold([.accept])
         let yes = Task { try await maya.accept(in: conversation) }
         #expect(await oliver.reaches(.planned, in: conversation))
-        #expect(await eventually { await group.wire.sent(to: maya.id).contains { $0.conversation == conversation && $0.body.kind == .accept } })
+        #expect(await eventually { await maya.service.invites[conversation]?.waitingConfirmation != nil })
         await maya.hold.release()
         try await yes.value
         #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await group.lifecyclesWereLegal())
+    }
+}
+
+/// Review of #124: a proposal held while Maya's yes is on its way is
+/// dropped, never shown, when that yes ends the request: its send fails,
+/// Maya withdraws, or she declines the consent sheet. Mallory organizes by
+/// hand, and Maya's yes waits on a sheet while Mallory's newer proposal
+/// arrives.
+@Suite("Held replies when the request ends", .serialized)
+struct HeldReplyEndingTests {
+    enum Ending: String, CaseIterable, Sendable { case sendFails, withdrawn, declined }
+
+    /// Counts how many times a yes was judged, so the second judgment (after
+    /// the sheet) can refuse it.
+    final class Judged: Sendable { let count = Mutex(0) }
+
+    @Test(arguments: Ending.allCases)
+    func aHeldProposalIsDroppedWhenTheYesEndsTheRequest(ending: Ending) async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let gate = ConsentGate()
+        let judged = Judged()
+        let policy = FixedPolicyEngine(decide: { message in
+            let envelope = message.envelope
+            guard envelope.body.kind == .accept else { return .allow }
+            let times = judged.count.withLock { $0 += 1; return $0 }
+            if ending == .sendFails, times > 1 { return .deny(PolicyViolation(rule: "test.changedMyMind")) }
+            return .needsConsent(Disclosure(recipient: envelope.recipient, recipientModel: nil, items: [],
+                                            conversation: envelope.conversation, skill: envelope.skill))
+        })
+        let mallory = Phone("Mallory", hub: hub, maps: maps)
+        let maya = Phone("Maya", hub: hub, maps: maps, policy: policy, consent: ending == .declined ? .declined : .approved, gate: gate)
+        let group = try await Group([mallory, maya], hub: hub)
+        defer { Task { await gate.open(); await group.stop() } }
+        let skill = PickAPlaceSkill.ref
+        let conversation = ConversationID()
+        try await mallory.outbox.send(.query(Query(issue: .place, candidates: .places([Venues.bobaGuys.choice]))), to: maya.id,
+                                      conversation: conversation, skill: skill, mode: .invite)
+        #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
+        let terms = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
+        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        #expect(await maya.reaches(.proposed, in: conversation))
+
+        // Maya's yes waits on its sheet; Mallory's newer proposal is held.
+        let yes = Task { try? await maya.accept(in: conversation) }
+        #expect(await eventually { await gate.waiting >= 1 })
+        try await mallory.outbox.send(.propose(Proposal(round: 1, terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        #expect(await eventually { await maya.service.invites[conversation]?.waitingProposal != nil })
+
+        if ending == .withdrawn {
+            let mayas = try #require(await maya.interaction(conversation)?.id)
+            await maya.service.withdraw(mayas)
+        }
+        await gate.open()
+        _ = await yes.value
+        let ended: InteractionState = switch ending {
+        case .sendFails: .ended(.blockedByPrivacy)
+        case .withdrawn: .ended(.withdrawn)
+        case .declined: .ended(.declined)
+        }
+        #expect(await maya.reaches(ended, in: conversation))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.state(in: conversation) == ended)
+        #expect(await maya.interaction(conversation)?.proposalRevision == 1)
+        #expect(await group.wire.sent(by: maya.id).allSatisfy { $0.body.kind != .accept })
         #expect(await group.lifecyclesWereLegal())
     }
 }
