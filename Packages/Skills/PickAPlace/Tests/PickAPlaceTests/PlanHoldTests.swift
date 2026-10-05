@@ -3,6 +3,7 @@ import Foundation
 import StarlingCore
 import StarlingFakes
 import StarlingTransport
+import Synchronization
 import Testing
 
 /// One change to a plan at a time on each phone (ADR 0023): a pick on a
@@ -184,4 +185,82 @@ struct PlanHoldTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    // MARK: - Review of #122
+
+    /// A policy that asks for a sheet before every yes (and, if asked, every
+    /// no), once `on` is set.
+    final class Asking: Sendable {
+        let on = Mutex(true)
+        let noes: Bool
+        init(on: Bool = true, noes: Bool = false) { self.noes = noes; self.on.withLock { $0 = on } }
+        var policy: FixedPolicyEngine {
+            FixedPolicyEngine(decide: { message in
+                let envelope = message.envelope
+                let asks = envelope.body.kind == .accept || (self.noes && envelope.body.kind == .reject)
+                guard asks, self.on.withLock({ $0 }) else { return .allow }
+                return .needsConsent(Disclosure(recipient: envelope.recipient, recipientModel: nil, items: [],
+                                                conversation: envelope.conversation, skill: envelope.skill))
+            })
+        }
+    }
+
+    func group(_ maya: Phone, _ oliver: Phone, _ jake: Phone, hub: LoopbackHub) async throws -> Group {
+        try await Group([oliver, maya, jake], hub: hub)
+    }
+
+    /// Item 1: Maya's yes waits on its consent sheet when her app stops. It
+    /// never went out, so after the relaunch it is not a yes: she can still
+    /// pass, and her phone holds nothing.
+    @Test func aYesOnASheetWhenTheAppStopsIsNotAYes() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all + [PlanChangeTests.greenBowl])
+        let gate = ConsentGate()
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, policy: Asking().policy, gate: gate, configuration: quick)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: quick)
+        let group = try await group(maya, oliver, jake, hub: hub)
+        defer { Task { await gate.open(); await group.stop() } }
+        let plan = try await plan([oliver, maya, jake])
+        let conversation = try await change(plan, by: oliver, with: [maya, jake]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+
+        let yes = Task { try? await maya.accept(in: conversation) }
+        #expect(await eventually { await gate.waiting >= 1 })
+        await maya.restart()
+        _ = yes
+
+        #expect(await maya.service.invites[conversation]?.accepted == false)
+        #expect(await maya.holds.holder(of: plan.origin) == nil)
+        #expect(await group.wire.sent(by: maya.id).allSatisfy { $0.conversation != conversation || $0.body.kind != .accept })
+        try await maya.pass(in: conversation)
+        #expect(await maya.reaches(.ended(.declined), in: conversation))
+    }
+
+    /// Item 1: after a relaunch, Maya's restored yes is said again and now
+    /// asks for a sheet, which she declines. Her card ends at once, and the
+    /// plan is no longer held, rather than waiting out the card's deadline
+    /// (12 seconds with these windows, past every wait below).
+    @Test func aDeclinedRepeatOfARestoredYesEndsTheCard() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all + [PlanChangeTests.greenBowl])
+        let asking = Asking(on: false)
+        let oliver = Phone("Oliver", hub: hub, maps: maps)
+        let maya = Phone("Maya", hub: hub, maps: maps, policy: asking.policy, consent: .declined)
+        let jake = Phone("Jake", hub: hub, maps: maps)
+        let group = try await group(maya, oliver, jake, hub: hub)
+        defer { Task { await group.stop() } }
+        let plan = try await plan([oliver, maya, jake])
+        let conversation = try await change(plan, by: oliver, with: [maya, jake]).conversation
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+
+        asking.on.withLock { $0 = true }
+        await maya.restart()
+        #expect(await maya.reaches(.ended(.declined), in: conversation))
+        // Within a second: Oliver's own confirm deadline (3 seconds) would
+        // end the card and its hold anyway.
+        #expect(await eventually(1) { await maya.holds.holder(of: plan.origin) == nil })
+        #expect(await eventually(1) { await maya.service.invites[conversation]?.isFinished == true })
+    }
 }

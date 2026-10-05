@@ -437,11 +437,11 @@ extension PickAPlaceService {
                     return
                 }
             }
-            // What this yes names is recorded before it goes, so only a
-            // confirmation of it is taken, across relaunches.
-            guard let named = await recordYes(in: conversation) else {
+            // What this yes names, so only a confirmation of it is taken. It
+            // is recorded as a yes only once it has gone (below).
+            guard let named = prepareYes(in: conversation), invites[conversation]?.isFinished == false else {
                 invites[conversation]?.accepting = false
-                throw PickAPlaceError.ledgerUnavailable
+                return
             }
             let acceptance = Acceptance(proposal: named, terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
@@ -469,6 +469,9 @@ extension PickAPlaceService {
                 // Unreachable for now: the owner can tap again.
                 throw error
             }
+            // The yes has gone: recorded now, so a relaunch keeps it. A yes
+            // still on a consent sheet when the app stopped is not one.
+            await saveYes(in: conversation, revision: revision)
             guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else { return }
             invites[conversation]?.accepted = true
             emit(invite.id, .ownerAccepted(revision: revision))
@@ -486,35 +489,47 @@ extension PickAPlaceService {
     func spawnAcceptance(_ conversation: ConversationID) {
         guard let invite = invites[conversation], let proposal = invite.proposal else { return }
         spawn(conversation) { service in
-            // Recorded before it goes; a yes that cannot be recorded is not
-            // sent.
-            guard let named = await service.recordYes(in: conversation),
+            guard let named = service.prepareYes(in: conversation), service.invites[conversation]?.isFinished == false,
                   service.invites[conversation]?.proposal?.revision == proposal.revision
             else { return }
-            await service.trySend(.accept(Acceptance(proposal: named, terms: proposal.terms)), to: invite.organizer, conversation: conversation,
-                                  chainedFrom: invite.chainedFrom, accepting: invite.offer)
+            do {
+                try await service.send(.accept(Acceptance(proposal: named, terms: proposal.terms)), to: invite.organizer,
+                                       conversation: conversation, chainedFrom: invite.chainedFrom, accepting: invite.offer)
+                await service.saveYes(in: conversation, revision: proposal.revision)
+            } catch OutboxError.consentDeclined {
+                // The owner declined the sheet for a yes said again, as after
+                // a relaunch before the friend's card is known: the card
+                // ends, and its hold with it. The coordinator applies the
+                // pass (review of #122).
+                service.endInvite(conversation, event: nil, reply: nil)
+            } catch OutboxError.denied {
+                service.endInvite(conversation, event: .blockedByPrivacy, reply: nil)
+            } catch {
+                // Unreachable or cancelled: the yes is said again later.
+            }
         }
     }
 
-    /// Adds the proposal this phone's next yes names to the ones its yes
-    /// has named for the current card, and records them, before the yes is
-    /// sent. Returns the proposal it names, or nil if it could not be
-    /// recorded.
-    func recordYes(in conversation: ConversationID) async -> MessageID? {
-        guard let invite = invites[conversation], let proposal = invite.proposal else { return nil }
+    /// Adds the proposal this phone's next yes names to the ones its yes has
+    /// named for the current card, so only a confirmation of it is taken.
+    /// Returns the proposal it names.
+    func prepareYes(in conversation: ConversationID) -> MessageID? {
+        guard let invite = invites[conversation], invite.proposal != nil else { return nil }
         let named = invite.proposeID ?? MessageID()
         var yesNamed = invite.yesNamed.filter { $0 != named } + [named]
         if yesNamed.count > Self.maxRememberedProposals { yesNamed.removeFirst(yesNamed.count - Self.maxRememberedProposals) }
-        do {
-            try await ledger.recordYes(RecordedYes(revision: proposal.revision, proposals: yesNamed, at: clock.now()), for: conversation)
-        } catch {
-            return nil
-        }
-        // A newer card arrived while the record was written: this yes is
-        // not for it.
-        guard invites[conversation]?.proposal?.revision == proposal.revision else { return nil }
         invites[conversation]?.yesNamed = yesNamed
         return named
+    }
+
+    /// Records the yes for the card of `revision` once it has gone, with the
+    /// proposals it named, so a relaunch keeps it and its confirmation. A
+    /// yes not yet sent, such as one on a consent sheet, is never recorded
+    /// (review of #122). If the record cannot be written, the yes has still
+    /// gone; a relaunch then does not count it.
+    func saveYes(in conversation: ConversationID, revision: UInt32) async {
+        guard let yesNamed = invites[conversation]?.yesNamed, !yesNamed.isEmpty else { return }
+        try? await ledger.recordYes(RecordedYes(revision: revision, proposals: yesNamed, at: clock.now()), for: conversation)
     }
 
     /// Repeats the yes until the organizer confirms, in case either message

@@ -423,25 +423,24 @@ struct PlanChangeTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
-    /// Codex round 2 on #118: Maya's yes reached Oliver, but her app
-    /// stopped before her card showed it. Restored, her yes stands (it is
-    /// in the ledger): it cannot be taken back, and the plan goes ahead.
+    /// Codex round 2 on #118: Maya's yes went out, but her app stopped
+    /// before her card showed it. Restored, her yes stands (it is recorded
+    /// once sent): it cannot be taken back, and the plan goes ahead.
     @Test func aYesRecordedBeforeARestartStandsEvenIfTheCardDidNotShowIt() async throws {
         let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
-        defer { Task { await maya.hold.release(); await group.stop() } }
+        defer { Task { await group.stop() } }
         let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
         await share(plan, with: [oliver, maya, jake])
         let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
                                                      chainedFrom: plan.origin).conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
+        // The card as the app last saved it, before it showed the yes.
+        let saved = try #require(await maya.interaction(conversation))
 
-        await maya.hold.hold([.accept])
-        let yes = Task { try? await maya.accept(in: conversation) }
+        try await maya.accept(in: conversation)
         #expect(await eventually { await oliver.service.organized[conversation]?.accepted.contains(maya.id) == true })
-        #expect(await maya.state(in: conversation) == .proposed)
+        await maya.coordinator.add(saved)
         await maya.restart()
-        await maya.hold.release()
-        _ = await yes.value
 
         #expect(await maya.reaches(.confirmed, in: conversation))
         await #expect(throws: PickAPlaceError.yesIsFinal) { try await maya.pass(in: conversation) }
@@ -449,4 +448,5 @@ struct PlanChangeTests {
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation), "\(phone.name)") }
         #expect(await group.lifecyclesWereLegal())
     }
+
 }
