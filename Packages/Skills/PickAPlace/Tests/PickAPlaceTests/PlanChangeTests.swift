@@ -325,4 +325,33 @@ struct PlanChangeTests {
         #expect(await jake.attendees(in: conversation).map(Set.init) == Set(plan.attendees.peers))
         #expect(await group.lifecyclesWereLegal())
     }
+
+    /// Round 2, item 2: a yes is final from the moment it is on its way.
+    /// Maya's yes reaches Oliver while her own send has not returned (the
+    /// audit journal holds it); she cannot pass or withdraw then, so both
+    /// phones end with the same plan.
+    @Test func aYesOnItsWayIsAlreadyFinal() async throws {
+        let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
+        defer { Task { await maya.hold.release(); await group.stop() } }
+        let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
+        let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
+                                                     chainedFrom: plan.origin).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
+
+        await maya.hold.hold([.accept])
+        let yes = Task { try await maya.accept(in: conversation) }
+        #expect(await eventually { await oliver.service.organized[conversation]?.accepted.contains(maya.id) == true })
+        await #expect(throws: PickAPlaceError.yesIsFinal) { try await maya.pass(in: conversation) }
+        let mayas = try #require(await maya.interaction(conversation)?.id)
+        await maya.service.withdraw(mayas)
+
+        try await jake.accept(in: conversation)
+        try await oliver.accept(in: conversation)
+        #expect(await oliver.reaches(.planned, in: conversation))
+        await maya.hold.release()
+        try await yes.value
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation), "\(phone.name)") }
+        #expect(await group.lifecyclesWereLegal())
+    }
 }

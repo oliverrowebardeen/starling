@@ -391,7 +391,7 @@ extension PickAPlaceService {
             emit(invite.id, .ownerAccepted(revision: revision))
             spawnWaitForConfirmation(conversation)
         case .pass:
-            guard !(invite.isChange && invite.accepted) else { throw PickAPlaceError.yesIsFinal }
+            guard !(invite.isChange && (invite.accepted || invite.accepting)) else { throw PickAPlaceError.yesIsFinal }
             // After a yes, passing takes the yes back: the state machine
             // calls that withdrawing.
             leave(conversation, event: invite.accepted || invite.accepting ? .withdrawn : .ownerPassed)
@@ -475,7 +475,8 @@ extension PickAPlaceService {
     func leave(_ conversation: ConversationID, event: InteractionEvent) {
         guard let invite = invites[conversation] else { return }
         // A yes to a change of place is final once sent (ADR 0233).
-        guard !(invite.isChange && (invite.accepted || invite.finalRoster != nil)) else { return }
+        // A yes on its way counts: the organizer may already have it.
+        guard !(invite.isChange && (invite.accepted || invite.accepting || invite.finalRoster != nil)) else { return }
         if invite.isFinished {
             // Withdrawing from a confirmed plan takes the yes back like any
             // other: the organizer shortens the roster for everyone left.
