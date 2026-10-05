@@ -46,6 +46,14 @@ struct Invite {
     /// What the request is on this phone's plan, from this phone's own copy
     /// of it; nil when the request is not chained from a plan.
     var kind: PlaceRequestKind?
+    /// The newest proposal that arrived while this phone's own list or yes
+    /// was still on its way, handled once that send returns. The organizer
+    /// may send it the moment it has the list or yes, before this phone's
+    /// send has returned (issue #121).
+    var waitingProposal: (proposal: Proposal, id: MessageID, generation: UInt64)?
+    /// A confirmation that arrived while this phone's yes was still on its
+    /// way, taken once the yes has gone (issue #121).
+    var waitingConfirmation: Acceptance?
     /// The proposals this phone's yes named, for the current card, most
     /// recent last and bounded: a confirmation must name one of them.
     var yesNamed: [MessageID] = []
@@ -185,7 +193,10 @@ extension PickAPlaceService {
         let candidates = invite.candidates
         invites[conversation]?.answering = true
         invites[conversation]?.lastQuery = queryID
-        defer { invites[conversation]?.answering = false }
+        defer {
+            invites[conversation]?.answering = false
+            ownSendReturned(conversation)
+        }
 
         let acceptable: [PlaceChoice]
         if let judged = invite.acceptable {
@@ -266,16 +277,39 @@ extension PickAPlaceService {
 
     /// Whether a proposal's checks may still change the card: the request is
     /// open, no send is on its way, and no newer proposal has arrived.
-    func isCurrent(_ conversation: ConversationID, generation: UInt64) -> Bool {
-        guard let invite = invites[conversation] else { return false }
-        return !invite.isFinished && !invite.answering && !invite.accepting && invite.proposalGeneration == generation
+    /// Whether the proposal of `generation` can be handled now. If only this
+    /// phone's own list or yes, still on its way, is in the way, the
+    /// proposal is kept and handled when that send returns, rather than
+    /// dropped and left to the organizer's next retry (issue #121).
+    func readyForProposal(_ proposal: Proposal, id: MessageID, in conversation: ConversationID, generation: UInt64) -> Bool {
+        guard let invite = invites[conversation], !invite.isFinished, invite.proposalGeneration == generation else { return false }
+        guard !invite.answering, !invite.accepting else {
+            invites[conversation]?.waitingProposal = (proposal, id, generation)
+            return false
+        }
+        return true
+    }
+
+    /// This phone's list or yes has returned, sent or not: a proposal or a
+    /// confirmation that arrived meanwhile is handled now (issue #121).
+    func ownSendReturned(_ conversation: ConversationID) {
+        guard let invite = invites[conversation], !invite.isFinished, !invite.answering, !invite.accepting else { return }
+        if let waiting = invite.waitingConfirmation {
+            invites[conversation]?.waitingConfirmation = nil
+            if invite.accepted { confirmed(waiting, in: conversation) }
+        }
+        if let waiting = invites[conversation]?.waitingProposal, invites[conversation]?.isFinished == false {
+            invites[conversation]?.waitingProposal = nil
+            spawn(conversation) { await $0.received(waiting.proposal, id: waiting.id, in: conversation, generation: waiting.generation) }
+        }
     }
 
     func received(_ proposal: Proposal, id: MessageID, in conversation: ConversationID, generation: UInt64) async {
         // While this phone's list or yes is on its way, possibly waiting on
-        // a consent sheet, the card cannot change under the owner: a newer
-        // proposal is ignored, and the organizer sends it again.
-        guard isCurrent(conversation, generation: generation), let invite = invites[conversation], let acceptable = invite.acceptable,
+        // a consent sheet, the card cannot change under the owner: the
+        // newest proposal waits until that send returns (issue #121).
+        guard readyForProposal(proposal, id: id, in: conversation, generation: generation), let invite = invites[conversation],
+              let acceptable = invite.acceptable,
               let place = validPlace(in: proposal.terms, acceptable: acceptable, organizer: invite.organizer),
               case .peers(let roster)? = proposal.terms[.people]
         else { return }
@@ -295,20 +329,20 @@ extension PickAPlaceService {
         var facts = invite.facts[place]
         if facts == nil {
             facts = (try? await maps.facts(for: place)) ?? .unknown
-            guard isCurrent(conversation, generation: generation) else { return }
+            guard readyForProposal(proposal, id: id, in: conversation, generation: generation) else { return }
             invites[conversation]?.facts[place] = facts
         }
         let limits = await ownerLimits()
         // Checked after every await, the limit failure included: a newer
         // proposal decides now.
-        guard isCurrent(conversation, generation: generation), let invite = invites[conversation],
+        guard readyForProposal(proposal, id: id, in: conversation, generation: generation), let invite = invites[conversation],
               invite.proposal?.terms != proposal.terms || invite.offer?.round != proposal.round
         else { return }
         guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
             // A private limit: an ordinary no, like a list where nothing
             // fits, once it has spent the budget for the place.
             let saysNo = await reserve([place], to: invite.organizer, in: conversation)
-            guard isCurrent(conversation, generation: generation) else { return }
+            guard readyForProposal(proposal, id: id, in: conversation, generation: generation) else { return }
             endInvite(conversation, event: .noAgreement, reply: saysNo ? .noOverlap : nil)
             return
         }
@@ -364,6 +398,9 @@ extension PickAPlaceService {
             // A second tap while the first is on its way changes nothing.
             guard !invite.accepted, !invite.accepting else { return }
             invites[conversation]?.accepting = true
+            // However this ends, a proposal or confirmation that arrived
+            // while the yes was on its way is handled after (issue #121).
+            defer { ownSendReturned(conversation) }
             // A change applies only over the plan it was made for: if the
             // plan moved on meanwhile, the card closes and nothing is sent
             // (ADR 0233).
@@ -478,6 +515,12 @@ extension PickAPlaceService {
     /// The organizer's confirmation: the accepted terms, with everyone who
     /// said yes. It may list fewer people than the proposal, never others.
     func confirmed(_ acceptance: Acceptance, in conversation: ConversationID) {
+        // The yes may still be on its way, its send not yet returned: the
+        // confirmation waits for it (issue #121).
+        if let invite = invites[conversation], !invite.isFinished, !invite.accepted, invite.accepting {
+            invites[conversation]?.waitingConfirmation = acceptance
+            return
+        }
         // It must confirm this phone's own yes: name a proposal the yes named.
         guard let invite = invites[conversation], invite.accepted, let proposal = invite.proposal,
               invite.yesNamed.contains(acceptance.proposal),

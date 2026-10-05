@@ -178,3 +178,63 @@ struct EarlyReplyTests {
         #expect(await eventually { await oliver.service.organized[conversation]?.answers[mallory.id] == [Venues.bobaGuys.choice] })
     }
 }
+
+/// Issue #121: the friend's side of #105. A friend's answer reaches the
+/// organizer before the friend's own send returns (its audit observer
+/// still running), so the organizer can propose while the friend still
+/// counts itself as answering. The proposal must not be dropped there and
+/// left to the organizer's next retry, which a slow or frozen clock may
+/// never bring.
+@Suite("Replies to a friend that arrive before its send returns", .serialized)
+struct FriendEarlyReplyTests {
+    /// Retries far slower than any test: only the first send of each
+    /// step can move the request on.
+    let noRetries = PickAPlaceConfiguration(retryInterval: .seconds(60), maxRetryInterval: .seconds(60),
+                                            answerWindow: .seconds(30), confirmWindow: .seconds(30))
+
+    func threeFriends() async throws -> (Group, oliver: Phone, maya: Phone, jake: Phone) {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all)
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: noRetries)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: noRetries)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: noRetries)
+        return (try await Group([oliver, maya, jake], hub: hub), oliver, maya, jake)
+    }
+
+    @Test func aProposalThatArrivesWhileTheAnswerIsSendingIsShown() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await maya.hold.release(); await group.stop() } }
+        await maya.hold.hold([.answer])
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+
+        // Oliver has both answers and proposes; Maya's answer send has not
+        // returned, so the proposal reaches her while she is answering.
+        #expect(await oliver.reaches(.proposed, in: conversation))
+        #expect(await jake.reaches(.proposed, in: conversation))
+        #expect(await eventually { await group.wire.sent(to: maya.id).contains { $0.conversation == conversation && $0.body.kind == .propose } })
+        await maya.hold.release()
+        #expect(await maya.reaches(.proposed, in: conversation))
+        #expect(await group.wire.sent(by: oliver.id).filter { $0.conversation == conversation && $0.body.kind == .propose && $0.recipient == maya.id }.count == 1)
+        #expect(await group.lifecyclesWereLegal())
+    }
+
+    @Test func aConfirmationThatArrivesWhileTheYesIsSendingIsTaken() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await maya.hold.release(); await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
+        try await jake.accept(in: conversation)
+        try await oliver.accept(in: conversation)
+
+        // Maya's yes completes the plan, and Oliver's confirmation reaches
+        // her before her own send has returned.
+        await maya.hold.hold([.accept])
+        let yes = Task { try await maya.accept(in: conversation) }
+        #expect(await oliver.reaches(.planned, in: conversation))
+        #expect(await eventually { await group.wire.sent(to: maya.id).contains { $0.conversation == conversation && $0.body.kind == .accept } })
+        await maya.hold.release()
+        try await yes.value
+        #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await group.lifecyclesWereLegal())
+    }
+}
