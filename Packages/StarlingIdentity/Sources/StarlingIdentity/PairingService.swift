@@ -204,7 +204,8 @@ public actor PairingService {
 
     /// Starts a ceremony with the phone the owner picked, or with a phone
     /// that asked (`requests()`). Replaces any ceremony already running with
-    /// that peer.
+    /// that peer; of overlapping calls for one peer, the one that installs
+    /// last wins and the others' ceremonies end cancelled.
     public func pair(with peer: PeerID, nickname: String) async throws -> any PairingSession {
         guard started else { throw PairingServiceError.notStarted }
         guard peer != identity.peerID else { throw PairingServiceError.cannotPairWithSelf }
@@ -212,8 +213,12 @@ public actor PairingService {
         _ = try PairedPeer(publicKey: identity.publicKey, nickname: nickname, pairedAt: Timestamp(now()))
 
         // Removed before the old one is cancelled, so its ending leaves no
-        // linger that would answer the new ceremony's peer.
-        if let previous = ceremonies.removeValue(forKey: peer) { await previous.cancel() }
+        // linger that would answer the new ceremony's peer. Another pair
+        // call for this peer may install its ceremony while this one waits;
+        // the call that installs last replaces it too, so none is left
+        // running unheard (review round 3 of #104). Nothing awaits between
+        // the last check and the install below.
+        while let previous = ceremonies.removeValue(forKey: peer) { await previous.cancel() }
         lingers[peer] = nil
         // Answering a request: the ceremony starts bound to the attempt that
         // asked, so a later hello for a new attempt restarts it (Codex

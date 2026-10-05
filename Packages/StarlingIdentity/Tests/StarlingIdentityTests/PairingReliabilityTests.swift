@@ -428,3 +428,65 @@ extension PairingConfiguration {
         #expect(try await victim.store.all().isEmpty)
     }
 }
+
+/// Holds outgoing aborts while armed, so a ceremony's cancel can be caught
+/// mid-send; everything else passes.
+actor AbortGateLink: Transport {
+    nonisolated let inner: LoopbackTransport
+    nonisolated var kind: TransportKind { inner.kind }
+    nonisolated var localPeer: PeerID { inner.localPeer }
+    nonisolated var events: AsyncStream<TransportEvent> { inner.events }
+    private var armed = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+
+    init(_ inner: LoopbackTransport) { self.inner = inner }
+
+    var holding: Int { held.count }
+    func arm() { armed = true }
+    func release() {
+        armed = false
+        for waiter in held { waiter.resume() }
+        held = []
+    }
+
+    func start() async throws { try await inner.start() }
+    func stop() async { await inner.stop() }
+
+    func send(_ frame: Frame, to peer: PeerID) async throws {
+        if armed, frame.bytes.first == PairingCeremony.MessageType.abort.rawValue {
+            await withCheckedContinuation { held.append($0) }
+        }
+        try await inner.send(frame, to: peer)
+    }
+}
+
+/// Review round 3 of #104 (low): two pair calls for one peer that overlap
+/// while the first waits on the old ceremony's cancel. Before, the first
+/// call then overwrote the second's ceremony, which never heard the other
+/// phone again and ran until its timeout. Now the call that installs last
+/// cancels whatever another call registered meanwhile.
+@Suite struct OverlappingPairCallTests {
+    @Test func aCeremonyReplacedMidCancelIsCancelledNotOrphaned() async throws {
+        let hub = LoopbackHub()
+        let aliceKey = IdentityKeyPair.generate()
+        let link = AbortGateLink(LoopbackTransport(localPeer: aliceKey.peerID, hub: hub))
+        let alice = PairingService(authority: PinAuthority(identity: aliceKey, store: InMemoryPairedPeerStore()), link: link, configuration: .reliable)
+        try await alice.start()
+        let bob = try await LossyDevice.make(hub: hub)
+
+        _ = try await alice.pair(with: bob.id, nickname: "Bob")
+        await link.arm()
+        let first = Task { try await alice.pair(with: bob.id, nickname: "Bob") }
+        try await eventually("the old ceremony's cancel is mid-send") { await link.holding == 1 }
+        let second = try await alice.pair(with: bob.id, nickname: "Bob")
+        let secondEvents = await Recorder.recording(second.events)
+        await link.release()
+        let winner = try await first.value
+
+        #expect(try await secondEvents.waitForOutcome() == .failed(.cancelled), "replaced, not left running")
+        let sb = try await bob.service.pair(with: aliceKey.peerID, nickname: "Alice")
+        let (ea, eb) = (await Recorder.recording(winner.events), await Recorder.recording(sb.events))
+        let code = try await ea.waitForCode()
+        #expect(try await eb.waitForCode() == code)
+    }
+}
