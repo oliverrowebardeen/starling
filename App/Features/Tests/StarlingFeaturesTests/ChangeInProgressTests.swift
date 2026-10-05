@@ -94,6 +94,23 @@ import Testing
         #expect(await app.leavePlan(root) != PlanChangesInProgress.note)
     }
 
+    /// The skill would turn a yes away while another change holds the
+    /// plan, after the card had moved on; the app asks the holds first.
+    @Test func aYesWaitsWhileAnotherChangeHoldsThePlan() async throws {
+        let root = try planned()
+        let card = try placeCard(on: root)
+        let app = await app([root, card])
+        let origin = try #require(root.plan?.origin)
+        let other = ConversationID()
+        #expect(await holds.hold(origin, for: other))
+        #expect(await !app.answer(card.id, with: .accept(proposal: 1)))
+        #expect(app.lifecycle.interaction(card.id)?.state == .proposed)
+
+        await holds.release(origin, for: other)
+        #expect(await app.answer(card.id, with: .accept(proposal: 1)))
+        #expect(app.lifecycle.interaction(card.id)?.state != .proposed)
+    }
+
     /// Change the plan that refuses as lane E's does when the plan is held.
     actor BusyChangePlan: SkillService {
         nonisolated let descriptor = ChangePlan.descriptor

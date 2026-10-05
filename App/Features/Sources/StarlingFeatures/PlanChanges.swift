@@ -120,6 +120,19 @@ extension AppModel {
         return all.first { $0.skill.id != item.skill.id && $0.planConversation == hint && $0.plan != nil }?.plan
     }
 
+    /// The owner's answer to a card. A yes to a change is not sent while
+    /// another change holds its plan (ADR 0023): the skill would turn it
+    /// away after the card had moved on, so the holds are asked first and
+    /// the card stays as it was. Returns whether the answer was taken.
+    public func answer(_ id: InteractionID, with answer: OwnerAnswer) async -> Bool {
+        if case .accept = answer, let item = lifecycle.interaction(id), let plan = planChanged(by: item),
+           let holds = services.changesInProgress?.holds,
+           let holder = await holds.holder(of: plan.origin), holder != item.conversation {
+            return false
+        }
+        return await lifecycle.answer(id, with: answer)
+    }
+
     /// Why a card asking the owner offers less than its usual answers, or
     /// nil when it offers both.
     public func answerLimit(_ item: Interaction) -> AnswerLimit? {
