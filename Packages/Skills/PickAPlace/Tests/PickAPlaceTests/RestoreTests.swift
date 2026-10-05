@@ -351,7 +351,7 @@ struct RestoreTests {
         let service = PickAPlaceService(
             localPeer: .random(), outbox: Outbox(transport: RecordingTransport(), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved)),
             pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty },
-            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger()
+            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger(), plans: { _ in nil }
         )
         let now = Timestamp(Date())
         let otherVersion = Interaction(skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), role: .invitee, participants: [.random()], createdAt: now)

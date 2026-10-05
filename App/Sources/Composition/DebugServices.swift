@@ -85,7 +85,8 @@ final class DebugHarness {
                 let downFor = scriptedDownFor ? [] : [LiveServices.downFor(me: identity.peerID, outbox: outbox, agent: agent, psi: InsecurePSIStub(), friends: friends, ledger: ledger)]
                 return skills + downFor + [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
-                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger),
+                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger,
+                                            interactions: interactions),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
                 ]
             },

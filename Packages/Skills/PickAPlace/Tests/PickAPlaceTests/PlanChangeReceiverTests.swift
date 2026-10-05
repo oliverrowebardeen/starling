@@ -174,4 +174,31 @@ struct PlanChangeReceiverTests {
         #expect(await maya.state(in: conversation) == .confirmed)
         #expect(await group.lifecyclesWereLegal())
     }
+
+    /// Round 2, item 3: a chained request naming a plan Maya's phone does
+    /// not hold changes no plan there. Her agreed plan is her own, at
+    /// revision 0, which applies over no plan's revision. Holding the
+    /// plan, the same request's agreed plan names it.
+    @Test func aRequestOnAPlanThisPhoneDoesNotHoldChangesNoPlan() async throws {
+        let (group, mallory, maya, jake) = try await mallorysGroup()
+        defer { Task { await group.stop() } }
+        let plan = try Plan(origin: ConversationID(), attendees: Attendees([mallory.id, maya.id, jake.id]), activity: kw("boba"), time: nil)
+
+        let unheld = ConversationID()
+        try await ask(maya, from: mallory, in: unheld, chainedFrom: plan.origin, group)
+        #expect(await maya.service.invites[unheld]?.kind == .planNotHeld)
+        try await send(.propose(Proposal(round: 1, terms: terms([mallory, maya, jake]))), from: mallory, to: maya, in: unheld, chainedFrom: plan.origin)
+        #expect(await maya.reaches(.proposed, in: unheld))
+        let card = try #require(await maya.interaction(unheld)?.proposal?.plan)
+        #expect(card.origin == unheld && card.revision == 0)
+
+        await maya.plans.hold(plan)
+        let held = ConversationID()
+        try await ask(maya, from: mallory, in: held, chainedFrom: plan.origin, group)
+        try await send(.propose(Proposal(round: 1, terms: terms([mallory, maya, jake]))), from: mallory, to: maya, in: held, chainedFrom: plan.origin)
+        #expect(await maya.reaches(.proposed, in: held))
+        let linked = try #require(await maya.interaction(held)?.proposal?.plan)
+        #expect(linked.origin == plan.origin && linked.revision == 1)
+        #expect(await group.lifecyclesWereLegal())
+    }
 }

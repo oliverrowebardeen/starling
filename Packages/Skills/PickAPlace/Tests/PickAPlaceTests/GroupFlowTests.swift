@@ -332,6 +332,7 @@ struct GroupFlowTests {
         let origin = ConversationID()
         let slot = try TimeSlot(start: Date(timeIntervalSince1970: 1_790_000_000), end: Date(timeIntervalSince1970: 1_790_003_600))
         let plan = try Plan(origin: origin, attendees: Attendees([oliver.id, maya.id, jake.id]), activity: kw("boba"), time: slot)
+        for phone in [oliver, maya, jake] { await phone.plans.hold(plan) }
         let conversation = try await oliver.organize(Venues.all, with: [maya, jake], inputs: [.plan(plan)], chainedFrom: origin).conversation
 
         #expect(await jake.reaches(.proposed, in: conversation))

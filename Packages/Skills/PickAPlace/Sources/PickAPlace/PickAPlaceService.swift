@@ -184,10 +184,12 @@ public actor PickAPlaceService: SkillService {
     ///     (ADR 0021).
     ///   - ledger: What must survive a relaunch (`UserDefaultsPickAPlaceLedger`
     ///     in the app).
-    ///   - plans: This phone's own plan for the plan conversation a friend's
-    ///     chained request names (`Envelope.chainedFrom`), if it holds one.
-    ///     A friend checks a change of place against it: the whole roster
-    ///     must agree, over the plan's own revision (ADR 0233).
+    ///   - plans: This phone's own plan for the plan conversation a chained
+    ///     request names (`Envelope.chainedFrom`), if it holds one: in the
+    ///     app, an agreed interaction's plan from the interaction store. A
+    ///     friend checks a change of place against it, and both sides check
+    ///     again that the plan has not moved on before a yes or a
+    ///     confirmation (ADR 0233). Required, so no caller skips the checks.
     public init(
         localPeer: PeerID,
         outbox: Outbox,
@@ -197,7 +199,7 @@ public actor PickAPlaceService: SkillService {
         ownerLimits: @escaping @Sendable () async -> ConstraintSet,
         ledger: any PickAPlaceLedger,
         conversations: any ConversationLedger,
-        plans: @escaping @Sendable (ConversationID) async -> Plan? = { _ in nil },
+        plans: @escaping @Sendable (ConversationID) async -> Plan?,
         clock: PickAPlaceClock = .system,
         configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
     ) {
@@ -454,6 +456,19 @@ public actor PickAPlaceService: SkillService {
     /// cannot be read: a change of place that no proposal can match, the
     /// stricter rule (ADR 0233).
     static let unreadableKind = PlaceRequestKind.placeChange(roster: [], revision: .max, time: nil, activity: nil)
+
+    /// The `plans` lookup over the app's interaction store: the plan of the
+    /// interaction whose conversation a chained request names, once it is
+    /// agreed (planned or done), the same plans `IncomingChain` lets a
+    /// request group under. Nil otherwise, or if the store cannot answer.
+    public static func plans(in store: any InteractionStore) -> @Sendable (ConversationID) async -> Plan? {
+        { conversation in
+            guard let parent = try? await store.interaction(conversation: conversation),
+                  parent.state == .planned || parent.state == .done
+            else { return nil }
+            return parent.plan
+        }
+    }
 
     /// What a request on `plan` is: nil when this phone holds no such plan.
     static func kind(of plan: Plan?) -> PlaceRequestKind {

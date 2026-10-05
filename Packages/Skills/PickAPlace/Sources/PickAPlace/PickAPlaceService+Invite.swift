@@ -316,8 +316,12 @@ extension PickAPlaceService {
         // card, it also keeps the offer's revision across a restart; a
         // request on no plan names 0.
         let planRevision = UInt32(proposal.round)
-        let plan = Self.plan(base: nil, origin: invite.chainedFrom ?? conversation, roster: roster, terms: proposal.terms, place: place,
-                             revision: planRevision)
+        // A request naming a plan this phone does not hold changes no plan
+        // here: its agreed plan is its own, at revision 0, which applies
+        // over no plan's revision (ADR 0233).
+        let notHeld = invite.kind == .planNotHeld
+        let plan = Self.plan(base: nil, origin: notHeld ? conversation : invite.chainedFrom ?? conversation, roster: roster,
+                             terms: proposal.terms, place: place, revision: notHeld ? 0 : planRevision)
         let card = SkillProposal(revision: revision, participants: roster, terms: proposal.terms, plan: plan)
         invites[conversation]?.revision = revision
         invites[conversation]?.proposal = card
