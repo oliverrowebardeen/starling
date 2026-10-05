@@ -103,12 +103,6 @@ extension PickAPlaceService {
         }
     }
 
-    /// What a request on `plan` is: nil when this phone holds no such plan.
-    static func kind(of plan: Plan?) -> PlaceRequestKind {
-        guard let plan else { return .planNotHeld }
-        return plan.place == nil ? .firstPlace : .placeChange(roster: plan.attendees.peers, revision: plan.revision)
-    }
-
     /// Ends a request the organizer stops answering. An honest organizer
     /// settles it within its answer window, a confirm window for friends,
     /// and one more for its own owner, so a request still open after a
@@ -284,9 +278,11 @@ extension PickAPlaceService {
         else { return }
         // A change of place asks this phone's plan's whole roster, over the
         // plan's own revision: anything else is not shown (ADR 0233).
-        if case .placeChange(let everyone, let revision)? = invite.kind {
+        if case .placeChange(let everyone, let revision, let time, let activity)? = invite.kind {
             guard Set(roster) == Set(everyone), revision < UInt32(ProtocolLimits.maxNegotiationRounds - 1),
-                  UInt32(proposal.round) == revision + 1
+                  UInt32(proposal.round) == revision + 1,
+                  // Only the place changes: the time and activity stay.
+                  proposal.terms[.time] == time.map({ .slots([$0]) }), proposal.terms[.activity] == activity.map({ .keywords([$0]) })
             else { return }
         }
         // The owner's limits are checked again before the card is shown:

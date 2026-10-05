@@ -140,9 +140,7 @@ extension PickAPlaceService {
             .prefix(ProtocolLimits.maxAttendees - 1)
         // Changing a plan's place needs everyone in it to be able to say
         // yes (ADR 0022, ADR 0233).
-        let kind: PlaceRequestKind? = base.map { plan in
-            plan.place == nil ? .firstPlace : .placeChange(roster: plan.attendees.peers, revision: plan.revision)
-        }
+        let kind: PlaceRequestKind? = base.map { Self.kind(of: $0) }
         let everyoneMustAgree = if case .placeChange? = kind { true } else { false }
         let everyoneCanAgree = base.map { plan in
             !everyoneMustAgree || Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)

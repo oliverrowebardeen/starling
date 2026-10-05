@@ -43,8 +43,9 @@ public enum PlaceRequestKind: Codable, Hashable, Sendable {
     /// A plan's first place: it goes ahead with whoever agrees.
     case firstPlace
     /// A change to a plan that already has a place: everyone in `roster`
-    /// must agree, and the plan changes from `revision` to the next.
-    case placeChange(roster: [PeerID], revision: UInt32)
+    /// must agree, and the plan changes from `revision` to the next. Its
+    /// time and activity stay as they are: a place change carries no other.
+    case placeChange(roster: [PeerID], revision: UInt32, time: TimeSlot?, activity: Keyword?)
     /// A friend's request that names a plan this phone does not hold: its
     /// result changes no plan here.
     case planNotHeld

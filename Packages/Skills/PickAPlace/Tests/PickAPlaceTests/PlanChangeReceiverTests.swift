@@ -68,6 +68,14 @@ struct PlanChangeReceiverTests {
         try await send(.propose(Proposal(round: 2, terms: terms([mallory, maya]))), from: mallory, to: maya, in: conversation, chainedFrom: plan.origin)
         try await send(.propose(Proposal(round: 3, terms: terms([mallory, maya, jake]))), from: mallory, to: maya, in: conversation,
                        chainedFrom: plan.origin)
+        // Round 2, review of #118: a change of place carries the plan's own
+        // time and activity, and no other.
+        var otherActivity = try terms([mallory, maya, jake]).values
+        otherActivity[.activity] = .keywords([kw("karaoke")])
+        try await send(.propose(Proposal(round: 2, terms: Terms(otherActivity))), from: mallory, to: maya, in: conversation, chainedFrom: plan.origin)
+        var addedTime = try terms([mallory, maya, jake]).values
+        addedTime[.time] = .slots([try TimeSlot(start: Date(timeIntervalSince1970: 1_790_000_000), end: Date(timeIntervalSince1970: 1_790_003_600))])
+        try await send(.propose(Proposal(round: 2, terms: Terms(addedTime))), from: mallory, to: maya, in: conversation, chainedFrom: plan.origin)
         try await Task.sleep(for: .milliseconds(200))
         #expect(await maya.interaction(conversation)?.proposal == nil)
 
