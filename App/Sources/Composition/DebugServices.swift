@@ -94,7 +94,7 @@ final class DebugHarness {
                 return skills + downFor + [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger,
-                                            interactions: interactions, holds: holds),
+                                            plans: plans, holds: holds),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans),
                     LiveServices.changePlan(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans, holds: holds),
                 ]

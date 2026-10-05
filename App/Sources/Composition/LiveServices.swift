@@ -47,7 +47,7 @@ extension AppServices {
                 [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger,
-                                            interactions: interactions, holds: holds),
+                                            plans: plans, holds: holds),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans),
                     LiveServices.changePlan(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans, holds: holds),
                 ]
@@ -169,10 +169,13 @@ enum LiveServices {
 
     /// Lane D's service over the app's one Outbox and the same conversation
     /// ledger the Outbox enforces (P15-D request 3). A friend checks a
-    /// change of a plan's place against the plan saved on this phone
-    /// (ADR 0233, P15-D request 15).
+    /// change of a plan's place against this phone's plan (ADR 0233, P15-D
+    /// request 15), read from the coordinator's interactions in memory:
+    /// the interaction store is written asynchronously and can lag them,
+    /// or stay stale after a failed save, so a yes to change B could be
+    /// checked against the plan from before change A (review of #118).
     static func pickAPlace(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, staged: StagedCandidates,
-                           rules: any RulesStore, ledger: any ConversationLedger, interactions: any InteractionStore,
+                           rules: any RulesStore, ledger: any ConversationLedger, plans: StandingPlans,
                            holds: any PlanChangeHolding) -> any SkillService {
         PickAPlaceService(
             localPeer: me, outbox: outbox, pairedPeers: friends, candidates: staged, maps: MapKitPlaceSearch(),
@@ -180,7 +183,8 @@ enum LiveServices {
             // a friend asks; the organizer's own come with its request.
             ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty },
             ledger: UserDefaultsPickAPlaceLedger(), conversations: ledger,
-            plans: PickAPlaceService.plans(in: interactions), holds: holds
+            plans: { conversation in await plans.plan(origin: conversation) },
+            holds: holds
         )
     }
 
