@@ -178,7 +178,7 @@ final class PlacePhone: Sendable {
     func boot(restore: Bool = false) async throws {
         let limits = limits
         let fresh = PickAPlaceService(localPeer: id, outbox: outbox, pairedPeers: peers, candidates: staged,
-            maps: maps, ownerLimits: { limits }, ledger: ledger, conversations: conversations, plans: { _ in nil },
+            maps: maps, ownerLimits: { limits }, ledger: ledger, conversations: conversations, plans: { _ in nil }, holds: PlanChangeHolds(),
             clock: clock.clock, configuration: Self.configuration)
         current.withLock { $0 = fresh }
         let events = events

@@ -36,7 +36,7 @@ struct PlaceSendRaceTests {
         let outbox = Outbox(transport: try #require(a.agent.secureTransport), policy: a.policy, consent: a.consent,
             observer: gate, sequences: InMemorySentSequenceStore(), ledger: a.conversations, now: { P15.date })
         let service = PickAPlaceService(localPeer: a.id, outbox: outbox, pairedPeers: a.peers, candidates: a.staged,
-            maps: a.maps, ownerLimits: { .empty }, ledger: a.ledger, conversations: a.conversations, plans: { _ in nil },
+            maps: a.maps, ownerLimits: { .empty }, ledger: a.ledger, conversations: a.conversations, plans: { _ in nil }, holds: PlanChangeHolds(),
             clock: a.clock.clock, configuration: PlacePhone.configuration)
         let collector = Task { for await event in service.events { await a.events.record(event) } }
         defer { Task { await gate.releaseAll(); await service.shutdown(); await world.stop(); collector.cancel() } }

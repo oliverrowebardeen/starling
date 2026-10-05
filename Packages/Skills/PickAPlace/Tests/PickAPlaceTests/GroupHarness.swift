@@ -280,12 +280,15 @@ final class Phone: Sendable {
     /// This phone's own plans, by plan conversation, as the app's store
     /// holds them.
     let plans = PlanBook()
+    /// The app's holds (ADR 0023). In memory, so a restart gets new ones.
+    private let currentHolds = Mutex(PlanChangeHolds())
+    var holds: PlanChangeHolds { currentHolds.withLock { $0 } }
     /// Wraps `sends`; holds nothing unless a test asks (issue #105).
     let hold: DidSendHold
     let outbox: Outbox
     let card: AgentCard
     private let current: Mutex<PickAPlaceService>
-    private let makeService: @Sendable () -> PickAPlaceService
+    private let makeService: @Sendable (PlanChangeHolds) -> PickAPlaceService
     private let tasks = Mutex<[Task<Void, Never>]>([])
     /// Each terminal event the service reported, and whether its
     /// conversation was already retired when it did (ADR 0021).
@@ -313,12 +316,12 @@ final class Phone: Sendable {
         let ledger: any PickAPlaceLedger = placeLedger ?? self.ledger
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }
         let book = plans
-        makeService = {
+        makeService = { holds in
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
                               ownerLimits: readLimits, ledger: ledger, conversations: conversations,
-                              plans: { await book.plan(for: $0) }, clock: .system, configuration: configuration)
+                              plans: { await book.plan(for: $0) }, holds: holds, clock: .system, configuration: configuration)
         }
-        current = Mutex(makeService())
+        current = Mutex(makeService(currentHolds.withLock { $0 }))
     }
 
     func start() async throws {
@@ -335,9 +338,14 @@ final class Phone: Sendable {
 
     /// The app quits and launches again: a new service, restored from the
     /// coordinator's store before it handles anything.
-    func restart() async {
+    /// A relaunch: a new service with new, empty holds, which `beforeRestore`
+    /// can fill as another skill restoring first would.
+    func restart(beforeRestore: (@Sendable (PlanChangeHolds) async -> Void)? = nil) async {
         await service.shutdown()
-        let fresh = makeService()
+        let holds = PlanChangeHolds()
+        await beforeRestore?(holds)
+        currentHolds.withLock { $0 = holds }
+        let fresh = makeService(holds)
         let coordinator = coordinator
         tasks.withLock { $0.append(Task { [self] in for await event in fresh.events { await self.deliver(event) } }) }
         await fresh.restore(Array(await coordinator.interactions.values))

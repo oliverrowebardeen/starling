@@ -366,7 +366,8 @@ struct PlanChangeTests {
 
         // A friend: Maya's plan moved on before she taps.
         await share(plan, with: [oliver, maya, jake])
-        let first = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin).conversation
+        let firstRequest = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin)
+        let first = firstRequest.conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: first), "\(phone.name)") }
         await maya.plans.hold(movedOn)
         await #expect(throws: PickAPlaceError.planChangedMeanwhile) { try await maya.accept(in: first) }
@@ -374,6 +375,9 @@ struct PlanChangeTests {
         #expect(await group.wire.sent(by: maya.id).allSatisfy { $0.conversation != first || $0.body.kind != .accept })
 
         // The organizer: everyone said yes, but Oliver's plan moved on.
+        // The first change ends first: one change to a plan at a time.
+        await oliver.service.withdraw(firstRequest.id)
+        #expect(await eventually { await oliver.holds.holder(of: plan.origin) == nil })
         await share(plan, with: [oliver, maya, jake])
         let second = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin).conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: second), "\(phone.name)") }
@@ -398,12 +402,15 @@ struct PlanChangeTests {
                                  place: Venues.teaLab.choice, revision: plan.revision)
 
         await share(plan, with: [oliver, maya, jake])
-        let first = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin).conversation
+        let firstRequest = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin)
+        let first = firstRequest.conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: first), "\(phone.name)") }
         await maya.plans.hold(elsewhere)
         await #expect(throws: PickAPlaceError.planChangedMeanwhile) { try await maya.accept(in: first) }
         #expect(await maya.reaches(.ended(.nobodyUp), in: first))
 
+        await oliver.service.withdraw(firstRequest.id)
+        #expect(await eventually { await oliver.holds.holder(of: plan.origin) == nil })
         await share(plan, with: [oliver, maya, jake])
         let second = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin).conversation
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: second), "\(phone.name)") }

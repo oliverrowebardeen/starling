@@ -62,6 +62,14 @@ struct Invite {
     /// A change of a plan's place: the plan's whole roster must agree, and
     /// a yes is final once sent (ADR 0233).
     var isChange: Bool { if case .placeChange? = kind { true } else { false } }
+    /// The plan a yes holds, named by its origin: a request on a plan this
+    /// phone holds, a first place too (ADR 0023).
+    var holdKey: ConversationID? {
+        switch kind {
+        case .firstPlace?, .placeChange?: chainedFrom
+        case .planNotHeld?, nil: nil
+        }
+    }
 }
 
 extension PickAPlaceService {
@@ -417,6 +425,18 @@ extension PickAPlaceService {
                 invites[conversation]?.accepting = false
                 return
             }
+            // One change to a plan at a time on this phone: no yes while
+            // another change holds the plan (ADR 0023).
+            if let plan = current.holdKey {
+                guard await holds.hold(plan, for: conversation) else {
+                    invites[conversation]?.accepting = false
+                    throw PickAPlaceError.planChangeInProgress
+                }
+                guard let held = invites[conversation], !held.isFinished, held.proposal?.revision == revision else {
+                    invites[conversation]?.accepting = false
+                    return
+                }
+            }
             // What this yes names is recorded before it goes, so only a
             // confirmation of it is taken, across relaunches.
             guard let named = await recordYes(in: conversation) else {
@@ -536,10 +556,15 @@ extension PickAPlaceService {
         invites[conversation]?.finalRoster = final
         cancelTasks(conversation)
         remember(conversation)
-        emit(invite.id, .everyoneConfirmed(revision: proposal.revision))
-        continuation.yield(.produced(invite.id, .placeChoice(place)))
-        if let attendees = try? Attendees(final) {
-            continuation.yield(.produced(invite.id, .attendees(attendees)))
+        let attendees = try? Attendees(final)
+        guard invite.holdKey != nil else {
+            reportPlanned(invite.id, revision: proposal.revision, place: place, attendees: attendees)
+            return
+        }
+        // Released before the plan is reported (ADR 0023).
+        spawn(conversation) { service in
+            await service.releaseHold(conversation)
+            service.reportPlanned(invite.id, revision: proposal.revision, place: place, attendees: attendees)
         }
     }
 
@@ -674,6 +699,11 @@ extension PickAPlaceService {
         guard let invite = invites[conversation], !invite.isFinished else { return }
         invites[conversation]?.finished = true
         cancelTasks(conversation)
+        if !retiring {
+            // The card closes without an ending of its own yet: its hold
+            // ends now (ADR 0023).
+            spawn(conversation) { await $0.releaseHold(conversation) }
+        }
         if retiring {
             let goodbye: [(PeerID, MessageBody)] = reply.map {
                 [(invite.organizer, .reject(Rejection(proposal: invite.proposeID ?? invite.lastQuery ?? MessageID(), reason: $0)))]

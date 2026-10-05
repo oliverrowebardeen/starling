@@ -77,6 +77,9 @@ final class DebugHarness {
         let places = LiveServices.places()
         let interactions = LiveServices.interactionStore()
         let choices = OwnerChoices()
+        // One change to a plan at a time (ADR 0023), shared by every skill
+        // that changes a plan.
+        let holds = PlanChangeHolds()
 
         return AppServices(
             agent: agent,
@@ -89,7 +92,7 @@ final class DebugHarness {
                 return skills + downFor + [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: friends, staged: places.staged, rules: rules, ledger: ledger,
-                                            interactions: interactions),
+                                            interactions: interactions, holds: holds),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
                 ]
             },

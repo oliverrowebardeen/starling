@@ -27,6 +27,9 @@ public enum PickAPlaceError: Error, Hashable, Sendable {
     /// The plan changed while this change of its place was open, so the
     /// change no longer applies and the card is closed (ADR 0233).
     case planChangedMeanwhile
+    /// Another change to this plan is open on this phone, so this one is
+    /// not started, or this yes is not sent (ADR 0023).
+    case planChangeInProgress
 }
 
 /// Wall time and timers, injectable so tests run retries in milliseconds.
@@ -143,6 +146,9 @@ public actor PickAPlaceService: SkillService {
     /// This phone's own plan for the plan conversation a chained request
     /// names, if it holds one.
     let plans: @Sendable (ConversationID) async -> Plan?
+    /// Which change this phone is taking part in for each plan (ADR 0023),
+    /// shared with every skill that changes a plan.
+    let holds: any PlanChangeHolding
     /// Whether `requestTimes` has been loaded from `admissions` this launch.
     var admissionsLoaded = false
     let clock: PickAPlaceClock
@@ -193,6 +199,9 @@ public actor PickAPlaceService: SkillService {
     ///     friend checks a change of place against it, and both sides check
     ///     again that the plan has not moved on before a yes or a
     ///     confirmation (ADR 0233). Required, so no caller skips the checks.
+    ///   - holds: The app's one `PlanChangeHolds`, shared with every skill
+    ///     that changes a plan, so this phone takes part in one change per
+    ///     plan at a time (ADR 0023).
     public init(
         localPeer: PeerID,
         outbox: Outbox,
@@ -203,6 +212,7 @@ public actor PickAPlaceService: SkillService {
         ledger: any PickAPlaceLedger,
         conversations: any ConversationLedger,
         plans: @escaping @Sendable (ConversationID) async -> Plan?,
+        holds: any PlanChangeHolding,
         clock: PickAPlaceClock = .system,
         configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
     ) {
@@ -215,6 +225,7 @@ public actor PickAPlaceService: SkillService {
         self.ledger = ledger
         self.conversations = conversations
         self.plans = plans
+        self.holds = holds
         self.clock = clock
         self.configuration = configuration
         (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
@@ -317,6 +328,8 @@ public actor PickAPlaceService: SkillService {
             for (peer, body) in goodbyes {
                 await service.trySend(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
             }
+            // Every ending ends the conversation's hold on its plan (ADR 0023).
+            await service.releaseHold(conversation)
             do {
                 try await service.outbox.retire(conversation)
                 if let interaction, let event { service.emit(interaction, event) }
@@ -325,6 +338,13 @@ public actor PickAPlaceService: SkillService {
                 if let interaction, event != nil { service.emit(interaction, .failed) }
             }
         }
+    }
+
+    /// Ends this conversation's hold on its plan, if it has one (ADR 0023).
+    /// Releasing a plan another change holds does nothing.
+    func releaseHold(_ conversation: ConversationID) async {
+        guard let plan = organized[conversation]?.holdKey ?? invites[conversation]?.holdKey else { return }
+        await holds.release(plan, for: conversation)
     }
 
     /// Tells a friend its rejection was heard, with an ordinary no, so a

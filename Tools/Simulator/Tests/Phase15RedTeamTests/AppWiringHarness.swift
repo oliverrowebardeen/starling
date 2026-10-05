@@ -107,7 +107,7 @@ final class AppPhone {
                     standingRules: { await choices.standingConstraints() }),
                 PickAPlaceService(localPeer: id, outbox: outbox, pairedPeers: peers, candidates: staged, maps: maps,
                     ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty }, ledger: InMemoryPickAPlaceLedger(), conversations: ledger,
-                    plans: PickAPlaceService.plans(in: store), clock: clock),
+                    plans: PickAPlaceService.plans(in: store), holds: PlanChangeHolds(), clock: clock),
                 SwapPhotosService(outbox: outbox, ledger: ledger, me: id, planLookup: { try? await store.interaction(conversation: $0)?.plan }),
             ] }, interactions: store, settings: FileOwnerSettingsStore(file: file("settings.json")), rules: rules, peers: peers,
             inboxEvents: events, makePolicy: { rules, only in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: only, pairedPeers: peers) },

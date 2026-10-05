@@ -200,6 +200,15 @@ extension PickAPlaceService {
         }
         organized[conversation]?.confirmDeadline = confirmDeadline
         organized[conversation]?.expiresAt = deadlines.expiresAt
+        // Holds are not saved: a restored request on a plan holds it again,
+        // and one that finds another change holding it ends, and the plan
+        // stays as it was (ADR 0023).
+        if let plan = organized[conversation]?.holdKey {
+            guard await holds.hold(plan, for: conversation) else {
+                endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
+                return true
+            }
+        }
         startProposing(conversation)
         spawnExpiry(conversation, at: deadlines.expiresAt)
         return true
@@ -257,6 +266,14 @@ extension PickAPlaceService {
             conversationOf[interaction.id] = conversation
             spawnInviteDeadline(conversation)
             if invite.accepted, !showedYes { emit(interaction.id, .ownerAccepted(revision: proposal.revision)) }
+            // A yes holds the plan again, as before the relaunch; if another
+            // change holds it, this one ends (ADR 0023).
+            if invite.accepted, let plan = invite.holdKey {
+                guard await holds.hold(plan, for: conversation) else {
+                    endInvite(conversation, event: .noAgreement, reply: nil)
+                    return true
+                }
+            }
             if invite.accepted {
                 spawnAcceptance(conversation)
                 spawnWaitForConfirmation(conversation)

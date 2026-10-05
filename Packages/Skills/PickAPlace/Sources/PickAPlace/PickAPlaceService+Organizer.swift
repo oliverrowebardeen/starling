@@ -27,6 +27,9 @@ struct Organizer {
     /// once the change is confirmed. The first place for a plan still goes
     /// ahead with whoever agrees, as a chain does.
     var everyoneMustAgree: Bool { if case .placeChange? = kind { true } else { false } }
+    /// The plan this request holds while it is open, named by its origin:
+    /// any request on a plan, a first place too (ADR 0023).
+    var holdKey: ConversationID? { kind == nil ? nil : base?.origin ?? chainedFrom }
     let time: TimeSlot?
     let activity: Keyword?
     var phase: Phase = .asking
@@ -151,6 +154,13 @@ extension PickAPlaceService {
             !everyoneMustAgree || Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)
         } ?? true
 
+        // One change to a plan at a time on this phone (ADR 0023): a request
+        // on a plan holds it before anything is sent.
+        if let base {
+            guard await holds.hold(base.origin, for: request.conversation) else { throw PickAPlaceError.planChangeInProgress }
+            guard isNew(request) else { throw PickAPlaceError.alreadyStarted }
+        }
+
         let conversation = request.conversation
         conversationOf[request.interaction] = conversation
         organized[conversation] = Organizer(
@@ -175,6 +185,7 @@ extension PickAPlaceService {
             try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry), for: conversation)
             if let kind { try await ledger.recordRequestKind(kind, for: conversation, at: clock.now()) }
         } catch {
+            await releaseHold(conversation)
             organized[conversation] = nil
             conversationOf[request.interaction] = nil
             throw PickAPlaceError.ledgerUnavailable
@@ -629,13 +640,27 @@ extension PickAPlaceService {
                                       conversation: conversation, chainedFrom: chainedFrom)
             }
         }
-        emit(organizer.id, .everyoneConfirmed(revision: proposal.revision))
-        continuation.yield(.produced(organizer.id, .placeChoice(place)))
         // The proposal's roster may name friends who passed or never
         // answered; these are the people actually in the plan.
-        if let attendees = try? Attendees([localPeer] + yes) {
-            continuation.yield(.produced(organizer.id, .attendees(attendees)))
+        let attendees = try? Attendees([localPeer] + yes)
+        let (id, revision) = (organizer.id, proposal.revision)
+        guard organizer.holdKey != nil else {
+            reportPlanned(id, revision: revision, place: place, attendees: attendees)
+            return
         }
+        // The plan is released before the plan is reported, so a change
+        // started once it is planned finds the plan free (ADR 0023).
+        spawn(conversation) { service in
+            await service.releaseHold(conversation)
+            service.reportPlanned(id, revision: revision, place: place, attendees: attendees)
+        }
+    }
+
+    /// Reports a confirmed plan: the event, then the place and the people.
+    func reportPlanned(_ id: InteractionID, revision: UInt32, place: PlaceChoice, attendees: Attendees?) {
+        emit(id, .everyoneConfirmed(revision: revision))
+        continuation.yield(.produced(id, .placeChoice(place)))
+        if let attendees { continuation.yield(.produced(id, .attendees(attendees))) }
     }
 
     /// The owner withdraws a confirmed plan. Confirmations still on their
