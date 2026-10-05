@@ -21,15 +21,17 @@ A request with a `Plan` input runs on that plan. Two cases differ.
 2. **Everyone must say yes.** The change is confirmed only when every friend accepts by the confirm deadline. Otherwise it ends with no agreement at the deadline, and everyone still waiting hears the ordinary no. A pass still looks like silence, as in ADR 0230.
 3. **Everyone must be able to say yes.** If anyone in the plan is not named or cannot run Pick a place, nobody could agree for them, so the request ends as unsupported before anything is sent.
 4. **A yes is final once sent** (the Orchestrator's decision on the review of #118, as in Change the plan).
-   - A friend cannot pass or withdraw after their yes has gone (`PickAPlaceError.yesIsFinal`).
+   - A friend cannot pass or withdraw once their yes is on its way (`PickAPlaceError.yesIsFinal`): the organizer may already have it.
    - A withdrawal that arrives after everyone said yes is ignored.
    - Nobody calls a confirmed change off, the organizer included.
    - Someone who changes their mind suggests another change, or leaves the plan through Change the plan. No rollback is needed.
 5. **Every phone checks the change against its own plan.** A friend looks up its own copy of the plan the request names, through the service's `plans` lookup, and records what the request is before answering.
-   - A proposal must name the plan's whole roster and the revision after the plan's own; anything else is not shown.
-   - A confirmation must name the whole roster.
+   - A proposal must name the plan's whole roster, the revision after the plan's own, and the plan's own time and activity; anything else is not shown.
+   - A confirmation must name the whole roster, and the proposal this phone's yes named. The proposals a yes names are recorded in the ledger before it goes, so a delayed confirmation of an older proposal, or of none, is never taken, even after a relaunch.
    - A shorter roster or a call-off after the confirmation changes nothing.
-   - A request naming a plan this phone does not hold changes no plan here.
+   - Just before its yes goes out, a friend checks that its plan is still at the revision the change is over, and the organizer checks again before it confirms. If another change moved the plan on, nothing is sent, and the change ends with no agreement (`PickAPlaceError.planChangedMeanwhile` for the friend).
+   - A request naming a plan this phone does not hold changes no plan here. Its agreed plan is the request's own, at revision 0, which applies over no plan's revision.
+   - The app must supply the `plans` lookup: it is a required parameter, read from the interaction store (`PickAPlaceService.plans(in:)`).
 6. **The agreed plan is `Plan.updating(place:)`.** It has the same identifier, attendees, time, and activity, and a revision one higher (ADR 0022, decision 7).
 
 **A plan with no place yet: its first place.** This is usually Keep it going after Down for….
