@@ -76,6 +76,9 @@ struct Organizer {
     var ownerAccepted = false
     var finalTerms: Terms?
     var confirmationsRepeated: [PeerID: Int] = [:]
+    /// The proposal each friend's counted yes named. A confirmation names
+    /// it back, since a friend takes only a confirmation of its own yes.
+    var acceptedProposal: [PeerID: MessageID] = [:]
     /// A change is waiting on its check that the plan has not moved on.
     var checkingPlan = false
 
@@ -271,6 +274,7 @@ extension PickAPlaceService {
                 return
             }
             organizer.accepted.insert(sender)
+            organizer.acceptedProposal[sender] = acceptance.proposal
         case (.proposing, .reject):
             guard organizer.invited.contains(sender) else { return }
             organizer.accepted.remove(sender)
@@ -297,7 +301,9 @@ extension PickAPlaceService {
             let repeats = organizer.confirmationsRepeated[sender, default: 0]
             if organizer.accepted.contains(sender), acceptance.terms == organizer.proposal?.terms, repeats < configuration.maxConfirmationRepeats {
                 organizer.confirmationsRepeated[sender] = repeats + 1
-                spawnConfirmation(conversation, to: sender, organizer: organizer)
+                // It names the proposal this yes named, which the friend
+                // knows, even after either phone restarted.
+                spawnConfirmation(conversation, to: sender, organizer: organizer, naming: acceptance.proposal)
             }
         default:
             return
@@ -673,9 +679,11 @@ extension PickAPlaceService {
         continuation.yield(.produced(organizer.id, .attendees(attendees)))
     }
 
-    func spawnConfirmation(_ conversation: ConversationID, to friend: PeerID, organizer: Organizer) {
+    /// Confirms to `friend`, naming the proposal its yes named.
+    func spawnConfirmation(_ conversation: ConversationID, to friend: PeerID, organizer: Organizer, naming: MessageID? = nil) {
         guard let terms = organizer.finalTerms else { return }
-        let acceptance = Acceptance(proposal: organizer.lastProposeID[friend] ?? MessageID(), terms: terms)
+        let named = naming ?? organizer.acceptedProposal[friend] ?? organizer.lastProposeID[friend] ?? MessageID()
+        let acceptance = Acceptance(proposal: named, terms: terms)
         spawn(conversation) { service in
             await service.trySend(.accept(acceptance), to: friend, conversation: conversation, chainedFrom: organizer.chainedFrom)
         }

@@ -46,6 +46,9 @@ struct Invite {
     /// What the request is on this phone's plan, from this phone's own copy
     /// of it; nil when the request is not chained from a plan.
     var kind: PlaceRequestKind?
+    /// The proposals this phone's yes named, for the current card, most
+    /// recent last and bounded: a confirmation must name one of them.
+    var yesNamed: [MessageID] = []
 
     var isFinished: Bool { finished }
     /// A change of a plan's place: the plan's whole roster must agree, and
@@ -328,6 +331,7 @@ extension PickAPlaceService {
         invites[conversation]?.offer = proposal
         invites[conversation]?.proposeID = id
         invites[conversation]?.accepted = false
+        invites[conversation]?.yesNamed = []
         emit(invite.id, .proposalReady(card))
     }
 
@@ -376,7 +380,13 @@ extension PickAPlaceService {
                 invites[conversation]?.accepting = false
                 return
             }
-            let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
+            // What this yes names is recorded before it goes, so only a
+            // confirmation of it is taken, across relaunches.
+            guard let named = await recordYes(in: conversation) else {
+                invites[conversation]?.accepting = false
+                throw PickAPlaceError.ledgerUnavailable
+            }
+            let acceptance = Acceptance(proposal: named, terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
                                            accepting: invite.offer)
             invites[conversation]?.accepting = false
@@ -418,11 +428,36 @@ extension PickAPlaceService {
 
     func spawnAcceptance(_ conversation: ConversationID) {
         guard let invite = invites[conversation], let proposal = invite.proposal else { return }
-        let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
         spawn(conversation) { service in
-            await service.trySend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
-                                  accepting: invite.offer)
+            // Recorded before it goes; a yes that cannot be recorded is not
+            // sent.
+            guard let named = await service.recordYes(in: conversation),
+                  service.invites[conversation]?.proposal?.revision == proposal.revision
+            else { return }
+            await service.trySend(.accept(Acceptance(proposal: named, terms: proposal.terms)), to: invite.organizer, conversation: conversation,
+                                  chainedFrom: invite.chainedFrom, accepting: invite.offer)
         }
+    }
+
+    /// Adds the proposal this phone's next yes names to the ones its yes
+    /// has named for the current card, and records them, before the yes is
+    /// sent. Returns the proposal it names, or nil if it could not be
+    /// recorded.
+    func recordYes(in conversation: ConversationID) async -> MessageID? {
+        guard let invite = invites[conversation], let proposal = invite.proposal else { return nil }
+        let named = invite.proposeID ?? MessageID()
+        var yesNamed = invite.yesNamed.filter { $0 != named } + [named]
+        if yesNamed.count > Self.maxRememberedProposals { yesNamed.removeFirst(yesNamed.count - Self.maxRememberedProposals) }
+        do {
+            try await ledger.recordYes(RecordedYes(revision: proposal.revision, proposals: yesNamed, at: clock.now()), for: conversation)
+        } catch {
+            return nil
+        }
+        // A newer card arrived while the record was written: this yes is
+        // not for it.
+        guard invites[conversation]?.proposal?.revision == proposal.revision else { return nil }
+        invites[conversation]?.yesNamed = yesNamed
+        return named
     }
 
     /// Repeats the yes until the organizer confirms, in case either message
@@ -443,7 +478,9 @@ extension PickAPlaceService {
     /// The organizer's confirmation: the accepted terms, with everyone who
     /// said yes. It may list fewer people than the proposal, never others.
     func confirmed(_ acceptance: Acceptance, in conversation: ConversationID) {
+        // It must confirm this phone's own yes: name a proposal the yes named.
         guard let invite = invites[conversation], invite.accepted, let proposal = invite.proposal,
+              invite.yesNamed.contains(acceptance.proposal),
               case .peers(let proposed)? = proposal.terms[.people], case .peers(let final)? = acceptance.terms[.people],
               case .places(let places)? = proposal.terms[.place], let place = places.first,
               Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
@@ -468,6 +505,7 @@ extension PickAPlaceService {
     func rosterShrank(_ acceptance: Acceptance, in conversation: ConversationID) {
         // A confirmed change of place never loses anyone (ADR 0233).
         guard let invite = invites[conversation], !invite.isChange, let roster = invite.finalRoster, let proposal = invite.proposal,
+              invite.yesNamed.contains(acceptance.proposal),
               case .peers(let shorter)? = acceptance.terms[.people],
               Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
               acceptance.terms.values.allSatisfy({ $0.key == .people || $0.value == proposal.terms[$0.key] }),

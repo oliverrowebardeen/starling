@@ -86,6 +86,16 @@ extension PickAPlaceService {
         return true
     }
 
+    /// The proposals this phone's yes named for `proposal`'s card, so a
+    /// confirmation of that yes is still taken, and a repeated yes names
+    /// one of them. A record for another card, or none, restores nothing:
+    /// no confirmation is taken until the yes is said again.
+    static func restore(_ yes: RecordedYes??, into invite: inout Invite, for proposal: SkillProposal) {
+        guard let yes = yes ?? nil, yes.revision == proposal.revision else { return }
+        invite.yesNamed = yes.proposals
+        invite.proposeID = yes.proposals.last
+    }
+
     /// What a friend's request is on this phone's plan: none when it was
     /// not chained from one; otherwise the recorded kind, and a missing or
     /// unreadable one is read as a change of place no proposal can match
@@ -115,6 +125,7 @@ extension PickAPlaceService {
     private func resumePlannedInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
         let kind = await friendKind(of: interaction)
+        let yes = try? await ledger.yes(for: conversation)
         guard invites[conversation] == nil, let proposal = interaction.proposal, let (place, _) = Self.parts(of: proposal),
               let roster = Self.attendees(of: interaction), let organizer = roster.first, organizer != localPeer, roster.contains(localPeer)
         else { return false }
@@ -129,6 +140,7 @@ extension PickAPlaceService {
         invite.finished = true
         invite.finalRoster = roster
         invite.kind = kind
+        Self.restore(yes, into: &invite, for: proposal)
         invites[conversation] = invite
         conversationOf[interaction.id] = conversation
         return true
@@ -192,6 +204,7 @@ extension PickAPlaceService {
     private func resumeInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
         let kind = await friendKind(of: interaction)
+        let yes = try? await ledger.yes(for: conversation)
         guard invites[conversation] == nil else { return false }
         switch Self.step(of: interaction.state) {
         case .negotiating:
@@ -230,6 +243,7 @@ extension PickAPlaceService {
             let round = UInt16(min(proposal.plan?.revision ?? 0, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
             invite.offer = try? Proposal(round: round, terms: proposal.terms)
             invite.kind = kind
+            Self.restore(yes, into: &invite, for: proposal)
             invite.accepted = Self.step(of: interaction.state) == .confirmed
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation

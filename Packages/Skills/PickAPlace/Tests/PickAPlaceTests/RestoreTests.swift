@@ -388,4 +388,6 @@ actor FailedAdmissionLedger: PickAPlaceLedger {
     func recordRequestKind(_ kind: PlaceRequestKind, for conversation: ConversationID, at date: Date) async throws {
         try await base.recordRequestKind(kind, for: conversation, at: date)
     }
+    func yes(for conversation: ConversationID) async throws -> RecordedYes? { try await base.yes(for: conversation) }
+    func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws { try await base.recordYes(yes, for: conversation) }
 }

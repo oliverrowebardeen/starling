@@ -175,6 +175,43 @@ struct PlanChangeReceiverTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// Round 2, item 1: a confirmation must confirm this phone's own yes.
+    /// Maya says yes to the same terms at round 0 and then round 1. A
+    /// delayed confirmation naming the round 0 proposal, or any other, does
+    /// not make the round 1 card a plan, before or after a restart; one
+    /// naming the proposal her latest yes named does.
+    @Test func aConfirmationMustNameTheProposalTheYesNamed() async throws {
+        let (group, mallory, maya, _) = try await mallorysGroup()
+        defer { Task { await group.stop() } }
+        let conversation = ConversationID()
+        try await ask(maya, from: mallory, in: conversation, chainedFrom: nil, group)
+        let roster = try terms([mallory, maya])
+
+        let old = try await send(.propose(Proposal(round: 0, terms: roster)), from: mallory, to: maya, in: conversation, chainedFrom: nil)
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+        let newer = try await send(.propose(Proposal(round: 1, terms: roster)), from: mallory, to: maya, in: conversation, chainedFrom: nil)
+        #expect(await maya.reaches(.proposed, in: conversation))
+        try await maya.accept(in: conversation)
+        #expect(await maya.reaches(.confirmed, in: conversation))
+
+        for named in [old.id, MessageID()] {
+            try await send(.accept(Acceptance(proposal: named, terms: roster)), from: mallory, to: maya, in: conversation, chainedFrom: nil)
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.state(in: conversation) == .confirmed)
+
+        // The proposals her yes named survive a restart.
+        await maya.restart()
+        try await send(.accept(Acceptance(proposal: old.id, terms: roster)), from: mallory, to: maya, in: conversation, chainedFrom: nil)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await maya.state(in: conversation) == .confirmed)
+        try await send(.accept(Acceptance(proposal: newer.id, terms: roster)), from: mallory, to: maya, in: conversation, chainedFrom: nil)
+        #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     /// Round 2, item 3: a chained request naming a plan Maya's phone does
     /// not hold changes no plan there. Her agreed plan is her own, at
     /// revision 0, which applies over no plan's revision. Holding the

@@ -288,17 +288,22 @@ struct AdversarialTests {
         try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await eventually { await group.wire.sent(by: maya.id).contains { $0.body.kind == .answer } })
         let terms = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id])])
-        try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        let offer = try await mallory.outbox.send(.propose(Proposal(round: 0, terms: terms)), to: maya.id, conversation: conversation,
+                                                  skill: skill, mode: .invite)
         #expect(await maya.reaches(.proposed, in: conversation))
         try await maya.accept(in: conversation)
         #expect(await maya.reaches(.confirmed, in: conversation))
 
         let padded = try Terms([.place: .places([Venues.bobaGuys.choice]), .people: .peers([mallory.id, maya.id, PeerID.random()])])
-        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: padded)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        try await mallory.outbox.send(.accept(Acceptance(proposal: offer.id, terms: padded)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        // A confirmation must confirm Maya's own yes, which named the offer:
+        // the right terms naming any other proposal are not one (review of
+        // #118, round 2).
+        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         try await Task.sleep(for: .milliseconds(150))
         #expect(await maya.state(in: conversation) == .confirmed)
 
-        try await mallory.outbox.send(.accept(Acceptance(proposal: MessageID(), terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
+        try await mallory.outbox.send(.accept(Acceptance(proposal: offer.id, terms: terms)), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.planned, in: conversation))
         #expect(await group.lifecyclesWereLegal())
     }
