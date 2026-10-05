@@ -71,7 +71,8 @@ final class AppPhone {
     var app: AppModel!
     var store: FileInteractionStore!
     var ledger: any ConversationLedger = InMemoryConversationLedger()
-    var journal: FileEgressJournal!
+    var journal: AppJournalLifetime!
+    var delivery = AppSkillDelivery()
     var sequences: FileSentSequenceStore!
     var downStore: FileDownForRequestStore!
     var input: AsyncStream<InboxEvent>.Continuation?
@@ -85,31 +86,35 @@ final class AppPhone {
     func boot(ledgerOverride: (any ConversationLedger)? = nil) async throws {
         store = FileInteractionStore(file: file("interactions.json"))
         ledger = ledgerOverride ?? FileConversationLedger(file: file("ledger.json"))
-        journal = FileEgressJournal(file: file("journal.json"))
+        journal = AppJournalLifetime(file: file("journal.json"))
+        delivery = AppSkillDelivery()
         sequences = FileSentSequenceStore(file: file("sequences.json"))
         downStore = FileDownForRequestStore(file: file("requests.json"))
         let (events, continuation) = AsyncStream.makeStream(of: InboxEvent.self)
         input = continuation
         let choices = OwnerChoices(), id = id, peers = peers, ledger = ledger, store = store!
         let calendar = calendar, staged = staged, maps = maps, downStore = downStore!, matcher = matcher
-        let clock = clock.clock
+        let clock = clock.clock, delivery = delivery
         let rules = FileRulesStore(url: file("rules.json").url)
         let checkpoints = FileFindATimeCheckpoints(directory: directory.appending(path: "time"))
         let secure = try #require(agent.secureTransport)
         app = AppModel(services: AppServices(skillModel: model.model, registry: Self.registry, flags: flags,
-            makeSkills: { outbox in [
-                DownForService(localPeer: id, outbox: outbox, model: matcher.model, psi: InsecurePSIStub(), ledger: ledger,
-                    store: downStore, pairedPeers: peers, clock: SkillClock(now: clock.now, sleep: clock.sleep), timeZone: TimeZone(secondsFromGMT: 0)!,
-                    configuration: DownForConfiguration(maxAttempts: 30)),
-                FindATimeService(localPeer: id, outbox: outbox, conversations: ledger, pairedPeers: peers,
-                    availability: .standard(calendar: calendar, use: { await choices.calendarUse() }), checkpoints: checkpoints,
-                    clock: FindATimeClock(now: clock.now, sleep: clock.sleep), timeZone: TimeZone(secondsFromGMT: 0)!, configuration: FindATimeConfiguration(dailyFrom: 0, dailyTo: 1440), isTurnedOn: { await choices.isOn(.findATime) },
-                    standingRules: { await choices.standingConstraints() }),
-                PickAPlaceService(localPeer: id, outbox: outbox, pairedPeers: peers, candidates: staged, maps: maps,
-                    ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty }, ledger: InMemoryPickAPlaceLedger(), conversations: ledger,
-                    plans: PickAPlaceService.plans(in: store), holds: PlanChangeHolds(), clock: clock),
-                SwapPhotosService(outbox: outbox, ledger: ledger, me: id, planLookup: { try? await store.interaction(conversation: $0)?.plan }),
-            ] }, interactions: store, settings: FileOwnerSettingsStore(file: file("settings.json")), rules: rules, peers: peers,
+            makeSkills: { outbox in
+                let skills: [any SkillService] = [
+                    DownForService(localPeer: id, outbox: outbox, model: matcher.model, psi: InsecurePSIStub(), ledger: ledger,
+                        store: downStore, pairedPeers: peers, clock: SkillClock(now: clock.now, sleep: clock.sleep), timeZone: TimeZone(secondsFromGMT: 0)!,
+                        configuration: DownForConfiguration(maxAttempts: 30)),
+                    FindATimeService(localPeer: id, outbox: outbox, conversations: ledger, pairedPeers: peers,
+                        availability: .standard(calendar: calendar, use: { await choices.calendarUse() }), checkpoints: checkpoints,
+                        clock: FindATimeClock(now: clock.now, sleep: clock.sleep), timeZone: TimeZone(secondsFromGMT: 0)!, configuration: FindATimeConfiguration(dailyFrom: 0, dailyTo: 1440), isTurnedOn: { await choices.isOn(.findATime) },
+                        standingRules: { await choices.standingConstraints() }),
+                    PickAPlaceService(localPeer: id, outbox: outbox, pairedPeers: peers, candidates: staged, maps: maps,
+                        ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty }, ledger: InMemoryPickAPlaceLedger(), conversations: ledger,
+                        plans: PickAPlaceService.plans(in: store), holds: PlanChangeHolds(), clock: clock),
+                    SwapPhotosService(outbox: outbox, ledger: ledger, me: id, planLookup: { try? await store.interaction(conversation: $0)?.plan }),
+                ]
+                return skills.map { AppObservedSkill(base: $0, delivery: delivery) }
+            }, interactions: store, settings: FileOwnerSettingsStore(file: file("settings.json")), rules: rules, peers: peers,
             inboxEvents: events, makePolicy: { rules, only in DeterministicPolicyEngine(ownerRules: rules, onlyOnDeviceAgents: only, pairedPeers: peers) },
             auditLog: wire, sequences: sequences, ledger: ledger, egressJournal: journal,
             placeFinder: PlaceFinder(search: maps, location: location), stagedPlaces: staged, choices: choices,
@@ -130,18 +135,30 @@ final class AppPhone {
                 if case .hello(let card) = envelope.body { self.app.cards.cards[peer] == card } else { false }
             }
         }
+        for envelope in latest.values { try await handledHello(envelope) }
     }
-    func restart() async throws {
+    func handledHello(_ envelope: Envelope) async throws {
+        let skills = app.lifecycle.skillsInBuild
+        try await appEventually("all installed skills handled authenticated hello") {
+            await self.delivery.finished(envelope.id, skills: skills)
+        }
+    }
+    func shutdownGraph() async {
         await ingress.attach(nil)
         input?.finish()
+        await outbox.cancelInFlight()
         await app.shutdown()
+        await journal.closeAndDrain()
+    }
+    func restart() async throws {
+        await shutdownGraph()
         try await boot()
     }
     func stop() async {
         await wire.release()
-        await ingress.attach(nil)
-        input?.finish()
-        await app.shutdown()
+        await delivery.release()
+        await journal.release()
+        await shutdownGraph()
         try? FileManager.default.removeItem(at: directory)
     }
     func approving() -> Task<Void, Never> {
@@ -222,7 +239,10 @@ struct AppWorld {
             for other in phones where phone.id != other.id {
                 let hello = try await phone.outbox.send(.hello(#require(phone.app.agentCard)), to: other.id, conversation: ConversationID())
                 try await appEventually("authenticated app hello") { await other.agent.received.contains(hello) }
+                // SimulatorKit consumes hello itself; forward only the
+                // authenticated envelope, then await service delivery too.
                 other.input?.yield(.message(hello))
+                try await other.handledHello(hello)
             }
         }
         try await appEventually("all app support cards") {

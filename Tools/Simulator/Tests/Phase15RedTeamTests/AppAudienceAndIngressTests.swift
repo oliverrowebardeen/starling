@@ -10,6 +10,41 @@ import Testing
 @MainActor
 @Suite("P15-F app audience and ingress", .serialized)
 struct AppAudienceAndIngressTests {
+    @Test func aVisibleSupportUpgradeMustNotEndAsUnsupported() async throws {
+        let world = try await AppWorld.make(2)
+        defer { Task { await world.stop() } }
+        let (a, b) = (world.phones[0], world.phones[1])
+        let old = try await b.outbox.send(.hello(b.agent.card), to: a.id, conversation: ConversationID())
+        try await appEventually("old support card authenticated") { await a.agent.received.contains(old) }
+        a.input?.yield(.message(old))
+        try await a.handledHello(old)
+        await a.delivery.holdHello(from: b.id)
+        let updated = try await b.outbox.send(.hello(#require(b.app.agentCard)), to: a.id, conversation: ConversationID())
+        try await appEventually("new support card authenticated") { await a.agent.received.contains(updated) }
+        a.input?.yield(.message(updated))
+        try await appEventually("hello held before Down for handles it") { await a.delivery.holding }
+        #expect(a.app.cards.cards[b.id] == b.app.agentCard)
+        try await a.compose(.downFor, with: [b.id])
+        #expect(a.app.composer.participants == [b.id])
+        let id = try #require(await a.app.composer.send())
+        let request = try #require(a.app.lifecycle.interaction(id))
+        try await appEventually("request ends or installs an invitee") {
+            a.app.lifecycle.interaction(id)?.state.isFinal == true || b.app.lifecycle.interaction(conversation: request.conversation) != nil
+        }
+        let settled = try #require(a.app.lifecycle.interaction(id))
+        withKnownIssue("#123: Compose publishes support before the skill handles hello") {
+            #expect(settled.state != .ended(.unsupported))
+        }
+        if settled.state == .ended(.unsupported) { #expect(await a.sent(request.conversation).isEmpty) }
+        await a.delivery.release()
+        try await a.handledHello(updated)
+        try await a.compose(.downFor, with: [b.id])
+        let control = try #require(await a.app.composer.send())
+        let owner = try #require(a.app.lifecycle.interaction(control))
+        let card = try await b.incoming(owner.conversation)
+        _ = try await b.wait(.proposed, card.id)
+    }
+
     @Test func parsedExclusionsAndSavedRulesResolveBeforeAnyWireSend() async throws {
         let world = try await AppWorld.make()
         defer { Task { await world.stop() } }
