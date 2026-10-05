@@ -23,3 +23,7 @@ Change the plan (ADR 0022, ADR 0243), three phones A, B, and C in one plan:
 16. Phone B: while A's suggestion is open, look for Suggest a change. Expect: it is not offered until A's suggestion settles.
 17. Phone A: suggest adding D, a friend of A's. B and C: Sounds good. Expect: D gets an invite showing the plan and who is in it; after D accepts, all four phones list four people.
 18. Phone C: Leave this plan. Expect: no sheet; C's plan ends; A and B (and D) show C left and list one fewer person.
+19. Phone A: suggest 9:30. Phone B: tap Sounds good, then turn on Airplane Mode before C answers. C: Sounds good. Wait 2 minutes, then turn B's Airplane Mode off. Expect: within 5 minutes B's plan reads 9:30, and B's card shows it planned, not closed.
+20. Phone A: suggest 10:00. B and C: Sounds good. Force-quit Starling on B right after C taps, then reopen it. Expect: B's plan reads 10:00 within 5 minutes of reopening, with one entry for the change on B's timeline.
+21. Phone A: suggest dinner. B and C: Sounds good. On A, tap Withdraw as fast as possible after C taps. Expect: either the plan changes on all three phones or on none; never on A alone.
+22. Phone A: tap Somewhere else?, and while the place step is open, add D through Suggest a change (step 17). Then finish the place step without D. Expect: D stays in the plan on every phone; the place step changes nothing it was not asked over.
