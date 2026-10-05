@@ -6,10 +6,26 @@ public struct PairingConfiguration: Sendable {
     public var handshakeTimeout: Duration
     /// From the code appearing until both owners have answered.
     public var confirmationTimeout: Duration
+    /// How often a ceremony that waits on the other phone sends its last
+    /// message again (ADR 0260). Links lose frames; nothing else resends them.
+    public var resendInterval: Duration
+    /// How long a finished ceremony keeps answering the other phone's
+    /// resends with its last messages, so a lost final `accept` or notice
+    /// still arrives (ADR 0260).
+    public var lingerDuration: Duration
+    /// How long a request from another phone stays listed after its last hello.
+    public var requestLifetime: Duration
 
-    public init(handshakeTimeout: Duration = .seconds(30), confirmationTimeout: Duration = .seconds(120)) {
+    public init(
+        handshakeTimeout: Duration = .seconds(60), confirmationTimeout: Duration = .seconds(120),
+        resendInterval: Duration = .seconds(1), lingerDuration: Duration = .seconds(30),
+        requestLifetime: Duration = .seconds(5)
+    ) {
         self.handshakeTimeout = handshakeTimeout
         self.confirmationTimeout = confirmationTimeout
+        self.resendInterval = resendInterval
+        self.lingerDuration = lingerDuration
+        self.requestLifetime = requestLifetime
     }
 }
 
@@ -18,127 +34,339 @@ public enum PairingServiceError: Error, Hashable, Sendable {
     case notStarted
 }
 
-/// In-person pairing (ADR 0003, ADR 0101): Noise XX over an unauthenticated
-/// link, a 6-digit code both owners compare, and a `PairedPeer` saved only
-/// after both owners confirm. A mismatch, cancel, timeout, or link loss on
-/// either side leaves nothing stored on that side.
+/// The pairing messages, for diagnostics.
+public enum PairingMessage: String, Hashable, Sendable {
+    case hello, message1 = "message 1", message2 = "message 2", message3 = "message 3"
+    case reveal, accept, reject, cancel, abort
+    /// An encrypted message that did not decrypt or did not fit.
+    case secure
+}
+
+/// One step of a ceremony, for the Debug pairing log. Never carries keys,
+/// nonces, or the code (ADR 0260).
+public enum PairingStep: Hashable, Sendable {
+    case started(initiator: Bool)
+    case sent(PairingMessage)
+    case resent(PairingMessage)
+    /// No link took the frame. The ceremony keeps resending.
+    case unsent(PairingMessage)
+    case received(PairingMessage)
+    /// A frame that did not fit the current step, dropped.
+    case ignored(PairingMessage)
+    /// The other phone started over before a code was shown; so did this one.
+    case restarted
+    /// The other phone asked to start over after this phone's nonce went
+    /// out; the ceremony ended instead (ADR 0260).
+    case refusedRestart
+    case codeShown
+    case confirmed(codesMatch: Bool)
+    case peerAccepted
+    case linkUp
+    case linkDown
+    /// Another phone asked to pair, with no ceremony running here.
+    case requested
+    /// A finished ceremony answered a resend with its last messages.
+    case answeredAfterEnd
+    case paired
+    case failed(PairingFailure)
+}
+
+public struct PairingTrace: Hashable, Sendable {
+    public let peer: PeerID
+    public let step: PairingStep
+}
+
+/// In-person pairing (ADR 0003, ADR 0101, ADR 0260): Noise XX over
+/// unauthenticated links, a 6-digit code both owners compare, and a
+/// `PairedPeer` saved only after both owners confirm. A mismatch, cancel, or
+/// timeout on either side leaves nothing stored on that side.
 ///
-/// Both owners pick each other and call `pair(with:nickname:)`. The link can
-/// be any `Transport` whose peer IDs are key-derived, typically
-/// `SecureTransport.pairingLink` so pairing and the secure channel share one
-/// link. The service is the single consumer of the link's events.
+/// One owner picks the other phone and calls `pair(with:nickname:)`. The
+/// other phone lists that as a request (`requests()`), and its owner, or the
+/// app on their behalf, calls `pair(with:nickname:)` too. The service runs
+/// over every link the phones share at once, sending each frame on all of
+/// them, so both phones meet whichever link works. Peer IDs on every link
+/// must be key-derived, as `SecureTransport.pairingLink` reports them. The
+/// service is the single consumer of each link's events.
 public actor PairingService {
+    private struct Linger {
+        let frames: [Frame]
+        let peerAttempt: Data?
+        let until: Date
+        var lastReplay: Date?
+        var replays = 0
+    }
+
+    private struct Request {
+        let attempt: Data?
+        var heard: Date
+    }
+
+    static let maxRequests = 16
+    static let maxLingers = 16
+    /// Replays per finished ceremony. Enough to cover a few lost answers,
+    /// and bounded so two finished ceremonies whose replays reach each
+    /// other cannot keep answering one another.
+    static let maxReplays = 3
+
     private let identity: IdentityKeyPair
     private let pins: PinAuthority
-    private let link: any Transport
+    private let links: [any Transport]
     private let configuration: PairingConfiguration
     private let now: @Sendable () -> Date
+    private let trace: (@Sendable (PairingTrace) -> Void)?
     private var ceremonies: [PeerID: PairingCeremony] = [:]
-    private var loop: Task<Void, Never>?
+    private var lingers: [PeerID: Linger] = [:]
+    private var pending: [PeerID: Request] = [:]
+    private var loops: [Task<Void, Never>] = []
+    private var started = false
 
     /// Pairs over `secureTransport.pairingLink` and commits pins through its
     /// authority, so unpairing is ordered against every commit.
     public init(
         secureTransport: SecureTransport,
         configuration: PairingConfiguration = PairingConfiguration(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        trace: (@Sendable (PairingTrace) -> Void)? = nil
     ) {
-        self.init(authority: secureTransport.authority, link: secureTransport.pairingLink, configuration: configuration, now: now)
+        self.init(authority: secureTransport.authority, links: [secureTransport.pairingLink], configuration: configuration, now: now, trace: trace)
     }
 
-    /// Pairs over any link as `authority.identity`. Pins are committed only
-    /// through `authority`, the one every unpair also goes through.
+    /// Pairs over one link as `authority.identity`.
     public init(
         authority: PinAuthority,
         link: any Transport,
         configuration: PairingConfiguration = PairingConfiguration(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        trace: (@Sendable (PairingTrace) -> Void)? = nil
     ) {
-        self.identity = authority.identity
-        self.pins = authority
-        self.link = link
-        self.configuration = configuration
-        self.now = now
+        self.init(authority: authority, links: [link], configuration: configuration, now: now, trace: trace)
     }
 
-    /// Starts the link (if needed) and begins listening for pairing traffic.
+    /// Pairs over several links at once as `authority.identity`, for example
+    /// the `pairingLink` of every `SecureTransport` sharing `authority`. Pins
+    /// are committed only through `authority`, the one every unpair also
+    /// goes through.
+    public init(
+        authority: PinAuthority,
+        links: [any Transport],
+        configuration: PairingConfiguration = PairingConfiguration(),
+        now: @escaping @Sendable () -> Date = { Date() },
+        trace: (@Sendable (PairingTrace) -> Void)? = nil
+    ) {
+        precondition(!links.isEmpty, "pairing needs at least one link")
+        self.identity = authority.identity
+        self.pins = authority
+        self.links = links
+        self.configuration = configuration
+        self.now = now
+        self.trace = trace
+    }
+
+    /// Starts the links (if needed) and begins listening for pairing
+    /// traffic. Throws only if no link starts.
     public func start() async throws {
-        guard loop == nil else { return }
+        guard !started else { return }
+        started = true
         pins.observeRevocations { [weak self] peer, epoch in await self?.revocationNotice(peer, epoch: epoch) }
-        let events = link.events
-        loop = Task { [weak self] in
-            for await event in events {
-                guard let self else { return }
-                await self.route(event)
+        for link in links {
+            let events = link.events
+            loops.append(Task { [weak self] in
+                for await event in events {
+                    guard let self else { return }
+                    await self.route(event)
+                }
+            })
+        }
+        var firstError: (any Error)?
+        var anyStarted = false
+        for link in links {
+            do {
+                try await link.start()
+                anyStarted = true
+            } catch {
+                firstError = firstError ?? error
             }
         }
-        try await link.start()
+        if !anyStarted, let firstError { throw firstError }
     }
 
     /// Stops listening and cancels every ceremony in progress.
     public func stop() async {
-        loop?.cancel()
-        loop = nil
+        for loop in loops { loop.cancel() }
+        loops = []
+        started = false
         for ceremony in ceremonies.values { await ceremony.cancel() }
         ceremonies = [:]
+        lingers = [:]
+        pending = [:]
     }
 
-    /// Starts a ceremony with the device the owner picked. The other owner
-    /// must do the same on their phone. Replaces any ceremony already running
-    /// with that peer.
+    /// Starts a ceremony with the phone the owner picked, or with a phone
+    /// that asked (`requests()`). Replaces any ceremony already running with
+    /// that peer; of overlapping calls for one peer, the one that installs
+    /// last wins and the others' ceremonies end cancelled.
     public func pair(with peer: PeerID, nickname: String) async throws -> any PairingSession {
-        guard loop != nil else { throw PairingServiceError.notStarted }
+        guard started else { throw PairingServiceError.notStarted }
         guard peer != identity.peerID else { throw PairingServiceError.cannotPairWithSelf }
         // Validates the nickname now, rather than after both owners confirm.
         _ = try PairedPeer(publicKey: identity.publicKey, nickname: nickname, pairedAt: Timestamp(now()))
 
-        if let previous = ceremonies.removeValue(forKey: peer) { await previous.cancel() }
+        // Removed before the old one is cancelled, so its ending leaves no
+        // linger that would answer the new ceremony's peer. Another pair
+        // call for this peer may install its ceremony while this one waits;
+        // the call that installs last replaces it too, so none is left
+        // running unheard (review round 3 of #104). Nothing awaits between
+        // the last check and the install below.
+        while let previous = ceremonies.removeValue(forKey: peer) { await previous.cancel() }
+        lingers[peer] = nil
+        // Answering a request: the ceremony starts bound to the attempt that
+        // asked, so a later hello for a new attempt restarts it (Codex
+        // re-review of #104). Read after the await, so it is the latest.
+        let requested = pending.removeValue(forKey: peer)?.attempt
+        let links = links
+        let trace = trace
         let ceremony = PairingCeremony(
             peer: peer, nickname: nickname, identity: identity, pins: pins,
-            link: link, configuration: configuration, now: now,
-            revocationEpoch: pins.epoch(of: peer)
+            send: { frame in await Self.send(frame, to: peer, over: links) },
+            configuration: configuration, now: now,
+            revocationEpoch: pins.epoch(of: peer),
+            peerAttempt: requested,
+            trace: { step in trace?(PairingTrace(peer: peer, step: step)) }
         )
         ceremonies[peer] = ceremony
-        await ceremony.begin { [weak self] in await self?.finished(ceremony, peer: peer) }
+        await ceremony.begin { [weak self] frames, peerAttempt in
+            await self?.finished(ceremony, peer: peer, frames: frames, peerAttempt: peerAttempt)
+        }
         return ceremony
     }
 
-    /// Unpairing wins: a ceremony with a revoked peer ends now.
+    /// Phones that asked to pair with this one in the last few seconds and
+    /// have no ceremony running here, newest first. A request is a claim
+    /// from an unauthenticated link: answering it only starts a ceremony,
+    /// whose code comparison verifies the phone (ADR 0260).
+    public func requests() -> [PeerID] {
+        let cutoff = now().addingTimeInterval(-Self.seconds(configuration.requestLifetime))
+        pending = pending.filter { $0.value.heard > cutoff }
+        return pending.filter { ceremonies[$0.key] == nil }.sorted { $0.value.heard > $1.value.heard }.map(\.key)
+    }
+
     /// A revocation notice from the authority, carrying the epoch the
     /// revocation produced. It can arrive late, after a new ceremony with the
     /// peer has started, so it ends only a ceremony that started under an
-    /// older epoch.
+    /// older epoch. Unpairing wins: a ceremony with a revoked peer ends now.
     func revocationNotice(_ peer: PeerID, epoch: UInt64) async {
         await ceremonies[peer]?.revoke(startedBefore: epoch)
     }
 
-    private func finished(_ ceremony: PairingCeremony, peer: PeerID) {
-        if ceremonies[peer] === ceremony { ceremonies[peer] = nil }
+    /// Sends on every link; true if at least one took the frame. Each link
+    /// keeps its own order, so a phone reading any one link sees the
+    /// ceremony's messages in the order they were sent.
+    static func send(_ frame: Frame, to peer: PeerID, over links: [any Transport]) async -> Bool {
+        var delivered = false
+        for link in links where (try? await link.send(frame, to: peer)) != nil {
+            delivered = true
+        }
+        return delivered
+    }
+
+    private func finished(_ ceremony: PairingCeremony, peer: PeerID, frames: [Frame], peerAttempt: Data?) {
+        guard ceremonies[peer] === ceremony else { return }
+        ceremonies[peer] = nil
+        // Hellos heard before or during the ceremony are not a new request.
+        pending[peer] = nil
+        guard !frames.isEmpty else { return }
+        lingers[peer] = Linger(frames: frames, peerAttempt: peerAttempt, until: now().addingTimeInterval(Self.seconds(configuration.lingerDuration)))
+        if lingers.count > Self.maxLingers, let oldest = lingers.min(by: { $0.value.until < $1.value.until })?.key {
+            lingers[oldest] = nil
+        }
     }
 
     private func route(_ event: TransportEvent) async {
         switch event {
-        case .received(let frame, let peer): await ceremonies[peer]?.receive(frame.bytes)
-        case .peerAvailable(let peer): await ceremonies[peer]?.linkAvailable()
-        case .peerUnavailable(let peer): await ceremonies[peer]?.linkLost()
+        case .received(let frame, let peer):
+            if let ceremony = ceremonies[peer] {
+                await ceremony.receive(frame.bytes)
+            } else {
+                await idle(frame.bytes, from: peer)
+            }
+        case .peerAvailable(let peer):
+            if let ceremony = ceremonies[peer] {
+                trace?(PairingTrace(peer: peer, step: .linkUp))
+                await ceremony.linkAvailable()
+            }
+        case .peerUnavailable(let peer):
+            if ceremonies[peer] != nil { trace?(PairingTrace(peer: peer, step: .linkDown)) }
         }
+    }
+
+    /// A frame from a phone with no ceremony running here. A hello for a new
+    /// attempt is a request; anything else from a phone whose ceremony just
+    /// ended gets that ceremony's last messages again.
+    private func idle(_ bytes: Data, from peer: PeerID) async {
+        guard peer != identity.peerID, let first = bytes.first, let type = PairingCeremony.MessageType(rawValue: first) else { return }
+        let date = now()
+        if let linger = lingers[peer], linger.until <= date { lingers[peer] = nil }
+        if type == .hello {
+            guard let attempt = PairingCeremony.attempt(in: Data(bytes.dropFirst())) else { return }
+            if let linger = lingers[peer], let bound = linger.peerAttempt, attempt == bound {
+                await replay(to: peer)
+                return
+            }
+            let isNew = pending[peer]?.attempt != attempt
+            pending[peer] = Request(attempt: attempt, heard: date)
+            if pending.count > Self.maxRequests, let oldest = pending.min(by: { $0.value.heard < $1.value.heard })?.key {
+                pending[oldest] = nil
+            }
+            if isNew { trace?(PairingTrace(peer: peer, step: .requested)) }
+            return
+        }
+        await replay(to: peer)
+    }
+
+    /// Sends a finished ceremony's last messages again, at most once per
+    /// half resend interval and `maxReplays` times, so a flood of frames
+    /// cannot multiply them.
+    private func replay(to peer: PeerID) async {
+        guard var linger = lingers[peer], linger.replays < Self.maxReplays else { return }
+        let date = now()
+        if let last = linger.lastReplay, date.timeIntervalSince(last) < Self.seconds(configuration.resendInterval) / 2 { return }
+        linger.lastReplay = date
+        linger.replays += 1
+        lingers[peer] = linger
+        trace?(PairingTrace(peer: peer, step: .answeredAfterEnd))
+        for frame in linger.frames { _ = await Self.send(frame, to: peer, over: links) }
+    }
+
+    static func seconds(_ duration: Duration) -> TimeInterval {
+        let parts = duration.components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
     }
 }
 
-/// One ceremony with one peer. See `PairingService` and ADR 0101.
+/// One ceremony with one peer. See `PairingService`, ADR 0101, and ADR 0260.
 ///
 /// Messages (pairing frames, first byte is the type):
 ///
-///     hello       both, until the handshake starts (lets either side start first)
+///     hello       both, until the handshake starts. Carries the sender's
+///                 attempt ID: 8 random bytes, new for each `pair` call.
 ///     message 1   initiator: -> e
 ///     message 2   responder: <- e, ee, s, es   payload: commitment to responder nonce
 ///     message 3   initiator: -> s, se          payload: initiator nonce
 ///     secure      Noise transport messages: reveal (responder nonce), accept, reject, cancel
-///     abort       unauthenticated cancel, only before keys exist
+///     abort       unauthenticated cancel, only before keys exist. Carries
+///                 the sender's attempt ID.
 ///
-/// The peer with the lower `PeerID` is the XX initiator. Frames that do not
-/// parse, decrypt, or fit the current step are dropped, so injected traffic
-/// cannot end a ceremony once keys exist; only the code comparison decides.
+/// The peer with the lower `PeerID` is the XX initiator. While waiting on
+/// the other phone, a ceremony sends its last message again every resend
+/// interval, and answers a repeat of the message it last answered with the
+/// same reply. Frames that do not parse, decrypt, or fit the current step
+/// are dropped, so injected traffic cannot end a ceremony once keys exist;
+/// only the code comparison decides. Before this phone sends its nonce, a
+/// hello for a new attempt means the other phone started over, and so does
+/// this one, with fresh keys and nonces. After its nonce has gone out, such
+/// a hello ends the ceremony instead: a phone in the middle could otherwise
+/// draw a fresh code for each restart, unseen.
 actor PairingCeremony: PairingSession {
     enum MessageType: UInt8 {
         case hello = 0x01, message1 = 0x02, message2 = 0x03, message3 = 0x04, secure = 0x05, abort = 0x06
@@ -149,10 +377,22 @@ actor PairingCeremony: PairingSession {
     }
 
     /// `saving` begins once both owners have confirmed: that is the commit
-    /// point, so a late cancel or link loss no longer changes the outcome.
+    /// point, so a late cancel no longer changes the outcome.
     private enum Phase { case waiting, awaitingMessage2, awaitingMessage3, awaitingReveal, comparing, saving, finished }
 
     static let prologue = Data("Starling pairing v1".utf8)
+    static let attemptLength = 8
+
+    /// Parses the attempt field of a hello or abort body: `.some(id)` for 8
+    /// bytes, `.some(nil)` for an empty body (a build from before ADR 0260,
+    /// which names no attempt), and nil for any other length, which is dropped.
+    static func attempt(in body: Data) -> Data?? {
+        switch body.count {
+        case 0: return .some(nil)
+        case attemptLength: return .some(body)
+        default: return nil
+        }
+    }
 
     nonisolated let events: AsyncStream<PairingEvent>
     private let continuation: AsyncStream<PairingEvent>.Continuation
@@ -160,56 +400,94 @@ actor PairingCeremony: PairingSession {
     private let nickname: String
     private let identity: IdentityKeyPair
     private let pins: PinAuthority
-    private let link: any Transport
+    private let send: @Sendable (Frame) async -> Bool
     private let configuration: PairingConfiguration
     private let now: @Sendable () -> Date
+    private let trace: @Sendable (PairingStep) -> Void
     private let initiator: Bool
     /// The peer's epoch at the pin authority when the ceremony started.
     private let revocationEpoch: UInt64
+    /// This ceremony's attempt ID. A restart keeps it, so two phones that
+    /// restart for each other never loop.
+    private let attempt: Data
 
     private var phase = Phase.waiting
     private var handshake: NoiseHandshakeState
     private var session: NoiseSession?
-    private let localNonce = PairingCode.nonce()
+    /// Fresh for every handshake, restarts included: reusing a nonce after
+    /// the other side saw it would let that side choose its own afterwards.
+    private var localNonce = PairingCode.nonce()
+    /// This phone sent its nonce (message 3, or the reveal). From then on
+    /// the ceremony never restarts: one nonce, so one code, per ceremony.
+    private var nonceSent = false
     private var responderCommitment: Data?
     private var initiatorNonce: Data?
     private var localConfirmed = false
     private var remoteAccepted = false
+    /// The latest attempt ID the peer's hellos carried.
+    private var peerAttempt: Data?
+    /// The last handshake message sent, resent while waiting on the peer.
+    private var lastSent: (type: MessageType, frame: Frame)?
+    /// The last handshake message answered, so a repeat gets the same reply.
+    private var lastAnswered: Data?
+    /// Every encrypted message sent, in order, resent together so the peer
+    /// can decrypt them in sequence whichever copy it lost.
+    private var secureSent: [Frame] = []
     private var timer: Task<Void, Never>?
-    private var onFinish: (@Sendable () async -> Void)?
+    private var resender: Task<Void, Never>?
+    private var onFinish: (@Sendable ([Frame], Data?) async -> Void)?
 
     init(
         peer: PeerID, nickname: String, identity: IdentityKeyPair, pins: PinAuthority,
-        link: any Transport, configuration: PairingConfiguration, now: @escaping @Sendable () -> Date,
-        revocationEpoch: UInt64
+        send: @escaping @Sendable (Frame) async -> Bool, configuration: PairingConfiguration,
+        now: @escaping @Sendable () -> Date, revocationEpoch: UInt64,
+        peerAttempt: Data? = nil,
+        trace: @escaping @Sendable (PairingStep) -> Void = { _ in }
     ) {
         self.revocationEpoch = revocationEpoch
+        self.peerAttempt = peerAttempt
         self.peer = peer
         self.nickname = nickname
         self.identity = identity
         self.pins = pins
-        self.link = link
+        self.send = send
         self.configuration = configuration
         self.now = now
+        self.trace = trace
         initiator = identity.peerID < peer
+        attempt = PairingCode.nonce().prefix(Self.attemptLength)
         (events, continuation) = AsyncStream.makeStream(of: PairingEvent.self)
+        handshake = Self.freshHandshake(identity: identity, initiator: identity.peerID < peer)
+    }
+
+    private static func freshHandshake(identity: IdentityKeyPair, initiator: Bool) -> NoiseHandshakeState {
         // Force-try is safe: XX takes no remote key up front, which is the only failure.
-        handshake = try! NoiseHandshakeState(
-            pattern: .xx, initiator: identity.peerID < peer, prologue: Self.prologue,
+        try! NoiseHandshakeState(
+            pattern: .xx, initiator: initiator, prologue: prologue,
             localStatic: identity.privateKey, remoteStatic: nil
         )
     }
 
-    func begin(onFinish: @escaping @Sendable () async -> Void) async {
+    func begin(onFinish: @escaping @Sendable ([Frame], Data?) async -> Void) async {
         self.onFinish = onFinish
+        trace(.started(initiator: initiator))
         arm(configuration.handshakeTimeout)
-        await send(.hello, Data())
+        let interval = configuration.resendInterval
+        resender = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                await self.resend()
+            }
+        }
+        await sendHello()
     }
 
     // MARK: PairingSession
 
     func confirm(codesMatch: Bool) async {
         guard phase == .comparing, !localConfirmed else { return }
+        trace(.confirmed(codesMatch: codesMatch))
         guard codesMatch else { return await end(.codeMismatch, notice: .reject) }
         localConfirmed = true
         await sendSecure(.accept)
@@ -231,35 +509,114 @@ actor PairingCeremony: PairingSession {
 
     // MARK: Link events
 
+    /// A link to the peer came up: send what the peer is missing now rather
+    /// than at the next resend.
     func linkAvailable() async {
-        if phase == .waiting { await send(.hello, Data()) }
-    }
-
-    func linkLost() {
-        guard phase != .finished, phase != .saving else { return }
-        fail(.transportFailed)
+        await resend()
     }
 
     func receive(_ bytes: Data) async {
         guard phase != .finished, let first = bytes.first, let type = MessageType(rawValue: first) else { return }
         let body = Data(bytes.dropFirst())
-        switch (type, phase, initiator) {
-        case (.hello, .waiting, true):
-            await startHandshake()
-        case (.hello, .waiting, false):
-            await send(.hello, Data())
-        case (.message1, .waiting, false):
+        switch type {
+        case .hello:
+            await receiveHello(body)
+        case .message1 where !initiator && phase == .waiting:
+            trace(.received(.message1))
             await answerMessage1(body)
-        case (.message2, .awaitingMessage2, true):
+        case .message2 where initiator && phase == .awaitingMessage2:
+            trace(.received(.message2))
             await answerMessage2(body)
-        case (.message3, .awaitingMessage3, false):
+        case .message3 where !initiator && phase == .awaitingMessage3:
+            trace(.received(.message3))
             await answerMessage3(body)
-        case (.secure, _, _):
+        case .message1, .message2, .message3:
+            await receiveRepeat(type, body)
+        case .secure:
             await receiveSecure(body)
-        case (.abort, .waiting, _), (.abort, .awaitingMessage2, _), (.abort, .awaitingMessage3, _):
-            fail(.cancelled)
-        default:
-            return
+        case .abort:
+            receiveAbort(body)
+        }
+    }
+
+    // MARK: Hellos and restarts
+
+    private func receiveHello(_ body: Data) async {
+        guard let parsed = Self.attempt(in: body) else { return trace(.ignored(.hello)) }
+        if let theirs = parsed {
+            if let bound = peerAttempt, bound != theirs {
+                // The other phone started over. Once a code is shown, keys
+                // exist and a hello cannot derail the comparison (ADR 0101
+                // decision 4).
+                guard showsNoCode else { return trace(.ignored(.hello)) }
+                // Once this phone's nonce has gone out, the other phone may
+                // already know this side's code. Restarting would hand it a
+                // fresh code to try for free, so the ceremony ends where the
+                // owner sees it (review round 3 of #104, ADR 0260).
+                if nonceSent {
+                    trace(.refusedRestart)
+                    return await end(.cancelled, notice: .cancel)
+                }
+                if phase != .waiting { restart() }
+            }
+            peerAttempt = theirs
+        }
+        guard phase == .waiting else { return }
+        trace(.received(.hello))
+        if initiator {
+            await startHandshake()
+        } else {
+            await sendHello()
+        }
+    }
+
+    private var showsNoCode: Bool {
+        switch phase {
+        case .waiting, .awaitingMessage2, .awaitingMessage3, .awaitingReveal: true
+        case .comparing, .saving, .finished: false
+        }
+    }
+
+    /// Back to the start of the handshake with fresh keys and nonces. Only
+    /// before this phone's nonce went out, and the handshake timer keeps
+    /// running, so restarts cannot extend a ceremony or yield a second code.
+    private func restart() {
+        trace(.restarted)
+        phase = .waiting
+        handshake = Self.freshHandshake(identity: identity, initiator: initiator)
+        session = nil
+        localNonce = PairingCode.nonce()
+        responderCommitment = nil
+        initiatorNonce = nil
+        lastSent = nil
+        lastAnswered = nil
+        secureSent = []
+    }
+
+    /// An unauthenticated cancel ends a ceremony only before keys exist, and
+    /// only if it names the attempt this ceremony is answering (or the peer
+    /// has named none), so a stale abort cannot end a newer attempt.
+    private func receiveAbort(_ body: Data) {
+        guard let parsed = Self.attempt(in: body) else { return trace(.ignored(.abort)) }
+        switch phase {
+        case .waiting, .awaitingMessage2, .awaitingMessage3: break
+        default: return trace(.ignored(.abort))
+        }
+        guard peerAttempt == nil || parsed == peerAttempt else { return trace(.ignored(.abort)) }
+        trace(.received(.abort))
+        fail(.cancelled)
+    }
+
+    /// A copy of the handshake message this ceremony last answered: the
+    /// reply was lost, so send it again. Anything else is dropped.
+    private func receiveRepeat(_ type: MessageType, _ body: Data) async {
+        guard let lastAnswered, body == lastAnswered else { return trace(.ignored(Self.message(type))) }
+        if let lastSent, showsNoCode {
+            trace(.resent(Self.message(lastSent.type)))
+            _ = await send(lastSent.frame)
+        } else {
+            // The repeated message 3: the reveal (and anything after it) was lost.
+            await resendSecure()
         }
     }
 
@@ -268,17 +625,18 @@ actor PairingCeremony: PairingSession {
     private func startHandshake() async {
         guard let message = try? handshake.writeMessage(payload: Data()) else { return fail(.protocolError) }
         phase = .awaitingMessage2
-        await send(.message1, message)
+        await sendHandshake(.message1, message)
     }
 
     private func answerMessage1(_ body: Data) async {
         var attempt = handshake
         guard let payload = try? attempt.readMessage(body), payload.isEmpty,
               let reply = try? attempt.writeMessage(payload: PairingCode.commitment(to: localNonce))
-        else { return }
+        else { return trace(.ignored(.message1)) }
         handshake = attempt
+        lastAnswered = body
         phase = .awaitingMessage3
-        await send(.message2, reply)
+        await sendHandshake(.message2, reply)
     }
 
     private func answerMessage2(_ body: Data) async {
@@ -286,26 +644,30 @@ actor PairingCeremony: PairingSession {
         guard let commitment = try? attempt.readMessage(body), commitment.count == 32,
               let reply = try? attempt.writeMessage(payload: localNonce),
               let session = try? attempt.session()
-        else { return }
+        else { return trace(.ignored(.message2)) }
         handshake = attempt
         guard acceptable(session) else { return await abandon() }
         self.session = session
         responderCommitment = commitment
+        lastAnswered = body
         phase = .awaitingReveal
-        await send(.message3, reply)
+        nonceSent = true
+        await sendHandshake(.message3, reply)
     }
 
     private func answerMessage3(_ body: Data) async {
         var attempt = handshake
         guard let nonce = try? attempt.readMessage(body), nonce.count == PairingCode.nonceLength,
               let session = try? attempt.session()
-        else { return }
+        else { return trace(.ignored(.message3)) }
         handshake = attempt
         guard acceptable(session) else { return await abandon() }
         self.session = session
         initiatorNonce = nonce
-        await sendSecure(.reveal, localNonce)
+        lastAnswered = body
         showCode(initiatorNonce: nonce, responderNonce: localNonce)
+        nonceSent = true
+        await sendSecure(.reveal, localNonce)
     }
 
     /// The remote key must be the one the link claimed (so the secure channel
@@ -318,7 +680,9 @@ actor PairingCeremony: PairingSession {
     private func showCode(initiatorNonce: Data, responderNonce: Data) {
         guard let session else { return }
         phase = .comparing
+        lastSent = nil
         arm(configuration.confirmationTimeout)
+        trace(.codeShown)
         continuation.yield(.confirmCode(PairingCode.code(
             handshakeHash: session.handshakeHash, initiatorNonce: initiatorNonce, responderNonce: responderNonce
         )))
@@ -329,9 +693,10 @@ actor PairingCeremony: PairingSession {
     private func receiveSecure(_ body: Data) async {
         guard var session, let plaintext = try? session.receive.decrypt(ad: Data(), ciphertext: body),
               let first = plaintext.first, let kind = SecureKind(rawValue: first)
-        else { return }
+        else { return trace(.ignored(.secure)) }
         self.session = session
         let content = Data(plaintext.dropFirst())
+        trace(.received(Self.message(kind)))
         switch (kind, phase) {
         case (.reveal, .awaitingReveal):
             // The responder must reveal the nonce it committed to before seeing ours.
@@ -340,6 +705,7 @@ actor PairingCeremony: PairingSession {
             }
             showCode(initiatorNonce: localNonce, responderNonce: content)
         case (.accept, .comparing):
+            trace(.peerAccepted)
             remoteAccepted = true
             await completeIfReady()
         case (.reject, .comparing):
@@ -355,6 +721,7 @@ actor PairingCeremony: PairingSession {
         guard phase == .comparing, localConfirmed, remoteAccepted, let session else { return }
         phase = .saving
         timer?.cancel()
+        resender?.cancel()
         do {
             let key = try IdentityPublicKey(bytes: session.remoteStatic.rawRepresentation)
             let paired = try PairedPeer(publicKey: key, nickname: nickname, pairedAt: Timestamp(now()))
@@ -368,8 +735,33 @@ actor PairingCeremony: PairingSession {
         }
     }
 
-    // MARK: Plumbing
+    // MARK: Resending
 
+    /// Sends what the peer may be missing: the last handshake message while
+    /// waiting on the next one, or every encrypted message once this owner
+    /// has confirmed and waits on the other's answer.
+    private func resend() async {
+        switch phase {
+        case .waiting:
+            await sendHello(resend: true)
+        case .awaitingMessage2, .awaitingMessage3, .awaitingReveal:
+            guard let lastSent else { return }
+            trace(.resent(Self.message(lastSent.type)))
+            if !(await send(lastSent.frame)) { trace(.unsent(Self.message(lastSent.type))) }
+        case .comparing where localConfirmed:
+            await resendSecure()
+        case .comparing, .saving, .finished:
+            return
+        }
+    }
+
+    private func resendSecure() async {
+        guard !secureSent.isEmpty else { return }
+        trace(.resent(.secure))
+        for frame in secureSent { _ = await send(frame) }
+    }
+
+    // MARK: Plumbing
 
     private func abandon() async {
         await end(.protocolError, notice: .cancel)
@@ -378,16 +770,26 @@ actor PairingCeremony: PairingSession {
     /// Ends the ceremony on this phone, then tells the peer. The ending is
     /// final before anything is awaited: an accept that arrives while the
     /// notice is in flight finds the ceremony finished and cannot pin the
-    /// peer. The notice is sealed first, while the session keys still exist.
+    /// peer. The notice is sealed first, while the session keys still exist,
+    /// and is kept with the other final messages for the linger.
     private func end(_ failure: PairingFailure, notice: SecureKind) async {
         guard phase != .finished, phase != .saving else { return }
-        let frame = sealedNotice(notice)
-        fail(failure)
-        if let frame { try? await link.send(frame, to: peer) }
+        if let frame = sealedNotice(notice) {
+            if session == nil {
+                secureSent = [frame]
+            } else {
+                secureSent.append(frame)
+            }
+            fail(failure)
+            trace(.sent(session == nil ? .abort : Self.message(notice)))
+            _ = await send(frame)
+        } else {
+            fail(failure)
+        }
     }
 
     private func sealedNotice(_ kind: SecureKind) -> Frame? {
-        guard var session else { return try? Frame(Data([MessageType.abort.rawValue])) }
+        guard var session else { return try? Frame(Data([MessageType.abort.rawValue]) + attempt) }
         guard let ciphertext = try? session.send.encrypt(ad: Data(), plaintext: Data([kind.rawValue])) else { return nil }
         self.session = session
         return try? Frame(Data([MessageType.secure.rawValue]) + ciphertext)
@@ -395,19 +797,26 @@ actor PairingCeremony: PairingSession {
 
     private func sendSecure(_ kind: SecureKind, _ content: Data = Data()) async {
         guard var session else { return }
-        guard let ciphertext = try? session.send.encrypt(ad: Data(), plaintext: Data([kind.rawValue]) + content) else {
-            return fail(.protocolError)
-        }
+        guard let ciphertext = try? session.send.encrypt(ad: Data(), plaintext: Data([kind.rawValue]) + content),
+              let frame = try? Frame(Data([MessageType.secure.rawValue]) + ciphertext)
+        else { return fail(.protocolError) }
         self.session = session
-        await send(.secure, ciphertext)
+        secureSent.append(frame)
+        trace(.sent(Self.message(kind)))
+        if !(await send(frame)) { trace(.unsent(Self.message(kind))) }
     }
 
-    private func send(_ type: MessageType, _ body: Data) async {
-        do {
-            try await link.send(Frame(Data([type.rawValue]) + body), to: peer)
-        } catch {
-            fail(.transportFailed)
-        }
+    private func sendHello(resend: Bool = false) async {
+        guard let frame = try? Frame(Data([MessageType.hello.rawValue]) + attempt) else { return }
+        trace(resend ? .resent(.hello) : .sent(.hello))
+        if !(await send(frame)) { trace(.unsent(.hello)) }
+    }
+
+    private func sendHandshake(_ type: MessageType, _ body: Data) async {
+        guard let frame = try? Frame(Data([type.rawValue]) + body) else { return fail(.protocolError) }
+        lastSent = (type, frame)
+        trace(.sent(Self.message(type)))
+        if !(await send(frame)) { trace(.unsent(Self.message(type))) }
     }
 
     private func arm(_ timeout: Duration) {
@@ -433,9 +842,63 @@ actor PairingCeremony: PairingSession {
         phase = .finished
         timer?.cancel()
         timer = nil
+        resender?.cancel()
+        resender = nil
         session = nil
+        if case .failed(let failure) = event { trace(.failed(failure)) } else { trace(.paired) }
         continuation.yield(event)
         continuation.finish()
-        if let onFinish { Task { await onFinish() } }
+        let frames = secureSent
+        let peerAttempt = peerAttempt
+        if let onFinish { Task { await onFinish(frames, peerAttempt) } }
     }
+
+    private static func message(_ type: MessageType) -> PairingMessage {
+        switch type {
+        case .hello: .hello
+        case .message1: .message1
+        case .message2: .message2
+        case .message3: .message3
+        case .secure: .secure
+        case .abort: .abort
+        }
+    }
+
+    private static func message(_ kind: SecureKind) -> PairingMessage {
+        switch kind {
+        case .reveal: .reveal
+        case .accept: .accept
+        case .reject: .reject
+        case .cancel: .cancel
+        }
+    }
+}
+
+extension PairingStep: CustomStringConvertible {
+    /// One line for the Debug pairing log.
+    public var description: String {
+        switch self {
+        case .started(let initiator): "started as \(initiator ? "initiator" : "responder")"
+        case .sent(let message): "sent \(message.rawValue)"
+        case .resent(let message): "sent \(message.rawValue) again"
+        case .unsent(let message): "no link took \(message.rawValue)"
+        case .received(let message): "received \(message.rawValue)"
+        case .ignored(let message): "ignored \(message.rawValue)"
+        case .restarted: "the other phone started over; restarted the handshake"
+        case .refusedRestart: "the other phone asked to start over after this phone's nonce went out; ended"
+        case .codeShown: "code shown"
+        case .confirmed(let codesMatch): codesMatch ? "owner says the codes match" : "owner says the codes differ"
+        case .peerAccepted: "the other owner confirmed"
+        case .linkUp: "link up"
+        case .linkDown: "link down"
+        case .requested: "asked to pair by this phone"
+        case .answeredAfterEnd: "answered a resend after the ceremony ended"
+        case .paired: "paired"
+        case .failed(let failure): "failed: \(failure)"
+        }
+    }
+}
+
+extension PairingTrace: CustomStringConvertible {
+    public var description: String { "\(peer.short): \(step)" }
 }

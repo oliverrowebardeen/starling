@@ -201,17 +201,6 @@ extension Recorder where Element == PairingEvent {
         }
     }
 
-    @Test func linkLossFailsTheCeremony() async throws {
-        let hub = LoopbackHub()
-        let alice = try await PairingDevice.make(hub: hub)
-        let bob = try await PairingDevice.make(hub: hub)
-        let (ea, _, _, _) = try await start(alice, bob)
-        _ = try await ea.waitForCode()
-        await hub.partition(alice.id, bob.id)
-        #expect(try await ea.waitForOutcome() == .failed(.transportFailed))
-        #expect(try await alice.store.all().isEmpty)
-    }
-
     /// Garbage and forged frames claiming to be the peer do not derail or end
     /// the ceremony: they fail to parse or decrypt and are dropped.
     @Test func injectedTrafficIsIgnored() async throws {

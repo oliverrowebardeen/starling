@@ -172,6 +172,9 @@ public final class AppModel {
     public let localPeer: PeerID?
     /// Whether the owner allowed notifications, once asked.
     public private(set) var notificationsAllowed: Bool?
+    /// What iOS says about notifications, read at launch and on returning
+    /// to the app. You shows a quiet line when it is `.denied` (ADR 0260).
+    public private(set) var notificationAccess: NotificationAccess?
     /// Lane E's recorder of what each send disclosed (the Outbox's observer).
     public let egress: EgressRecorder
     /// This launch's sends not yet durably recorded, read live by every
@@ -423,6 +426,8 @@ public final class AppModel {
         // Listening before the radios start, so no peerAvailable is missed.
         routeInbox()
         if settings.settings.localNetworkAsked { await bringUpLinks() }
+        // Reading the state asks nothing (ADR 0013).
+        await refreshNotificationAccess()
     }
 
     /// Starts the radios and then whatever must follow them (lane E1's
@@ -457,6 +462,23 @@ public final class AppModel {
         await settings.markNotificationsOffered()
         guard yes else { return }
         notificationsAllowed = await services.notifier.requestAuthorization()
+    }
+
+    /// Reads what iOS says about notifications now.
+    public func refreshNotificationAccess() async {
+        notificationAccess = await services.notifier.access()
+    }
+
+    /// After a pairing, Starling's one-button explanation leads straight
+    /// to iOS's alert (ADR 0013 decision 3). Asked here, after the first
+    /// friend, instead of after the first request (ADR 0260 amends ADR
+    /// 0202 decision 3), and recorded so the request-time offer never
+    /// asks again.
+    public func askNotificationsAfterPairing() async {
+        await settings.markNotificationsOffered()
+        composer.offerNotifications = false
+        notificationsAllowed = await services.notifier.requestAuthorization()
+        await refreshNotificationAccess()
     }
 
     /// The single Inbox loop: every event, in arrival order, goes to the
@@ -546,6 +568,7 @@ public final class AppModel {
     /// the app calls it when it comes to the foreground.
     public func foreground() {
         lifecycle.tick()
+        Task { await refreshNotificationAccess() }
         Task {
             await retryRetirements()
             if let due = try? await scheduler?.due() { await handleScheduled(due) }
@@ -603,7 +626,15 @@ public final class AppModel {
     public func makePairing() -> PairingModel? {
         guard let directory = services.pairing, services.peers != nil else { return nil }
         let friends = friends
-        return PairingModel(directory: directory, friends: { friends?.friends ?? [] })
+        let offer = NotificationOffer(
+            shouldOffer: { [weak self] in
+                guard let self else { return false }
+                await self.refreshNotificationAccess()
+                return self.notificationAccess == .notAsked
+            },
+            ask: { [weak self] in await self?.askNotificationsAfterPairing() }
+        )
+        return PairingModel(directory: directory, friends: { friends?.friends ?? [] }, notifications: offer)
     }
 
     /// Plan detail for a planned or finished interaction.

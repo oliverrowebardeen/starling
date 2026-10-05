@@ -35,6 +35,9 @@ final class DebugHarness {
     /// Friends that exist only in this Debug session. Never written to the
     /// Keychain.
     let overlay = InMemoryPairedPeerStore()
+    /// Every pairing step and Wi-Fi Aware link event, for the Developer
+    /// section (ADR 0260).
+    let pairingLog = PairingLog()
     /// Skills played by scripted services: Down for... only when the
     /// Developer section asks for it.
     let skills: [ScriptedSkillService]
@@ -65,7 +68,7 @@ final class DebugHarness {
         let skillModel: any SkillModel = usesScriptedModel ? Self.scriptedSkillModel() : model
         let scriptedDownFor = usesScriptedDownFor
         let friends = OverlayPairedPeerStore(base: KeychainPairedPeerStore(), overlay: overlay)
-        let links = SecureLinks.make(identity: identity, friends: friends)
+        let links = SecureLinks.make(identity: identity, friends: friends, log: pairingLog)
         self.friends = friends
         localPeer = identity.peerID
         let skills = skills
@@ -134,7 +137,7 @@ final class DebugHarness {
             peers: peers,
             pairing: PairingDirectory(
                 localPeer: .random(),
-                candidates: { [PairingCandidate(peer: demo.id, link: "Preview")] },
+                candidates: { [PairingCandidate(peer: demo.id, deviceName: "Demo's iPhone")] },
                 pair: { _, nickname in
                     ScriptedPairingSession(code: "482 913", peer: try PairedPeer(publicKey: demo.publicKey, nickname: nickname, pairedAt: Timestamp(Date())))
                 },
@@ -506,6 +509,7 @@ enum PreviewSupport {
     struct SilentNotifier: PlanNotifier {
         func requestAuthorization() async -> Bool { true }
         func post(_ notice: LifecycleNotice) async {}
+        func access() async -> NotificationAccess { .notAsked }
     }
 
     struct SilentPrompter: LocalNetworkPrompter {

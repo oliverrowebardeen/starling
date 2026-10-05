@@ -226,6 +226,15 @@ final class UserNotificationsNotifier: NSObject, PlanNotifier, UNUserNotificatio
         (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
+    /// `notDetermined` until iOS has asked (UNNotificationSettings).
+    func access() async -> NotificationAccess {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .notDetermined: .notAsked
+        case .denied: .denied
+        default: .allowed
+        }
+    }
+
     func post(_ notice: LifecycleNotice) async {
         let content = UNMutableNotificationContent()
         content.title = notice.title

@@ -37,13 +37,20 @@ actor RecordingNotifier: PlanNotifier {
     private(set) var posted: [LifecycleNotice] = []
     private(set) var authorizationRequests = 0
     let allow: Bool
+    private var state: NotificationAccess
 
-    init(allow: Bool = true) { self.allow = allow }
+    init(allow: Bool = true, access: NotificationAccess = .notAsked) {
+        self.allow = allow
+        state = access
+    }
 
     func requestAuthorization() async -> Bool {
         authorizationRequests += 1
+        state = allow ? .allowed : .denied
         return allow
     }
+
+    func access() async -> NotificationAccess { state }
 
     func post(_ notice: LifecycleNotice) async { posted.append(notice) }
 }

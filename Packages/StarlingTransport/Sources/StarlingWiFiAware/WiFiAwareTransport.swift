@@ -4,25 +4,40 @@ import StarlingLocalP2P
 
 extension AwareTiming {
     /// LocalP2P's dial fallback and redial backoff (1, 2, 4, 8, 16 seconds,
-    /// then give up while the device stays discovered), and radio restarts
-    /// capped at 30 seconds.
+    /// then give up while the device stays discovered), radio restarts
+    /// capped at 30 seconds, and fixed roles with 10-second random slots
+    /// for devices whose role is not settled yet (ADR 0260).
     package static let standard = AwareTiming(
         helloTimeout: .seconds(5),
         fallbackDelay: DialRule.fallbackDelay,
         retryDelay: { RetryPolicy.delay(forAttempt: $0) },
-        radioRestartDelay: { attempt in .seconds(min(1 << min(max(attempt - 1, 0), 5), 30)) }
+        radioRestartDelay: { attempt in .seconds(min(1 << min(max(attempt - 1, 0), 5), 30)) },
+        roles: .fixed(slot: .seconds(10))
     )
 }
 
 /// Links between paired friends over Wi-Fi Aware (ADR 0110).
 ///
 /// Wi-Fi Aware roles are asymmetric: a publisher listens and a subscriber
-/// dials. Every phone does both for the same service, and this type hides
-/// the difference: callers see symmetric peers, one link per paired device,
-/// identified by the `PeerID` in the link hello. `LinkTable` decides who
-/// dials and which duplicate survives. A link that drops is redialed with
-/// bounded backoff while the device stays discovered, and again whenever it
-/// is rediscovered.
+/// dials. This type hides the difference: callers see symmetric peers, one
+/// link per paired device, identified by the `PeerID` in the link hello.
+///
+/// With fixed roles (ADR 0260, the default), each phone takes one role per
+/// paired device, because a developer reports that two phones that both
+/// publish and subscribe never connect (FB21527009):
+///
+/// - The phone whose owner picked the other in `WiFiAwareDevicePicker`
+///   subscribes (`pickedDevice(_:)`); the phone that was discoverable
+///   publishes to a device paired while `expectPairing(for:)` runs.
+/// - Once a hello names the peer, both phones settle on the `PeerID` rule
+///   (the greater ID subscribes and dials, as `LinkArbiter` prefers) and
+///   remember it across launches.
+/// - A device with neither takes a random role every slot until a link
+///   forms, so pairings made before this rule still meet.
+///
+/// `LinkTable` decides which duplicate survives. A link that drops is
+/// redialed with bounded backoff while the device stays discovered, and
+/// again whenever it is rediscovered.
 ///
 /// Each connection is TCP with TLV framing and the LocalP2P link hello.
 /// Wi-Fi Aware encrypts the link between OS-paired devices, but that binds
@@ -51,6 +66,7 @@ public actor WiFiAwareTransport: Transport {
     private let continuation: AsyncStream<TransportEvent>.Continuation
     private let radio: any AwareRadio
     private let timing: AwareTiming
+    private let trace: (@Sendable (String) -> Void)?
 
     private var state = State.idle
     private var table: LinkTable
@@ -69,11 +85,37 @@ public actor WiFiAwareTransport: Transport {
     private var deviceWaiters: [AwareDeviceID: [UUID: DeviceWaiter]] = [:]
     private var browseTask: Task<Void, Never>?
     private var listenTask: Task<Void, Never>?
+    private var pairedTask: Task<Void, Never>?
+    private var slotTask: Task<Void, Never>?
+    /// Bumped on every browse restart, so a stopped browse's last report
+    /// cannot overwrite the new one's.
+    private var browseGeneration = 0
 
-    package init(localPeer: PeerID, radio: any AwareRadio, timing: AwareTiming = .standard) {
+    // Roles (ADR 0260).
+    private let roleStore: any AwareRoleStore
+    /// Devices paired with this app, from the radio.
+    private var paired: Set<AwareDeviceID> = []
+    /// Roles settled by the PeerID rule, kept across launches.
+    private var settledRoles: [AwareDeviceID: AwareRole]
+    /// Roles from the pairing views, until a link settles them or they lapse.
+    private var tentativeRoles: [AwareDeviceID: (role: AwareRole, until: ContinuousClock.Instant)] = [:]
+    /// While set, a newly paired device was paired from the other phone's picker.
+    private var expectingPairingUntil: ContinuousClock.Instant?
+    /// This slot's role for devices with no other role.
+    private var slotRole: AwareRole = Bool.random() ? .publisher : .subscriber
+    private var browsing: AwareDevices?
+    private var listening: AwareDevices?
+
+    package init(
+        localPeer: PeerID, radio: any AwareRadio, timing: AwareTiming = .standard,
+        roleStore: any AwareRoleStore = InMemoryAwareRoleStore(), trace: (@Sendable (String) -> Void)? = nil
+    ) {
         self.localPeer = localPeer
         self.radio = radio
         self.timing = timing
+        self.trace = trace
+        self.roleStore = roleStore
+        settledRoles = roleStore.load()
         table = LinkTable(localPeer: localPeer)
         (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
     }
@@ -93,23 +135,17 @@ public actor WiFiAwareTransport: Transport {
             throw TransportError.failed(String(describing: error))
         }
         state = .started
-
-        browseTask = Task { [weak self] in
-            await self?.keepRunning("browse") { [weak self] radio in
-                // Whatever ends the browse, its results are stale afterwards.
-                do {
-                    try await radio.browse { [weak self] devices in await self?.discoveryChanged(devices) }
-                } catch {
-                    await self?.discoveryChanged([])
-                    throw error
-                }
-                await self?.discoveryChanged([])
+        pairedTask = Task { [weak self] in
+            await self?.keepRunning("paired devices") { [weak self] radio in
+                try await radio.pairedDevices { [weak self] devices in await self?.pairedChanged(devices) }
             }
         }
-        listenTask = Task { [weak self] in
-            await self?.keepRunning("listen") { [weak self] radio in
-                try await radio.listen { [weak self] channel in
-                    await self?.runLink(channel, direction: .incoming, device: nil)
+        if case .fixed(let slot) = timing.roles {
+            slotTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: slot)
+                    guard !Task.isCancelled else { return }
+                    await self?.nextSlot()
                 }
             }
         }
@@ -132,6 +168,8 @@ public actor WiFiAwareTransport: Transport {
         state = .stopped
         browseTask?.cancel()
         listenTask?.cancel()
+        pairedTask?.cancel()
+        slotTask?.cancel()
         // Pending dials and waits must not outlive the transport.
         for task in dialTasks.values { task.cancel() }
         for task in waitTasks.values { task.cancel() }
@@ -147,6 +185,136 @@ public actor WiFiAwareTransport: Transport {
         }
         live.removeAll()
         continuation.finish()
+    }
+
+    // MARK: - Roles (ADR 0260)
+
+    /// The owner picked `device` in `WiFiAwareDevicePicker`: this phone
+    /// subscribes to it and dials, while the other phone publishes.
+    public func pickedDevice(_ device: WiFiAwarePairedDevice) {
+        guard case .fixed = timing.roles, settledRoles[device.id] == nil else { return }
+        tentativeRoles[device.id] = (.subscriber, ContinuousClock.now.advanced(by: timing.tentativeRoleLifetime))
+        log("picked device \(device.id): subscribing")
+        applyRoles()
+    }
+
+    /// The pairing sheet is open here. A device paired in the next
+    /// `duration` that this phone did not pick was paired from the other
+    /// phone's picker, so this phone publishes to it. `pickedDevice(_:)`
+    /// overrides this for the device this phone picked.
+    public func expectPairing(for duration: Duration = .seconds(180)) {
+        expectingPairingUntil = ContinuousClock.now.advanced(by: duration)
+    }
+
+    /// The role with `device` now, or nil to both publish and subscribe.
+    package func role(for device: AwareDeviceID) -> AwareRole? {
+        if let settled = settledRoles[device] { return settled }
+        if let tentative = tentativeRoles[device], ContinuousClock.now < tentative.until { return tentative.role }
+        switch timing.roles {
+        case .symmetric: return nil
+        case .fixed: return slotRole
+        }
+    }
+
+    private func pairedChanged(_ devices: Set<AwareDeviceID>) {
+        guard state == .started else { return }
+        let added = devices.subtracting(paired)
+        guard devices != paired else { return }
+        paired = devices
+        log("\(devices.count) paired device(s)")
+        if let until = expectingPairingUntil, ContinuousClock.now < until {
+            for device in added where settledRoles[device] == nil && tentativeRoles[device] == nil {
+                tentativeRoles[device] = (.publisher, ContinuousClock.now.advanced(by: timing.tentativeRoleLifetime))
+                log("device \(device) paired from the other phone: publishing")
+            }
+        }
+        let forgotten = settledRoles.keys.filter { !devices.contains($0) }
+        if !forgotten.isEmpty {
+            for device in forgotten { settledRoles[device] = nil }
+            roleStore.save(settledRoles)
+        }
+        // With symmetric roles the browse covers every paired device and
+        // must restart to see a new one; the listener does not, because
+        // restarting it closes the links it accepted (ADR 0110).
+        applyRoles(restartBrowse: timing.roles == .symmetric && !added.isEmpty)
+    }
+
+    private func nextSlot() {
+        guard state == .started else { return }
+        let now = ContinuousClock.now
+        tentativeRoles = tentativeRoles.filter { $0.value.until > now }
+        guard paired.contains(where: { settledRoles[$0] == nil && tentativeRoles[$0] == nil }) else { return }
+        slotRole = Bool.random() ? .publisher : .subscriber
+        applyRoles()
+    }
+
+    /// A hello named the peer behind `device`: settle on the PeerID rule,
+    /// which the other phone computes the same way.
+    private func settleRole(_ device: AwareDeviceID, peer: PeerID) {
+        guard case .fixed = timing.roles else { return }
+        let role: AwareRole = LinkArbiter.preferredDirection(local: localPeer, remote: peer) == .outgoing ? .subscriber : .publisher
+        tentativeRoles[device] = nil
+        guard settledRoles[device] != role else { return }
+        settledRoles[device] = role
+        roleStore.save(settledRoles)
+        log("settled as \(role) with device \(device)")
+        applyRoles()
+    }
+
+    /// Runs the browse and listen the roles call for, restarting each only
+    /// when the devices it covers change.
+    private func applyRoles(restartBrowse: Bool = false) {
+        guard state == .started else { return }
+        let browse: AwareDevices?
+        let listen: AwareDevices?
+        switch timing.roles {
+        case .symmetric:
+            browse = paired.isEmpty ? nil : .all
+            listen = browse
+        case .fixed:
+            let subscribing = paired.filter { role(for: $0) == .subscriber }
+            let publishing = paired.filter { role(for: $0) == .publisher }
+            browse = subscribing.isEmpty ? nil : .only(subscribing)
+            listen = publishing.isEmpty ? nil : .only(publishing)
+        }
+        if browse != browsing || restartBrowse { runBrowse(browse) }
+        if listen != listening { runListen(listen) }
+    }
+
+    private func runBrowse(_ devices: AwareDevices?) {
+        browseTask?.cancel()
+        browseTask = nil
+        browsing = devices
+        browseGeneration += 1
+        discoveryChanged([], generation: browseGeneration)
+        guard let devices else { return }
+        let generation = browseGeneration
+        browseTask = Task { [weak self] in
+            await self?.keepRunning("browse") { [weak self] radio in
+                // Whatever ends the browse, its results are stale afterwards.
+                do {
+                    try await radio.browse(devices) { [weak self] found in await self?.discoveryChanged(found, generation: generation) }
+                } catch {
+                    await self?.discoveryChanged([], generation: generation)
+                    throw error
+                }
+                await self?.discoveryChanged([], generation: generation)
+            }
+        }
+    }
+
+    private func runListen(_ devices: AwareDevices?) {
+        listenTask?.cancel()
+        listenTask = nil
+        listening = devices
+        guard let devices else { return }
+        listenTask = Task { [weak self] in
+            await self?.keepRunning("listen") { [weak self] radio in
+                try await radio.listen(devices) { [weak self] channel in
+                    await self?.runLink(channel, direction: .incoming, device: nil)
+                }
+            }
+        }
     }
 
     // MARK: - Devices
@@ -179,6 +347,15 @@ public actor WiFiAwareTransport: Transport {
         }
     }
 
+    /// The paired device whose link hello last claimed `peer`, with the name
+    /// the system has for it, or nil if no Wi-Fi Aware link has named that
+    /// peer. The name labels a phone; it comes from that phone, so it is
+    /// never a person's name by itself (ADR 0260).
+    public func pairedDevice(for peer: PeerID) async -> WiFiAwarePairedDevice? {
+        guard let device = table.device(for: peer) else { return nil }
+        return await radio.pairedDevice(device)
+    }
+
     private func resolveWaiter(_ id: UUID, for device: AwareDeviceID, with peer: PeerID?) {
         guard let waiter = deviceWaiters[device]?.removeValue(forKey: id) else { return }
         if deviceWaiters[device]?.isEmpty == true { deviceWaiters[device] = nil }
@@ -200,12 +377,9 @@ public actor WiFiAwareTransport: Transport {
             do {
                 try await operation(radio)
                 failures += 1
-            } catch is AwareRadioRestart {
-                failures = 0
-                continue
             } catch {
                 failures += 1
-                log("\(label) failed: \(error)")
+                log("\(label) failed: \(radio.describe(error))")
             }
             guard state == .started, !Task.isCancelled else { return }
             try? await Task.sleep(for: timing.radioRestartDelay(failures))
@@ -214,9 +388,10 @@ public actor WiFiAwareTransport: Transport {
 
     // MARK: - Discovery and redial
 
-    private func discoveryChanged(_ devices: Set<AwareDeviceID>) {
-        guard state == .started else { return }
+    private func discoveryChanged(_ devices: Set<AwareDeviceID>, generation: Int) {
+        guard state == .started, generation == browseGeneration else { return }
         let appeared = devices.subtracting(discovered)
+        if devices != discovered { log("discovered \(devices.count) paired device(s)") }
         discovered = devices
         // Stop waiting on devices that disappeared, and give them a fresh
         // retry budget for when they come back.
@@ -235,7 +410,8 @@ public actor WiFiAwareTransport: Transport {
     /// Connects to a discovered device unless already linked or trying.
     private func connect(to device: AwareDeviceID, after delay: Duration) {
         guard canConnect(to: device) else { return }
-        let wait = table.dialsImmediately(device) ? delay : max(delay, timing.fallbackDelay)
+        // With fixed roles only the subscriber dials, so it never waits.
+        let wait = timing.roles != .symmetric || table.dialsImmediately(device) ? delay : max(delay, timing.fallbackDelay)
         guard wait > .zero else {
             dial(device)
             return
@@ -259,6 +435,7 @@ public actor WiFiAwareTransport: Transport {
     }
 
     private func dial(_ device: AwareDeviceID) {
+        log("dialing device \(device)")
         let radio = radio
         dialTasks[device] = Task { [weak self] in
             do {
@@ -266,7 +443,7 @@ public actor WiFiAwareTransport: Transport {
                     await self?.runLink(channel, direction: .outgoing, device: device)
                 }
             } catch {
-                await self?.log("dial failed: \(error)")
+                await self?.log("dial failed: \(radio.describe(error))")
             }
             await self?.finishedDialing(device)
         }
@@ -299,7 +476,7 @@ public actor WiFiAwareTransport: Transport {
         do {
             hello = try await exchangeHello(on: channel)
         } catch {
-            log("\(direction) hello failed: \(error)")
+            log("\(direction) hello failed: \(radio.describe(error))")
             return
         }
         var device = dialed
@@ -318,14 +495,17 @@ public actor WiFiAwareTransport: Transport {
         let admission = table.admit(id: id, peer: remote, direction: direction, device: device)
         if let device, let learned = table.peersByDevice[device] { resolveWaiters(for: device, with: learned) }
         guard let linkState = admission.state else {
+            log("\(direction) link to \(remote.short) lost to an existing link")
             task.cancel()
             return
         }
+        log("\(direction) link to \(remote.short) is \(linkState == .active ? "active" : "provisional")")
         live[id] = LiveLink(channel: channel, task: task)
         for closed in admission.closed { close(closed) }
         for peer in admission.unavailable { continuation.yield(.peerUnavailable(peer)) }
         if let device { retryAttempts[device] = nil }
         if admission.announce { continuation.yield(.peerAvailable(remote)) }
+        if let device { settleRole(device, peer: remote) }
         if linkState == .provisional { startGrace(for: id) }
 
         // Cancelling this task (Stop, or a cancelled dial) must reach the loop.
@@ -394,6 +574,7 @@ public actor WiFiAwareTransport: Transport {
         graceTasks.removeValue(forKey: id)?.cancel()
         guard state == .started, let link = table.current(id) else { return }
         if table.activate(id) {
+            log("link to \(link.peer.short) is active")
             if let device = link.device { retryAttempts[device] = nil }
             continuation.yield(.peerAvailable(link.peer))
         }
@@ -408,6 +589,7 @@ public actor WiFiAwareTransport: Transport {
         graceTasks.removeValue(forKey: id)?.cancel()
         live[id] = nil
         guard let link = table.remove(id), state == .started else { return }
+        log("link to \(link.peer.short) closed")
         if link.state == .active { continuation.yield(.peerUnavailable(link.peer)) }
         // An outgoing link's dial task is still running here, so this is a
         // no-op for it and `finishedDialing` retries instead.
@@ -423,6 +605,7 @@ public actor WiFiAwareTransport: Transport {
     package var linkTable: LinkTable { table }
 
     private func log(_ message: String) {
+        trace?(message)
         #if DEBUG
         print("[WiFiAware \(localPeer.short)] \(message)")
         #endif

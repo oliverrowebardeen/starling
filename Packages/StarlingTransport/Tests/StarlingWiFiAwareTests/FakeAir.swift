@@ -77,8 +77,12 @@ actor FakeAir {
     private var outOfRange: Set<Pair> = []
     /// `(observer, target)` pairs where the observer's browser misses the target.
     private var hidden: Set<[String]> = []
-    private var browsers: [String: [UUID: AsyncStream<Set<AwareDeviceID>>.Continuation]] = [:]
-    private var listeners: [String: [UUID: AsyncStream<FakeChannel>.Continuation]] = [:]
+    private var browsers: [String: [UUID: (devices: AwareDevices, continuation: AsyncStream<Set<AwareDeviceID>>.Continuation)]] = [:]
+    private var listeners: [String: [UUID: (devices: AwareDevices, continuation: AsyncStream<FakeChannel>.Continuation)]] = [:]
+    private var pairedObservers: [String: [UUID: AsyncStream<Set<AwareDeviceID>>.Continuation]] = [:]
+    /// Models FB21527009: two phones that both publish and subscribe to
+    /// each other never connect.
+    var symmetricLinksFail = false
     private var channels: [(pair: Pair, channel: FakeChannel)] = []
     private(set) var dialCount: [String: Int] = [:]
     /// `dialsTo[phone][target]` counts dial attempts from `phone` to `target`.
@@ -94,7 +98,42 @@ actor FakeAir {
     func pair(_ a: String, _ b: String) {
         deviceIDs[a, default: [:]][b] = nextID()
         deviceIDs[b, default: [:]][a] = nextID()
+        for phone in [a, b] {
+            for continuation in (pairedObservers[phone] ?? [:]).values { continuation.yield(pairedSet(phone)) }
+        }
         publishDiscovery()
+    }
+
+    func setSymmetricLinksFail(_ fail: Bool) { symmetricLinksFail = fail }
+
+    /// Whether `phone` publishes to, and subscribes to, `target`.
+    func roles(of phone: String, toward target: String) -> (publishes: Bool, subscribes: Bool) {
+        guard let id = deviceIDs[phone]?[target] else { return (false, false) }
+        let publishes = (listeners[phone] ?? [:]).values.contains { $0.devices.contains(id) }
+        let subscribes = (browsers[phone] ?? [:]).values.contains { $0.devices.contains(id) }
+        return (publishes, subscribes)
+    }
+
+    private func pairedSet(_ phone: String) -> Set<AwareDeviceID> { Set((deviceIDs[phone] ?? [:]).values) }
+
+    func addPairedObserver(_ phone: String) -> (UUID, AsyncStream<Set<AwareDeviceID>>) {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream.makeStream(of: Set<AwareDeviceID>.self)
+        pairedObservers[phone, default: [:]][id] = continuation
+        continuation.yield(pairedSet(phone))
+        return (id, stream)
+    }
+
+    func removePairedObserver(_ phone: String, _ id: UUID) {
+        pairedObservers[phone]?[id]?.finish()
+        pairedObservers[phone]?[id] = nil
+    }
+
+    /// The system name `phone` has for the device with `id`: the other
+    /// phone's name plus "'s iPhone", like a real default name.
+    func pairedDevice(_ id: AwareDeviceID, seenBy phone: String) -> WiFiAwarePairedDevice? {
+        guard let target = deviceIDs[phone]?.first(where: { $0.value == id })?.key else { return nil }
+        return WiFiAwarePairedDevice(id: id, name: "\(target.capitalized)'s iPhone")
     }
 
     func deviceID(of target: String, seenBy phone: String) -> AwareDeviceID? {
@@ -145,29 +184,29 @@ actor FakeAir {
 
     // MARK: Radio operations
 
-    func addBrowser(_ phone: String) -> (UUID, AsyncStream<Set<AwareDeviceID>>) {
+    func addBrowser(_ phone: String, _ devices: AwareDevices) -> (UUID, AsyncStream<Set<AwareDeviceID>>) {
         let id = UUID()
         let (stream, continuation) = AsyncStream.makeStream(of: Set<AwareDeviceID>.self)
-        browsers[phone, default: [:]][id] = continuation
-        continuation.yield(visibleDevices(for: phone))
+        browsers[phone, default: [:]][id] = (devices, continuation)
+        continuation.yield(visibleDevices(for: phone, browsing: devices))
         return (id, stream)
     }
 
     func removeBrowser(_ phone: String, _ id: UUID) {
-        browsers[phone]?[id]?.finish()
+        browsers[phone]?[id]?.continuation.finish()
         browsers[phone]?[id] = nil
     }
 
-    func addListener(_ phone: String) -> (UUID, AsyncStream<FakeChannel>) {
+    func addListener(_ phone: String, _ devices: AwareDevices) -> (UUID, AsyncStream<FakeChannel>) {
         let id = UUID()
         let (stream, continuation) = AsyncStream.makeStream(of: FakeChannel.self)
-        listeners[phone, default: [:]][id] = continuation
+        listeners[phone, default: [:]][id] = (devices, continuation)
         publishDiscovery()
         return (id, stream)
     }
 
     func removeListener(_ phone: String, _ id: UUID) {
-        listeners[phone]?[id]?.finish()
+        listeners[phone]?[id]?.continuation.finish()
         listeners[phone]?[id] = nil
         publishDiscovery()
     }
@@ -179,9 +218,18 @@ actor FakeAir {
         }
         guard !failingDials.contains(phone) else { throw FakeRadioError(reason: "dial failed") }
         guard let target = deviceIDs[phone]?.first(where: { $0.value == device })?.key,
-              visibleDevices(for: phone).contains(device),
-              let listener = listeners[target]?.values.first
+              let me = deviceIDs[target]?[phone],
+              (browsers[phone] ?? [:]).values.contains(where: { $0.devices.contains(device) }),
+              visible(target, to: phone),
+              let listener = listeners[target]?.values.first(where: { $0.devices.contains(me) })?.continuation
         else { throw FakeRadioError(reason: "device \(device) not reachable") }
+        if symmetricLinksFail {
+            let mine = roles(of: phone, toward: target)
+            let theirs = roles(of: target, toward: phone)
+            if mine.publishes && mine.subscribes && theirs.publishes && theirs.subscribes {
+                throw FakeRadioError(reason: "symmetric roles never connect")
+            }
+        }
 
         let toTarget = FakeMailbox()
         let toCaller = FakeMailbox()
@@ -199,19 +247,23 @@ actor FakeAir {
         return nextDeviceID
     }
 
-    /// Paired, in range, publishing, and not hidden from this phone.
-    private func visibleDevices(for phone: String) -> Set<AwareDeviceID> {
+    /// In range, not hidden, and `target` publishes to `phone`.
+    private func visible(_ target: String, to phone: String) -> Bool {
+        guard let me = deviceIDs[target]?[phone] else { return false }
+        let publishing = (listeners[target] ?? [:]).values.contains { $0.devices.contains(me) }
+        return publishing && !outOfRange.contains(Pair(phone, target)) && !hidden.contains([phone, target])
+    }
+
+    /// Paired devices this browser covers that are visible to this phone.
+    private func visibleDevices(for phone: String, browsing devices: AwareDevices) -> Set<AwareDeviceID> {
         Set((deviceIDs[phone] ?? [:]).compactMap { target, id in
-            let publishing = !(listeners[target] ?? [:]).isEmpty
-            let reachable = !outOfRange.contains(Pair(phone, target)) && !hidden.contains([phone, target])
-            return publishing && reachable ? id : nil
+            devices.contains(id) && visible(target, to: phone) ? id : nil
         })
     }
 
     private func publishDiscovery() {
         for (phone, streams) in browsers {
-            let visible = visibleDevices(for: phone)
-            for continuation in streams.values { continuation.yield(visible) }
+            for browser in streams.values { browser.continuation.yield(visibleDevices(for: phone, browsing: browser.devices)) }
         }
     }
 }
@@ -222,14 +274,20 @@ struct FakeRadio: AwareRadio {
 
     func preflight() throws {}
 
-    func browse(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {
-        let (id, stream) = await air.addBrowser(phone)
+    func pairedDevices(_ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {
+        let (id, stream) = await air.addPairedObserver(phone)
+        for await devices in stream { await update(devices) }
+        await air.removePairedObserver(phone, id)
+    }
+
+    func browse(_ devices: AwareDevices, _ update: @escaping @Sendable (Set<AwareDeviceID>) async -> Void) async throws {
+        let (id, stream) = await air.addBrowser(phone, devices)
         for await devices in stream { await update(devices) }
         await air.removeBrowser(phone, id)
     }
 
-    func listen(_ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {
-        let (id, stream) = await air.addListener(phone)
+    func listen(_ devices: AwareDevices, _ accept: @escaping @Sendable (any AwareChannel) async -> Void) async throws {
+        let (id, stream) = await air.addListener(phone, devices)
         await withTaskGroup(of: Void.self) { group in
             for await channel in stream {
                 group.addTask {
@@ -246,5 +304,9 @@ struct FakeRadio: AwareRadio {
         let channel = try await air.connect(from: phone, to: device)
         await body(channel)
         await channel.close()
+    }
+
+    func pairedDevice(_ device: AwareDeviceID) async -> WiFiAwarePairedDevice? {
+        await air.pairedDevice(device, seenBy: phone)
     }
 }
