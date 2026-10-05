@@ -351,7 +351,7 @@ struct RestoreTests {
         let service = PickAPlaceService(
             localPeer: .random(), outbox: Outbox(transport: RecordingTransport(), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved)),
             pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty },
-            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger()
+            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger(), plans: { _ in nil }
         )
         let now = Timestamp(Date())
         let otherVersion = Interaction(skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), role: .invitee, participants: [.random()], createdAt: now)
@@ -384,4 +384,10 @@ actor FailedAdmissionLedger: PickAPlaceLedger {
     func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws {
         try await base.recordDeadlines(deadlines, for: conversation)
     }
+    func requestKind(for conversation: ConversationID) async throws -> PlaceRequestKind? { try await base.requestKind(for: conversation) }
+    func recordRequestKind(_ kind: PlaceRequestKind, for conversation: ConversationID, at date: Date) async throws {
+        try await base.recordRequestKind(kind, for: conversation, at: date)
+    }
+    func yes(for conversation: ConversationID) async throws -> RecordedYes? { try await base.yes(for: conversation) }
+    func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws { try await base.recordYes(yes, for: conversation) }
 }

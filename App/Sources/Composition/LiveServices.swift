@@ -41,7 +41,8 @@ extension AppServices {
             makeSkills: { outbox in
                 [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
-                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger),
+                    LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger,
+                                            interactions: interactions),
                     LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
                 ]
             },
@@ -159,15 +160,18 @@ enum LiveServices {
     }
 
     /// Lane D's service over the app's one Outbox and the same conversation
-    /// ledger the Outbox enforces (P15-D request 3).
+    /// ledger the Outbox enforces (P15-D request 3). A friend checks a
+    /// change of a plan's place against the plan saved on this phone
+    /// (ADR 0233, P15-D request 15).
     static func pickAPlace(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, staged: StagedCandidates,
-                           rules: any RulesStore, ledger: any ConversationLedger) -> any SkillService {
+                           rules: any RulesStore, ledger: any ConversationLedger, interactions: any InteractionStore) -> any SkillService {
         PickAPlaceService(
             localPeer: me, outbox: outbox, pairedPeers: friends, candidates: staged, maps: MapKitPlaceSearch(),
             // The owner's standing budget, diet, and place limits, read when
             // a friend asks; the organizer's own come with its request.
             ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty },
-            ledger: UserDefaultsPickAPlaceLedger(), conversations: ledger
+            ledger: UserDefaultsPickAPlaceLedger(), conversations: ledger,
+            plans: PickAPlaceService.plans(in: interactions)
         )
     }
 

@@ -17,6 +17,16 @@ public enum PickAPlaceError: Error, Hashable, Sendable {
     /// The ledger could not record the request's deadlines, so it was not
     /// sent.
     case ledgerUnavailable
+    /// The plan has changed as many times as a proposal can say (ADR 0233):
+    /// its next revision would not fit in `Proposal.round`.
+    case planRevisionLimit
+    /// A yes to a change of a plan's place is final once sent (ADR 0233):
+    /// to change their mind, the owner suggests another change or leaves
+    /// the plan.
+    case yesIsFinal
+    /// The plan changed while this change of its place was open, so the
+    /// change no longer applies and the card is closed (ADR 0233).
+    case planChangedMeanwhile
 }
 
 /// Wall time and timers, injectable so tests run retries in milliseconds.
@@ -130,6 +140,9 @@ public actor PickAPlaceService: SkillService {
     /// service checks it before opening a request and before an ordinary
     /// no, and retires through `Outbox.retire(_:)`.
     let conversations: any ConversationLedger
+    /// This phone's own plan for the plan conversation a chained request
+    /// names, if it holds one.
+    let plans: @Sendable (ConversationID) async -> Plan?
     /// Whether `requestTimes` has been loaded from `admissions` this launch.
     var admissionsLoaded = false
     let clock: PickAPlaceClock
@@ -174,6 +187,12 @@ public actor PickAPlaceService: SkillService {
     ///     (ADR 0021).
     ///   - ledger: What must survive a relaunch (`UserDefaultsPickAPlaceLedger`
     ///     in the app).
+    ///   - plans: This phone's own plan for the plan conversation a chained
+    ///     request names (`Envelope.chainedFrom`), if it holds one: in the
+    ///     app, an agreed interaction's plan from the interaction store. A
+    ///     friend checks a change of place against it, and both sides check
+    ///     again that the plan has not moved on before a yes or a
+    ///     confirmation (ADR 0233). Required, so no caller skips the checks.
     public init(
         localPeer: PeerID,
         outbox: Outbox,
@@ -183,6 +202,7 @@ public actor PickAPlaceService: SkillService {
         ownerLimits: @escaping @Sendable () async -> ConstraintSet,
         ledger: any PickAPlaceLedger,
         conversations: any ConversationLedger,
+        plans: @escaping @Sendable (ConversationID) async -> Plan?,
         clock: PickAPlaceClock = .system,
         configuration: PickAPlaceConfiguration = PickAPlaceConfiguration()
     ) {
@@ -194,6 +214,7 @@ public actor PickAPlaceService: SkillService {
         self.ownerLimits = ownerLimits
         self.ledger = ledger
         self.conversations = conversations
+        self.plans = plans
         self.clock = clock
         self.configuration = configuration
         (events, continuation) = AsyncStream.makeStream(of: SkillEvent.self)
@@ -216,6 +237,9 @@ public actor PickAPlaceService: SkillService {
         guard let conversation = conversationOf[interaction] else { return }
         if let organizer = organized[conversation] {
             if organizer.phase == .settled {
+                // A confirmed change of place is final: to undo it, the owner
+                // suggests another change (ADR 0233).
+                guard !organizer.everyoneMustAgree else { return }
                 callOff(conversation)
             } else {
                 endOrganizer(conversation, event: .withdrawn, reason: .noOverlap)
@@ -431,14 +455,50 @@ public actor PickAPlaceService: SkillService {
         return !Task.isCancelled
     }
 
-    /// The plan the agreed place would make, when the terms say what or when.
-    static func plan(base: Plan?, origin: ConversationID, roster: [PeerID], terms: Terms, place: PlaceChoice) -> Plan? {
-        guard let attendees = try? Attendees(roster) else { return nil }
-        if let base {
-            return try? Plan(id: base.id, origin: base.origin, attendees: attendees, activity: base.activity, time: base.time, place: place)
+    /// What a request on a plan is read as when its record is missing or
+    /// cannot be read: a change of place that no proposal can match, the
+    /// stricter rule (ADR 0233).
+    static let unreadableKind = PlaceRequestKind.placeChange(roster: [], revision: .max, time: nil, activity: nil)
+
+    /// The `plans` lookup over the app's interaction store: the plan of the
+    /// interaction whose conversation a chained request names, once it is
+    /// agreed (planned or done), the same plans `IncomingChain` lets a
+    /// request group under. Nil otherwise, or if the store cannot answer.
+    public static func plans(in store: any InteractionStore) -> @Sendable (ConversationID) async -> Plan? {
+        { conversation in
+            guard let parent = try? await store.interaction(conversation: conversation),
+                  parent.state == .planned || parent.state == .done
+            else { return nil }
+            return parent.plan
         }
+    }
+
+    /// What a request on `plan` is: nil when this phone holds no such plan.
+    static func kind(of plan: Plan?) -> PlaceRequestKind {
+        guard let plan else { return .planNotHeld }
+        guard plan.place != nil else { return .firstPlace }
+        return .placeChange(roster: plan.attendees.peers, revision: plan.revision, time: plan.time, activity: plan.activity)
+    }
+
+    /// The plan the agreed place would make, when the terms say what or when.
+    /// On a plan, the same plan at the new place, with its revision one
+    /// higher (ADR 0022): with everyone still in it for a change of place,
+    /// or with the roster that agreed for its first place.
+    /// Without a base, `revision` is the one the organizer's proposal named:
+    /// a friend's phone does not have the organizer's plan.
+    static func plan(base: Plan?, keepingEveryone: Bool = false, origin: ConversationID, roster: [PeerID], terms: Terms,
+                     place: PlaceChoice, revision: UInt32 = 0) -> Plan? {
+        if let base {
+            if keepingEveryone { return try? base.updating(place: .some(place)) }
+            // The people who agreed, in the plan's own order, so the same
+            // people compare equal to the plan's roster.
+            let kept = base.attendees.peers.filter(roster.contains)
+            guard let attendees = try? Attendees(Set(kept) == Set(roster) ? kept : roster) else { return nil }
+            return try? base.updating(attendees: attendees, place: .some(place))
+        }
+        guard let attendees = try? Attendees(roster) else { return nil }
         let activity: Keyword? = if case .keywords(let list)? = terms[.activity] { list.first } else { nil }
         let time: TimeSlot? = if case .slots(let list)? = terms[.time] { list.first } else { nil }
-        return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place)
+        return try? Plan(origin: origin, attendees: attendees, activity: activity, time: time, place: place, revision: revision)
     }
 }

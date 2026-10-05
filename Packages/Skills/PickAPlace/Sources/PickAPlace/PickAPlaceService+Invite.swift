@@ -43,8 +43,17 @@ struct Invite {
     /// resume late can never replace a newer one.
     var proposalGeneration: UInt64 = 0
     var finished = false
+    /// What the request is on this phone's plan, from this phone's own copy
+    /// of it; nil when the request is not chained from a plan.
+    var kind: PlaceRequestKind?
+    /// The proposals this phone's yes named, for the current card, most
+    /// recent last and bounded: a confirmation must name one of them.
+    var yesNamed: [MessageID] = []
 
     var isFinished: Bool { finished }
+    /// A change of a plan's place: the plan's whole roster must agree, and
+    /// a yes is final once sent (ADR 0233).
+    var isChange: Bool { if case .placeChange? = kind { true } else { false } }
 }
 
 extension PickAPlaceService {
@@ -81,6 +90,13 @@ extension PickAPlaceService {
         spawn(conversation) { service in
             do {
                 try await service.ledger.recordAdmission(sender, at: now)
+                // What the request is on this phone's own plan, recorded for
+                // its whole life before anything is answered (ADR 0233).
+                if let chainedFrom = envelope.chainedFrom {
+                    let kind = Self.kind(of: await service.plans(chainedFrom))
+                    try await service.ledger.recordRequestKind(kind, for: conversation, at: now)
+                    service.invites[conversation]?.kind = kind
+                }
             } catch {
                 service.endInvite(conversation, event: nil, reply: nil)
                 return
@@ -135,7 +151,10 @@ extension PickAPlaceService {
             guard Set(candidates) == Set(invites[conversation]?.candidates ?? []) else { return }
             spawn(conversation) { await $0.judgeAndAnswer(conversation, queryID: envelope.id, query: query) }
         case .propose(let proposal):
-            if let current = invite.proposal, current.terms == proposal.terms {
+            // A retry repeats the terms and the revision it names; the same
+            // terms at another revision are a new proposal, which needs a
+            // fresh decision from the owner.
+            if let current = invite.proposal, current.terms == proposal.terms, invite.offer?.round == proposal.round {
                 // A retry. If the owner already said yes, say it again.
                 invites[conversation]?.proposeID = envelope.id
                 if invite.accepted { spawnAcceptance(conversation) }
@@ -260,6 +279,15 @@ extension PickAPlaceService {
               let place = validPlace(in: proposal.terms, acceptable: acceptable, organizer: invite.organizer),
               case .peers(let roster)? = proposal.terms[.people]
         else { return }
+        // A change of place asks this phone's plan's whole roster, over the
+        // plan's own revision: anything else is not shown (ADR 0233).
+        if case .placeChange(let everyone, let revision, let time, let activity)? = invite.kind {
+            guard Set(roster) == Set(everyone), revision < UInt32(ProtocolLimits.maxNegotiationRounds - 1),
+                  UInt32(proposal.round) == revision + 1,
+                  // Only the place changes: the time and activity stay.
+                  proposal.terms[.time] == time.map({ .slots([$0]) }), proposal.terms[.activity] == activity.map({ .keywords([$0]) })
+            else { return }
+        }
         // The owner's limits are checked again before the card is shown:
         // they may have changed since the list was sent (rule 6). After a
         // restart the facts are gone, so they are looked up again rather
@@ -274,7 +302,7 @@ extension PickAPlaceService {
         // Checked after every await, the limit failure included: a newer
         // proposal decides now.
         guard isCurrent(conversation, generation: generation), let invite = invites[conversation],
-              invite.proposal?.terms != proposal.terms
+              invite.proposal?.terms != proposal.terms || invite.offer?.round != proposal.round
         else { return }
         guard PlaceJudge.fit(place, facts: facts ?? .unknown, limits: limits).fits else {
             // A private limit: an ordinary no, like a list where nothing
@@ -285,13 +313,25 @@ extension PickAPlaceService {
             return
         }
         let revision = invite.revision + 1
-        let plan = Self.plan(base: nil, origin: invite.chainedFrom ?? conversation, roster: roster, terms: proposal.terms, place: place)
+        // A request on a plan names, in its round, the revision the agreed
+        // plan will have, so this phone's plan names it too (ADR 0233). Lane
+        // E applies it only over the revision just before. Stored with the
+        // card, it also keeps the offer's revision across a restart; a
+        // request on no plan names 0.
+        let planRevision = UInt32(proposal.round)
+        // A request naming a plan this phone does not hold changes no plan
+        // here: its agreed plan is its own, at revision 0, which applies
+        // over no plan's revision (ADR 0233).
+        let notHeld = invite.kind == .planNotHeld
+        let plan = Self.plan(base: nil, origin: notHeld ? conversation : invite.chainedFrom ?? conversation, roster: roster,
+                             terms: proposal.terms, place: place, revision: notHeld ? 0 : planRevision)
         let card = SkillProposal(revision: revision, participants: roster, terms: proposal.terms, plan: plan)
         invites[conversation]?.revision = revision
         invites[conversation]?.proposal = card
         invites[conversation]?.offer = proposal
         invites[conversation]?.proposeID = id
         invites[conversation]?.accepted = false
+        invites[conversation]?.yesNamed = []
         emit(invite.id, .proposalReady(card))
     }
 
@@ -324,7 +364,29 @@ extension PickAPlaceService {
             // A second tap while the first is on its way changes nothing.
             guard !invite.accepted, !invite.accepting else { return }
             invites[conversation]?.accepting = true
-            let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
+            // A change applies only over the plan it was made for: if the
+            // plan moved on meanwhile, the card closes and nothing is sent
+            // (ADR 0233).
+            if case .placeChange(_, let planRevision, _, _)? = invite.kind {
+                let current: Plan? = if let chainedFrom = invite.chainedFrom { await plans(chainedFrom) } else { nil }
+                guard let current, current.revision == planRevision, current.place != nil else {
+                    invites[conversation]?.accepting = false
+                    endInvite(conversation, event: .noAgreement, reply: nil)
+                    throw PickAPlaceError.planChangedMeanwhile
+                }
+            }
+            // The lookup waited: the card must still be this one.
+            guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else {
+                invites[conversation]?.accepting = false
+                return
+            }
+            // What this yes names is recorded before it goes, so only a
+            // confirmation of it is taken, across relaunches.
+            guard let named = await recordYes(in: conversation) else {
+                invites[conversation]?.accepting = false
+                throw PickAPlaceError.ledgerUnavailable
+            }
+            let acceptance = Acceptance(proposal: named, terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
                                            accepting: invite.offer)
             invites[conversation]?.accepting = false
@@ -355,6 +417,7 @@ extension PickAPlaceService {
             emit(invite.id, .ownerAccepted(revision: revision))
             spawnWaitForConfirmation(conversation)
         case .pass:
+            guard !(invite.isChange && (invite.accepted || invite.accepting)) else { throw PickAPlaceError.yesIsFinal }
             // After a yes, passing takes the yes back: the state machine
             // calls that withdrawing.
             leave(conversation, event: invite.accepted || invite.accepting ? .withdrawn : .ownerPassed)
@@ -365,11 +428,36 @@ extension PickAPlaceService {
 
     func spawnAcceptance(_ conversation: ConversationID) {
         guard let invite = invites[conversation], let proposal = invite.proposal else { return }
-        let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
         spawn(conversation) { service in
-            await service.trySend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
-                                  accepting: invite.offer)
+            // Recorded before it goes; a yes that cannot be recorded is not
+            // sent.
+            guard let named = await service.recordYes(in: conversation),
+                  service.invites[conversation]?.proposal?.revision == proposal.revision
+            else { return }
+            await service.trySend(.accept(Acceptance(proposal: named, terms: proposal.terms)), to: invite.organizer, conversation: conversation,
+                                  chainedFrom: invite.chainedFrom, accepting: invite.offer)
         }
+    }
+
+    /// Adds the proposal this phone's next yes names to the ones its yes
+    /// has named for the current card, and records them, before the yes is
+    /// sent. Returns the proposal it names, or nil if it could not be
+    /// recorded.
+    func recordYes(in conversation: ConversationID) async -> MessageID? {
+        guard let invite = invites[conversation], let proposal = invite.proposal else { return nil }
+        let named = invite.proposeID ?? MessageID()
+        var yesNamed = invite.yesNamed.filter { $0 != named } + [named]
+        if yesNamed.count > Self.maxRememberedProposals { yesNamed.removeFirst(yesNamed.count - Self.maxRememberedProposals) }
+        do {
+            try await ledger.recordYes(RecordedYes(revision: proposal.revision, proposals: yesNamed, at: clock.now()), for: conversation)
+        } catch {
+            return nil
+        }
+        // A newer card arrived while the record was written: this yes is
+        // not for it.
+        guard invites[conversation]?.proposal?.revision == proposal.revision else { return nil }
+        invites[conversation]?.yesNamed = yesNamed
+        return named
     }
 
     /// Repeats the yes until the organizer confirms, in case either message
@@ -390,12 +478,16 @@ extension PickAPlaceService {
     /// The organizer's confirmation: the accepted terms, with everyone who
     /// said yes. It may list fewer people than the proposal, never others.
     func confirmed(_ acceptance: Acceptance, in conversation: ConversationID) {
+        // It must confirm this phone's own yes: name a proposal the yes named.
         guard let invite = invites[conversation], invite.accepted, let proposal = invite.proposal,
+              invite.yesNamed.contains(acceptance.proposal),
               case .peers(let proposed)? = proposal.terms[.people], case .peers(let final)? = acceptance.terms[.people],
               case .places(let places)? = proposal.terms[.place], let place = places.first,
               Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
               acceptance.terms.values.allSatisfy({ $0.key == .people || $0.value == proposal.terms[$0.key] }),
-              final.count >= 2, final.first == invite.organizer, final.contains(localPeer), Set(final).isSubset(of: proposed)
+              final.count >= 2, final.first == invite.organizer, final.contains(localPeer), Set(final).isSubset(of: proposed),
+              // A change of place is confirmed only with everyone in it.
+              !invite.isChange || Set(final) == Set(proposed)
         else { return }
         invites[conversation]?.finished = true
         invites[conversation]?.finalRoster = final
@@ -411,7 +503,9 @@ extension PickAPlaceService {
     /// A confirmed plan lost someone: the same terms with fewer people,
     /// still including this phone and the organizer.
     func rosterShrank(_ acceptance: Acceptance, in conversation: ConversationID) {
-        guard let invite = invites[conversation], let roster = invite.finalRoster, let proposal = invite.proposal,
+        // A confirmed change of place never loses anyone (ADR 0233).
+        guard let invite = invites[conversation], !invite.isChange, let roster = invite.finalRoster, let proposal = invite.proposal,
+              invite.yesNamed.contains(acceptance.proposal),
               case .peers(let shorter)? = acceptance.terms[.people],
               Set(acceptance.terms.values.keys) == Set(proposal.terms.values.keys),
               acceptance.terms.values.allSatisfy({ $0.key == .people || $0.value == proposal.terms[$0.key] }),
@@ -434,6 +528,9 @@ extension PickAPlaceService {
     ///   (ADR 0020, decision 9).
     func leave(_ conversation: ConversationID, event: InteractionEvent) {
         guard let invite = invites[conversation] else { return }
+        // A yes to a change of place is final once sent (ADR 0233).
+        // A yes on its way counts: the organizer may already have it.
+        guard !(invite.isChange && (invite.accepted || invite.accepting || invite.finalRoster != nil)) else { return }
         if invite.isFinished {
             // Withdrawing from a confirmed plan takes the yes back like any
             // other: the organizer shortens the roster for everyone left.
@@ -482,7 +579,9 @@ extension PickAPlaceService {
 
     /// The organizer withdrew a confirmed plan: it is over on this phone too.
     func planCalledOff(_ conversation: ConversationID) {
-        guard let invite = invites[conversation], invite.finalRoster != nil else { return }
+        // A confirmed change of place is final; it is not called off
+        // (ADR 0233).
+        guard let invite = invites[conversation], invite.finalRoster != nil, !invite.isChange else { return }
         invites[conversation]?.finalRoster = nil
         finish(conversation, interaction: invite.id, event: .withdrawn)
     }

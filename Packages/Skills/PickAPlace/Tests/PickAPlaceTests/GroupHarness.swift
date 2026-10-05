@@ -96,8 +96,12 @@ actor Coordinator {
         switch event {
         case .incoming(let id, let conversation, let from, let chainedFrom):
             incoming.append((id, from, chainedFrom))
-            interactions[id] = Interaction(id: id, conversation: conversation, skill: PickAPlaceSkill.ref, role: .invitee,
-                                           participants: [from], createdAt: Timestamp(Date()))
+            var interaction = Interaction(id: id, conversation: conversation, skill: PickAPlaceSkill.ref, role: .invitee,
+                                          participants: [from], createdAt: Timestamp(Date()))
+            // As the app does: the request's chain hint, for grouping and
+            // for a restart.
+            try? interaction.setFriendChainHint(chainedFrom)
+            interactions[id] = interaction
         case .lifecycle(let id, let lifecycle):
             guard let interaction = interactions[id] else { rejected.append((event, "unknown interaction")); return }
             // While the sheet is up, progress waits its turn; anything else,
@@ -267,6 +271,9 @@ final class Phone: Sendable {
     let consent: CoordinatorConsent
     /// Every send the Outbox made, with its context.
     let sends = RecordingOutboxObserver()
+    /// This phone's own plans, by plan conversation, as the app's store
+    /// holds them.
+    let plans = PlanBook()
     /// Wraps `sends`; holds nothing unless a test asks (issue #105).
     let hold: DidSendHold
     let outbox: Outbox
@@ -299,9 +306,11 @@ final class Phone: Sendable {
         let (peer, outbox, store, staged, conversations) = (key.peerID, outbox, store, staged, conversations)
         let ledger: any PickAPlaceLedger = placeLedger ?? self.ledger
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }
+        let book = plans
         makeService = {
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
-                              ownerLimits: readLimits, ledger: ledger, conversations: conversations, clock: .system, configuration: configuration)
+                              ownerLimits: readLimits, ledger: ledger, conversations: conversations,
+                              plans: { await book.plan(for: $0) }, clock: .system, configuration: configuration)
         }
         current = Mutex(makeService())
     }
@@ -375,7 +384,13 @@ final class Phone: Sendable {
         _ candidates: [PlaceCandidate], with friends: [Phone], limits: ConstraintSet = .empty,
         inputs: [Artifact] = [], chainedFrom: ConversationID? = nil, expiresIn: TimeInterval = 60
     ) async throws -> Interaction {
-        let interaction = Interaction(skill: PickAPlaceSkill.ref, role: .initiator, participants: friends.map(\.id), createdAt: Timestamp(Date()))
+        // A request chained from a plan is a link of it, as the planner
+        // makes one.
+        let chain = chainedFrom.map {
+            ChainLink(parent: InteractionID(), parentConversation: $0, consumed: [.plan], trigger: .atConfirm, optedInAt: Timestamp(Date()))
+        }
+        let interaction = Interaction(skill: PickAPlaceSkill.ref, role: .initiator, participants: friends.map(\.id), createdAt: Timestamp(Date()),
+                                      chain: chain)
         await coordinator.add(interaction)
         await staged.stage(candidates, for: interaction.id)
         let intent = SkillIntent(skill: PickAPlaceSkill.ref, rules: OwnerRules(constraints: limits), audience: .picked(friends.map(\.id)),
@@ -429,6 +444,14 @@ final class Phone: Sendable {
         let artifacts = await coordinator.produced[interaction.id] ?? []
         return artifacts.lazy.compactMap { if case .placeChoice(let place) = $0 { place } else { nil } }.first
     }
+}
+
+/// A phone's own plans, by the conversation that agreed them (`Plan.origin`).
+actor PlanBook {
+    private var plans: [ConversationID: Plan] = [:]
+
+    func hold(_ plan: Plan) { plans[plan.origin] = plan }
+    func plan(for conversation: ConversationID) -> Plan? { plans[conversation] }
 }
 
 /// Holds Outbox's `didSend` for chosen kinds of message, as an audit

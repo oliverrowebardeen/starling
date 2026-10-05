@@ -33,7 +33,7 @@ extension PickAPlaceService {
             case .planned:
                 // A confirmed plan stays open for a shorter roster or a
                 // call-off; one this phone cannot rebuild is retired.
-                let rebuilt = interaction.role == .initiator ? resumeSettled(interaction) : resumePlannedInvite(interaction)
+                let rebuilt = interaction.role == .initiator ? await resumeSettled(interaction) : await resumePlannedInvite(interaction)
                 if !rebuilt { try? await outbox.retire(interaction.conversation) }
                 continue
             case .done, .ended:
@@ -60,8 +60,11 @@ extension PickAPlaceService {
     /// A settled organizer that can repeat its confirmation, from the stored
     /// proposal and the attendees it produced.
     @discardableResult
-    private func resumeSettled(_ interaction: Interaction) -> Bool {
+    private func resumeSettled(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
+        // Read before anything is checked, so nothing changes between the
+        // checks and the rebuild.
+        let kind = await organizerKind(of: interaction)
         guard organized[conversation] == nil, let proposal = interaction.proposal, let (place, roster) = Self.parts(of: proposal),
               roster.first == localPeer, let attendees = Self.attendees(of: interaction)
         else { return false }
@@ -69,7 +72,8 @@ extension PickAPlaceService {
         values[.people] = .peers(attendees)
         var organizer = Organizer(
             id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
-            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan, time: nil, activity: nil
+            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan,
+            kind: kind, time: nil, activity: nil
         )
         organizer.phase = .settled
         organizer.proposal = proposal
@@ -82,14 +86,46 @@ extension PickAPlaceService {
         return true
     }
 
+    /// The proposals this phone's yes named for `proposal`'s card, so a
+    /// confirmation of that yes is still taken, and a repeated yes names
+    /// one of them. A record for another card, or none, restores nothing:
+    /// no confirmation is taken until the yes is said again.
+    static func restore(_ yes: RecordedYes??, into invite: inout Invite, for proposal: SkillProposal) {
+        guard let yes = yes ?? nil, yes.revision == proposal.revision else { return }
+        invite.yesNamed = yes.proposals
+        invite.proposeID = yes.proposals.last
+    }
+
+    /// What a friend's request is on this phone's plan: none when it was
+    /// not chained from one; otherwise the recorded kind, and a missing or
+    /// unreadable one is read as a change of place no proposal can match
+    /// (ADR 0233).
+    func friendKind(of interaction: Interaction) async -> PlaceRequestKind? {
+        guard interaction.friendChainHint != nil else { return nil }
+        guard let recorded = try? await ledger.requestKind(for: interaction.conversation) else { return Self.unreadableKind }
+        return recorded
+    }
+
+    /// What an organizer's request is on a plan. One not chained from a
+    /// plan is on none. Otherwise the recorded kind; missing or unreadable,
+    /// it is read as a change of place, so a relaunch never drops the rule
+    /// that everyone must agree (ADR 0233).
+    func organizerKind(of interaction: Interaction) async -> PlaceRequestKind? {
+        guard interaction.chain != nil else { return nil }
+        guard let recorded = try? await ledger.requestKind(for: interaction.conversation) else { return Self.unreadableKind }
+        return recorded
+    }
+
     static func attendees(of interaction: Interaction) -> [PeerID]? {
         interaction.artifacts.compactMap { if case .attendees(let people) = $0 { people.peers } else { nil } }.last
     }
 
     /// A friend's confirmed plan, so a shorter roster or a call-off still
     /// reaches it, and it can still be withdrawn.
-    private func resumePlannedInvite(_ interaction: Interaction) -> Bool {
+    private func resumePlannedInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
+        let kind = await friendKind(of: interaction)
+        let yes = try? await ledger.yes(for: conversation)
         guard invites[conversation] == nil, let proposal = interaction.proposal, let (place, _) = Self.parts(of: proposal),
               let roster = Self.attendees(of: interaction), let organizer = roster.first, organizer != localPeer, roster.contains(localPeer)
         else { return false }
@@ -103,6 +139,8 @@ extension PickAPlaceService {
         invite.accepted = true
         invite.finished = true
         invite.finalRoster = roster
+        invite.kind = kind
+        Self.restore(yes, into: &invite, for: proposal)
         invites[conversation] = invite
         conversationOf[interaction.id] = conversation
         return true
@@ -125,6 +163,9 @@ extension PickAPlaceService {
     }
 
     private func resumeOrganizer(_ interaction: Interaction) async -> Bool {
+        // Read first, so nothing changes between the checks and the rebuild.
+        let kind = await organizerKind(of: interaction)
+        guard organized[interaction.conversation] == nil else { return false }
         let step = Self.step(of: interaction.state)
         guard step == .proposed || step == .confirmed, let proposal = interaction.proposal,
               let (place, roster) = Self.parts(of: proposal), roster.first == localPeer
@@ -134,7 +175,8 @@ extension PickAPlaceService {
         let conversation = interaction.conversation
         var organizer = Organizer(
             id: interaction.id, conversation: conversation, chainedFrom: interaction.chain?.parentConversation,
-            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan, time: time, activity: activity
+            friends: Array(roster.dropFirst()), ranking: [place], base: proposal.plan,
+            kind: kind, time: time, activity: activity
         )
         organizer.phase = .proposing
         organizer.proposal = proposal
@@ -161,6 +203,9 @@ extension PickAPlaceService {
 
     private func resumeInvite(_ interaction: Interaction) async -> Bool {
         let conversation = interaction.conversation
+        let kind = await friendKind(of: interaction)
+        let yes = try? await ledger.yes(for: conversation)
+        guard invites[conversation] == nil else { return false }
         switch Self.step(of: interaction.state) {
         case .negotiating:
             // The coordinator recorded the friend who asked.
@@ -174,6 +219,7 @@ extension PickAPlaceService {
             invite.announced = true
             invite.admitted = true
             invite.revision = interaction.proposalRevision ?? 0
+            invite.kind = kind
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
             spawnInviteDeadline(conversation)
@@ -192,8 +238,12 @@ extension PickAPlaceService {
             invite.revision = proposal.revision
             invite.proposal = proposal
             // The offer itself was not stored; its terms are what a yes
-            // repeats, so they stand for it.
-            invite.offer = try? Proposal(round: 0, terms: proposal.terms)
+            // repeats, and the round it named is the agreed plan's revision,
+            // so they stand for it.
+            let round = UInt16(min(proposal.plan?.revision ?? 0, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
+            invite.offer = try? Proposal(round: round, terms: proposal.terms)
+            invite.kind = kind
+            Self.restore(yes, into: &invite, for: proposal)
             invite.accepted = Self.step(of: interaction.state) == .confirmed
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
