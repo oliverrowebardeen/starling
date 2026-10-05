@@ -26,6 +26,7 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0020](0020-send-modes-and-audience.md) | Send modes and audience: Ask quietly, Invite, and undetectable exclusion | Accepted (amends 0010, 0011) |
 | [0021](0021-one-ledger-for-what-a-friend-was-told.md) | One ledger for what a friend was told, enforced by Outbox | Accepted (amends 0011, 0019) |
 | [0022](0022-plans-can-change-after-they-are-confirmed.md) | Plans can change after they are confirmed | Accepted |
+| [0023](0023-one-change-to-a-plan-at-a-time.md) | One change to a plan at a time | Accepted (amends 0022) |
 | [0200](0200-interactions-in-one-json-file.md) | Interactions persist in one JSON file | Proposed |
 | [0201](0201-the-lifecycle-coordinator-contract.md) | What the lifecycle coordinator applies, and what skills report | Proposed |
 | [0202](0202-first-use-permissions-and-no-onboarding.md) | No onboarding; Local Network and notifications at first use | Proposed |
