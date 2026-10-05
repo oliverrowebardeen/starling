@@ -57,17 +57,39 @@ import Testing
     }
 
     /// The hazard itself: symmetric roles on a platform that breaks them.
+    ///
+    /// Condition-based, not a time window: the fake refuses a dial only once
+    /// both phones publish and subscribe, so the phones stay out of range
+    /// until both have started both, and the test then waits for every dial
+    /// the retry policy allows (one on discovery and five retries each)
+    /// before checking that none linked.
     @Test func symmetricRolesNeverLinkWhereThePlatformBreaksThem() async throws {
         let air = FakeAir()
         await air.setSymmetricLinksFail(true)
         await air.pair("a", "b")
+        await air.setInRange("a", "b", false)
         var symmetric = Self.timing(slot: .seconds(60))
         symmetric.roles = .symmetric
         let a = await Phone("a", air: air, timing: symmetric)
         let b = await Phone("b", air: air, timing: symmetric)
         try await a.transport.start()
         try await b.transport.start()
-        #expect(await !linked(a, b, within: .milliseconds(500)))
+        try await eventually {
+            let ab = await air.roles(of: "a", toward: "b")
+            let ba = await air.roles(of: "b", toward: "a")
+            return ab.publishes && ab.subscribes && ba.publishes && ba.subscribes
+        }
+
+        await air.setInRange("a", "b", true)
+        let allowed = 6
+        try await eventually {
+            let ab = await air.dials(from: "a", to: "b")
+            let ba = await air.dials(from: "b", to: "a")
+            return ab >= allowed && ba >= allowed
+        }
+        #expect(await !a.sees(b))
+        #expect(await !b.sees(a))
+        #expect(await air.openConnectionCount("a", "b") == 0)
         await a.transport.stop()
         await b.transport.stop()
     }
