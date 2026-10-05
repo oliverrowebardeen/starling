@@ -123,15 +123,38 @@ final class OfferRecorder {
     /// pull it into another ceremony.
     @Test func aFailedSheetJoinsTheSamePhoneTryingAgain() async {
         let failing = ScriptedDirectory(candidates: [Self.candidate]) { _, _ in TimingOutSession() }
-        let model = PairingModel(directory: failing.directory)
+        let clock = PairingClock()
+        let model = PairingModel(directory: failing.directory, now: clock.now)
         await model.choose(Self.candidate)
         await eventually { model.phase == .failed(.timedOut) }
+        clock.advance(PairingModel.rejoinDelay)
         failing.ask(from: PeerID.random())
         await model.refresh()
         #expect(model.phase == .failed(.timedOut))
         failing.ask(from: Self.maya.id)
         await model.refresh()
         #expect(failing.starts.count == 2)
+    }
+
+    /// Review of #104: the failure a rejoin follows stays on screen for a
+    /// few seconds first, so the owner sees every ceremony that ended.
+    @Test func aFailureStaysOnScreenBeforeTheRejoin() async {
+        let failing = ScriptedDirectory(candidates: [Self.candidate]) { _, _ in TimingOutSession() }
+        let clock = PairingClock()
+        let model = PairingModel(directory: failing.directory, now: clock.now)
+        await model.choose(Self.candidate)
+        await eventually { model.phase == .failed(.timedOut) }
+        failing.ask(from: Self.maya.id)
+
+        await model.refresh()
+        clock.advance(PairingModel.rejoinDelay - 0.5)
+        await model.refresh()
+        #expect(failing.starts.count == 1, "not while the failure is new")
+        #expect(model.phase == .failed(.timedOut))
+
+        clock.advance(0.5)
+        await model.refresh()
+        #expect(failing.starts.count == 2, "then the one automatic rejoin")
     }
 
     /// Cancel and "They're different" stick: the sheet does not rejoin.
@@ -665,7 +688,8 @@ final class FriendActions: @unchecked Sendable {
         let sessions = [first, second]
         let counter = Counter()
         let directory = ScriptedDirectory(candidates: []) { _, _ in sessions[await counter.next()] }
-        let model = PairingModel(directory: directory.directory)
+        let clock = PairingClock()
+        let model = PairingModel(directory: directory.directory, now: clock.now)
         let friend = PeerID.random()
 
         await model.choose(PairingCandidate(peer: friend))
@@ -678,6 +702,7 @@ final class FriendActions: @unchecked Sendable {
         // A's queued confirm runs.
         await first.fail(.timedOut)
         await eventually { model.phase == .failed(.timedOut) }
+        clock.advance(PairingModel.rejoinDelay)
         directory.ask(from: friend)
         await model.refresh()
         await second.show("222222")
@@ -743,15 +768,18 @@ final class FriendActions: @unchecked Sendable {
     /// After that the owner taps Try again.
     @Test func aSheetRejoinsOnItsOwnOnlyOnce() async {
         let directory = ScriptedDirectory(candidates: []) { _, _ in PairingModelTests.TimingOutSession() }
-        let model = PairingModel(directory: directory.directory)
+        let clock = PairingClock()
+        let model = PairingModel(directory: directory.directory, now: clock.now)
         let friend = PeerID.random()
         await model.choose(PairingCandidate(peer: friend))
         await eventually { model.phase == .failed(.timedOut) }
         directory.ask(from: friend)
 
+        clock.advance(PairingModel.rejoinDelay)
         await model.refresh()
         await eventually { model.phase == .failed(.timedOut) && directory.starts.count == 2 }
         #expect(directory.starts.count == 2, "the one automatic rejoin")
+        clock.advance(PairingModel.rejoinDelay)
         await model.refresh()
         await model.refresh()
         #expect(directory.starts.count == 2, "no second one without a tap")
@@ -816,4 +844,12 @@ extension PairingModel {
         guard let comparison else { return }
         await confirm(codesMatch: codesMatch, for: comparison)
     }
+}
+
+/// A clock the test moves, so timing rules run without waiting.
+@MainActor
+final class PairingClock {
+    var date = Date(timeIntervalSince1970: 1_000_000)
+    var now: @MainActor () -> Date { { [unowned self] in date } }
+    func advance(_ seconds: TimeInterval) { date += seconds }
 }

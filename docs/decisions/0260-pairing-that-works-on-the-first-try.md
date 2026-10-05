@@ -59,6 +59,7 @@ Primary sources checked on 2026-10-02:
    - The service lists phones whose hellos ask to pair with no ceremony running here (`requests()`, each kept for 5 s after its last hello).
    - The app joins a request while the sheet is open and idle. A request comes only from a phone whose owner picked this one, by its PeerID. The code comparison still decides.
    - After a failure the owner did not choose, the sheet rejoins a new request from the same phone on its own, **at most once per sheet**. After that the owner taps Try again (review round 3 of #104). Each rejoin is another code a phone in the middle could try, so the free ones are capped at one.
+   - The failure stays on screen for 3 seconds before that rejoin (review of #104, follow-up). One Add friend tap can still give a phone in the middle two of this phone's nonces (about 2 in 10^6), within ADR 0101's bound. But the first failure is always seen, never replaced within a second.
    - Cancel on Waiting asks the ceremony to stop but keeps following it. If both owners had confirmed, the ceremony is past its commit point and saves the friend (ADR 0101 decision 2, kept so pairing never ends one-sided), and the sheet goes on to the name step. Waiting has no Close and cannot be swiped away.
    - An attacker in range can at most show a code that will not match, which is the denial of service an abort already allowed.
    - Each attempt on the sheet has a generation that Cancel, the sheet closing, and every new attempt move forward (Codex review of PR #104).

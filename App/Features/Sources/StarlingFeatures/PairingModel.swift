@@ -146,6 +146,13 @@ public final class PairingModel {
     /// that the owner taps Try again (review round 3 of #104, ADR 0260).
     private var automaticRejoins = 0
     static let maxAutomaticRejoins = 1
+    /// How long a failure stays on screen before the automatic rejoin, so
+    /// the owner sees every ceremony that ended, the one a rejoin follows
+    /// included (review of #104, ADR 0260).
+    public static let rejoinDelay: TimeInterval = 3
+    /// When the failure on screen appeared.
+    private var failedAt: Date?
+    private let now: @MainActor () -> Date
     /// Bumped by every new attempt, by Cancel, and when the sheet goes away.
     /// A session, event, or stream ending from an older attempt is ignored.
     private var attempt = 0
@@ -162,8 +169,10 @@ public final class PairingModel {
     public init(
         directory: PairingDirectory,
         friends: @escaping @MainActor () -> [PairedPeer] = { [] },
-        notifications: NotificationOffer? = nil
+        notifications: NotificationOffer? = nil,
+        now: @escaping @MainActor () -> Date = { Date() }
     ) {
+        self.now = now
         self.directory = directory
         self.friends = friends
         self.notifications = notifications
@@ -182,10 +191,11 @@ public final class PairingModel {
     /// a pick (ADR 0260).
     ///
     /// After a failure, a new request from the same phone is joined too, once
-    /// per sheet: its owner tapped Try again, and this owner should not have
-    /// to. Later retries take this owner's tap.
+    /// per sheet and only after the failure has been on screen for
+    /// `rejoinDelay`: its owner tapped Try again, and this owner should not
+    /// have to. Later retries take this owner's tap.
     public func refresh() async {
-        if case .failed = phase, !endedHere, automaticRejoins < Self.maxAutomaticRejoins, let phone,
+        if case .failed = phase, !endedHere, automaticRejoins < Self.maxAutomaticRejoins, failureShownLongEnough, let phone,
            await directory.requests().contains(phone.peer), case .failed = phase, automaticRejoins < Self.maxAutomaticRejoins {
             automaticRejoins += 1
             await start(with: phone)
@@ -268,7 +278,7 @@ public final class PairingModel {
             // review of PR #104).
             guard mine == attempt, !isEnded else {
                 await session.cancel()
-                if mine == attempt { phase = .failed(.cancelled) }
+                if mine == attempt { showFailure(.cancelled) }
                 return
             }
             self.session = session
@@ -281,7 +291,7 @@ public final class PairingModel {
                 self?.streamEnded(attempt: mine)
             }
         } catch {
-            if mine == attempt { phase = .failed(.transportFailed) }
+            if mine == attempt { showFailure(.transportFailed) }
         }
     }
 
@@ -317,7 +327,7 @@ public final class PairingModel {
             return
         }
         if let current = abandonAttempt() {
-            phase = .failed(.cancelled)
+            showFailure(.cancelled)
             await current.cancel()
         } else {
             phase = .choosing
@@ -346,7 +356,7 @@ public final class PairingModel {
         switch phase {
         case .connecting, .comparing, .waiting:
             let current = abandonAttempt()
-            phase = .failed(.cancelled)
+            showFailure(.cancelled)
             await current?.cancel()
         case .choosing, .naming, .notifications, .done, .failed:
             break
@@ -372,7 +382,7 @@ public final class PairingModel {
             phase = .naming(peer)
         case .failed(let failure):
             clearComparison()
-            phase = .failed(failure)
+            showFailure(failure)
         }
     }
 
@@ -384,10 +394,20 @@ public final class PairingModel {
         switch phase {
         case .connecting, .comparing, .waiting:
             // The session ended without a result.
-            phase = .failed(.protocolError)
+            showFailure(.protocolError)
         default:
             break
         }
+    }
+
+    private func showFailure(_ failure: PairingFailure) {
+        failedAt = now()
+        phase = .failed(failure)
+    }
+
+    private var failureShownLongEnough: Bool {
+        guard let failedAt else { return false }
+        return now().timeIntervalSince(failedAt) >= Self.rejoinDelay
     }
 
     // MARK: Naming
