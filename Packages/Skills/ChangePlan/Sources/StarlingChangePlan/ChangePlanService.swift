@@ -128,6 +128,14 @@ public actor ChangePlanService: SkillService {
             stepID += 1
         }
 
+        /// A voter or joiner whose yes is given or going out.
+        var saidYes: Bool {
+            switch step {
+            case .accepting, .accepted: true
+            default: false
+            }
+        }
+
         /// Everyone the suggester asked, in plan order, then the friend.
         var asked: [PeerID] { voters + (friend.map { [$0] } ?? []) }
 
@@ -277,7 +285,7 @@ public actor ChangePlanService: SkillService {
         )
         byConversation[request.conversation] = request.interaction
         await sendLeaveNotices(request.interaction)
-        await settle(planConversation: plan.plan.origin)
+        await settle(planConversation: plan.plan.origin, keepingYes: false)
         await retire(plan.plan.origin)
         await finish(request.interaction, with: [.withdrawn], then: [.lifecycle(plan.interaction, .withdrawn)])
         startResending(request.interaction.rawValue)
@@ -465,8 +473,11 @@ public actor ChangePlanService: SkillService {
         guard let current = await planLookup(planConversation), current.plan.origin == planConversation,
               current.plan.attendees.peers.contains(envelope.sender), UInt32(offer.round) <= current.plan.revision
         else { return }
-        // Anything open for this plan included them: it cannot go through.
-        await settle(planConversation: planConversation)
+        // Anything still open for this plan included them: it cannot go
+        // through. A yes already given stays: its change may have been
+        // committed, and applies over the smaller plan (final review of
+        // PR #111, finding 1).
+        await settle(planConversation: planConversation, keepingYes: true)
         let departure = Departure(id: UUID(), departure: noticeID, planConversation: planConversation, peer: envelope.sender,
                                   revision: current.plan.revision, until: resend.end(for: current.plan, now: now()))
         // Durable before it applies; if it cannot be, nothing happens and
@@ -637,10 +648,14 @@ public actor ChangePlanService: SkillService {
         guard let session = sessions[id], case .accepted(let offer) = session.step, let suggester = session.suggester else { return }
         let step = session.stepID
         var update: SkillEvent?
+        var result = session.proposed
+        var over = session.basisRevision
         if let planInteraction = session.planInteraction {
             guard let current = await planLookup(session.planConversation) else { return }
-            if current.plan.revision == session.basisRevision, current.plan.attendees == session.basis?.attendees {
-                update = .produced(planInteraction, .plan(session.proposed))
+            if let target = target(of: session, over: current.plan) {
+                update = .produced(planInteraction, .plan(target))
+                result = target
+                over = current.plan.revision
             } else if current.plan.revision == session.proposed.revision, current.plan.attendees == session.proposed.attendees,
                       current.plan.time == session.proposed.time, current.plan.activity == session.proposed.activity {
                 update = nil
@@ -652,8 +667,8 @@ public actor ChangePlanService: SkillService {
             update = .produced(id, .plan(session.proposed))
         }
         let receipt = AppliedConfirmation(interaction: id, conversation: session.conversation, planConversation: session.planConversation,
-                                          suggester: suggester, offer: offer, plan: session.proposed, planInteraction: session.planInteraction,
-                                          basisRevision: session.basisRevision, until: resend.end(for: session.proposed, now: now()))
+                                          suggester: suggester, offer: offer, plan: result, planInteraction: session.planInteraction,
+                                          basisRevision: over, until: resend.end(for: result, now: now()))
         guard await store(.applied(receipt)), sessions[id]?.stepID == step else { return }
         journaledYes.remove(id)
         applied[session.conversation] = receipt
@@ -718,9 +733,15 @@ public actor ChangePlanService: SkillService {
         }
     }
 
-    /// Ends whatever is open for a plan (its people changed), quietly.
-    private func settle(planConversation: ConversationID) async {
+    /// Ends whatever is open for a plan (its people changed), quietly. With
+    /// `keepingYes`, a card that already said yes stays: someone else
+    /// leaving does not undo a change that may have been committed.
+    private func settle(planConversation: ConversationID, keepingYes: Bool) async {
         guard let id = openByPlan[planConversation], let session = sessions[id], session.step != .ending else { return }
+        if keepingYes, session.saidYes {
+            queued[planConversation] = nil
+            return
+        }
         let notices = session.role == .suggester ? session.withdrawals : []
         sessions[id]?.advance(to: .ending)
         cancelSends(of: id)
@@ -759,7 +780,12 @@ public actor ChangePlanService: SkillService {
     /// applies any plan update): a suggestion or card open for it whose
     /// basis no longer stands ends at once (review of PR #111, finding C).
     public func planDidChange(_ planConversation: ConversationID) async {
-        guard let id = openByPlan[planConversation], let session = sessions[id], session.step != .ending, session.basis != nil else { return }
+        // A card that said yes waits for its confirmation: another change
+        // cannot have moved the plan while it holds it (ADR 0023), and a
+        // leave does not stop it applying (final review, finding 1).
+        guard let id = openByPlan[planConversation], let session = sessions[id], session.step != .ending, session.basis != nil,
+              !session.saidYes
+        else { return }
         _ = await basisStands(id)
     }
 
@@ -861,11 +887,37 @@ public actor ChangePlanService: SkillService {
     }
 
     /// Whether a confirmation for this card could still apply: the plan
-    /// still stands at the card's basis (a friend being added has none).
+    /// still stands at the card's basis, or only people have left it since
+    /// (a friend being added has no basis).
     private func couldStillApply(_ session: Session) async -> Bool {
-        guard let basis = session.basis else { return true }
+        guard session.basis != nil else { return true }
         guard let current = await planLookup(session.planConversation) else { return false }
-        return current.plan.revision == basis.revision && current.plan.attendees == basis.attendees
+        return target(of: session, over: current.plan) != nil
+    }
+
+    /// The plan a card's change makes over the plan as it stands, or nil if
+    /// it no longer can. Over its basis, the agreed plan. Over its basis
+    /// with only leaves since (each journaled here as a departure, one
+    /// revision each), the change's own fields over the smaller plan, one
+    /// revision higher: a leave and a confirmation then end every phone on
+    /// the same plan and revision, whichever arrives first (final review of
+    /// PR #111, finding 1).
+    private func target(of session: Session, over current: Plan) -> Plan? {
+        guard let basis = session.basis, current.origin == basis.origin, current.revision >= basis.revision else { return nil }
+        if current.revision == basis.revision {
+            return current.attendees == basis.attendees ? session.proposed : nil
+        }
+        let left = departed.values.filter {
+            $0.planConversation == session.planConversation && $0.revision >= basis.revision && $0.revision < current.revision
+        }
+        let leavers = Set(left.map(\.peer))
+        guard left.count == Int(current.revision - basis.revision), leavers.count == left.count,
+              current.attendees.peers == basis.attendees.peers.filter({ !leavers.contains($0) }),
+              current.activity == basis.activity, current.time == basis.time, current.place == basis.place
+        else { return nil }
+        let added = session.proposed.attendees.peers.filter { !basis.attendees.peers.contains($0) }
+        guard let attendees = try? Attendees(current.attendees.peers + added) else { return nil }
+        return try? current.updating(attendees: attendees, activity: .some(session.proposed.activity), time: .some(session.proposed.time))
     }
 
     /// Whether this phone's plan already shows an applied change.
