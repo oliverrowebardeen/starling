@@ -144,6 +144,10 @@ final class Phone: Sendable {
     /// While set, the coordinator loses the plan updates it is given, as an
     /// app that quits before saving them would.
     let losingUpdates = Flag()
+    /// This phone's plan-change holds (ADR 0023), shared with every skill
+    /// that changes plans. In memory: a relaunch starts with new ones.
+    private let holdsBox = Mutex(PlanChangeHolds())
+    var holds: PlanChangeHolds { holdsBox.withLock { $0 } }
     private let box: Mutex<ChangePlanService>
     var service: ChangePlanService { box.withLock { $0 } }
     let inbox: Inbox
@@ -161,7 +165,8 @@ final class Phone: Sendable {
         self.consent = ScriptedConsentProvider(consent)
         outbox = Outbox(transport: transport, policy: policy ?? FixedPolicyEngine(.allow), consent: self.consent,
                         observer: observer?(store) ?? nil, ledger: ledger, now: { clock.now })
-        box = Mutex(Self.makeService(outbox: outbox, ledger: ledger, journal: journal, me: me, store: store, clock: clock))
+        box = Mutex(Self.makeService(outbox: outbox, ledger: ledger, journal: journal, holds: holdsBox.withLock { $0 }, me: me, store: store,
+                                     clock: clock))
         inbox = Inbox(localPeer: me, now: { clock.now })
         let service = box.withLock { $0 }
         let (store, problems) = (store, problems)
@@ -169,9 +174,9 @@ final class Phone: Sendable {
         consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock, losing: losing) } }
     }
 
-    private static func makeService(outbox: Outbox, ledger: InMemoryConversationLedger, journal: TestJournal, me: PeerID,
+    private static func makeService(outbox: Outbox, ledger: InMemoryConversationLedger, journal: TestJournal, holds: PlanChangeHolds, me: PeerID,
                                     store: InMemoryInteractionStore, clock: TestClock) -> ChangePlanService {
-        ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, me: me, planLookup: { conversation in
+        ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, holds: holds, me: me, planLookup: { conversation in
             let all = (try? await store.all()) ?? []
             guard let holder = all.first(where: { ($0.state == .planned || $0.state == .done) && $0.plan?.origin == conversation }),
                   let plan = holder.plan
@@ -181,12 +186,17 @@ final class Phone: Sendable {
     }
 
     /// The app quits and relaunches: a new service over the same journal,
-    /// Outbox, ledger, and store, restored as the coordinator restores it.
-    func restart() async {
+    /// Outbox, ledger, and store, with new holds, restored as the
+    /// coordinator restores it. `before` runs first, as another skill
+    /// restoring its own change would.
+    func restart(before: (PlanChangeHolds) async -> Void = { _ in }) async {
         let old = service
         await old.shutdown()
         _ = await consumer.withLock { $0 }?.value
-        let fresh = Self.makeService(outbox: outbox, ledger: ledger, journal: journal, me: me, store: store, clock: clock)
+        let holds = PlanChangeHolds()
+        holdsBox.withLock { $0 = holds }
+        await before(holds)
+        let fresh = Self.makeService(outbox: outbox, ledger: ledger, journal: journal, holds: holds, me: me, store: store, clock: clock)
         box.withLock { $0 = fresh }
         let (store, problems, clock, losing) = (store, problems, clock, losingUpdates)
         losing.set(false)

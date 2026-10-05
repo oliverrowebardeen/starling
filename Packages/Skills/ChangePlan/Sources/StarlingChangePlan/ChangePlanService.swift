@@ -23,7 +23,9 @@ public enum ChangePlanError: Error, Hashable, Sendable {
     case noPlan
     /// The plan changed since the request was made.
     case stale
-    /// A suggestion for this plan is already open (ADR 0022 decision 6).
+    /// Another change to this plan is in progress on this phone, from this
+    /// skill or another (ADR 0022 decision 6, ADR 0023): a suggestion cannot
+    /// start, and a yes cannot be given, until it ends.
     case planBusy
     /// The request's people are not the plan's.
     case notInThePlan
@@ -163,6 +165,9 @@ public actor ChangePlanService: SkillService {
     /// Journal writes that failed. Each one stops or holds the action it
     /// would have let a restart recover (issue #117).
     public private(set) var journalFailures = 0
+    /// One change per plan at a time, shared with every skill that changes
+    /// plans (ADR 0023).
+    private let holds: any PlanChangeHolding
     /// Cards whose yes is journaled, so ending them clears the record.
     private var journaledYes: Set<InteractionID> = []
     /// Friends' cards from their `hello`, passed on every send so the policy
@@ -181,13 +186,14 @@ public actor ChangePlanService: SkillService {
     ///     owed acknowledgments, and for what this phone applied.
     ///   - resend: how unacknowledged ones are resent.
     ///   - sleep: waits until a date; a suggestion's window closes then.
-    public init(outbox: Outbox, ledger: any ConversationLedger, journal: any ChangePlanJournal, me: PeerID,
+    public init(outbox: Outbox, ledger: any ConversationLedger, journal: any ChangePlanJournal, holds: any PlanChangeHolding, me: PeerID,
                 planLookup: @escaping @Sendable (ConversationID) async -> PlanRef?, resend: ResendSchedule = .standard,
                 now: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (Date) async throws -> Void = { try await Task.sleep(for: .seconds(max(0, $0.timeIntervalSinceNow))) }) {
         self.outbox = outbox
         self.ledger = ledger
         self.journal = journal
+        self.holds = holds
         self.resend = resend
         self.me = me
         self.planLookup = planLookup
@@ -218,6 +224,14 @@ public actor ChangePlanService: SkillService {
         }
         guard openByPlan[planConversation] == nil else { throw ChangePlanError.planBusy }
         guard basis.revision < UInt32(ProtocolLimits.maxNegotiationRounds - 1) else { throw ChangePlanError.stale }
+        // Held before the first offer (ADR 0023): while another change to
+        // this plan is in progress here, this one does not start.
+        guard await holds.hold(planConversation, for: request.conversation) else { throw ChangePlanError.planBusy }
+        // Nothing else may have started while the hold was asked for.
+        guard openByPlan[planConversation] == nil, sessions[request.interaction] == nil, byConversation[request.conversation] == nil else {
+            await holds.release(planConversation, for: request.conversation)
+            throw ChangePlanError.planBusy
+        }
         let proposed = try change.applied(to: basis)
         let terms = try change.terms(for: basis)
         var friend: PeerID?
@@ -274,6 +288,14 @@ public actor ChangePlanService: SkillService {
         switch (session.step, answer) {
         case (.deciding(let offer, let proposal), .accept(let revision)) where revision == 1:
             guard let suggester = session.suggester else { throw ChangePlanError.unexpectedAnswer(interaction) }
+            // Held before the yes (ADR 0023): no yes while another change to
+            // this plan is in progress here. The card stays open, and the app
+            // says another change is in progress.
+            guard await holds.hold(session.planConversation, for: session.conversation) else { throw ChangePlanError.planBusy }
+            guard sessions[interaction]?.step == .deciding(offer: offer, proposal: proposal) else {
+                await holds.release(session.planConversation, for: session.conversation)
+                throw ChangePlanError.unexpectedAnswer(interaction)
+            }
             // Registered before the send: the confirmation names this offer.
             // A fast one that arrives while the yes is still going out is
             // held until the yes is recorded (review of PR #111, finding E).
@@ -290,6 +312,7 @@ public actor ChangePlanService: SkillService {
                 if sessions[interaction]?.step == .accepting(offer: offer) {
                     sessions[interaction]?.advance(to: .deciding(offer: offer, proposal: proposal))
                 }
+                await holds.release(session.planConversation, for: session.conversation)
                 throw ChangePlanError.journalUnavailable
             }
             // Withdrawn while it was recorded: the record goes with the card.
@@ -595,7 +618,7 @@ public actor ChangePlanService: SkillService {
         // What each acknowledgment must name, before any confirmation is sent (#105).
         confirming[id] = delivery
         confirmingByConversation[session.conversation] = id
-        close(id)
+        await close(id)
         emit(id, .everyoneConfirmed(revision: 1))
         if let plan = session.planInteraction { continuation.yield(.produced(plan, .plan(session.proposed))) }
         await resendOnce(id.rawValue)
@@ -636,7 +659,7 @@ public actor ChangePlanService: SkillService {
         applied[session.conversation] = receipt
         emit(id, .everyoneConfirmed(revision: 1))
         if let update { continuation.yield(update) }
-        close(id)
+        await close(id)
         await acknowledge(offer, to: suggester, in: session.conversation, planConversation: session.planConversation, interaction: id)
         startResending(id.rawValue)
         await dequeue(session.planConversation)
@@ -644,13 +667,15 @@ public actor ChangePlanService: SkillService {
 
     /// Ends a session that is settled without an ending (the change applies),
     /// keeping its conversation open for acknowledgments.
-    private func close(_ id: InteractionID) {
+    private func close(_ id: InteractionID) async {
         cancelSends(of: id)
         timers.removeValue(forKey: id)?.cancel()
         deadlines[id] = nil
         guard let session = sessions.removeValue(forKey: id) else { return }
         byConversation[session.conversation] = nil
         if openByPlan[session.planConversation] == id { openByPlan[session.planConversation] = nil }
+        // The change is over on this phone (ADR 0023).
+        await holds.release(session.planConversation, for: session.conversation)
     }
 
     // MARK: - Windows
@@ -987,6 +1012,11 @@ public actor ChangePlanService: SkillService {
                 journaledYes.insert(yes.interaction)
                 schedule(yes.interaction, at: yes.until)
                 recovered.insert(yes.interaction)
+                // Held again (ADR 0023 decision 5). If another change holds
+                // the plan, this one ends and the plan stays as it was.
+                if await !holds.hold(yes.planConversation, for: yes.conversation) {
+                    await finish(yes.interaction, with: [.noAgreement])
+                }
                 continue
             case .confirming(let delivery):
                 confirming[delivery.interaction] = delivery
@@ -1092,6 +1122,8 @@ public actor ChangePlanService: SkillService {
         guard let session = sessions.removeValue(forKey: id) else { return }
         byConversation[session.conversation] = nil
         if openByPlan[session.planConversation] == id { openByPlan[session.planConversation] = nil }
+        // Every ending releases the plan (ADR 0023).
+        await holds.release(session.planConversation, for: session.conversation)
         if journaledYes.remove(id) != nil { await forget(id.rawValue) }
         let retired = await retire(session.conversation)
         if retired {
