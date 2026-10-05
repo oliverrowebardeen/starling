@@ -453,34 +453,47 @@ extension PickAPlaceService {
             let acceptance = Acceptance(proposal: named, terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
                                            accepting: invite.offer)
-            invites[conversation]?.accepting = false
-            // A yes to a proposal that has since been replaced reports
-            // nothing (ADR 0011, amendment 14).
-            guard invites[conversation]?.proposal?.revision == revision else { return }
+            // The yes stays on its way until it counts, through the ledger
+            // write below, so a confirmation waits for it and a change's
+            // final-yes guard holds (review of #122).
+            guard invites[conversation]?.proposal?.revision == revision else {
+                // A yes to a proposal that has since been replaced reports
+                // nothing (ADR 0011, amendment 14).
+                invites[conversation]?.accepting = false
+                return
+            }
             switch result {
             case nil:
                 break
             case is CancellationError?:
                 // Withdrawn or ended while the send waited; nothing left.
+                invites[conversation]?.accepting = false
                 return
             case OutboxError.consentDeclined?:
                 // The coordinator applies the pass; like any pass, nothing
                 // is sent.
+                invites[conversation]?.accepting = false
                 endInvite(conversation, event: nil, reply: nil)
                 return
             case OutboxError.denied?:
                 // No yes left the phone, so this looks like a pass.
+                invites[conversation]?.accepting = false
                 endInvite(conversation, event: .blockedByPrivacy, reply: nil)
                 return
             case let error?:
                 // Unreachable for now: the owner can tap again.
+                invites[conversation]?.accepting = false
                 throw error
             }
             // The yes has gone: recorded now, so a relaunch keeps it. A yes
             // still on a consent sheet when the app stopped is not one.
             await saveYes(in: conversation, revision: revision)
-            guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else { return }
+            guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else {
+                invites[conversation]?.accepting = false
+                return
+            }
             invites[conversation]?.accepted = true
+            invites[conversation]?.accepting = false
             emit(invite.id, .ownerAccepted(revision: revision))
             spawnWaitForConfirmation(conversation)
         case .pass:

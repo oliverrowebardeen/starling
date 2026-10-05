@@ -449,4 +449,76 @@ struct PlanChangeTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// Review of #122: Maya's yes has gone but its ledger write has not
+    /// returned. The yes is still on its way, not yet counted: Oliver's
+    /// confirmation waits for it rather than being dropped, and a change's
+    /// final-yes guard still holds. Retries are a minute apart, so only
+    /// the first confirmation can make Maya's card a plan.
+    @Test func aYesBeingRecordedIsStillOnItsWay() async throws {
+        let slow = PickAPlaceConfiguration(retryInterval: .seconds(60), maxRetryInterval: .seconds(60),
+                                           answerWindow: .seconds(30), confirmWindow: .seconds(30))
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all + [Self.greenBowl])
+        let ledger = YesWriteHold()
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: slow)
+        let maya = Phone("Maya", hub: hub, maps: maps, placeLedger: ledger, configuration: slow)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: slow)
+        let group = try await Group([oliver, maya, jake], hub: hub)
+        defer { Task { await ledger.open(); await group.stop() } }
+        let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        await share(plan, with: [oliver, maya, jake])
+        let conversation = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)],
+                                                     chainedFrom: plan.origin).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation), "\(phone.name)") }
+        try await jake.accept(in: conversation)
+        try await oliver.accept(in: conversation)
+
+        let yes = Task { try await maya.accept(in: conversation) }
+        #expect(await eventually { await ledger.waiting >= 1 })
+        #expect(await oliver.reaches(.planned, in: conversation))
+        #expect(await eventually { await maya.service.invites[conversation]?.waitingConfirmation != nil })
+        await #expect(throws: PickAPlaceError.yesIsFinal) { try await maya.pass(in: conversation) }
+
+        await ledger.open()
+        try await yes.value
+        #expect(await maya.reaches(.planned, in: conversation))
+        #expect(await group.lifecyclesWereLegal())
+    }
+}
+
+/// A Pick a place ledger whose yes writes wait for the test, as a slow
+/// store would; everything else goes straight through.
+actor YesWriteHold: PickAPlaceLedger {
+    let base = InMemoryPickAPlaceLedger()
+    private var isOpen = false
+    private(set) var waiting = 0
+
+    func open() { isOpen = true }
+
+    func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws {
+        waiting += 1
+        while !isOpen { try? await Task.sleep(for: .milliseconds(5)) }
+        try await base.recordYes(yes, for: conversation)
+    }
+
+    func yes(for conversation: ConversationID) async throws -> RecordedYes? { try await base.yes(for: conversation) }
+    func admissions(since date: Date) async throws -> [PeerID: [Date]] { try await base.admissions(since: date) }
+    func recordAdmission(_ peer: PeerID, at date: Date) async throws { try await base.recordAdmission(peer, at: date) }
+    func pendingWithdrawals() async throws -> [PendingWithdrawal] { try await base.pendingWithdrawals() }
+    func recordWithdrawal(_ withdrawal: PendingWithdrawal) async throws { try await base.recordWithdrawal(withdrawal) }
+    func clearWithdrawal(_ conversation: ConversationID) async throws { try await base.clearWithdrawal(conversation) }
+    func deadlines(for conversation: ConversationID) async throws -> RequestDeadlines? { try await base.deadlines(for: conversation) }
+    func recordDeadlines(_ deadlines: RequestDeadlines, for conversation: ConversationID) async throws {
+        try await base.recordDeadlines(deadlines, for: conversation)
+    }
+    func requestKind(for conversation: ConversationID) async throws -> PlaceRequestKind? { try await base.requestKind(for: conversation) }
+    func recordRequestKind(_ kind: PlaceRequestKind, for conversation: ConversationID, at date: Date) async throws {
+        try await base.recordRequestKind(kind, for: conversation, at: date)
+    }
+    func acceptedProposals(for conversation: ConversationID) async throws -> [PeerID: MessageID]? {
+        try await base.acceptedProposals(for: conversation)
+    }
+    func recordAcceptedProposals(_ proposals: [PeerID: MessageID], for conversation: ConversationID, at date: Date) async throws {
+        try await base.recordAcceptedProposals(proposals, for: conversation, at: date)
+    }
 }
