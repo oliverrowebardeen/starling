@@ -45,7 +45,12 @@ Primary sources checked on 2026-10-02:
    - A failed send and a dropped link no longer end it. Only its timeouts do: 60 s to the code (was 30) and 120 s to answer.
 2. **A finished ceremony lingers.** For 30 s it answers the peer's resends with its last messages (its accept, or its cancel), at most 3 times. So a lost final accept still arrives, and two finished phones cannot keep answering each other.
 3. **Attempts are named.** Hellos and aborts carry an 8-byte attempt ID, new for each `pair` call.
-   - Before a code is shown, a hello for a new attempt means the other phone started over, and this one restarts its handshake with fresh keys and fresh nonces. A nonce the other side has seen is never committed to again (ADR 0101's commit-then-reveal needs fresh randomness on every run).
+   - Before this phone has sent its nonce, a hello for a new attempt means the other phone started over, and this one restarts its handshake with fresh keys and a fresh nonce. The initiator sends its nonce in message 3, and the responder in its reveal. Up to then it has sent at most a commitment, which tells the other side nothing.
+   - **After its nonce has gone out, a hello for a new attempt ends the ceremony where the owner sees it, instead of restarting** (review round 3 of #104). One ceremony gives out one nonce, so one code.
+     - The attack this stops: a phone in the middle of two victims is the responder to both. It learns each victim's code from that victim's message 3.
+     - Under the first version of this ADR, when the two codes differed it held back its reveal and sent a new hello. The victim, still showing no code, restarted silently with a fresh nonce. That was a new code to try every two round trips, unseen, until the two matched and both owners saved the middle phone.
+     - Now every try costs a failure on the victim's screen, as before #104.
+     - No silent restart after the nonce is allowed, not even one. The stuck-handshake case it would have served is covered by the one automatic rejoin in decision 4.
    - A restart keeps the local attempt ID, so two phones never restart each other in a loop, and keeps the original timer, so restarts cannot extend a ceremony.
    - An abort ends a ceremony only if it names the attempt the ceremony answers, so a stale abort cannot end a newer one.
    - After a code is shown, nothing unauthenticated changes it (ADR 0101 decision 4 stands).
@@ -53,6 +58,8 @@ Primary sources checked on 2026-10-02:
 4. **One pick is enough.**
    - The service lists phones whose hellos ask to pair with no ceremony running here (`requests()`, each kept for 5 s after its last hello).
    - The app joins a request while the sheet is open and idle. A request comes only from a phone whose owner picked this one, by its PeerID. The code comparison still decides.
+   - After a failure the owner did not choose, the sheet rejoins a new request from the same phone on its own, **at most once per sheet**. After that the owner taps Try again (review round 3 of #104). Each rejoin is another code a phone in the middle could try, so the free ones are capped at one.
+   - Cancel on Waiting asks the ceremony to stop but keeps following it. If both owners had confirmed, the ceremony is past its commit point and saves the friend (ADR 0101 decision 2, kept so pairing never ends one-sided), and the sheet goes on to the name step. Waiting has no Close and cannot be swiped away.
    - An attacker in range can at most show a code that will not match, which is the denial of service an abort already allowed.
    - Each attempt on the sheet has a generation that Cancel, the sheet closing, and every new attempt move forward (Codex review of PR #104).
      - A session returned for an older attempt is cancelled, not installed.
@@ -63,6 +70,7 @@ Primary sources checked on 2026-10-02:
    - A new attempt takes its generation, and shows Connecting, before it waits on the old session's cancel, and checks again afterwards. Try again does nothing unless the sheet shows a failure (Codex re-review of #104).
    - The code buttons capture the comparison they were drawn for: attempt, session, and code. A tap answers that comparison only, never one that replaced it before the tap ran.
    - A phone that joins a request starts bound to that request's attempt ID, so the initiator starting over restarts it.
+   - Overlapping `pair` calls for one peer: the call that installs last cancels any ceremony another call registered meanwhile, so none runs on unheard.
 5. **One service over every link.** The app runs one `PairingService` over the pairing links of every `SecureTransport`, sending each frame on all of them and listening on all of them. The phones meet on whichever link works. `PairingRoute` is removed (ADR 0145 decision 4).
 6. **One Wi-Fi Aware role per paired device** (`WiFiAwareTransport`, replacing ADR 0110 decision 3):
    - The phone whose owner picked in `WiFiAwareDevicePicker` subscribes and dials.
@@ -97,7 +105,11 @@ Primary sources checked on 2026-10-02:
 - **A phone with friends in both roles still publishes and subscribes at once**, to different devices. If the reported failure is per device rather than per pair, a later change can use one global role per phone. The device checklist and the pairing log will show it.
 - The ceremony now sends a frame per second while it waits, on every link, for at most its 60 s and 120 s windows.
 - Threat model input (`docs/requests/P15-G.md`):
-  - Before a code is shown, an attacker in range can restart a ceremony with a forged hello or end it with a forged abort for the right attempt. This is denial of service only, as before.
+  - **The other phone in the ceremony**, including a phone in the middle, gets one nonce, so one code, per ceremony from each victim. Any further try needs a new ceremony.
+    - Every new ceremony follows a failure the victim's owner sees ("Pairing didn't finish").
+    - At most one per sheet starts without the owner's tap.
+    - So the middle phone wins with probability about 10^-6 per ceremony, and each failed try shows on a screen, the bound ADR 0101 sets.
+  - **A third phone in range**, before this phone's nonce goes out, can restart a ceremony with a forged hello, or end it with a forged abort for the right attempt. After the nonce, a forged hello ends the ceremony visibly. Either way it learns no code, and this is denial of service only, as before.
   - Requests are unauthenticated claims; joining one only starts a ceremony.
   - A forged link hello can at most set a Wi-Fi Aware role that stops linking until the next settled hello. This is denial of service only.
 - `WAPairedDevice` names "may be intercepted or manipulated by an attacker" (ADR 0102). They label phones and seed a suggestion; they never become a nickname without the owner's Done.
