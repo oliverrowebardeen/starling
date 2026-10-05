@@ -437,8 +437,14 @@ public actor ChangePlanService: SkillService {
     }
 
     /// An invite to a plan this phone is not in: a friend is being added.
+    /// Only an invite counts: it names no asked roster (an offer to someone
+    /// in the plan does), and this phone is the friend being added, last in
+    /// its roster. So someone who left the plan never reads an offer meant
+    /// for its members as an invite back in (final review of PR #111,
+    /// finding 4).
     private func invited(_ envelope: Envelope, offer: Proposal, planConversation: ConversationID) async {
         if let expires = offer.expiresAt?.date, expires <= now() { return }
+        guard offer.inReplyTo == nil, case .peers(let roster)? = offer.terms[.people], roster.last == me else { return }
         guard envelope.sender != me,
               let plan = PlanChange.invitedPlan(from: offer.terms, origin: planConversation, revision: UInt32(offer.round) + 1,
                                                 sender: envelope.sender, me: me),
@@ -560,6 +566,12 @@ public actor ChangePlanService: SkillService {
     /// in this conversation; one that arrives before Outbox returned that
     /// offer's ID is held until it does.
     private func vote(_ proposal: MessageID, from peer: PeerID, in id: InteractionID) async {
+        guard let asked = sessions[id], asked.step == .asking || asked.step == .inviting else { return }
+        // Only from someone in the plan as it stands, or the friend being
+        // added (finding 4): a yes from someone who has left counts for nothing.
+        if peer != asked.friend {
+            guard let current = await planLookup(asked.planConversation), current.plan.attendees.peers.contains(peer) else { return }
+        }
         guard var session = sessions[id], session.step == .asking || session.step == .inviting else { return }
         guard let sent = session.offers[peer] else {
             session.early[peer] = proposal

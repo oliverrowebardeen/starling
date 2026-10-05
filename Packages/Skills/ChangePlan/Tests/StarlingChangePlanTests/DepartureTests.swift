@@ -61,7 +61,7 @@ import Testing
     @Test func anAddedFriendWhoLeavesRetiresTheirPlansConversationFirst() async throws {
         let group = Group(extra: [sam])
         let network = group.network
-        try await group.suggest(.change(time: nil, activity: nil, adding: sam), by: alex)
+        try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: sam), by: alex)
         await network.deliver()
         try await network.until("cards up") { await ReliabilityTests.cardsUp(group) }
         for person in [maya, jake] {
@@ -82,5 +82,44 @@ import Testing
         #expect(try await group.phone(sam).ledger.isRetired(group.origin))
         #expect(await network.problems().isEmpty)
         await network.shutdown()
+    }
+
+    /// Finding 4: Jake has left, but Alex has not heard yet, so Alex's next
+    /// suggestion, a later time with Sam added, still asks Jake. Jake holds
+    /// no plan; the offer, whose roster and time make a whole plan, is not
+    /// an invite back in.
+    @Test func someoneWhoLeftDoesNotReadAMembersOfferAsAnInvite() async throws {
+        let group = Group(extra: [sam])
+        let network = group.network
+        network.drop("Jake > Alex: propose")
+        try await group.suggest(.leave, by: jake)
+        await network.deliver()
+        try await network.until("Jake's plan ended") { await group.phone(jake).plan(group.origin) == nil }
+        try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: sam), by: alex)
+        await network.deliver()
+        #expect(network.transcript.contains("Alex > Jake: propose"))
+        await network.settle()
+        #expect(await group.openCard(of: jake) == nil)
+        #expect(await group.phone(jake).changes().allSatisfy { $0.role == .initiator })
+        await network.shutdown()
+    }
+
+    /// Finding 4: an invite opens a card only for the friend it adds, the
+    /// last in its roster.
+    @Test func anInviteOpensACardOnlyForTheFriendItAdds() async throws {
+        let group = Group(extra: [sam])
+        let phone = group.phone(sam)
+        func invite(_ roster: [PeerID]) throws -> Envelope {
+            let terms = try Terms([.people: .peers(roster), .activity: .keywords([Fixtures.boba]), .time: .slots([Fixtures.tonight])])
+            return try Envelope(conversation: ConversationID(), sender: alex, recipient: sam, sequence: 0, sentAt: Timestamp(group.clock.now),
+                                body: .propose(Proposal(round: 0, terms: terms, expiresAt: Timestamp(Fixtures.date(minutes: 60)))),
+                                skill: ChangePlan.descriptor.ref, mode: .invite, chainedFrom: group.origin)
+        }
+        await phone.service.handle(.message(try invite([alex, sam, maya, jake])))
+        await group.network.settle()
+        #expect(await phone.changes().isEmpty)
+        await phone.service.handle(.message(try invite([alex, maya, jake, sam])))
+        try await group.network.until("Sam's card") { await group.openCard(of: sam) != nil }
+        await group.network.shutdown()
     }
 }
