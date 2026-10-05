@@ -12,14 +12,14 @@ import Testing
     func applied() throws -> ChangePlanRecord {
         func json<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: JSONEncoder().encode([value]), options: [.fragmentsAllowed]) as! [Any] }
         let body: [String: Any] = [
-            "interaction": (try json(InteractionID()) as! [Any])[0],
-            "conversation": (try json(ConversationID()) as! [Any])[0],
+            "id": (try json(UUID()) as! [Any])[0],
+            "departure": (try json(MessageID()) as! [Any])[0],
             "planConversation": (try json(ConversationID()) as! [Any])[0],
-            "suggester": (try json(PeerID.random()) as! [Any])[0],
-            "offer": (try json(MessageID()) as! [Any])[0],
+            "peer": (try json(PeerID.random()) as! [Any])[0],
+            "revision": 1,
             "until": (try json(Date().addingTimeInterval(3600)) as! [Any])[0],
         ]
-        let data = try JSONSerialization.data(withJSONObject: ["applied": ["_0": body]])
+        let data = try JSONSerialization.data(withJSONObject: ["departed": ["_0": body]])
         return try JSONDecoder().decode(ChangePlanRecord.self, from: data)
     }
 
