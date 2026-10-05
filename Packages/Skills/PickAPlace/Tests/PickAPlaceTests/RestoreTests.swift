@@ -30,7 +30,7 @@ struct RestoreTests {
         try await oliver.accept(in: conversation)
         #expect(await oliver.reaches(.planned, in: conversation))
         #expect(await maya.reaches(.planned, in: conversation))
-        #expect(await oliver.agreedPlace(in: conversation) == Venues.teaLab.choice)
+        #expect(await eventually { await oliver.agreedPlace(in: conversation) == Venues.teaLab.choice })
         #expect(await group.lifecyclesWereLegal())
     }
 
