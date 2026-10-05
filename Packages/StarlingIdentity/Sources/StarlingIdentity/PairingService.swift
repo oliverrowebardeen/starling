@@ -55,6 +55,9 @@ public enum PairingStep: Hashable, Sendable {
     case ignored(PairingMessage)
     /// The other phone started over before a code was shown; so did this one.
     case restarted
+    /// The other phone asked to start over after this phone's nonce went
+    /// out; the ceremony ended instead (ADR 0260).
+    case refusedRestart
     case codeShown
     case confirmed(codesMatch: Bool)
     case peerAccepted
@@ -354,9 +357,11 @@ public actor PairingService {
 /// interval, and answers a repeat of the message it last answered with the
 /// same reply. Frames that do not parse, decrypt, or fit the current step
 /// are dropped, so injected traffic cannot end a ceremony once keys exist;
-/// only the code comparison decides. Before a code is shown, a hello for a
-/// new attempt means the other phone started over, and so does this one,
-/// with fresh keys and nonces.
+/// only the code comparison decides. Before this phone sends its nonce, a
+/// hello for a new attempt means the other phone started over, and so does
+/// this one, with fresh keys and nonces. After its nonce has gone out, such
+/// a hello ends the ceremony instead: a phone in the middle could otherwise
+/// draw a fresh code for each restart, unseen.
 actor PairingCeremony: PairingSession {
     enum MessageType: UInt8 {
         case hello = 0x01, message1 = 0x02, message2 = 0x03, message3 = 0x04, secure = 0x05, abort = 0x06
@@ -407,6 +412,9 @@ actor PairingCeremony: PairingSession {
     /// Fresh for every handshake, restarts included: reusing a nonce after
     /// the other side saw it would let that side choose its own afterwards.
     private var localNonce = PairingCode.nonce()
+    /// This phone sent its nonce (message 3, or the reveal). From then on
+    /// the ceremony never restarts: one nonce, so one code, per ceremony.
+    private var nonceSent = false
     private var responderCommitment: Data?
     private var initiatorNonce: Data?
     private var localConfirmed = false
@@ -532,10 +540,18 @@ actor PairingCeremony: PairingSession {
         guard let parsed = Self.attempt(in: body) else { return trace(.ignored(.hello)) }
         if let theirs = parsed {
             if let bound = peerAttempt, bound != theirs {
-                // The other phone started over. Before a code is shown, so
-                // does this one; afterwards keys exist and a hello cannot
-                // derail the comparison (ADR 0101 decision 4).
+                // The other phone started over. Once a code is shown, keys
+                // exist and a hello cannot derail the comparison (ADR 0101
+                // decision 4).
                 guard showsNoCode else { return trace(.ignored(.hello)) }
+                // Once this phone's nonce has gone out, the other phone may
+                // already know this side's code. Restarting would hand it a
+                // fresh code to try for free, so the ceremony ends where the
+                // owner sees it (review round 3 of #104, ADR 0260).
+                if nonceSent {
+                    trace(.refusedRestart)
+                    return await end(.cancelled, notice: .cancel)
+                }
                 if phase != .waiting { restart() }
             }
             peerAttempt = theirs
@@ -556,8 +572,9 @@ actor PairingCeremony: PairingSession {
         }
     }
 
-    /// Back to the start of the handshake with fresh keys and nonces. The
-    /// handshake timer keeps running, so restarts cannot extend a ceremony.
+    /// Back to the start of the handshake with fresh keys and nonces. Only
+    /// before this phone's nonce went out, and the handshake timer keeps
+    /// running, so restarts cannot extend a ceremony or yield a second code.
     private func restart() {
         trace(.restarted)
         phase = .waiting
@@ -629,6 +646,7 @@ actor PairingCeremony: PairingSession {
         responderCommitment = commitment
         lastAnswered = body
         phase = .awaitingReveal
+        nonceSent = true
         await sendHandshake(.message3, reply)
     }
 
@@ -643,6 +661,7 @@ actor PairingCeremony: PairingSession {
         initiatorNonce = nonce
         lastAnswered = body
         showCode(initiatorNonce: nonce, responderNonce: localNonce)
+        nonceSent = true
         await sendSecure(.reveal, localNonce)
     }
 
@@ -861,6 +880,7 @@ extension PairingStep: CustomStringConvertible {
         case .received(let message): "received \(message.rawValue)"
         case .ignored(let message): "ignored \(message.rawValue)"
         case .restarted: "the other phone started over; restarted the handshake"
+        case .refusedRestart: "the other phone asked to start over after this phone's nonce went out; ended"
         case .codeShown: "code shown"
         case .confirmed(let codesMatch): codesMatch ? "owner says the codes match" : "owner says the codes differ"
         case .peerAccepted: "the other owner confirmed"

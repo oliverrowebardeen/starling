@@ -17,6 +17,7 @@ actor LossyPairingLink: Transport {
     private var losing: [PairingCeremony.MessageType: Int] = [:]
     private(set) var lost = 0
     private(set) var sent: [PairingCeremony.MessageType] = []
+    private var bodies: [PairingCeremony.MessageType: Set<Data>] = [:]
 
     init(_ inner: LoopbackTransport) { self.inner = inner }
 
@@ -24,6 +25,8 @@ actor LossyPairingLink: Transport {
     func lose(_ type: PairingCeremony.MessageType, count: Int = 1) { losing[type] = count }
     func stopLosing() { losing = [:] }
     func sentCount(_ type: PairingCeremony.MessageType) -> Int { sent.filter { $0 == type }.count }
+    /// Different frames of `type` sent; a resend repeats the same bytes.
+    func distinctSent(_ type: PairingCeremony.MessageType) -> Int { bodies[type]?.count ?? 0 }
 
     func start() async throws { try await inner.start() }
     func stop() async { await inner.stop() }
@@ -32,6 +35,7 @@ actor LossyPairingLink: Transport {
         let type = frame.bytes.first.flatMap(PairingCeremony.MessageType.init(rawValue:))
         if let type {
             sent.append(type)
+            bodies[type, default: []].insert(frame.bytes)
             if let left = losing[type], left > 0 {
                 losing[type] = left == .max ? left : left - 1
                 lost += 1
@@ -164,22 +168,32 @@ extension PairingConfiguration {
     }
 
     /// One phone gave up and started over while the other was still in the
-    /// old handshake. The old ceremony ignored the new hello, so every new
-    /// attempt timed out until both happened to start over together.
-    @Test func aCeremonyStuckInAnOldHandshakeFollowsTheOtherPhoneStartingOver() async throws {
+    /// old handshake. Before, the old ceremony ignored the new hello, so
+    /// every new attempt timed out until both owners restarted together.
+    ///
+    /// Here the initiator had already sent its nonce, so it does not restart
+    /// silently (review round 3 of #104): it fails at once where its owner
+    /// sees it, and the next ceremony (the sheet's one automatic rejoin)
+    /// pairs.
+    @Test func aCeremonyStuckAfterItsNonceEndsVisiblyAndTheNextOnePairs() async throws {
         let hub = LoopbackHub()
         let (a, b) = try await LossyDevice.pair(hub: hub)
         // The initiator's third message never arrives, and neither does the
         // responder's cancel: the initiator is left waiting for the reveal.
         await a.link.lose(.message3, count: .max)
         await b.link.lose(.abort, count: .max)
-        let sa = try await a.service.pair(with: b.id, nickname: "Bob")
+        let stuck = try await a.service.pair(with: b.id, nickname: "Bob")
+        let stuckEvents = await Recorder.recording(stuck.events)
         let stale = try await b.service.pair(with: a.id, nickname: "Alice")
         try await eventually("a sent message 3") { await a.link.sentCount(.message3) >= 1 }
         await stale.cancel()
         await a.link.stopLosing()
 
         let sb = try await b.service.pair(with: a.id, nickname: "Alice")
+        #expect(try await stuckEvents.waitForOutcome() == .failed(.cancelled))
+        #expect(await stuckEvents.code == nil)
+        try await eventually("a lists b's new request") { await a.service.requests() == [b.id] }
+        let sa = try await a.service.pair(with: b.id, nickname: "Bob")
         let (ea, eb) = (await Recorder.recording(sa.events), await Recorder.recording(sb.events))
         try await confirmBoth(ea, eb, sa, sb)
         try await expectPaired(ea, eb)
@@ -233,23 +247,25 @@ extension PairingConfiguration {
         try await eventually("the request expires") { await b.service.requests().isEmpty }
     }
 
-    /// A restart after the other phone started over uses fresh nonces: a
-    /// nonce the other side has seen is never committed to again.
-    @Test func aRestartedHandshakeGivesANewCode() async throws {
+    /// A phone that has not sent its nonce yet restarts when the other phone
+    /// starts over, with a fresh commitment, so a nonce the other side might
+    /// have seen is never committed to again.
+    @Test func aResponderRestartsBeforeItsNonceWithAFreshCommitment() async throws {
         let hub = LoopbackHub()
         let (a, b) = try await LossyDevice.pair(hub: hub)
         await a.link.lose(.message3, count: .max)
-        await b.link.lose(.abort, count: .max)
-        let sa = try await a.service.pair(with: b.id, nickname: "Bob")
-        _ = try await b.service.pair(with: a.id, nickname: "Alice")
-        try await eventually("a sent message 3 twice") { await a.link.sentCount(.message3) >= 2 }
-        let firstHandshake = await a.link.sentCount(.message1)
-        await a.link.stopLosing()
+        let first = try await a.service.pair(with: b.id, nickname: "Bob")
         let sb = try await b.service.pair(with: a.id, nickname: "Alice")
+        // The initiator has its keys (message 3 went out, and was lost), so
+        // its cancel is encrypted and the responder cannot read it.
+        try await eventually("a sent message 3") { await a.link.sentCount(.message3) >= 1 }
+        await first.cancel()
+        await a.link.stopLosing()
+        let sa = try await a.service.pair(with: b.id, nickname: "Bob")
         let (ea, eb) = (await Recorder.recording(sa.events), await Recorder.recording(sb.events))
         let code = try await ea.waitForCode()
         #expect(try await eb.waitForCode() == code)
-        #expect(await a.link.sentCount(.message1) > firstHandshake, "the initiator ran a new handshake")
+        #expect(await b.link.distinctSent(.message2) == 2, "the responder committed to a fresh nonce")
     }
 
     /// A ceremony that is never answered still ends, and a link that never
@@ -346,5 +362,69 @@ extension PairingConfiguration {
         #expect(!String(describing: await log.values).contains(code))
         #expect(await log.values.first { $0.step == .codeShown }?.description.hasSuffix(": code shown") == true)
         withExtendedLifetime(services) {}
+    }
+}
+
+/// Review round 3 of #104 (HIGH). A phone in the middle of two victims is
+/// the responder to both. Once a victim has sent its nonce, the middle
+/// phone knows that victim's code; if it does not match the other victim's,
+/// it holds back its reveal and sends a hello for a new attempt. If that
+/// restarted the victim silently with a fresh nonce, the middle phone could
+/// keep drawing codes until two matched. A victim gives out one nonce per
+/// ceremony and fails visibly instead.
+@Suite struct PairingRestartLimitTests {
+    @Test func aResponderHoldingBackItsRevealGetsOneNonceAndAVisibleFailure() async throws {
+        let hub = LoopbackHub()
+        var victimKey = IdentityKeyPair.generate()
+        var middleKey = IdentityKeyPair.generate()
+        if middleKey.peerID < victimKey.peerID { swap(&victimKey, &middleKey) }
+        let victim = try await PairingDevice.make(hub: hub, identity: victimKey, configuration: .reliable)
+        let middle = LoopbackTransport(localPeer: middleKey.peerID, hub: hub)
+        let inbound = await Recorder.recording(middle.events)
+        try await middle.start()
+
+        let session = try await victim.service.pair(with: middleKey.peerID, nickname: "Bob")
+        let events = await Recorder.recording(session.events)
+        typealias T = PairingCeremony.MessageType
+        @Sendable func frames(_ type: T) async -> [Data] {
+            await inbound.received.filter { $0.0.first == type.rawValue }.map { Data($0.0.dropFirst()) }
+        }
+        func hello() throws -> Frame { try Frame(Data([T.hello.rawValue]) + PairingCode.nonce().prefix(8)) }
+
+        // Up to five rounds: answer message 1, read the victim's nonce in
+        // message 3, hold back the reveal, and ask for a new attempt.
+        try await middle.send(hello(), to: victim.id)
+        var answered = 0
+        var rounds = 0
+        for _ in 0..<5 {
+            // Wait for a handshake not answered yet; none means no restart.
+            var seen = 0
+            for _ in 0..<100 {
+                seen = Set(await frames(.message1)).count
+                if seen > answered { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard seen > answered else { break }
+            answered = seen
+            rounds += 1
+            var handshake = try NoiseHandshakeState(
+                pattern: .xx, initiator: false, prologue: PairingCeremony.prologue,
+                localStatic: middleKey.privateKey, remoteStatic: nil
+            )
+            _ = try handshake.readMessage(try #require(await frames(.message1).last))
+            let reply = try handshake.writeMessage(payload: PairingCode.commitment(to: PairingCode.nonce()))
+            try await middle.send(Frame(Data([T.message2.rawValue]) + reply), to: victim.id)
+            let before = Set(await frames(.message3)).count
+            try await eventually("the victim sent its nonce") { Set(await frames(.message3)).count > before }
+            try await middle.send(hello(), to: victim.id)
+            try await Task.sleep(for: .milliseconds(300))
+        }
+
+        #expect(rounds == 1, "the middle phone got one round")
+        #expect(Set(await frames(.message3)).count == 1, "one nonce for the whole ceremony")
+        #expect(Set(await frames(.message1)).count == 1, "no new handshake after the nonce went out")
+        #expect(try await events.waitForOutcome() == .failed(.cancelled), "the owner sees pairing stop")
+        #expect(await events.code == nil)
+        #expect(try await victim.store.all().isEmpty)
     }
 }
