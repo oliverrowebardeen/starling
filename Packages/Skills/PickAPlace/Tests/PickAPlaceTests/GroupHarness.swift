@@ -192,7 +192,10 @@ actor Coordinator {
     }
 
     private func settle(_ event: InteractionEvent, for disclosure: Disclosure) {
-        guard var interaction = target(disclosure) else { return }
+        // A sheet for an interaction that has already ended is dismissed,
+        // as the app's sheet is: a withdrawal can end it before the sheet
+        // it cancelled reports back.
+        guard var interaction = target(disclosure), !interaction.state.isFinal else { return }
         do {
             try interaction.apply(event, at: Timestamp(Date()))
             interactions[interaction.id] = interaction
