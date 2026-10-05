@@ -168,6 +168,9 @@ public final class ComposerModel {
     /// Runs before every send: the first time, the deliberate Local Network
     /// prompt and the radios (ADR 0013).
     public var beforeFirstRequest: @MainActor () async -> Void
+    /// Whether a change holds the plan an interaction holds (ADR 0023).
+    /// `AppModel` sets it.
+    public var planIsChanging: @MainActor (InteractionID) -> Bool = { _ in false }
     let now: @Sendable () -> Date
     let timeZone: TimeZone
 
@@ -637,6 +640,10 @@ public final class ComposerModel {
         }
         let missing = descriptor.intent.requiredIssues.subtracting(constraints.constraints.keys)
         if let issue = missing.sorted().first { return Self.missingSlotNote(issue, descriptor) }
+        // One change per plan at a time (ADR 0023).
+        if let chain, PlanChangesInProgress.skills.contains(descriptor.id), planIsChanging(chain.suggestion.parent) {
+            return PlanChangesInProgress.note
+        }
         if descriptor.id == .pickAPlace, let places {
             if places.chosen.isEmpty { return "Find a few places, or type one." }
             if places.askable(limits: requestLimits).isEmpty { return "None of these fit your limits." }

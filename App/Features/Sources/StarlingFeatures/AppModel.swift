@@ -294,6 +294,10 @@ public final class AppModel {
             places: services.placeFinder.flatMap { finder in services.stagedPlaces.map { PlacePicker(finder: finder, staging: $0) } }
         )
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
+        composer.planIsChanging = { [weak self] id in
+            guard let self, let origin = lifecycle.interaction(id)?.plan?.origin else { return false }
+            return services.changesInProgress?.isHeld(origin) == true
+        }
 
         services.choices?.attach(self)
         services.plans?.attach(lifecycle)

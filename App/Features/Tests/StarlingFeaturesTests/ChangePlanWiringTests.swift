@@ -279,8 +279,8 @@ import Testing
         #expect(try PlanChange.decode(request).change == .change(time: nil, activity: try Keyword("dinner"), adding: nil))
         let link = try #require(app.lifecycle.interaction(request.interaction))
         #expect(link.chain?.parent == root.id)
-        #expect(app.changeUnavailableReason(for: root) == "A suggestion for this plan is still open.")
-        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("tacos"), adding: nil), on: root) == "A suggestion for this plan is still open.")
+        #expect(app.changeUnavailableReason(for: root) == PlanChangesInProgress.note)
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("tacos"), adding: nil), on: root) == PlanChangesInProgress.note)
         #expect(await changeService?.started.count == 1)
     }
 

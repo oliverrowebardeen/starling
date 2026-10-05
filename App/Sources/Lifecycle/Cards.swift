@@ -85,9 +85,10 @@ struct ProposalCard: View {
     let text: (headline: String, detail: String?)?
     let isFriend: (PeerID) -> Bool
     let localPeer: PeerID?
-    /// A yes to a change of place was already sent and is final: no
-    /// answers, just where to go instead (ADR 0233).
-    var yesIsFinal = false
+    /// Answers the card leaves out, and the line it shows instead: a yes
+    /// to a change of place that is final (ADR 0233), or another change to
+    /// the plan in progress (ADR 0023).
+    var limit: AnswerLimit?
     let answer: (OwnerAnswer) async -> Void
     @State private var isAnswering = false
 
@@ -104,16 +105,19 @@ struct ProposalCard: View {
                     Text(detail).foregroundStyle(.secondary)
                 }
             }
-            if yesIsFinal {
-                Text(AppModel.placeYesIsFinalNote).font(.footnote).foregroundStyle(.secondary)
-            } else if let revision = summary.interaction.proposalRevision {
+            if let limit {
+                Text(limit.note).font(.footnote).foregroundStyle(.secondary)
+            }
+            if limit?.offersNo ?? true, let revision = summary.interaction.proposalRevision {
                 HStack(spacing: 12) {
-                    Button {
-                        respond(.accept(proposal: revision))
-                    } label: {
-                        Text(summary.skill.wording.acceptAction).frame(maxWidth: .infinity)
+                    if limit == nil {
+                        Button {
+                            respond(.accept(proposal: revision))
+                        } label: {
+                            Text(summary.skill.wording.acceptAction).frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
                     Button {
                         respond(.pass)
                     } label: {
@@ -124,7 +128,7 @@ struct ProposalCard: View {
                 .controlSize(.large)
                 .disabled(isAnswering)
             }
-            if !yesIsFinal {
+            if limit?.offersNo ?? true {
                 Text(summary.skill.wording.declineNote).font(.footnote).foregroundStyle(.secondary)
             }
         }

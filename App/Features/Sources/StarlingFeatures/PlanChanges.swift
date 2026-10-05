@@ -17,11 +17,14 @@ extension AppModel {
     /// Why "Suggest a change" is off for a standing plan, in plain words, or
     /// nil when it is on. Never off without saying why.
     public func changeUnavailableReason(for root: Interaction) -> String? {
-        guard root.state == .planned, root.plan != nil else { return "Only a plan that's still on can change." }
+        guard root.state == .planned, let plan = root.plan else { return "Only a plan that's still on can change." }
+        // One change per plan at a time (ADR 0023), a place as well.
+        if services.changesInProgress?.isHeld(plan.origin) == true || ChainPlanner.openChange(for: root, in: lifecycle.interactions) != nil {
+            return PlanChangesInProgress.note
+        }
         if changeOffer(for: root) != nil { return nil }
         guard lifecycle.skillsInBuild.contains(.changePlan) else { return "Changing a plan isn't in this build yet." }
         guard settings.isOn(.changePlan) else { return "Change the plan is off in You." }
-        if ChainPlanner.openChange(for: root, in: lifecycle.interactions) != nil { return "A suggestion for this plan is still open." }
         if (root.plan?.revision ?? 0) >= ChainPlanner.maxChangeableRevision { return "This plan has changed as many times as it can." }
         if let end = root.plan?.endsAt, Date() >= end { return "This plan has already happened." }
         return "Not everyone's Starling can change plans yet."
@@ -101,17 +104,52 @@ extension AppModel {
         // The owner's yes moves a card to confirmed; it stays said after.
         guard item.skill.id == .pickAPlace, !item.state.isFinal,
               item.history.contains(where: { [.confirmed, .planned, .done].contains($0.state) }) else { return false }
-        let all = lifecycle.interactions
-        let plan: Plan? = if let parent = item.chain?.parent {
-            all.first { $0.id == parent }?.plan
-        } else if let hint = item.friendChainHint {
-            all.first { $0.skill.id != .pickAPlace && $0.planConversation == hint }?.plan
-        } else {
-            nil
-        }
-        return plan?.place != nil
+        return planChanged(by: item)?.place != nil
     }
 
-    public static let placeYesIsFinalNote = "Your yes to this place is final. To change the plan, use Suggest a change or Leave this plan."
+    nonisolated public static let placeYesIsFinalNote = "Your yes to this place is final. To change the plan, use Suggest a change or Leave this plan."
 
+    /// The plan a Pick a place or Change the plan interaction changes: the
+    /// one its link names, or, on a friend's phone, the one its card is
+    /// grouped under. Nil for anything else.
+    public func planChanged(by item: Interaction) -> Plan? {
+        guard PlanChangesInProgress.skills.contains(item.skill.id) else { return nil }
+        let all = lifecycle.interactions
+        if let parent = item.chain?.parent { return all.first { $0.id == parent }?.plan }
+        guard let hint = item.friendChainHint else { return nil }
+        return all.first { $0.skill.id != item.skill.id && $0.planConversation == hint && $0.plan != nil }?.plan
+    }
+
+    /// Why a card asking the owner offers less than its usual answers, or
+    /// nil when it offers both.
+    public func answerLimit(_ item: Interaction) -> AnswerLimit? {
+        if placeYesIsFinal(item) { return .yesIsFinal }
+        // Another change holds this card's plan (ADR 0023): a yes would be
+        // turned away, so it is not offered. A no still goes.
+        if item.state == .proposed, item.role != .initiator, let plan = planChanged(by: item),
+           services.changesInProgress?.isHeld(plan.origin, byOtherThan: item.conversation) == true {
+            return .anotherChangeInProgress
+        }
+        return nil
+    }
+
+}
+
+/// What a card asking the owner leaves out, and the line it shows instead.
+public enum AnswerLimit: Equatable, Sendable {
+    /// A yes to a change of place was sent and is final (ADR 0233): no
+    /// answers at all.
+    case yesIsFinal
+    /// Another change to the plan is open on this phone (ADR 0023): no yes.
+    case anotherChangeInProgress
+
+    public var note: String {
+        switch self {
+        case .yesIsFinal: AppModel.placeYesIsFinalNote
+        case .anotherChangeInProgress: PlanChangesInProgress.note
+        }
+    }
+
+    /// Whether the card still offers its no.
+    public var offersNo: Bool { self == .anotherChangeInProgress }
 }
