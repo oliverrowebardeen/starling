@@ -144,6 +144,9 @@ final class Phone: Sendable {
     /// While set, the coordinator loses the plan updates it is given, as an
     /// app that quits before saving them would.
     let losingUpdates = Flag()
+    /// While set, the coordinator loses every event it is given, as an app
+    /// killed before it saved any of them would.
+    let losingEverything = Flag()
     /// This phone's plan-change holds (ADR 0023), shared with every skill
     /// that changes plans. In memory: a relaunch starts with new ones.
     private let holdsBox = Mutex(PlanChangeHolds())
@@ -170,8 +173,9 @@ final class Phone: Sendable {
         inbox = Inbox(localPeer: me, now: { clock.now })
         let service = box.withLock { $0 }
         let (store, problems) = (store, problems)
-        let losing = losingUpdates
-        consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock, losing: losing) } }
+        let (losing, everything) = (losingUpdates, losingEverything)
+        consumer.withLock { $0 = Task { await Self.coordinate(service.events, store: store, problems: problems, clock: clock, losing: losing,
+                                                              everything: everything) } }
     }
 
     private static func makeService(outbox: Outbox, ledger: InMemoryConversationLedger, journal: TestJournal, holds: PlanChangeHolds, me: PeerID,
@@ -198,16 +202,19 @@ final class Phone: Sendable {
         await before(holds)
         let fresh = Self.makeService(outbox: outbox, ledger: ledger, journal: journal, holds: holds, me: me, store: store, clock: clock)
         box.withLock { $0 = fresh }
-        let (store, problems, clock, losing) = (store, problems, clock, losingUpdates)
+        let (store, problems, clock, losing, everything) = (store, problems, clock, losingUpdates, losingEverything)
         losing.set(false)
-        consumer.withLock { $0 = Task { await Self.coordinate(fresh.events, store: store, problems: problems, clock: clock, losing: losing) } }
+        everything.set(false)
+        consumer.withLock { $0 = Task { await Self.coordinate(fresh.events, store: store, problems: problems, clock: clock, losing: losing,
+                                                              everything: everything) } }
         await fresh.restore(await all())
     }
 
     /// The stand-in coordinator.
     private static func coordinate(_ events: AsyncStream<SkillEvent>, store: InMemoryInteractionStore, problems: Problems, clock: TestClock,
-                                   losing: Flag) async {
+                                   losing: Flag, everything: Flag) async {
         for await event in events {
+            if everything.isSet { continue }
             let at = Timestamp(clock.now)
             do {
                 switch event {

@@ -286,8 +286,8 @@ public actor ChangePlanService: SkillService {
         byConversation[request.conversation] = request.interaction
         await sendLeaveNotices(request.interaction)
         await settle(planConversation: plan.plan.origin, keepingYes: false)
-        await retire(plan.plan.origin)
-        await finish(request.interaction, with: [.withdrawn], then: [.lifecycle(plan.interaction, .withdrawn)])
+        await finish(request.interaction, with: [.withdrawn])
+        await endPlan(plan)
         startResending(request.interaction.rawValue)
     }
 
@@ -733,6 +733,12 @@ public actor ChangePlanService: SkillService {
         }
     }
 
+    /// This phone's plan ends withdrawn (its owner left, or only this phone
+    /// is left in it), after the plan's conversation is retired.
+    private func endPlan(_ plan: PlanRef) async {
+        if await retire(plan.plan.origin) { emit(plan.interaction, .withdrawn) }
+    }
+
     /// Ends whatever is open for a plan (its people changed), quietly. With
     /// `keepingYes`, a card that already said yes stays: someone else
     /// leaving does not undo a change that may have been committed.
@@ -1088,6 +1094,16 @@ public actor ChangePlanService: SkillService {
             case .leaving(let delivery):
                 leaving[delivery.interaction] = delivery
                 recovered.insert(delivery.interaction)
+                // A leave the crash interrupted ends here too, before its
+                // notices go out again (final review of PR #111, finding 2):
+                // the leave and this phone's plan end withdrawn, each after
+                // its conversation is retired.
+                if let leave = interactions.first(where: { $0.id == delivery.interaction }), !leave.state.isFinal {
+                    emit(leave.id, await retire(leave.conversation) ? .withdrawn : .failed)
+                }
+                if let current = await planLookup(delivery.planConversation), current.plan.attendees.peers.contains(me) {
+                    await endPlan(current)
+                }
             case .departed(let departure):
                 departed[departure.departure] = departure
                 // A departure applied but never made durable is applied again.

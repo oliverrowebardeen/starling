@@ -168,6 +168,33 @@ import Testing
         await network.shutdown()
     }
 
+    /// Final review of PR #111, finding 2: Jake's app is killed after his
+    /// notices go out but before his plan's withdrawal is saved. On relaunch
+    /// his plan ends, and the notice Maya missed goes out again.
+    @Test func aLeaveTheCrashInterruptedEndsTheLeaversPlanOnRestart() async throws {
+        let group = Group()
+        let network = group.network
+        let phone = group.phone(jake)
+        phone.losingEverything.set(true)
+        network.drop("Jake > Maya: propose")
+        let leave = try await group.suggest(.leave, by: jake)
+        await network.deliver()
+        try await network.until("Alex's plan shrank") { await group.phone(alex).plan(group.origin)?.attendees.peers == [alex, maya] }
+        // Nothing reached Jake's store: his plan still stands.
+        #expect(await phone.plan(group.origin) != nil)
+        #expect(await phone.interaction(leave.id)?.state.isFinal == false)
+        await phone.restart()
+        try await network.until("Jake's plan ended") { await phone.plan(group.origin) == nil }
+        #expect(await phone.interaction(group.roots[jake]!.id)?.state == .ended(.withdrawn))
+        #expect(await phone.interaction(leave.id)?.state == .ended(.withdrawn))
+        #expect(try await phone.ledger.isRetired(group.origin))
+        // The notice Maya missed went out again at once.
+        await network.deliver()
+        try await network.until("Maya's plan shrank") { await group.phone(maya).plan(group.origin)?.attendees.peers == [alex, maya] }
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
     // MARK: Issue #117: what cannot be recorded does not happen
 
     @Test func aCommitThatCannotBeRecordedChangesNothing() async throws {
