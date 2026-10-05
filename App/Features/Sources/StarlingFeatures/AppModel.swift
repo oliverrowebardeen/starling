@@ -549,29 +549,17 @@ public final class AppModel {
 
     /// A chained Pick a place that agreed on a place moves its parent's plan
     /// there (lane E's `ChainPlanner.parent(_:updatedBy:)`, P15-E 4.6).
-    /// A friend's request moves the plan too: on their phone it has no
-    /// chain, only the hint the coordinator grouped it by, so the plan is
-    /// found through that (review of #118). Without this a friend's stored
-    /// plan kept its old place and revision. Lane E's planner and the
-    /// coordinator apply it only at the plan's next revision.
+    /// The plan a Pick a place result moves, on every phone: lane E's
+    /// planner finds it, through the link's chain for this phone's own
+    /// link and through the hint for a friend's request, which has no
+    /// chain (P15-E request 6, review of #118), and applies the result only
+    /// over the plan's revision just before the one it names. The
+    /// coordinator also takes a plan only as its next revision.
     private func updateParent(of link: Interaction) {
-        guard let me = localPeer, let parent = parentPlan(of: link),
-              let updated = ChainPlanner(registry: services.registry, me: me).parent(parent, updatedBy: link)
+        guard let me = localPeer,
+              let updated = ChainPlanner(registry: services.registry, me: me).parent(updatedBy: link, in: lifecycle.interactions)
         else { return }
         lifecycle.update(updated)
-    }
-
-    /// The interaction holding the plan `link` continues: the one the
-    /// owner's link names, or, for a friend's request, the one holding the
-    /// plan its hint names (by `Plan.origin`), preferring the skill that
-    /// made the plan over another link that also carries it.
-    func parentPlan(of link: Interaction) -> Interaction? {
-        if let id = link.chain?.parent { return lifecycle.interaction(id) }
-        guard link.role == .invitee, let hint = link.friendChainHint else { return nil }
-        let holders = lifecycle.interactions.filter {
-            $0.id != link.id && $0.plan != nil && $0.planConversation == hint && ($0.state == .planned || $0.state == .done)
-        }
-        return holders.first { $0.skill.id != link.skill.id && $0.skill.id != .changePlan } ?? holders.first { $0.skill.id != link.skill.id }
     }
 
     /// Reads the recorder's view of which egress logs may be incomplete, and
