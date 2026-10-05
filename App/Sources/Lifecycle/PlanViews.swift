@@ -372,7 +372,9 @@ struct InteractionDetailView: View {
                 Section("What left your phone") {
                     EgressAuditView(shared: detail.shared, kept: detail.kept, isComplete: detail.auditIsComplete)
                 }
-                if interaction.role == .initiator, !interaction.state.isFinal, interaction.state != .planned {
+                if app.placeYesIsFinal(interaction) {
+                    Section { Text(AppModel.placeYesIsFinalNote).foregroundStyle(.secondary) }
+                } else if interaction.role == .initiator, !interaction.state.isFinal, interaction.state != .planned {
                     Section {
                         Button("Take it back", role: .destructive) { Task { await app.lifecycle.withdraw(id) } }
                     } footer: {

@@ -82,7 +82,8 @@ struct HomeView: View {
     @ViewBuilder private func needsYou(_ summary: InteractionSummary) -> some View {
         switch summary.interaction.state {
         case .proposed:
-            ProposalCard(summary: summary, text: app.proposals.text(for: summary.interaction, words: app.words, basis: app.changeBasis(for: summary.interaction)), isFriend: app.words.isFriend, localPeer: app.localPeer) { answer in
+            ProposalCard(summary: summary, text: app.proposals.text(for: summary.interaction, words: app.words, basis: app.changeBasis(for: summary.interaction)), isFriend: app.words.isFriend, localPeer: app.localPeer,
+                         yesIsFinal: app.placeYesIsFinal(summary.interaction)) { answer in
                 await app.lifecycle.answer(summary.id, with: answer)
             }
         case .awaitingOwner:

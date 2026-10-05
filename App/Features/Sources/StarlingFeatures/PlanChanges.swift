@@ -92,4 +92,26 @@ extension AppModel {
             return "Starling couldn't leave this plan. Try again."
         }
     }
+
+    /// A yes to a change of place is final once sent (Orchestrator, ADR
+    /// 0233): a Pick a place on a plan that has a place, after the owner
+    /// said yes. Its card and detail then offer no "Not this one" and no
+    /// Withdraw, and point to "Suggest a change" or "Leave this plan".
+    public func placeYesIsFinal(_ item: Interaction) -> Bool {
+        // The owner's yes moves a card to confirmed; it stays said after.
+        guard item.skill.id == .pickAPlace, !item.state.isFinal,
+              item.history.contains(where: { [.confirmed, .planned, .done].contains($0.state) }) else { return false }
+        let all = lifecycle.interactions
+        let plan: Plan? = if let parent = item.chain?.parent {
+            all.first { $0.id == parent }?.plan
+        } else if let hint = item.friendChainHint {
+            all.first { $0.skill.id != .pickAPlace && $0.planConversation == hint }?.plan
+        } else {
+            nil
+        }
+        return plan?.place != nil
+    }
+
+    public static let placeYesIsFinalNote = "Your yes to this place is final. To change the plan, use Suggest a change or Leave this plan."
+
 }

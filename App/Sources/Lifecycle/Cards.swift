@@ -85,6 +85,9 @@ struct ProposalCard: View {
     let text: (headline: String, detail: String?)?
     let isFriend: (PeerID) -> Bool
     let localPeer: PeerID?
+    /// A yes to a change of place was already sent and is final: no
+    /// answers, just where to go instead (ADR 0233).
+    var yesIsFinal = false
     let answer: (OwnerAnswer) async -> Void
     @State private var isAnswering = false
 
@@ -101,7 +104,9 @@ struct ProposalCard: View {
                     Text(detail).foregroundStyle(.secondary)
                 }
             }
-            if let revision = summary.interaction.proposalRevision {
+            if yesIsFinal {
+                Text(AppModel.placeYesIsFinalNote).font(.footnote).foregroundStyle(.secondary)
+            } else if let revision = summary.interaction.proposalRevision {
                 HStack(spacing: 12) {
                     Button {
                         respond(.accept(proposal: revision))
@@ -119,7 +124,9 @@ struct ProposalCard: View {
                 .controlSize(.large)
                 .disabled(isAnswering)
             }
-            Text(summary.skill.wording.declineNote).font(.footnote).foregroundStyle(.secondary)
+            if !yesIsFinal {
+                Text(summary.skill.wording.declineNote).font(.footnote).foregroundStyle(.secondary)
+            }
         }
     }
 

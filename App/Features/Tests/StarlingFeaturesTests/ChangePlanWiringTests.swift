@@ -299,3 +299,45 @@ import Testing
         #expect(request.participants == [maya.id])
     }
 }
+
+/// P15-D request 15 and ADR 0233: a yes to a change of place is final, so
+/// its card and detail offer no way to take it back.
+@MainActor
+@Suite struct PlaceYesIsFinalTests {
+    let me = PeerID.random()
+    let maya = PeerID.random()
+
+    func app(planHasPlace: Bool, said: [InteractionEvent]) async throws -> (AppModel, Interaction) {
+        var root = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Date()))
+        let start = Date().addingTimeInterval(3 * 3600)
+        var plan = try Plan(origin: root.conversation, attendees: Attendees([me, maya]), activity: Keyword("boba"), time: TimeSlot(start: start, end: start.addingTimeInterval(3600)))
+        if planHasPlace { plan = plan.updating(place: try PlaceChoice(name: PlaceName("Boba Guys"))) }
+        let proposal = SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]), plan: plan)
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try root.apply(event, at: Timestamp(Date()))
+        }
+        root.record(.plan(plan))
+        var change = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [maya], createdAt: Timestamp(Date()))
+        try change.setFriendChainHint(root.planConversation)
+        let place = SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.place: .places([try PlaceChoice(name: PlaceName("Tea Lab"))])]))
+        try change.apply(.proposalReady(place), at: Timestamp(Date()))
+        for event in said { try change.apply(event, at: Timestamp(Date())) }
+        var services = AppModelTests.services(transport: RecordingTransport(localPeer: me))
+        services.interactions = InMemoryInteractionStore([root, change])
+        let app = AppModel(services: services)
+        await app.start()
+        return (app, try #require(app.lifecycle.interaction(change.id)))
+    }
+
+    @Test func aYesToAChangeOfPlaceIsFinal() async throws {
+        let (app, change) = try await app(planHasPlace: true, said: [.ownerAccepted(revision: 1)])
+        #expect(app.placeYesIsFinal(change))
+    }
+
+    @Test func beforeTheYesOrOnAPlansFirstPlaceItIsNot() async throws {
+        let (before, card) = try await app(planHasPlace: true, said: [])
+        #expect(!before.placeYesIsFinal(card))
+        let (first, link) = try await app(planHasPlace: false, said: [.ownerAccepted(revision: 1)])
+        #expect(!first.placeYesIsFinal(link))
+    }
+}
