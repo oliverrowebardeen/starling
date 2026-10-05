@@ -54,11 +54,11 @@ A request with a `Plan` input runs on that plan. Two cases differ.
    - What a request on a plan is (a first place, or a change with the roster, revision, and place it changes) is saved in the Pick a place ledger before anything is sent or answered, on both sides. It is kept for the request's whole life, 60 days.
    - The organizer also saves the proposal each friend's counted yes named, so a restored organizer's confirmations, a shorter roster included, still name what each friend said yes to.
    - A record that is missing or cannot be read is treated as a change, the stricter rule. On a friend's phone, no proposal can match it, so nothing new is shown.
-   - A yes recorded in the ledger stands after a relaunch, even if the app stopped before the card showed it: it cannot be taken back.
+   - A yes is recorded in the ledger once it has gone, and then stands after a relaunch, even if the app stopped before the card showed it: it cannot be taken back. A yes still on its consent sheet when the app stopped never went out, so it is not one. A yes said again after a relaunch that meets a declined sheet, or a refused send, ends the card.
 12. **One change to a plan at a time** (ADR 0023). Every pick on a plan, a first place included, holds the plan in the app's `PlanChangeHolds`, shared with Change the plan.
    - The organizer holds it before its first query. If another change holds it, the request is not started (`planChangeInProgress`), and nothing is sent.
-   - A friend holds it before its yes goes out. If another change holds it, the yes is not sent (`planChangeInProgress`), and the card says another change is in progress.
-   - Every ending releases the hold, and a planned one does so before it is reported.
+   - A friend holds it before its yes goes out, keyed like the organizer by the origin of its own copy of the plan. If another change holds it, the yes is not sent (`planChangeInProgress`), and the card says another change is in progress.
+   - Every ending releases the hold: the plan is read when the request ends and released before any goodbye, and a planned ending releases it before it is reported.
    - After a relaunch, a restored request still asking, and a yes that went out, hold the plan again. One that finds another change holding it ends, and the plan stays as it was.
 13. **The organizer is trusted to report that everyone agreed**, as in Change the plan (ADR 0243) and ADR 0023. A friend's phone checks the change against its own plan and binds the confirmation to its own yes. It cannot verify another friend's yes, because friends in a plan are often not paired with each other. The checks keep honest phones on the same plan; they do not stop a paired friend who lies.
 
