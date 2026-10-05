@@ -185,7 +185,7 @@ extension PickAPlaceService {
             try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry), for: conversation)
             if let kind { try await ledger.recordRequestKind(kind, for: conversation, at: clock.now()) }
         } catch {
-            await releaseHold(conversation)
+            await release(heldPlan(of: conversation), for: conversation)
             organized[conversation] = nil
             conversationOf[request.interaction] = nil
             throw PickAPlaceError.ledgerUnavailable
@@ -650,8 +650,9 @@ extension PickAPlaceService {
         }
         // The plan is released before the plan is reported, so a change
         // started once it is planned finds the plan free (ADR 0023).
+        let plan = heldPlan(of: conversation)
         spawn(conversation) { service in
-            await service.releaseHold(conversation)
+            await service.release(plan, for: conversation)
             service.reportPlanned(id, revision: revision, place: place, attendees: attendees)
         }
     }

@@ -579,8 +579,9 @@ extension PickAPlaceService {
             return
         }
         // Released before the plan is reported (ADR 0023).
+        let plan = heldPlan(of: conversation)
         spawn(conversation) { service in
-            await service.releaseHold(conversation)
+            await service.release(plan, for: conversation)
             service.reportPlanned(invite.id, revision: proposal.revision, place: place, attendees: attendees)
         }
     }
@@ -719,7 +720,8 @@ extension PickAPlaceService {
         if !retiring {
             // The card closes without an ending of its own yet: its hold
             // ends now (ADR 0023).
-            spawn(conversation) { await $0.releaseHold(conversation) }
+            let plan = heldPlan(of: conversation)
+            spawn(conversation) { await $0.release(plan, for: conversation) }
         }
         if retiring {
             let goodbye: [(PeerID, MessageBody)] = reply.map {

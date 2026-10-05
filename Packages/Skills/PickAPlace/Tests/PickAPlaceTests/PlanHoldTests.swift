@@ -293,4 +293,24 @@ struct PlanHoldTests {
         #expect(await eventually { await holds.holder(of: plan.origin) == nil })
         #expect(await group.wire.sent(by: maya.id).allSatisfy { $0.conversation != request.conversation || $0.body.kind != .accept })
     }
+
+    /// Item 3: Oliver's goodbye waits on a consent sheet when he withdraws;
+    /// the plan is let go before it, not after.
+    @Test func anEndingReleasesThePlanBeforeItsGoodbyes() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all + [PlanChangeTests.greenBowl])
+        let gate = ConsentGate()
+        let oliver = Phone("Oliver", hub: hub, maps: maps, policy: Asking(noes: true).policy, gate: gate, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: quick)
+        let group = try await group(maya, oliver, jake, hub: hub)
+        defer { Task { await gate.open(); await group.stop() } }
+        let plan = try await plan([oliver, maya, jake])
+        let request = try await change(plan, by: oliver, with: [maya, jake])
+        for phone in [maya, jake] { #expect(await phone.reaches(.proposed, in: request.conversation), "\(phone.name)") }
+
+        await oliver.service.withdraw(request.id)
+        #expect(await eventually { await gate.waiting >= 1 })
+        #expect(await eventually { await oliver.holds.holder(of: plan.origin) == nil })
+    }
 }

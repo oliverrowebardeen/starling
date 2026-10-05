@@ -324,12 +324,15 @@ public actor PickAPlaceService: SkillService {
     /// has already applied the owner's pass.
     func finish(_ conversation: ConversationID, interaction: InteractionID?, event: InteractionEvent?,
                 goodbyes: [(PeerID, MessageBody)] = [], chainedFrom: ConversationID? = nil) {
+        // Every ending ends the conversation's hold on its plan (ADR 0023):
+        // the plan is read now, and released before any goodbye, which may
+        // wait on a consent sheet while the stored request is evicted.
+        let plan = heldPlan(of: conversation)
         spawn(conversation) { service in
+            await service.release(plan, for: conversation)
             for (peer, body) in goodbyes {
                 await service.trySend(body, to: peer, conversation: conversation, chainedFrom: chainedFrom)
             }
-            // Every ending ends the conversation's hold on its plan (ADR 0023).
-            await service.releaseHold(conversation)
             do {
                 try await service.outbox.retire(conversation)
                 if let interaction, let event { service.emit(interaction, event) }
@@ -340,10 +343,17 @@ public actor PickAPlaceService: SkillService {
         }
     }
 
-    /// Ends this conversation's hold on its plan, if it has one (ADR 0023).
-    /// Releasing a plan another change holds does nothing.
-    func releaseHold(_ conversation: ConversationID) async {
-        guard let plan = organized[conversation]?.holdKey ?? invites[conversation]?.holdKey else { return }
+    /// The plan `conversation` holds while it is open, named by its origin
+    /// (ADR 0023). Read when the request ends, so evicting the stored
+    /// request later cannot lose it.
+    func heldPlan(of conversation: ConversationID) -> ConversationID? {
+        organized[conversation]?.holdKey ?? invites[conversation]?.holdKey
+    }
+
+    /// Ends `conversation`'s hold on `plan`, if any. Releasing a plan
+    /// another change holds does nothing.
+    func release(_ plan: ConversationID?, for conversation: ConversationID) async {
+        guard let plan else { return }
         await holds.release(plan, for: conversation)
     }
 
