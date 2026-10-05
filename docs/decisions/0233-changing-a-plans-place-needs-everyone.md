@@ -29,7 +29,7 @@ A request with a `Plan` input runs on that plan. Two cases differ.
    - A proposal must name the plan's whole roster, the revision after the plan's own, and the plan's own time and activity; anything else is not shown.
    - A confirmation must name the whole roster, and the proposal this phone's yes named. The proposals a yes names are recorded in the ledger before it goes, so a delayed confirmation of an older proposal, or of none, is never taken, even after a relaunch.
    - A shorter roster or a call-off after the confirmation changes nothing.
-   - Just before its yes goes out, a friend checks that its plan is still at the revision the change is over, and the organizer checks again before it confirms. If another change moved the plan on, nothing is sent, and the change ends with no agreement (`PickAPlaceError.planChangedMeanwhile` for the friend).
+   - Just before its yes goes out, a friend checks that its plan is still at the revision and the place the change is over, and the organizer checks again before it confirms. The place is compared too, so a second change is caught even if a stored revision lags. If another change moved the plan on, nothing is sent, and the change ends with no agreement (`PickAPlaceError.planChangedMeanwhile` for the friend).
    - A request naming a plan this phone does not hold changes no plan here. Its agreed plan is the request's own, at revision 0, which applies over no plan's revision.
    - The app must supply the `plans` lookup: it is a required parameter, read from the interaction store (`PickAPlaceService.plans(in:)`).
 6. **The agreed plan is `Plan.updating(place:)`.** It has the same identifier, attendees, time, and activity, and a revision one higher (ADR 0022, decision 7).
@@ -51,7 +51,8 @@ A request with a `Plan` input runs on that plan. Two cases differ.
    - A plan whose next revision would not fit in a round (revision 15 and up) takes no further place, and nothing is sent.
    - The revision a proposal names is part of what it is. The same terms at another revision are a new proposal and need a fresh decision from the owner. A friend's agreed plan stores it, so a relaunch still tells a retry from a new proposal.
 11. **The rule survives a relaunch.**
-   - What a request on a plan is (a first place, or a change with the roster and revision it changes) is saved in the Pick a place ledger before anything is sent or answered, on both sides. It is kept for the request's whole life, 60 days.
+   - What a request on a plan is (a first place, or a change with the roster, revision, and place it changes) is saved in the Pick a place ledger before anything is sent or answered, on both sides. It is kept for the request's whole life, 60 days.
+   - The organizer also saves the proposal each friend's counted yes named, so a restored organizer's confirmations, a shorter roster included, still name what each friend said yes to.
    - A record that is missing or cannot be read is treated as a change, the stricter rule. On a friend's phone, no proposal can match it, so nothing new is shown.
 
 Without a `Plan` input, for example after Find a time or from New, nothing changes: the most-friends rule of ADR 0230 still applies.
