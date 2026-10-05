@@ -65,6 +65,9 @@ extension PickAPlaceService {
         // Read before anything is checked, so nothing changes between the
         // checks and the rebuild.
         let kind = await organizerKind(of: interaction)
+        // Each friend's counted yes, so a shorter roster still names what
+        // the friend said yes to.
+        let accepted = (try? await ledger.acceptedProposals(for: conversation)) ?? nil
         guard organized[conversation] == nil, let proposal = interaction.proposal, let (place, roster) = Self.parts(of: proposal),
               roster.first == localPeer, let attendees = Self.attendees(of: interaction)
         else { return false }
@@ -79,6 +82,7 @@ extension PickAPlaceService {
         organizer.proposal = proposal
         organizer.ownerAccepted = true
         organizer.accepted = Set(attendees.filter { $0 != localPeer })
+        organizer.acceptedProposal = accepted ?? [:]
         organizer.finalTerms = try? Terms(values)
         organized[conversation] = organizer
         conversationOf[interaction.id] = conversation

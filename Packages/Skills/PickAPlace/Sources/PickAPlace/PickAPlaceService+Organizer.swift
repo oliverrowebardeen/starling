@@ -275,6 +275,7 @@ extension PickAPlaceService {
             }
             organizer.accepted.insert(sender)
             organizer.acceptedProposal[sender] = acceptance.proposal
+            saveAcceptedProposals(conversation)
         case (.proposing, .reject):
             guard organizer.invited.contains(sender) else { return }
             organizer.accepted.remove(sender)
@@ -613,6 +614,9 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         cancelTasks(conversation)
         rememberOrganizer(conversation)
+        // Saved again after the cancel, which may have stopped a save that
+        // had not run yet.
+        saveAcceptedProposals(conversation)
 
         for friend in yes { spawnConfirmation(conversation, to: friend, organizer: organizer) }
         let chainedFrom = organizer.chainedFrom
@@ -677,6 +681,17 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         for other in remaining where other != localPeer { spawnConfirmation(conversation, to: other, organizer: organizer) }
         continuation.yield(.produced(organizer.id, .attendees(attendees)))
+    }
+
+    /// Saves the proposal each counted yes named, as it stands when the
+    /// write runs, so a restored organizer's confirmations still name them.
+    /// A failed write leaves a restored organizer naming nothing a friend
+    /// knows, and the friend keeps its roster.
+    func saveAcceptedProposals(_ conversation: ConversationID) {
+        spawn(conversation) { service in
+            guard let proposals = service.organized[conversation]?.acceptedProposal else { return }
+            try? await service.ledger.recordAcceptedProposals(proposals, for: conversation, at: service.clock.now())
+        }
     }
 
     /// Confirms to `friend`, naming the proposal its yes named.

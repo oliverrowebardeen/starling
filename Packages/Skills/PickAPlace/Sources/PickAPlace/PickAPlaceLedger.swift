@@ -27,6 +27,10 @@ public protocol PickAPlaceLedger: Sendable {
     /// only a confirmation of that yes is taken, across relaunches.
     func yes(for conversation: ConversationID) async throws -> RecordedYes?
     func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws
+    /// The proposal each friend's counted yes named, on the organizer's
+    /// side, so a restored organizer's confirmations still name them.
+    func acceptedProposals(for conversation: ConversationID) async throws -> [PeerID: MessageID]?
+    func recordAcceptedProposals(_ proposals: [PeerID: MessageID], for conversation: ConversationID, at date: Date) async throws
 }
 
 extension PickAPlaceLedger {
@@ -48,6 +52,26 @@ extension PickAPlaceLedger {
     /// A ledger that does not keep yeses cannot record one, so the yes is
     /// not sent.
     public func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws { throw LedgerUnavailable() }
+
+    /// A ledger that does not keep them has none: a restored organizer's
+    /// confirmations then name nothing a friend knows, so a friend keeps
+    /// the roster it has.
+    public func acceptedProposals(for conversation: ConversationID) async throws -> [PeerID: MessageID]? { nil }
+
+    public func recordAcceptedProposals(_ proposals: [PeerID: MessageID], for conversation: ConversationID, at date: Date) async throws {
+        throw LedgerUnavailable()
+    }
+}
+
+/// The proposal each friend's counted yes named, and when, for pruning.
+public struct RecordedAcceptances: Codable, Hashable, Sendable {
+    public let proposals: [PeerID: MessageID]
+    public let at: Date
+
+    public init(proposals: [PeerID: MessageID], at: Date) {
+        self.proposals = proposals
+        self.at = at
+    }
 }
 
 /// What a friend's yes named: the card revision it was for, and the
@@ -135,6 +159,7 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     public var deadlines: [ConversationID: RequestDeadlines] = [:]
     public var kinds: [ConversationID: RecordedRequestKind] = [:]
     public var yeses: [ConversationID: RecordedYes] = [:]
+    public var acceptances: [ConversationID: RecordedAcceptances] = [:]
 
     public init() {}
 
@@ -150,7 +175,7 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
     /// How long a withdrawal is retried before the organizer is assumed gone.
     public static let withdrawalLifetime: TimeInterval = 24 * 3_600
 
-    private enum CodingKeys: String, CodingKey { case admissions, withdrawals, deadlines, kinds, yeses }
+    private enum CodingKeys: String, CodingKey { case admissions, withdrawals, deadlines, kinds, yeses, acceptances }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -159,6 +184,7 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
         deadlines = try c.decodeIfPresent([ConversationID: RequestDeadlines].self, forKey: .deadlines) ?? [:]
         kinds = try c.decodeIfPresent([ConversationID: RecordedRequestKind].self, forKey: .kinds) ?? [:]
         yeses = try c.decodeIfPresent([ConversationID: RecordedYes].self, forKey: .yeses) ?? [:]
+        acceptances = try c.decodeIfPresent([ConversationID: RecordedAcceptances].self, forKey: .acceptances) ?? [:]
     }
 
 
@@ -170,6 +196,7 @@ public struct PickAPlaceLedgerState: Codable, Hashable, Sendable {
         deadlines = deadlines.filter { now.timeIntervalSince($0.value.expiresAt) < Self.deadlinesLifetime }
         kinds = kinds.filter { now.timeIntervalSince($0.value.at) < Self.kindLifetime }
         yeses = yeses.filter { now.timeIntervalSince($0.value.at) < Self.kindLifetime }
+        acceptances = acceptances.filter { now.timeIntervalSince($0.value.at) < Self.kindLifetime }
     }
 }
 
@@ -211,6 +238,16 @@ public actor InMemoryPickAPlaceLedger: PickAPlaceLedger {
     public func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws {
         guard !failing else { throw LedgerUnavailable() }
         state.yeses[conversation] = yes
+    }
+
+    public func acceptedProposals(for conversation: ConversationID) async throws -> [PeerID: MessageID]? {
+        guard !failing else { throw LedgerUnavailable() }
+        return state.acceptances[conversation]?.proposals
+    }
+
+    public func recordAcceptedProposals(_ proposals: [PeerID: MessageID], for conversation: ConversationID, at date: Date) async throws {
+        guard !failing else { throw LedgerUnavailable() }
+        state.acceptances[conversation] = RecordedAcceptances(proposals: proposals, at: date)
     }
 
     /// Forgets a request's kind, as a pruned or lost record would.
@@ -290,6 +327,14 @@ public actor UserDefaultsPickAPlaceLedger: PickAPlaceLedger {
 
     public func recordYes(_ yes: RecordedYes, for conversation: ConversationID) async throws {
         try update(now: yes.at) { $0.yeses[conversation] = yes }
+    }
+
+    public func acceptedProposals(for conversation: ConversationID) async throws -> [PeerID: MessageID]? {
+        try read().acceptances[conversation]?.proposals
+    }
+
+    public func recordAcceptedProposals(_ proposals: [PeerID: MessageID], for conversation: ConversationID, at date: Date) async throws {
+        try update(now: date) { $0.acceptances[conversation] = RecordedAcceptances(proposals: proposals, at: date) }
     }
 
 
