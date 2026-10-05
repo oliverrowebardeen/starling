@@ -3,13 +3,17 @@ import Foundation
 import StarlingCore
 
 /// The plan a conversation names on this phone: the interaction that holds
-/// it, and the plan as it stands.
+/// it, that interaction's own conversation, and the plan as it stands.
 public struct PlanRef: Hashable, Sendable {
     public let interaction: InteractionID
+    /// The holder's conversation: the plan's origin, except on the phone of
+    /// a friend added later, whose plan lives in the change that added them.
+    public let conversation: ConversationID
     public let plan: Plan
 
-    public init(interaction: InteractionID, plan: Plan) {
+    public init(interaction: InteractionID, conversation: ConversationID? = nil, plan: Plan) {
         self.interaction = interaction
+        self.conversation = conversation ?? plan.origin
         self.plan = plan
     }
 }
@@ -166,8 +170,9 @@ public actor ChangePlanService: SkillService {
     private var confirmingByConversation: [ConversationID: InteractionID] = [:]
     private var applied: [ConversationID: AppliedConfirmation] = [:]
     private var leaving: [InteractionID: LeaveDelivery] = [:]
-    /// Departures this phone applied, by their ID.
+    /// Departures this phone applied, by their ID, and those being applied.
     private var departed: [MessageID: Departure] = [:]
+    private var departing: Set<MessageID> = []
     /// Resend loops and end-of-window cleanups, by record key.
     private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
     /// Journal writes that failed. Each one stops or holds the action it
@@ -468,6 +473,11 @@ public actor ChangePlanService: SkillService {
             await retire(envelope.conversation)
             return
         }
+        // Reserved before the first suspension, so a second copy of the
+        // notice cannot apply it again while this one is being applied
+        // (final review, finding 6). The leaver's resend is acknowledged.
+        guard departing.insert(noticeID).inserted else { return }
+        defer { departing.remove(noticeID) }
         // Bound to this plan, and to a revision this phone has reached: a
         // leaver ahead of this phone is waited for, as its resends will be.
         guard let current = await planLookup(planConversation), current.plan.origin == planConversation,
@@ -485,15 +495,21 @@ public actor ChangePlanService: SkillService {
         guard await store(.departed(departure)) else { return }
         departed[noticeID] = departure
         startResending(departure.id)
+        // A confirmation owed to them is no longer (finding 6).
+        for (id, var delivery) in confirming where delivery.planConversation == planConversation && delivery.pending[envelope.sender] != nil {
+            delivery.pending[envelope.sender] = nil
+            confirming[id] = delivery
+            await progressDelivery(.confirming(delivery))
+        }
 
         let id = InteractionID()
         let remaining = current.plan.attendees.peers.filter { $0 != envelope.sender }
         continuation.yield(.incoming(id, conversation: envelope.conversation, from: envelope.sender, chainedFrom: planConversation))
         if remaining.count >= 2, let attendees = try? Attendees(remaining), let smaller = try? current.plan.updating(attendees: attendees) {
             continuation.yield(.produced(current.interaction, .plan(smaller)))
-        } else if await retire(planConversation) {
+        } else {
             // Only this phone is left: the plan ends here too.
-            emit(current.interaction, .withdrawn)
+            await endPlan(current)
         }
         await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: id)
         if await retire(envelope.conversation) { emit(id, .withdrawn) } else { emit(id, .failed) }
@@ -734,9 +750,13 @@ public actor ChangePlanService: SkillService {
     }
 
     /// This phone's plan ends withdrawn (its owner left, or only this phone
-    /// is left in it), after the plan's conversation is retired.
+    /// is left in it), after the plan's conversation and its holder's are
+    /// retired (on an added friend's phone they differ; final review of
+    /// PR #111, finding 6).
     private func endPlan(_ plan: PlanRef) async {
-        if await retire(plan.plan.origin) { emit(plan.interaction, .withdrawn) }
+        let origin = await retire(plan.plan.origin)
+        let holder = plan.conversation == plan.plan.origin ? true : await retire(plan.conversation)
+        if origin && holder { emit(plan.interaction, .withdrawn) }
     }
 
     /// Ends whatever is open for a plan (its people changed), quietly. With
@@ -1112,8 +1132,8 @@ public actor ChangePlanService: SkillService {
                     let remaining = current.plan.attendees.peers.filter { $0 != departure.peer }
                     if remaining.count >= 2, let attendees = try? Attendees(remaining), let smaller = try? current.plan.updating(attendees: attendees) {
                         continuation.yield(.produced(current.interaction, .plan(smaller)))
-                    } else if await retire(departure.planConversation) {
-                        emit(current.interaction, .withdrawn)
+                    } else {
+                        await endPlan(current)
                     }
                 }
             }

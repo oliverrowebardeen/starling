@@ -185,7 +185,7 @@ final class Phone: Sendable {
             guard let holder = all.first(where: { ($0.state == .planned || $0.state == .done) && $0.plan?.origin == conversation }),
                   let plan = holder.plan
             else { return nil }
-            return PlanRef(interaction: holder.id, plan: plan)
+            return PlanRef(interaction: holder.id, conversation: holder.conversation, plan: plan)
         }, now: { clock.now }, sleep: { try await clock.sleep(until: $0) })
     }
 
