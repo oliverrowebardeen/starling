@@ -19,9 +19,12 @@ import Testing
         return link
     }
 
-    static func agreed(_ revision: UInt32 = 1) throws -> [InteractionEvent] {
+    /// A place link's events up to "It's a plan", with `plan` as the agreed
+    /// plan each phone's proposal carries (#118).
+    static func agreed(_ revision: UInt32 = 1, plan: Plan? = nil) throws -> [InteractionEvent] {
         let terms = try Terms([.place: .places([Fixtures.place()])])
-        return [.started, .proposalReady(SkillProposal(revision: revision, participants: [Fixtures.me, Fixtures.maya, Fixtures.jake], terms: terms)),
+        return [.started, .proposalReady(SkillProposal(revision: revision, participants: [Fixtures.me, Fixtures.maya, Fixtures.jake], terms: terms,
+                                                       plan: plan)),
                 .ownerAccepted(revision: revision), .everyoneConfirmed(revision: revision)]
     }
 

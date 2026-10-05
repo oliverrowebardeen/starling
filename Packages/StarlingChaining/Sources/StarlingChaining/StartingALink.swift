@@ -86,48 +86,47 @@ extension ChainPlanner {
     }
 
     /// The parent with its plan updated by what a finished place link
-    /// agreed, with the plan's revision one higher (ADR 0022, ADR 0243).
+    /// agreed (ADR 0022, ADR 0243).
     ///
+    /// - Bound to a revision (review of PR #111, findings 5 and 6; issue
+    ///   #119): the link's agreed plan (`proposal?.plan`) names the revision
+    ///   it makes, and it applies only if that is the parent's next revision,
+    ///   which the updated plan keeps. A result over an older revision, or
+    ///   one already applied, changes nothing; it is never narrowed onto the
+    ///   plan as it stands now.
+    /// - Whole (finding 6): it applies only once both final artifacts, the
+    ///   place and the roster, are in, place and roster together, in
+    ///   whichever order they arrived.
     /// - This phone's own link (it organized the step and saw who accepted):
-    ///   the place applies, and the roster narrows to those who accepted
-    ///   (issue #66). Nobody is removed by someone else: each person left out
-    ///   was asked and did not accept. A roster with anyone outside the plan,
-    ///   or without this phone, is ignored.
+    ///   the roster narrows to those who accepted (issue #66). Nobody is
+    ///   removed by someone else: each person left out was asked and did
+    ///   not accept. A roster with anyone outside the plan, or without this
+    ///   phone, is ignored.
     /// - A friend's link, grouped under the plan by its hint: grouping is not
-    ///   authority (review of PR #111, finding D). It applies only if its
-    ///   roster is the plan's whole current roster, and never removes
-    ///   anyone. Until Pick a place carries the roster asked, a place a
-    ///   friend organized where someone passed does not reach this plan.
+    ///   authority (finding D). It applies only if its roster is the plan's
+    ///   whole current roster, and never removes anyone.
     ///
-    /// Either way the result applies once, place and roster together, the
-    /// roster compared as a set (finding F): applying it again, or after its
-    /// other artifact arrives, changes nothing. Nil if the link is not a
-    /// planned link of this parent or changes nothing. The app saves the
-    /// result.
+    /// Nil if the link is not a planned link of this parent, or its result
+    /// does not apply. The app saves the result.
     public func parent(_ parent: Interaction, updatedBy link: Interaction) -> Interaction? {
         guard Self.isLink(link, of: parent), link.state == .planned || link.state == .done,
-              let plan = parent.plan,
-              let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
+              let plan = parent.plan, let agreed = link.proposal?.plan, agreed.revision == plan.revision &+ 1,
+              let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).last,
+              let roster = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).last
         else { return nil }
-        let ownLink = link.chain?.parent == parent.id
-        let roster = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).first
-        var attendees = plan.attendees
-        if let roster {
-            let agreed = Set(roster.peers)
-            if ownLink {
-                guard agreed.contains(me), agreed.isSubset(of: plan.attendees.peers),
-                      let narrowed = try? Attendees(plan.attendees.peers.filter(agreed.contains))
-                else { return nil }
-                attendees = narrowed
-            } else {
-                guard agreed == Set(plan.attendees.peers) else { return nil }
-            }
-        } else if !ownLink {
-            return nil
+        let agreedPeople = Set(roster.peers)
+        let attendees: Attendees
+        if link.chain?.parent == parent.id {
+            guard agreedPeople.contains(me), agreedPeople.isSubset(of: plan.attendees.peers),
+                  let narrowed = try? Attendees(plan.attendees.peers.filter(agreedPeople.contains))
+            else { return nil }
+            attendees = narrowed
+        } else {
+            guard agreedPeople == Set(plan.attendees.peers) else { return nil }
+            attendees = plan.attendees
         }
-        // Already applied: the revision must not rise again.
-        guard place != plan.place || attendees != plan.attendees else { return nil }
-        guard let updatedPlan = try? plan.updating(attendees: attendees, place: .some(place)) else { return nil }
+        guard let updatedPlan = try? plan.updating(attendees: attendees, place: .some(place)), updatedPlan.revision == agreed.revision
+        else { return nil }
         var updated = parent
         updated.record(.plan(updatedPlan))
         return updated
