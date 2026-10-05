@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: 2026-10-03
 - Owner: P15-E (Chaining and audit)
-- Builds on: ADR 0022 (Oliver's decision), ADRs 0011, 0012, 0019, 0020, 0021, 0240, 0241
+- Builds on: ADR 0022 (Oliver's decision), ADR 0023 (one change to a plan at a time), ADRs 0011, 0012, 0019, 0020, 0021, 0240, 0241
 
 ## Context
 
@@ -48,6 +48,7 @@ Left open for this lane:
      - A friend's place link, grouped under the plan only by its hint, applies only if its roster is the plan's whole current roster, and never removes anyone: grouping is not authority to change the plan.
    - **One basis at a time** (finding C). Before inviting an added friend and before confirming, the suggester re-reads the plan; if another skill moved it, the suggestion ends as "The plan stays as it was" and everyone asked is told. `planDidChange(_:)` lets the coordinator end such a suggestion as soon as it applies another skill's update. Serializing with those updates needs the coordinator to apply a `.plan` only exactly one revision above the stored one (`docs/requests/P15-E.md`).
 5. **One suggestion per plan at a time.**
+   - **Holds** (ADR 0023). The service takes the app's `PlanChangeHolding`, shared with Pick a place. The suggester holds the plan before its first offer, and each friend before its yes. While another change holds the plan, from either skill, a suggestion does not start and a yes is not given: both throw `ChangePlanError.planBusy`, and the card stays open so the app can say another change is in progress. Every ending releases the hold: planned, nobody up, expired, withdrawn, passed, failed. A restored yes holds the plan again, and if another change holds it, the card ends with no change. Leaving takes no hold.
    - `changeOffer` is not offered while one is open, whether the owner's own or a friend's.
    - A friend's suggestion that arrives while another is open waits (up to four per plan). When the open one settles, it is shown only if its window is still open and the plan's revision has not moved.
    - The suggester can withdraw: everyone already asked is told, and their cards close.
