@@ -26,21 +26,47 @@ public protocol PlanChangeHolding: Sendable {
 /// decision 5).
 public actor PlanChangeHolds: PlanChangeHolding {
     private var holders: [ConversationID: ConversationID] = [:]
+    private var watchers: [UUID: AsyncStream<[ConversationID: ConversationID]>.Continuation] = [:]
 
     public init() {}
 
     public func hold(_ plan: ConversationID, for change: ConversationID) -> Bool {
         if let current = holders[plan] { return current == change }
         holders[plan] = change
+        publish()
         return true
     }
 
     public func release(_ plan: ConversationID, for change: ConversationID) {
         guard holders[plan] == change else { return }
         holders[plan] = nil
+        publish()
     }
 
     public func holder(of plan: ConversationID) -> ConversationID? {
         holders[plan]
+    }
+
+    /// Every plan's holder, now and after each hold or release that changes
+    /// one, so the app can show "another change is in progress" and take it
+    /// away the moment the hold ends, without asking again. Keeps only the
+    /// newest value if the reader falls behind.
+    public func updates() -> AsyncStream<[ConversationID: ConversationID]> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream.makeStream(of: [ConversationID: ConversationID].self, bufferingPolicy: .bufferingNewest(1))
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.stopWatching(id) }
+        }
+        watchers[id] = continuation
+        continuation.yield(holders)
+        return stream
+    }
+
+    private func stopWatching(_ id: UUID) {
+        watchers[id] = nil
+    }
+
+    private func publish() {
+        for watcher in watchers.values { watcher.yield(holders) }
     }
 }

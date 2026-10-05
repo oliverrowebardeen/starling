@@ -58,4 +58,18 @@ import Testing
         #expect(yesesForMaya == [false, true])
         #expect(yesesForOliver == [false, false])
     }
+
+    @Test func theAppSeesEachHoldStartAndEnd() async {
+        let holds = PlanChangeHolds()
+        var updates = await holds.updates().makeAsyncIterator()
+        #expect(await updates.next() == [:])
+        #expect(await holds.hold(plan, for: maya))
+        #expect(await updates.next() == [plan: maya])
+        // A refused hold and a release by a non-holder change nothing, so
+        // the next value the app sees is the real release.
+        #expect(await !holds.hold(plan, for: oliver))
+        await holds.release(plan, for: oliver)
+        await holds.release(plan, for: maya)
+        #expect(await updates.next() == [:])
+    }
 }
