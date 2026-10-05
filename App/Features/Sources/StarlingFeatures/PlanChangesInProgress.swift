@@ -1,4 +1,6 @@
 import Foundation
+import PickAPlace
+import StarlingChangePlan
 import StarlingCore
 
 /// Which change holds each plan on this phone (ADR 0023), kept on the main
@@ -12,6 +14,13 @@ public final class PlanChangesInProgress {
     nonisolated public static let note = "Another change to this plan is in progress."
     /// The skills whose changes hold a plan.
     nonisolated public static let skills: Set<SkillID> = [.pickAPlace, .changePlan]
+
+    /// Whether a skill refused because another change holds the plan.
+    nonisolated public static func isRefusal(_ error: any Error) -> Bool {
+        if case .planBusy? = error as? ChangePlanError { return true }
+        if case .planChangeInProgress? = error as? PickAPlaceError { return true }
+        return false
+    }
 
     /// The holds the app passes to Pick a place and Change the plan.
     public let holds: PlanChangeHolds

@@ -821,6 +821,7 @@ public final class ComposerModel {
         case .blockedByPrivacy(let topics): blockedReason(skill, topics)
         case .failed: "Starling couldn't start this. Try again."
         case .notSaved: "Starling couldn't save this on your phone, so nothing was sent. Try again."
+        case .planChangeInProgress: PlanChangesInProgress.note
         }
     }
 

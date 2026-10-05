@@ -48,6 +48,9 @@ public enum StartRefusal: Error, Hashable, Sendable {
     case failed(String)
     /// The request could not be saved on the phone, so it was not sent.
     case notSaved
+    /// Another change to the plan holds it on this phone (ADR 0023); the
+    /// interaction ended as failed and nothing was sent.
+    case planChangeInProgress
 }
 
 /// The one lifecycle coordinator (ADR 0011 decision 7, ADR 0201).
@@ -412,6 +415,7 @@ public final class LifecycleCoordinator {
             try await service.start(request)
         } catch {
             apply(.failed, to: item.id, reportedAs: nil, skill: skill.id)
+            if PlanChangesInProgress.isRefusal(error) { throw .planChangeInProgress }
             throw .failed(String(describing: error))
         }
         return item.id

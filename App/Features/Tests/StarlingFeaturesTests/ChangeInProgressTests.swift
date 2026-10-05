@@ -1,4 +1,5 @@
 import Foundation
+import PickAPlace
 import StarlingChangePlan
 import StarlingCore
 import StarlingFakes
@@ -91,5 +92,38 @@ import Testing
         #expect(app.composer.planIsChanging(root.id))
         // Leaving needs no hold (ADR 0023 decision 4).
         #expect(await app.leavePlan(root) != PlanChangesInProgress.note)
+    }
+
+    /// Change the plan that refuses as lane E's does when the plan is held.
+    actor BusyChangePlan: SkillService {
+        nonisolated let descriptor = ChangePlan.descriptor
+        nonisolated let events = AsyncStream<SkillEvent> { _ in }
+        func start(_ request: SkillRequest) async throws { throw ChangePlanError.planBusy }
+        func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws {}
+        func withdraw(_ interaction: InteractionID) async {}
+        func handle(_ event: InboxEvent) async {}
+        func restore(_ interactions: [Interaction]) async {}
+        func shutdown() async {}
+    }
+
+    @Test func aStartTheSkillRefusesForAHeldPlanSaysSo() async throws {
+        let registry = try SkillRegistry(SampleSkills.registry.descriptors + [ChangePlan.descriptor])
+        let lifecycle = LifecycleCoordinator(registry: registry, services: [BusyChangePlan()], store: InMemoryInteractionStore())
+        await lifecycle.start()
+        let request = SkillRequest(
+            interaction: InteractionID(), conversation: ConversationID(),
+            intent: SkillIntent(skill: ChangePlan.descriptor.ref, rules: .empty, audience: .picked([maya]), mode: .invite,
+                                expiresAt: Timestamp(Date().addingTimeInterval(3600))),
+            participants: [maya]
+        )
+        do {
+            _ = try await lifecycle.start(request, settings: SkillSettings(flags: .phase1_5))
+            Issue.record("a busy plan started")
+        } catch {
+            #expect(error == .planChangeInProgress)
+            #expect(ComposerModel.refusalNote(error, ChangePlan.descriptor) == PlanChangesInProgress.note)
+        }
+        #expect(PlanChangesInProgress.isRefusal(PickAPlaceError.planChangeInProgress))
+        #expect(!PlanChangesInProgress.isRefusal(PickAPlaceError.alreadyStarted))
     }
 }
