@@ -303,7 +303,8 @@ final class Phone: Sendable {
         _ name: String, hub: LoopbackHub, maps: FakeMaps, limits: ConstraintSet = .empty,
         ownerLimits: (@Sendable () async -> ConstraintSet)? = nil, placeLedger: (any PickAPlaceLedger)? = nil,
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent outcome: ConsentOutcome = .approved, gate: ConsentGate? = nil,
-        skills: [SkillRef] = [PickAPlaceSkill.ref], model: ModelLocality = .onDevice, configuration: PickAPlaceConfiguration = fastConfiguration
+        skills: [SkillRef] = [PickAPlaceSkill.ref], model: ModelLocality = .onDevice, configuration: PickAPlaceConfiguration = fastConfiguration,
+        wrapHolds: (@Sendable (PlanChangeHolds) -> any PlanChangeHolding)? = nil
     ) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
@@ -319,7 +320,8 @@ final class Phone: Sendable {
         makeService = { holds in
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
                               ownerLimits: readLimits, ledger: ledger, conversations: conversations,
-                              plans: { await book.plan(for: $0) }, holds: holds, clock: .system, configuration: configuration)
+                              plans: { await book.plan(for: $0) }, holds: wrapHolds?(holds) ?? holds, clock: .system,
+                              configuration: configuration)
         }
         current = Mutex(makeService(currentHolds.withLock { $0 }))
     }
@@ -481,6 +483,27 @@ actor EventHold {
         held += 1
         while isHolding { try? await Task.sleep(for: .milliseconds(5)) }
     }
+}
+
+/// Holds that wait for the test before granting a hold, so a test can end
+/// a card while its yes waits on one.
+actor GatedHolds: PlanChangeHolding {
+    let base: PlanChangeHolds
+    private var isOpen = false
+    private(set) var waiting = 0
+
+    init(_ base: PlanChangeHolds) { self.base = base }
+
+    func open() { isOpen = true }
+
+    func hold(_ plan: ConversationID, for change: ConversationID) async -> Bool {
+        waiting += 1
+        while !isOpen { try? await Task.sleep(for: .milliseconds(5)) }
+        return await base.hold(plan, for: change)
+    }
+
+    func release(_ plan: ConversationID, for change: ConversationID) async { await base.release(plan, for: change) }
+    func holder(of plan: ConversationID) async -> ConversationID? { await base.holder(of: plan) }
 }
 
 /// A phone's own plans, by the conversation that agreed them (`Plan.origin`).

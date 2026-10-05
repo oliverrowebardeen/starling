@@ -433,6 +433,8 @@ extension PickAPlaceService {
                     throw PickAPlaceError.planChangeInProgress
                 }
                 guard let held = invites[conversation], !held.isFinished, held.proposal?.revision == revision else {
+                    // The card ended while the hold was taken: let it go.
+                    await holds.release(plan, for: conversation)
                     invites[conversation]?.accepting = false
                     return
                 }

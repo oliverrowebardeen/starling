@@ -263,4 +263,34 @@ struct PlanHoldTests {
         #expect(await eventually(1) { await maya.holds.holder(of: plan.origin) == nil })
         #expect(await eventually(1) { await maya.service.invites[conversation]?.isFinished == true })
     }
+
+    /// Item 2: the card ends while Maya's yes waits for the hold. The hold
+    /// it then gets is let go at once.
+    @Test func aHoldTakenForACardThatEndedMeanwhileIsReleased() async throws {
+        let hub = LoopbackHub()
+        let maps = FakeMaps(Venues.all + [PlanChangeTests.greenBowl])
+        let gated = Mutex<GatedHolds?>(nil)
+        let oliver = Phone("Oliver", hub: hub, maps: maps, configuration: quick)
+        let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick, wrapHolds: { base in
+            let holds = GatedHolds(base)
+            gated.withLock { $0 = holds }
+            return holds
+        })
+        let jake = Phone("Jake", hub: hub, maps: maps, configuration: quick)
+        let group = try await group(maya, oliver, jake, hub: hub)
+        defer { Task { await gated.withLock({ $0 })?.open(); await group.stop() } }
+        let plan = try await plan([oliver, maya, jake])
+        let request = try await change(plan, by: oliver, with: [maya, jake])
+        #expect(await maya.reaches(.proposed, in: request.conversation))
+
+        let holds = try #require(gated.withLock { $0 })
+        let yes = Task { try? await maya.accept(in: request.conversation) }
+        #expect(await eventually { await holds.waiting >= 1 })
+        await oliver.service.withdraw(request.id)
+        #expect(await maya.reaches(.ended(.nobodyUp), in: request.conversation))
+        await holds.open()
+        _ = await yes.value
+        #expect(await eventually { await holds.holder(of: plan.origin) == nil })
+        #expect(await group.wire.sent(by: maya.id).allSatisfy { $0.conversation != request.conversation || $0.body.kind != .accept })
+    }
 }
