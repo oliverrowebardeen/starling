@@ -275,8 +275,6 @@ extension PickAPlaceService {
 
     // MARK: - Proposals
 
-    /// Whether a proposal's checks may still change the card: the request is
-    /// open, no send is on its way, and no newer proposal has arrived.
     /// Whether the proposal of `generation` can be handled now. If only this
     /// phone's own list or yes, still on its way, is in the way, the
     /// proposal is kept and handled when that send returns, rather than

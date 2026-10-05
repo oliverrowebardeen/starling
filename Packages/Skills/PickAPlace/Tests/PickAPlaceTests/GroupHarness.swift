@@ -271,6 +271,9 @@ final class Phone: Sendable {
     let consent: CoordinatorConsent
     /// Every send the Outbox made, with its context.
     let sends = RecordingOutboxObserver()
+    /// Holds the service's events on their way to the coordinator, as a
+    /// busy event loop can, while a consent sheet goes straight to it.
+    let events = EventHold()
     /// This phone's own plans, by plan conversation, as the app's store
     /// holds them.
     let plans = PlanBook()
@@ -348,6 +351,7 @@ final class Phone: Sendable {
     /// Hands an event to the coordinator, noting first whether a terminal
     /// one arrived only after its conversation was retired.
     func deliver(_ event: SkillEvent) async {
+        await events.pass(event)
         if case .lifecycle(let id, let lifecycle) = event, Self.isTerminal(lifecycle),
            let conversation = await coordinator.interactions[id]?.conversation {
             let retired = (try? await conversations.isRetired(conversation)) ?? false
@@ -443,6 +447,28 @@ final class Phone: Sendable {
         guard let interaction = await interaction(conversation) else { return nil }
         let artifacts = await coordinator.produced[interaction.id] ?? []
         return artifacts.lazy.compactMap { if case .placeChoice(let place) = $0 { place } else { nil } }.first
+    }
+}
+
+/// Holds a phone's service events, in order, from the first one that
+/// matches until the test releases them.
+actor EventHold {
+    private var matches: (@Sendable (SkillEvent) -> Bool)?
+    private var isHolding = false
+    private(set) var held = 0
+
+    func hold(from matching: @escaping @Sendable (SkillEvent) -> Bool) { matches = matching }
+
+    func release() {
+        matches = nil
+        isHolding = false
+    }
+
+    func pass(_ event: SkillEvent) async {
+        if let matches, matches(event) { isHolding = true }
+        guard isHolding else { return }
+        held += 1
+        while isHolding { try? await Task.sleep(for: .milliseconds(5)) }
     }
 }
 

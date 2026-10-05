@@ -79,7 +79,15 @@ struct WithdrawalTests {
     /// Final review of PR #55, finding 2: the organizer withdraws while its
     /// confirmation to Maya is held on a consent sheet. The confirmation
     /// never leaves, and Maya's request ends.
-    @Test func theOrganizerWithdrawsWhileItsConfirmationIsHeld() async throws {
+    ///
+    /// Issue #126: the sheet reaches the coordinator directly, while the
+    /// service's "everyone confirmed" comes through its event stream, so
+    /// either can arrive first. If the sheet does, the coordinator queues
+    /// the plan behind it (ADR 0011, amendment 15) and Oliver's card is on
+    /// the sheet rather than planned. Both orders are run, the second one
+    /// forced.
+    @Test(arguments: [false, true])
+    func theOrganizerWithdrawsWhileItsConfirmationIsHeld(sheetFirst: Bool) async throws {
         let hub = LoopbackHub()
         let maps = FakeMaps(Venues.all)
         let gate = ConsentGate()
@@ -92,13 +100,20 @@ struct WithdrawalTests {
         let oliver = Phone("Oliver", hub: hub, maps: maps, policy: askingForConfirmation, gate: gate, configuration: quick)
         let maya = Phone("Maya", hub: hub, maps: maps, configuration: quick)
         let group = try await Group([oliver, maya], hub: hub)
-        defer { Task { await group.stop() } }
+        defer { Task { await oliver.events.release(); await group.stop() } }
         let request = try await oliver.organize(Venues.all, with: [maya])
         for phone in [oliver, maya] { #expect(await phone.reaches(.proposed, in: request.conversation)) }
         try await maya.accept(in: request.conversation)
+        if sheetFirst { await oliver.events.hold { if case .lifecycle(_, .everyoneConfirmed) = $0 { true } else { false } } }
         try await oliver.accept(in: request.conversation)
-        #expect(await oliver.reaches(.planned, in: request.conversation))
+
+        // Oliver has settled and the confirmation waits on its sheet. His
+        // card shows the plan, or the sheet with the plan queued behind it.
         #expect(await eventually { await gate.waiting >= 1 })
+        await oliver.events.release()
+        #expect(await eventually { await oliver.service.organized[request.conversation]?.phase == .settled })
+        let shown = await oliver.state(in: request.conversation)
+        #expect(sheetFirst ? shown == .awaitingConsent(resume: .confirmed) : shown == .planned)
 
         await oliver.service.withdraw(request.id)
         #expect(await oliver.reaches(.ended(.withdrawn), in: request.conversation))
