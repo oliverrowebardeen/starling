@@ -132,6 +132,30 @@ extension ChainPlanner {
         return updated
     }
 
+    /// The stored interaction that holds the plan a link's result updates,
+    /// updated by it: for this phone's own link, its chain's parent; for a
+    /// friend's request grouped under a plan, the planned interaction that
+    /// holds that plan here, matched through the request's
+    /// `friendChainHint` (review of PR #118: a friend's phone must store the
+    /// agreed place too, or its plan falls a revision behind). Nil when
+    /// there is none or the result does not apply (`parent(_:updatedBy:)`).
+    /// The coordinator calls it after applying any event to a link and
+    /// saves the result.
+    public func parent(updatedBy link: Interaction, in interactions: [Interaction]) -> Interaction? {
+        let holder: Interaction?
+        if let parentID = link.chain?.parent {
+            holder = interactions.first { $0.id == parentID }
+        } else if link.role == .invitee, let hint = link.friendChainHint {
+            holder = interactions
+                .filter { $0.id != link.id && ($0.state == .planned || $0.state == .done) && $0.plan?.origin == hint }
+                .max { ($0.plan?.revision ?? 0) < ($1.plan?.revision ?? 0) }
+        } else {
+            holder = nil
+        }
+        guard let holder else { return nil }
+        return parent(holder, updatedBy: link)
+    }
+
     /// Whether `link` continues `parent`'s plan: an owner link, or a friend's
     /// request the coordinator grouped under the plan by its hint. Both
     /// update the plan on this phone, so every phone keeps the same plan and
