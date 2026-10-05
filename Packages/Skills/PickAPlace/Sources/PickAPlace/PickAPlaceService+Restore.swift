@@ -248,10 +248,15 @@ extension PickAPlaceService {
             invite.offer = try? Proposal(round: round, terms: proposal.terms)
             invite.kind = kind
             Self.restore(yes, into: &invite, for: proposal)
-            invite.accepted = Self.step(of: interaction.state) == .confirmed
+            // A yes recorded for this card went out, even if the app stopped
+            // before the interaction showed it (review of #118, round 2):
+            // the yes stands, and the interaction catches up.
+            let showedYes = Self.step(of: interaction.state) == .confirmed
+            invite.accepted = showedYes || !invite.yesNamed.isEmpty
             invites[conversation] = invite
             conversationOf[interaction.id] = conversation
             spawnInviteDeadline(conversation)
+            if invite.accepted, !showedYes { emit(interaction.id, .ownerAccepted(revision: proposal.revision)) }
             if invite.accepted {
                 spawnAcceptance(conversation)
                 spawnWaitForConfirmation(conversation)
