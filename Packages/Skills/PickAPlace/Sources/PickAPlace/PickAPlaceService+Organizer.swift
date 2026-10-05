@@ -76,6 +76,8 @@ struct Organizer {
     var ownerAccepted = false
     var finalTerms: Terms?
     var confirmationsRepeated: [PeerID: Int] = [:]
+    /// A change is waiting on its check that the plan has not moved on.
+    var checkingPlan = false
 
     var isFinished: Bool { phase == .settled || phase == .ended }
     var step: Step? {
@@ -533,7 +535,25 @@ extension PickAPlaceService {
         // the confirm deadline, so nobody can tell the two apart by when the
         // plan is confirmed (ADR 0017; ADR 0020, decision 9).
         guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.timedOut.contains($0) }) else { return }
-        finalize(conversation)
+        guard case .placeChange(_, let revision, _, _)? = organizer.kind else {
+            finalize(conversation)
+            return
+        }
+        // A change applies only to the plan it was made over: if another
+        // change moved the plan on meanwhile, this one is over (ADR 0233).
+        guard !organizer.checkingPlan else { return }
+        organized[conversation]?.checkingPlan = true
+        let chainedFrom = organizer.chainedFrom
+        spawn(conversation) { service in
+            let current: Plan? = if let chainedFrom { await service.plans(chainedFrom) } else { nil }
+            service.organized[conversation]?.checkingPlan = false
+            guard service.organized[conversation]?.phase == .proposing else { return }
+            guard let current, current.revision == revision else {
+                service.endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
+                return
+            }
+            service.finalize(conversation)
+        }
     }
 
     /// The confirm deadline: friends who have not answered are left out now

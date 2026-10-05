@@ -360,6 +360,22 @@ extension PickAPlaceService {
             // A second tap while the first is on its way changes nothing.
             guard !invite.accepted, !invite.accepting else { return }
             invites[conversation]?.accepting = true
+            // A change applies only over the plan it was made for: if the
+            // plan moved on meanwhile, the card closes and nothing is sent
+            // (ADR 0233).
+            if case .placeChange(_, let planRevision, _, _)? = invite.kind {
+                let current: Plan? = if let chainedFrom = invite.chainedFrom { await plans(chainedFrom) } else { nil }
+                guard let current, current.revision == planRevision, current.place != nil else {
+                    invites[conversation]?.accepting = false
+                    endInvite(conversation, event: .noAgreement, reply: nil)
+                    throw PickAPlaceError.planChangedMeanwhile
+                }
+            }
+            // The lookup waited: the card must still be this one.
+            guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else {
+                invites[conversation]?.accepting = false
+                return
+            }
             let acceptance = Acceptance(proposal: invite.proposeID ?? MessageID(), terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
                                            accepting: invite.offer)

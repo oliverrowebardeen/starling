@@ -24,6 +24,9 @@ public enum PickAPlaceError: Error, Hashable, Sendable {
     /// to change their mind, the owner suggests another change or leaves
     /// the plan.
     case yesIsFinal
+    /// The plan changed while this change of its place was open, so the
+    /// change no longer applies and the card is closed (ADR 0233).
+    case planChangedMeanwhile
 }
 
 /// Wall time and timers, injectable so tests run retries in milliseconds.
