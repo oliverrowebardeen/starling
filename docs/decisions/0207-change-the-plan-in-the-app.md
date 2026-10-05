@@ -24,7 +24,8 @@ ADR 0022 lets a confirmed plan change, and ADR 0243 says how lane E's `StarlingC
    - **"Suggest a change"** names why it can't run: a suggestion is still open, someone's Starling can't change plans, the plan is used up or over, or the skill is off in You. The sheet says what the suggestion uses beyond the plan before "Suggest it", which is the approval, as for Keep it going.
    - **"Leave this plan"** asks once.
 7. **A place reaches a plan only through lane E's planner.** A finished Pick a place link moves the parent only through `ChainPlanner.parent(_:updatedBy:)`, saved by the coordinator at the parent's next revision; plan detail shows the plan as stored and never replays a link's place into it (Codex review of PR #118). A yes to a place change is final once sent, so nothing rolls back.
-8. **"Update in Calendar".** A calendar hand-off remembers the plan revision it was made at. After a change, the plan's detail offers to add the new details. It says to remove the old event, because without calendar access the app cannot edit it (ADR 0018).
+8. **A yes to a change of place is final** (Orchestrator, ADR 0233). For a Pick a place on a plan that has a place, once the owner said yes, the app offers no "Not this one" and no "Take it back", and points to "Suggest a change" or "Leave this plan".
+9. **"Update in Calendar".** A calendar hand-off remembers the plan revision it was made at. After a change, the plan's detail offers to add the new details. It says to remove the old event, because without calendar access the app cannot edit it (ADR 0018).
 
 ## Consequences
 

@@ -94,3 +94,4 @@ Three phones, A, B, and C, all paired with each other, with a plan for boba toni
 50. Phone A: suggest adding D (a friend of A's whose Starling can change plans). Expect: the sheet lists D under Add a friend; B and C see "A suggests adding D". After they agree, D sees "A asks you to join boba with B and C, tonight at 8:30 PM"; after D accepts, D's Home shows the plan, and every timeline says "Added D".
 51. Phone C: Leave this plan. Expect: a confirmation ("The others see that you left. Nobody else has to agree."), then C's plan ends. A and B: the timeline says "C left" and the plan lists one fewer person.
 52. Phone A: New. Expect: no Change the plan tile.
+53. Phone A, on a plan that has a place: Somewhere else?, pick a new place, send. Phone B: I'm in on it. Expect on B: the card and the request's detail no longer offer "Not this one" or "Take it back", and say "Your yes to this place is final. To change the plan, use Suggest a change or Leave this plan."
