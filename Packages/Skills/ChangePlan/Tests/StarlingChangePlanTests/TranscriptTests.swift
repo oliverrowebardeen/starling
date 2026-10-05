@@ -77,9 +77,10 @@ import Testing
         try await network.until("everything settled") {
             await group.phone(alex).interaction(link.id)?.state.isFinal == true
         }
-        // Alex tells Maya, who said yes, that it ended (review of PR #111, finding 1).
+        // Alex tells everyone asked, so Maya's card that said yes closes
+        // (review of PR #111, finding 1), and each acknowledges (final review, finding 3).
         await network.deliver()
-        #expect(network.transcript.suffix(2) == ["Alex > Maya: reject", "Alex > Jake: reject"])
+        #expect(network.transcript.suffix(4) == ["Alex > Maya: reject", "Alex > Jake: reject", "Maya > Alex: accept", "Jake > Alex: accept"])
         try await network.until("Maya's card closed") {
             await group.phone(maya).changes().allSatisfy(\.state.isFinal)
         }

@@ -261,14 +261,20 @@ actor ArmedObserver: OutboxObserver {
         let group = Group()
         let maya = group.phone(self.maya)
         // As if Alex's offer was lost and only its withdrawal arrived.
+        let offer = MessageID()
         let stray = try Envelope(conversation: ConversationID(), sender: alex, recipient: self.maya, sequence: 0, sentAt: Timestamp(Fixtures.date(minutes: 10)),
-                                 body: .reject(Rejection(proposal: MessageID(), reason: .declinedByOwner)),
+                                 body: .reject(Rejection(proposal: offer, reason: .declinedByOwner)),
                                  skill: ChangePlan.descriptor.ref, mode: .invite, chainedFrom: group.origin)
         await maya.service.handle(.message(stray))
         await group.network.settle()
         #expect(await maya.plan(group.origin)?.attendees.peers == [alex, self.maya, jake])
         #expect(await maya.changes().isEmpty)
-        #expect(await maya.transport.sent.isEmpty)
+        // Only an acknowledgment that names the same offer and carries
+        // nothing, so Alex stops resending it (final review, finding 3).
+        let sent = try await maya.transport.sent.map { try EnvelopeCodec().decode($0.frame.bytes) }
+        #expect(sent.count == 1)
+        #expect(sent.first?.body == .accept(Acceptance(proposal: offer, terms: try Terms([:]))))
+        #expect(sent.first?.conversation == stray.conversation)
         await group.network.shutdown()
     }
 

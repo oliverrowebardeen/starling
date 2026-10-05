@@ -113,7 +113,7 @@ import Testing
         await network.settle()
         #expect(await ReliabilityTests.revisions(group, [alex, maya, jake]) == [0, 0, 0])
         #expect(Self.sent(network, "Alex > Maya: accept") == 0 && Self.sent(network, "Alex > Jake: accept") == 0)
-        #expect(network.transcript.suffix(2) == ["Alex > Maya: reject", "Alex > Jake: reject"])
+        #expect(network.transcript.suffix(4) == ["Alex > Maya: reject", "Alex > Jake: reject", "Maya > Alex: accept", "Jake > Alex: accept"])
         #expect(try await group.phone(alex).journal.records().isEmpty)
         #expect(await network.problems().isEmpty)
         await network.shutdown()

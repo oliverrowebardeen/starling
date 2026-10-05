@@ -22,6 +22,34 @@ public struct AcceptedOffer: Hashable, Sendable, Codable {
     public let proposed: Plan
     /// Where the plan lives on this phone; nil for a friend being added.
     public let planInteraction: InteractionID?
+    /// The offer's decision window: the hold on the plan ends a grace after
+    /// it (final review of PR #111, finding 3).
+    public let deadline: Date?
+    public let until: Date
+}
+
+/// A suggestion still asking, with the offers sent so far, so that after a
+/// restart everyone asked can be told it is withdrawn (finding 3).
+public struct OpenSuggestion: Hashable, Sendable, Codable {
+    public let interaction: InteractionID
+    public let conversation: ConversationID
+    public let planConversation: ConversationID
+    public let asked: [PeerID]
+    public var offers: [PeerID: MessageID]
+    /// The window's end plus the grace a yes holds the plan for.
+    public let until: Date
+}
+
+/// Withdrawals of a suggestion that ended without a change, resent until
+/// each person acknowledges them, so no card that said yes holds the plan
+/// for longer than it must (finding 3). Each attempt goes in a fresh
+/// conversation and names the offer it withdraws.
+public struct WithdrawalDelivery: Hashable, Sendable, Codable {
+    public let interaction: InteractionID
+    public let planConversation: ConversationID
+    public var order: [PeerID]
+    /// Who has not acknowledged yet, and the offer each withdrawal names.
+    public var pending: [PeerID: MessageID]
     public let until: Date
 }
 
@@ -94,6 +122,8 @@ public struct Departure: Hashable, Sendable, Codable {
 
 public enum ChangePlanRecord: Hashable, Sendable, Codable {
     case accepted(AcceptedOffer)
+    case asking(OpenSuggestion)
+    case withdrawing(WithdrawalDelivery)
     case confirming(ConfirmationDelivery)
     case applied(AppliedConfirmation)
     case leaving(LeaveDelivery)
@@ -103,6 +133,8 @@ public enum ChangePlanRecord: Hashable, Sendable, Codable {
     public var until: Date {
         switch self {
         case .accepted(let offer): offer.until
+        case .asking(let suggestion): suggestion.until
+        case .withdrawing(let delivery): delivery.until
         case .confirming(let delivery): delivery.until
         case .applied(let applied): applied.until
         case .leaving(let delivery): delivery.until
@@ -114,6 +146,8 @@ public enum ChangePlanRecord: Hashable, Sendable, Codable {
     public var key: UUID {
         switch self {
         case .accepted(let offer): offer.interaction.rawValue
+        case .asking(let suggestion): suggestion.interaction.rawValue
+        case .withdrawing(let delivery): delivery.interaction.rawValue
         case .confirming(let delivery): delivery.interaction.rawValue
         case .applied(let applied): applied.interaction.rawValue
         case .leaving(let delivery): delivery.interaction.rawValue
@@ -161,13 +195,19 @@ public struct ResendSchedule: Hashable, Sendable {
     public var maxBackoff: TimeInterval
     public var minimumWindow: TimeInterval
     public var untimedWindow: TimeInterval
+    /// How long after a suggestion's window a yes still holds the plan for
+    /// its confirmation, and withdrawals are resent (final review of PR
+    /// #111, finding 3). The suggester commits only within the window, so
+    /// this covers delivery only.
+    public var holdGrace: TimeInterval
 
     public init(firstRetry: TimeInterval = 5, maxBackoff: TimeInterval = 300, minimumWindow: TimeInterval = 15 * 60,
-                untimedWindow: TimeInterval = 24 * 3600) {
+                untimedWindow: TimeInterval = 24 * 3600, holdGrace: TimeInterval = 15 * 60) {
         self.firstRetry = firstRetry
         self.maxBackoff = maxBackoff
         self.minimumWindow = minimumWindow
         self.untimedWindow = untimedWindow
+        self.holdGrace = holdGrace
     }
 
     public static let standard = ResendSchedule()

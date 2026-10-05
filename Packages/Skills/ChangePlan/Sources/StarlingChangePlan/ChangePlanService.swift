@@ -126,10 +126,20 @@ public actor ChangePlanService: SkillService {
         var holdUntil: Date?
         /// A card's decision window.
         var deadline: Date?
+        /// A leave, which asks nothing and so withdraws nothing.
+        var isLeave = false
 
         mutating func advance(to next: Step) {
             step = next
             stepID += 1
+        }
+
+        /// A voter or joiner's offer.
+        var offer: MessageID? {
+            switch step {
+            case .deciding(let offer, _), .accepting(let offer), .accepted(let offer): offer
+            default: nil
+            }
         }
 
         /// A voter or joiner whose yes is given or going out.
@@ -142,11 +152,6 @@ public actor ChangePlanService: SkillService {
 
         /// Everyone the suggester asked, in plan order, then the friend.
         var asked: [PeerID] { voters + (friend.map { [$0] } ?? []) }
-
-        /// A withdrawal notice for each offer already sent, in plan order.
-        var withdrawals: [(MessageBody, PeerID)] {
-            asked.compactMap { peer in offers[peer].map { (MessageBody.reject(Rejection(proposal: $0, reason: .declinedByOwner)), peer) } }
-        }
     }
 
     private var sessions: [InteractionID: Session] = [:]
@@ -156,6 +161,9 @@ public actor ChangePlanService: SkillService {
     /// Suggestions that arrived while another was open for the same plan.
     private var queued: [ConversationID: [Envelope]] = [:]
     private var inFlight: [InteractionID: [UUID: Task<Void, any Error>]] = [:]
+    /// Offer sends not yet finished, cancelled or not, per suggestion: one
+    /// may still return after the suggestion ended (finding 3).
+    private var offerSends: [InteractionID: Int] = [:]
     private var timers: [InteractionID: Task<Void, Never>] = [:]
     /// Conversations ended on this launch: a cache in front of the ledger.
     private var closed: Set<ConversationID> = []
@@ -170,9 +178,18 @@ public actor ChangePlanService: SkillService {
     private var confirmingByConversation: [ConversationID: InteractionID] = [:]
     private var applied: [ConversationID: AppliedConfirmation] = [:]
     private var leaving: [InteractionID: LeaveDelivery] = [:]
+    /// Suggestions still asking, and withdrawals still owed (finding 3).
+    private var asking: [InteractionID: OpenSuggestion] = [:]
+    private var withdrawing: [InteractionID: WithdrawalDelivery] = [:]
     /// Departures this phone applied, by their ID, and those being applied.
     private var departed: [MessageID: Departure] = [:]
     private var departing: Set<MessageID> = []
+    /// Offers withdrawn here on this launch, acknowledged again if resent.
+    private var withdrawnOffers: Set<MessageID> = []
+    /// Yeses whose card ended a grace after its window with no confirmation
+    /// yet, by their conversation: one that still comes applies if the plan
+    /// still allows it (final review of PR #111, finding 3).
+    private var lateYes: [ConversationID: AcceptedOffer] = [:]
     /// Resend loops and end-of-window cleanups, by record key.
     private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
     /// Journal writes that failed. Each one stops or holds the action it
@@ -245,17 +262,40 @@ public actor ChangePlanService: SkillService {
             await holds.release(planConversation, for: request.conversation)
             throw ChangePlanError.planBusy
         }
-        let proposed = try change.applied(to: basis)
-        let terms = try change.terms(for: basis)
+        let proposed: Plan
+        let terms: Terms
+        let inviteTerms: Terms?
         var friend: PeerID?
-        if case .change(_, _, let adding) = change { friend = adding }
+        do {
+            proposed = try change.applied(to: basis)
+            terms = try change.terms(for: basis)
+            if case .change(_, _, let adding) = change { friend = adding }
+            inviteTerms = friend == nil ? nil : try PlanChange.inviteTerms(for: proposed)
+        } catch {
+            await holds.release(planConversation, for: request.conversation)
+            throw error
+        }
         let deadline = request.intent.expiresAt.date
+        // Who is asked, journaled before the first offer, so a restart can
+        // still withdraw it (final review of PR #111, finding 3).
+        let open = OpenSuggestion(interaction: request.interaction, conversation: request.conversation, planConversation: planConversation,
+                                  asked: others + (friend.map { [$0] } ?? []), offers: [:], until: deadline.addingTimeInterval(resend.holdGrace))
+        guard await store(.asking(open)) else {
+            await holds.release(planConversation, for: request.conversation)
+            throw ChangePlanError.journalUnavailable
+        }
+        guard openByPlan[planConversation] == nil, sessions[request.interaction] == nil, byConversation[request.conversation] == nil else {
+            await forget(request.interaction.rawValue)
+            await holds.release(planConversation, for: request.conversation)
+            throw ChangePlanError.planBusy
+        }
+        asking[request.interaction] = open
 
         // Everything a reply is matched against, before any send (#105).
         sessions[request.interaction] = Session(
             role: .suggester, conversation: request.conversation, planConversation: planConversation, planInteraction: current.interaction,
             basisRevision: basis.revision, basis: basis, proposed: proposed, suggester: nil, voters: others, friend: friend, terms: terms,
-            inviteTerms: friend == nil ? nil : try PlanChange.inviteTerms(for: proposed), step: .asking
+            inviteTerms: inviteTerms, step: .asking
         )
         byConversation[request.conversation] = request.interaction
         openByPlan[planConversation] = request.interaction
@@ -286,7 +326,7 @@ public actor ChangePlanService: SkillService {
         sessions[request.interaction] = Session(
             role: .suggester, conversation: request.conversation, planConversation: plan.plan.origin, planInteraction: plan.interaction,
             basisRevision: plan.plan.revision, basis: plan.plan, proposed: plan.plan, suggester: nil, voters: others, friend: nil, terms: Terms.empty,
-            inviteTerms: nil, step: .asking
+            inviteTerms: nil, step: .asking, isLeave: true
         )
         byConversation[request.conversation] = request.interaction
         await sendLeaveNotices(request.interaction)
@@ -319,7 +359,7 @@ public actor ChangePlanService: SkillService {
             let record = AcceptedOffer(
                 interaction: interaction, conversation: session.conversation, planConversation: session.planConversation,
                 joining: session.role == .joiner, suggester: suggester, offer: offer, basis: session.basis, proposed: session.proposed,
-                planInteraction: session.planInteraction, until: resend.end(for: session.proposed, now: now())
+                planInteraction: session.planInteraction, deadline: session.deadline, until: resend.end(for: session.proposed, now: now())
             )
             guard await store(.accepted(record)) else {
                 if sessions[interaction]?.step == .accepting(offer: offer) {
@@ -354,13 +394,11 @@ public actor ChangePlanService: SkillService {
     public func withdraw(_ interaction: InteractionID) async {
         guard let session = sessions[interaction] else { return }
         // Before the first suspension (review of PR #111, finding B): from
-        // here no late yes or confirmation counts, and the notices go to
-        // the offers sent so far.
-        let open = session.step == .asking || session.step == .inviting || session.step == .committing
-        let notices = session.role == .suggester && open ? session.withdrawals : []
+        // here no late yes or confirmation counts. Ending it withdraws every
+        // offer sent (finding 3).
+        _ = session
         sessions[interaction]?.advance(to: .ending)
         cancelSends(of: interaction)
-        if !notices.isEmpty { _ = await send(notices, in: interaction, failureEnds: false) }
         await finish(interaction, with: [])
     }
 
@@ -379,6 +417,12 @@ public actor ChangePlanService: SkillService {
         // Acknowledgments, and confirmations resent after this phone applied them.
         if await acknowledged(envelope) { return }
         if await reacknowledged(envelope) { return }
+        if await lateConfirmation(envelope) { return }
+        // A withdrawal comes in a fresh conversation and names its offer.
+        if case .reject(let rejection) = envelope.body {
+            await withdrawn(envelope, rejection: rejection, planConversation: planConversation)
+            return
+        }
         guard !closed.contains(envelope.conversation) else { return }
         if let id = byConversation[envelope.conversation] {
             await receive(envelope, in: id)
@@ -392,9 +436,6 @@ public actor ChangePlanService: SkillService {
         // revision (review of PR #111, finding A).
         case .propose(let offer) where offer.terms.values.isEmpty: await left(envelope, notice: offer, planConversation: planConversation)
         case .propose(let offer): await offered(envelope, offer: offer, planConversation: planConversation)
-        // A rejection only ever withdraws an offer it names; one that names
-        // nothing open here is ignored, never taken for a leave.
-        case .reject(let rejection): withdrawQueued(envelope, rejection: rejection, planConversation: planConversation)
         default: return
         }
     }
@@ -521,11 +562,46 @@ public actor ChangePlanService: SkillService {
         if await retire(envelope.conversation) { emit(id, .withdrawn) } else { emit(id, .failed) }
     }
 
-    /// The suggester withdrew an offer that was waiting behind another: it
-    /// leaves the queue. Nothing else changes.
-    private func withdrawQueued(_ envelope: Envelope, rejection: Rejection, planConversation: ConversationID) {
-        queued[planConversation]?.removeAll { $0.conversation == envelope.conversation && $0.sender == envelope.sender && $0.id == rejection.proposal }
-        if queued[planConversation]?.isEmpty == true { queued[planConversation] = nil }
+    /// The suggester withdrew an offer: the card it opened closes, or it
+    /// leaves the queue. A rejection only ever withdraws an offer it names,
+    /// and is never taken for a leave. It is acknowledged, again if resent,
+    /// so the suggester stops (final review of PR #111, finding 3).
+    private func withdrawn(_ envelope: Envelope, rejection: Rejection, planConversation: ConversationID) async {
+        guard envelope.sender != me else { return }
+        var known = false
+        if let (id, session) = sessions.first(where: {
+            $0.value.role != .suggester && $0.value.suggester == envelope.sender && $0.value.planConversation == planConversation
+                && $0.value.offer == rejection.proposal
+        }) {
+            known = true
+            withdrawnOffers.insert(rejection.proposal)
+            // Told at the window's end that it ends without agreement: the
+            // card just closes, as if no yes had been given.
+            let passed = session.deadline.map { now() >= $0 } ?? false
+            await finish(id, with: [passed ? .expired : .noAgreement])
+        }
+        if let (conversation, yes) = lateYes.first(where: {
+            $0.value.suggester == envelope.sender && $0.value.planConversation == planConversation && $0.value.offer == rejection.proposal
+        }) {
+            known = true
+            withdrawnOffers.insert(rejection.proposal)
+            lateYes[conversation] = nil
+            await forget(yes.interaction.rawValue)
+        }
+        if let waiting = queued[planConversation], waiting.contains(where: { $0.sender == envelope.sender && $0.id == rejection.proposal }) {
+            known = true
+            withdrawnOffers.insert(rejection.proposal)
+            queued[planConversation]?.removeAll { $0.sender == envelope.sender && $0.id == rejection.proposal }
+            if queued[planConversation]?.isEmpty == true { queued[planConversation] = nil }
+        }
+        if !known, !withdrawnOffers.contains(rejection.proposal) {
+            // An offer that never reached this phone, or a resend after a
+            // restart: acknowledged if it comes from someone in the plan.
+            guard let current = await planLookup(planConversation), current.plan.attendees.peers.contains(envelope.sender) else { return }
+        }
+        guard !closed.contains(envelope.conversation), (try? await ledger.isRetired(envelope.conversation)) == false else { return }
+        await acknowledge(rejection.proposal, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
+        await retire(envelope.conversation)
     }
 
     private func receive(_ envelope: Envelope, in id: InteractionID) async {
@@ -547,16 +623,6 @@ public actor ChangePlanService: SkillService {
         case (.voter, .accepted(let offer), .accept(let confirmation)), (.joiner, .accepted(let offer), .accept(let confirmation)):
             guard envelope.sender == session.suggester, confirmation.proposal == offer, confirmation.terms.values.isEmpty else { return }
             await applyConfirmation(id)
-        // The suggester withdrew it.
-        case (.voter, .deciding(let offer, _), .reject(let rejection)), (.voter, .accepting(let offer), .reject(let rejection)),
-             (.voter, .accepted(let offer), .reject(let rejection)),
-             (.joiner, .deciding(let offer, _), .reject(let rejection)), (.joiner, .accepting(let offer), .reject(let rejection)),
-             (.joiner, .accepted(let offer), .reject(let rejection)):
-            guard envelope.sender == session.suggester, rejection.proposal == offer else { return }
-            // Told at the window's end that it ends without agreement: the
-            // card just closes, as if no yes had been given.
-            let passed = session.deadline.map { now() >= $0 } ?? false
-            await finish(id, with: [passed ? .expired : .noAgreement])
         default:
             return
         }
@@ -587,10 +653,26 @@ public actor ChangePlanService: SkillService {
     /// Records an offer's ID as its send returns, and counts a yes that was
     /// waiting for it.
     private func recordOffer(_ envelope: Envelope, in id: InteractionID) async {
+        // An offer whose send returned after the suggestion ended is
+        // withdrawn too (finding 3).
+        if sessions[id] == nil, var delivery = withdrawing[id] {
+            if !delivery.order.contains(envelope.recipient) { delivery.order.append(envelope.recipient) }
+            delivery.pending[envelope.recipient] = envelope.id
+            withdrawing[id] = delivery
+            await store(.withdrawing(delivery))
+            // From the delivery's task: this one, the offer's, was cancelled.
+            startResending(id.rawValue, sendingFirst: true)
+            return
+        }
         guard var session = sessions[id], session.role == .suggester else { return }
         session.offers[envelope.recipient] = envelope.id
         let early = session.early.removeValue(forKey: envelope.recipient)
         sessions[id] = session
+        if var open = asking[id] {
+            open.offers[envelope.recipient] = envelope.id
+            asking[id] = open
+            await store(.asking(open))
+        }
         if let early { await vote(early, from: envelope.recipient, in: id) }
     }
 
@@ -625,6 +707,12 @@ public actor ChangePlanService: SkillService {
     /// retired when the delivery is done.
     private func confirm(_ id: InteractionID) async {
         guard let session = sessions[id], session.step == .asking || session.step == .inviting else { return }
+        // Only within the window, so a yes never waits on a confirmation
+        // longer than the window and its grace (finding 3).
+        if let deadline = deadlines[id], now() >= deadline {
+            await abandon(id)
+            return
+        }
         // Committing, before the first suspension (finding 2): a withdrawal
         // or the window from here aborts the commit instead.
         sessions[id]?.advance(to: .committing)
@@ -655,6 +743,7 @@ public actor ChangePlanService: SkillService {
             return
         }
         // What each acknowledgment must name, before any confirmation is sent (#105).
+        asking[id] = nil
         confirming[id] = delivery
         confirmingByConversation[session.conversation] = id
         await close(id)
@@ -743,14 +832,39 @@ public actor ChangePlanService: SkillService {
     /// Nothing changes. The suggester's card says the plan stays as it was;
     /// everyone else's card just closes.
     private func windowClosed(_ id: InteractionID) async {
+        // This timer has fired: an ending from here must not cancel the
+        // task it runs in.
+        timers[id] = nil
         guard let session = sessions[id] else { return }
         switch session.step {
         case .accepting, .accepted:
-            // Said yes: the confirmation may still come, resent, until its
-            // delivery ends (finding 1), as long as it could still apply.
-            if let until = session.holdUntil, now() < until, await couldStillApply(session) {
-                schedule(id, at: until)
+            // Said yes. The plan stays held only until a grace after the
+            // window: the suggester commits within it, so only delivery can
+            // be later (final review of PR #111, finding 3). The card still
+            // takes a confirmation that comes later, resent, until its
+            // delivery ends, as long as it could still apply (finding 1).
+            let graceEnd = (session.deadline ?? now()).addingTimeInterval(resend.holdGrace)
+            let mayApply = await couldStillApply(session)
+            if now() < graceEnd {
+                if let until = session.holdUntil, now() < until, mayApply {
+                    schedule(id, at: min(graceEnd, until))
+                    return
+                }
+                await finish(id, with: [.expired])
                 return
+            }
+            // Past the grace the card ends and the plan is free again. Its
+            // yes is kept, so a confirmation that still comes applies if
+            // the plan allows it (a friend being added has no plan to keep).
+            if let until = session.holdUntil, now() < until, mayApply, session.role == .voter, journaledYes.contains(id),
+               case .accepted(let offer) = session.step, let suggester = session.suggester {
+                journaledYes.remove(id)
+                lateYes[session.conversation] = AcceptedOffer(
+                    interaction: id, conversation: session.conversation, planConversation: session.planConversation, joining: false,
+                    suggester: suggester, offer: offer, basis: session.basis, proposed: session.proposed,
+                    planInteraction: session.planInteraction, deadline: session.deadline, until: until
+                )
+                startResending(id.rawValue)
             }
             await finish(id, with: [.expired])
         case .committing, .ending:
@@ -780,11 +894,9 @@ public actor ChangePlanService: SkillService {
             queued[planConversation] = nil
             return
         }
-        let notices = session.role == .suggester ? session.withdrawals : []
         sessions[id]?.advance(to: .ending)
         cancelSends(of: id)
         queued[planConversation] = nil
-        if !notices.isEmpty { _ = await send(notices, in: id, failureEnds: false) }
         await finish(id, with: [.noAgreement])
     }
 
@@ -807,10 +919,9 @@ public actor ChangePlanService: SkillService {
     /// suspension) and its card reads "The plan stays as it was".
     private func abandon(_ id: InteractionID) async {
         guard let session = sessions[id], session.step != .ending else { return }
-        let notices = session.role == .suggester ? session.withdrawals : []
+        _ = session
         sessions[id]?.advance(to: .ending)
         cancelSends(of: id)
-        if !notices.isEmpty { _ = await send(notices, in: id, failureEnds: false) }
         await finish(id, with: [.noAgreement])
     }
 
@@ -875,11 +986,16 @@ public actor ChangePlanService: SkillService {
     }
 
     /// A value-free acknowledgment that names what it acknowledges.
+    /// In a fresh conversation, retired after, if this one is already
+    /// retired here (a card that ended before its confirmation came).
     private func acknowledge(_ names: MessageID, to peer: PeerID, in conversation: ConversationID, planConversation: ConversationID,
                              interaction: InteractionID?) async {
-        _ = try? await outbox.send(.accept(Acceptance(proposal: names, terms: Terms.empty)), to: peer, conversation: conversation,
+        let ended = closed.contains(conversation)
+        let target = ended ? ConversationID() : conversation
+        _ = try? await outbox.send(.accept(Acceptance(proposal: names, terms: Terms.empty)), to: peer, conversation: target,
                                    recipientCard: cards[peer], context: OutboundContext(interaction: interaction),
                                    skill: descriptor.ref, mode: .invite, chainedFrom: planConversation)
+        if ended { await retire(target) }
     }
 
     /// An acknowledgment of a confirmation or leave notice this phone sent.
@@ -893,6 +1009,22 @@ public actor ChangePlanService: SkillService {
                 confirming[id] = delivery
                 await progressDelivery(.confirming(delivery))
             }
+            return true
+        }
+        // An acknowledgment from a card that ended before its confirmation
+        // came arrives in a fresh conversation (finding 3).
+        for (id, var delivery) in confirming where delivery.pending[envelope.sender] == ack.proposal
+            && envelope.chainedFrom == delivery.planConversation {
+            delivery.pending[envelope.sender] = nil
+            confirming[id] = delivery
+            await progressDelivery(.confirming(delivery))
+            return true
+        }
+        for (id, var delivery) in withdrawing where delivery.pending[envelope.sender] == ack.proposal
+            && envelope.chainedFrom == delivery.planConversation {
+            delivery.pending[envelope.sender] = nil
+            withdrawing[id] = delivery
+            await progressDelivery(.withdrawing(delivery))
             return true
         }
         for (id, var delivery) in leaving where delivery.pending.contains(envelope.sender) && ack.proposal == delivery.departure
@@ -941,21 +1073,47 @@ public actor ChangePlanService: SkillService {
     /// the same plan and revision, whichever arrives first (final review of
     /// PR #111, finding 1).
     private func target(of session: Session, over current: Plan) -> Plan? {
-        guard let basis = session.basis, current.origin == basis.origin, current.revision >= basis.revision else { return nil }
+        target(basis: session.basis, proposed: session.proposed, planConversation: session.planConversation, over: current)
+    }
+
+    private func target(basis: Plan?, proposed: Plan, planConversation: ConversationID, over current: Plan) -> Plan? {
+        guard let basis, current.origin == basis.origin, current.revision >= basis.revision else { return nil }
         if current.revision == basis.revision {
-            return current.attendees == basis.attendees ? session.proposed : nil
+            return current.attendees == basis.attendees ? proposed : nil
         }
         let left = departed.values.filter {
-            $0.planConversation == session.planConversation && $0.revision >= basis.revision && $0.revision < current.revision
+            $0.planConversation == planConversation && $0.revision >= basis.revision && $0.revision < current.revision
         }
         let leavers = Set(left.map(\.peer))
         guard left.count == Int(current.revision - basis.revision), leavers.count == left.count,
               current.attendees.peers == basis.attendees.peers.filter({ !leavers.contains($0) }),
               current.activity == basis.activity, current.time == basis.time, current.place == basis.place
         else { return nil }
-        let added = session.proposed.attendees.peers.filter { !basis.attendees.peers.contains($0) }
+        let added = proposed.attendees.peers.filter { !basis.attendees.peers.contains($0) }
         guard let attendees = try? Attendees(current.attendees.peers + added) else { return nil }
-        return try? current.updating(attendees: attendees, activity: .some(session.proposed.activity), time: .some(session.proposed.time))
+        return try? current.updating(attendees: attendees, activity: .some(proposed.activity), time: .some(proposed.time))
+    }
+
+    /// A confirmation for a yes whose card ended a grace after its window
+    /// (finding 3). It applies if the plan still stands where the yes left
+    /// it, or only people have left since, and is acknowledged.
+    private func lateConfirmation(_ envelope: Envelope) async -> Bool {
+        guard let yes = lateYes[envelope.conversation] else { return false }
+        guard case .accept(let confirmation) = envelope.body, confirmation.terms.values.isEmpty, envelope.sender == yes.suggester,
+              confirmation.proposal == yes.offer, envelope.chainedFrom == yes.planConversation,
+              let holder = yes.planInteraction, let current = await planLookup(yes.planConversation),
+              let plan = target(basis: yes.basis, proposed: yes.proposed, planConversation: yes.planConversation, over: current.plan),
+              lateYes[envelope.conversation] == yes
+        else { return true }
+        let receipt = AppliedConfirmation(interaction: yes.interaction, conversation: yes.conversation, planConversation: yes.planConversation,
+                                          suggester: yes.suggester, offer: yes.offer, plan: plan, planInteraction: holder,
+                                          basisRevision: current.plan.revision, until: max(yes.until, resend.end(for: plan, now: now())))
+        guard await store(.applied(receipt)), lateYes.removeValue(forKey: envelope.conversation) != nil else { return true }
+        applied[yes.conversation] = receipt
+        continuation.yield(.produced(holder, .plan(plan)))
+        await acknowledge(yes.offer, to: yes.suggester, in: yes.conversation, planConversation: yes.planConversation, interaction: yes.interaction)
+        startResending(yes.interaction.rawValue)
+        return true
     }
 
     /// Whether this phone's plan already shows an applied change.
@@ -981,6 +1139,7 @@ public actor ChangePlanService: SkillService {
         switch record {
         case .confirming(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
         case .leaving(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
+        case .withdrawing(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
         default: await store(record)
         }
     }
@@ -1012,6 +1171,8 @@ public actor ChangePlanService: SkillService {
             }
         } else if leaving[id] != nil {
             await sendLeaveNotices(id)
+        } else if let delivery = withdrawing[id] {
+            await sendWithdrawals(id, to: delivery.order)
         }
     }
 
@@ -1020,18 +1181,21 @@ public actor ChangePlanService: SkillService {
         let id = InteractionID(key)
         if let delivery = confirming[id] { return delivery.until }
         if let delivery = leaving[id] { return delivery.until }
+        if let delivery = withdrawing[id] { return delivery.until }
+        if let yes = lateYes.values.first(where: { $0.interaction == id }) { return yes.until }
         if let receipt = applied.values.first(where: { $0.interaction == id }) { return receipt.until }
         return departed.values.first { $0.id == key }?.until
     }
 
     /// Resends on the schedule until everyone acknowledged or the window
     /// ends; a record that only waits (applied, departed) just waits.
-    private func startResending(_ key: UUID) {
+    private func startResending(_ key: UUID, sendingFirst: Bool = false) {
         deliveryTasks[key]?.cancel()
-        deliveryTasks[key] = Task { [weak self] in await self?.runDelivery(key) }
+        deliveryTasks[key] = Task { [weak self] in await self?.runDelivery(key, sendingFirst: sendingFirst) }
     }
 
-    private func runDelivery(_ key: UUID) async {
+    private func runDelivery(_ key: UUID, sendingFirst: Bool) async {
+        if sendingFirst { await resendOnce(key) }
         var wait = resend.firstRetry
         while !Task.isCancelled, let end = until(key) {
             let next = min(now().addingTimeInterval(wait), end)
@@ -1060,6 +1224,11 @@ public actor ChangePlanService: SkillService {
             await retire(delivery.conversation)
         } else if leaving.removeValue(forKey: id) != nil {
             await forget(key)
+        } else if withdrawing.removeValue(forKey: id) != nil {
+            await forget(key)
+        } else if let yes = lateYes.values.first(where: { $0.interaction == id }) {
+            lateYes[yes.conversation] = nil
+            await forget(key)
         } else if let receipt = applied.values.first(where: { $0.interaction == id }) {
             applied[receipt.conversation] = nil
             await forget(key)
@@ -1086,6 +1255,13 @@ public actor ChangePlanService: SkillService {
         for record in records {
             switch record {
             case .accepted(let yes):
+                // A yes whose card ended a grace after its window waits for
+                // a late confirmation (finding 3).
+                if yes.until > now(), !yes.joining, states[yes.interaction] == .ended(.expired) {
+                    lateYes[yes.conversation] = yes
+                    startResending(record.key)
+                    continue
+                }
                 guard yes.until > now(), states[yes.interaction].map({ !$0.isFinal && $0 != .planned }) ?? false else {
                     await forget(record.key)
                     continue
@@ -1095,19 +1271,35 @@ public actor ChangePlanService: SkillService {
                     role: yes.joining ? .joiner : .voter, conversation: yes.conversation, planConversation: yes.planConversation,
                     planInteraction: yes.planInteraction, basisRevision: yes.basis?.revision ?? (yes.proposed.revision - 1), basis: yes.basis,
                     proposed: yes.proposed, suggester: yes.suggester, voters: [], friend: nil, terms: Terms.empty, inviteTerms: nil,
-                    step: .accepted(offer: yes.offer), holdUntil: yes.until
+                    step: .accepted(offer: yes.offer), holdUntil: yes.until, deadline: yes.deadline
                 )
                 byConversation[yes.conversation] = yes.interaction
                 if !yes.joining { openByPlan[yes.planConversation] = yes.interaction }
                 journaledYes.insert(yes.interaction)
-                schedule(yes.interaction, at: yes.until)
                 recovered.insert(yes.interaction)
-                // Held again (ADR 0023 decision 5). If another change holds
-                // the plan, this one ends and the plan stays as it was.
-                if await !holds.hold(yes.planConversation, for: yes.conversation) {
+                let graceEnd = (yes.deadline ?? now()).addingTimeInterval(resend.holdGrace)
+                schedule(yes.interaction, at: now() < graceEnd ? min(graceEnd, yes.until) : yes.until)
+                // Held again (ADR 0023 decision 5), until its grace ends
+                // (finding 3). If another change holds the plan, this one
+                // ends and the plan stays as it was.
+                if now() < graceEnd, await !holds.hold(yes.planConversation, for: yes.conversation) {
                     await finish(yes.interaction, with: [.noAgreement])
                 }
                 continue
+            case .asking(let open):
+                // A suggestion still asking cannot resume (its card is
+                // reported failed below); everyone it asked is told.
+                let order = open.asked.filter { open.offers[$0] != nil }
+                let delivery = WithdrawalDelivery(interaction: open.interaction, planConversation: open.planConversation, order: order,
+                                                  pending: Dictionary(uniqueKeysWithValues: order.map { ($0, open.offers[$0]!) }), until: open.until)
+                if delivery.pending.isEmpty {
+                    await forget(record.key)
+                    continue
+                }
+                withdrawing[open.interaction] = delivery
+                await store(.withdrawing(delivery))
+            case .withdrawing(let delivery):
+                withdrawing[delivery.interaction] = delivery
             case .confirming(let delivery):
                 confirming[delivery.interaction] = delivery
                 confirmingByConversation[delivery.conversation] = delivery.interaction
@@ -1183,9 +1375,11 @@ public actor ChangePlanService: SkillService {
         }
         let key = UUID()
         inFlight[id, default: [:]][key] = task
+        if recordOffers { offerSends[id, default: 0] += 1 }
         defer {
             inFlight[id]?[key] = nil
             if inFlight[id]?.isEmpty == true { inFlight[id] = nil }
+            if recordOffers { offersSettled(id) }
         }
         do {
             try await task.value
@@ -1204,6 +1398,15 @@ public actor ChangePlanService: SkillService {
 
     private func card(for peer: PeerID) -> AgentCard? { cards[peer] }
 
+    /// An offer send finished. A withdrawal waiting only for offers that
+    /// never went out is done.
+    private func offersSettled(_ id: InteractionID) {
+        let left = (offerSends[id] ?? 1) - 1
+        offerSends[id] = left > 0 ? left : nil
+        guard left <= 0, sessions[id] == nil, let delivery = withdrawing[id], delivery.pending.isEmpty else { return }
+        Task { [weak self] in await self?.endDelivery(id.rawValue) }
+    }
+
     private func cancelSends(of id: InteractionID) {
         if let tasks = inFlight.removeValue(forKey: id) { for task in tasks.values { task.cancel() } }
     }
@@ -1216,10 +1419,41 @@ public actor ChangePlanService: SkillService {
     /// else is announced. A suggestion queued behind this one is looked at
     /// next.
     private func finish(_ id: InteractionID, with events: [InteractionEvent], then extra: [SkillEvent] = []) async {
+        let offersInFlight = (offerSends[id] ?? 0) > 0
         cancelSends(of: id)
         timers.removeValue(forKey: id)?.cancel()
-        deadlines[id] = nil
+        let deadline = deadlines.removeValue(forKey: id)
         guard let session = sessions.removeValue(forKey: id) else { return }
+        // A suggestion that ends without a change withdraws every offer it
+        // sent, and any still in flight, until each is acknowledged (final
+        // review of PR #111, finding 3).
+        var withdrawal: WithdrawalDelivery?
+        if session.role == .suggester, !session.isLeave, confirming[id] == nil {
+            let order = session.asked.filter { session.offers[$0] != nil }
+            let delivery = WithdrawalDelivery(
+                interaction: id, planConversation: session.planConversation, order: order,
+                pending: Dictionary(uniqueKeysWithValues: order.map { ($0, session.offers[$0]!) }),
+                until: (deadline ?? now()).addingTimeInterval(resend.holdGrace)
+            )
+            asking[id] = nil
+            if !delivery.pending.isEmpty || offersInFlight {
+                withdrawing[id] = delivery
+                await store(.withdrawing(delivery))
+                withdrawal = delivery
+            } else {
+                await forget(id.rawValue)
+            }
+        }
+        // Withdrawals go in fresh conversations, so before the ending is
+        // announced; from the delivery's own task if this one is cancelled.
+        if withdrawal != nil {
+            if Task.isCancelled {
+                startResending(id.rawValue, sendingFirst: true)
+            } else {
+                await resendOnce(id.rawValue)
+                startResending(id.rawValue)
+            }
+        }
         byConversation[session.conversation] = nil
         if openByPlan[session.planConversation] == id { openByPlan[session.planConversation] = nil }
         // Every ending releases the plan (ADR 0023).
@@ -1233,6 +1467,18 @@ public actor ChangePlanService: SkillService {
             emit(id, .failed)
         }
         await dequeue(session.planConversation)
+    }
+
+    /// Withdrawals to `peers`, each in a fresh conversation, naming the
+    /// offer it withdraws.
+    private func sendWithdrawals(_ id: InteractionID, to peers: [PeerID]) async {
+        guard let delivery = withdrawing[id] else { return }
+        for peer in peers {
+            guard let offer = withdrawing[id]?.pending[peer] else { continue }
+            _ = try? await outbox.send(.reject(Rejection(proposal: offer, reason: .declinedByOwner)), to: peer, conversation: ConversationID(),
+                                       recipientCard: cards[peer], context: OutboundContext(interaction: id),
+                                       skill: descriptor.ref, mode: .invite, chainedFrom: delivery.planConversation)
+        }
     }
 
     private func dequeue(_ planConversation: ConversationID) async {
