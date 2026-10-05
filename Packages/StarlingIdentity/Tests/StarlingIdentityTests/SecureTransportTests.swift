@@ -217,6 +217,18 @@ import Testing
         let bob = try await Node.make("bob", hub: hub, identity: bobKey, configuration: configuration)
         try await alice.secure.start()
         try await bob.secure.start()
+        // Pairing runs over a live link, so both transports have handled the
+        // link coming up before either pins the other. Pinning earlier raced
+        // that: a link-up handled after the pin started a second handshake
+        // from the other side on a busy event loop, the lone 50 ms attempt
+        // expired before its answer, and neither side was left to retry (the
+        // higher ID had dropped its own attempt for the lower's). Seen under
+        // load 25 to 90; every failure had handshakes in both directions.
+        try await eventually("both links are up") {
+            let aliceUp = await alice.secure.status(of: bob.id).linkUp
+            let bobUp = await bob.secure.status(of: alice.id).linkUp
+            return aliceUp && bobUp
+        }
         try await alice.pin(bobKey)
         try await bob.pin(aliceKey)
         await bob.secure.reconnect(alice.id)
