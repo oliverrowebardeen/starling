@@ -385,4 +385,34 @@ struct PlanChangeTests {
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.ended(.nobodyUp), in: second), "\(phone.name)") }
         #expect(await group.lifecyclesWereLegal())
     }
+
+    /// Follow-up to round 2: the plan moved to another place while its
+    /// stored revision lagged (still the same number). The change records
+    /// the plan's place too, so the friend's yes and the organizer's
+    /// confirmation are still stopped.
+    @Test func aChangeIsCaughtByThePlacesEvenIfTheRevisionLags() async throws {
+        let (group, oliver, maya, jake, _) = try await friends(configuration: quick)
+        defer { Task { await group.stop() } }
+        let plan = try dinner([oliver, maya, jake], at: Venues.bobaGuys)
+        let elsewhere = try Plan(id: plan.id, origin: plan.origin, attendees: plan.attendees, activity: plan.activity, time: plan.time,
+                                 place: Venues.teaLab.choice, revision: plan.revision)
+
+        await share(plan, with: [oliver, maya, jake])
+        let first = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: first), "\(phone.name)") }
+        await maya.plans.hold(elsewhere)
+        await #expect(throws: PickAPlaceError.planChangedMeanwhile) { try await maya.accept(in: first) }
+        #expect(await maya.reaches(.ended(.nobodyUp), in: first))
+
+        await share(plan, with: [oliver, maya, jake])
+        let second = try await oliver.organize([Self.greenBowl], with: [maya, jake], inputs: [.plan(plan)], chainedFrom: plan.origin).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: second), "\(phone.name)") }
+        try await maya.accept(in: second)
+        try await jake.accept(in: second)
+        #expect(await eventually { await oliver.service.organized[second]?.accepted == [maya.id, jake.id] })
+        await oliver.plans.hold(elsewhere)
+        try await oliver.accept(in: second)
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.ended(.nobodyUp), in: second), "\(phone.name)") }
+        #expect(await group.lifecyclesWereLegal())
+    }
 }

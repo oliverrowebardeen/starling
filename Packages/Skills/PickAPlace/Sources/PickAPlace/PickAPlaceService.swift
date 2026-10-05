@@ -458,7 +458,7 @@ public actor PickAPlaceService: SkillService {
     /// What a request on a plan is read as when its record is missing or
     /// cannot be read: a change of place that no proposal can match, the
     /// stricter rule (ADR 0233).
-    static let unreadableKind = PlaceRequestKind.placeChange(roster: [], revision: .max, time: nil, activity: nil)
+    static let unreadableKind = PlaceRequestKind.placeChange(roster: [], revision: .max, place: nil, time: nil, activity: nil)
 
     /// The `plans` lookup over the app's interaction store: the plan of the
     /// interaction whose conversation a chained request names, once it is
@@ -477,7 +477,7 @@ public actor PickAPlaceService: SkillService {
     static func kind(of plan: Plan?) -> PlaceRequestKind {
         guard let plan else { return .planNotHeld }
         guard plan.place != nil else { return .firstPlace }
-        return .placeChange(roster: plan.attendees.peers, revision: plan.revision, time: plan.time, activity: plan.activity)
+        return .placeChange(roster: plan.attendees.peers, revision: plan.revision, place: plan.place, time: plan.time, activity: plan.activity)
     }
 
     /// The plan the agreed place would make, when the terms say what or when.

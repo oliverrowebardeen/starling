@@ -313,7 +313,7 @@ extension PickAPlaceService {
         else { return }
         // A change of place asks this phone's plan's whole roster, over the
         // plan's own revision: anything else is not shown (ADR 0233).
-        if case .placeChange(let everyone, let revision, let time, let activity)? = invite.kind {
+        if case .placeChange(let everyone, let revision, _, let time, let activity)? = invite.kind {
             guard Set(roster) == Set(everyone), revision < UInt32(ProtocolLimits.maxNegotiationRounds - 1),
                   UInt32(proposal.round) == revision + 1,
                   // Only the place changes: the time and activity stay.
@@ -402,9 +402,11 @@ extension PickAPlaceService {
             // A change applies only over the plan it was made for: if the
             // plan moved on meanwhile, the card closes and nothing is sent
             // (ADR 0233).
-            if case .placeChange(_, let planRevision, _, _)? = invite.kind {
+            if case .placeChange(_, let planRevision, let planPlace, _, _)? = invite.kind {
                 let current: Plan? = if let chainedFrom = invite.chainedFrom { await plans(chainedFrom) } else { nil }
-                guard let current, current.revision == planRevision, current.place != nil else {
+                // The place too, so a second change over the same revision
+                // is caught even if a stored revision lags.
+                guard let current, current.revision == planRevision, current.place != nil, current.place == planPlace else {
                     invites[conversation]?.accepting = false
                     endInvite(conversation, event: .noAgreement, reply: nil)
                     throw PickAPlaceError.planChangedMeanwhile

@@ -542,7 +542,7 @@ extension PickAPlaceService {
         // the confirm deadline, so nobody can tell the two apart by when the
         // plan is confirmed (ADR 0017; ADR 0020, decision 9).
         guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.timedOut.contains($0) }) else { return }
-        guard case .placeChange(_, let revision, _, _)? = organizer.kind else {
+        guard case .placeChange(_, let revision, let place, _, _)? = organizer.kind else {
             finalize(conversation)
             return
         }
@@ -555,7 +555,9 @@ extension PickAPlaceService {
             let current: Plan? = if let chainedFrom { await service.plans(chainedFrom) } else { nil }
             service.organized[conversation]?.checkingPlan = false
             guard service.organized[conversation]?.phase == .proposing else { return }
-            guard let current, current.revision == revision else {
+            // The place too, so a second change over the same revision is
+            // caught even if a stored revision lags.
+            guard let current, current.revision == revision, current.place == place else {
                 service.endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
                 return
             }
