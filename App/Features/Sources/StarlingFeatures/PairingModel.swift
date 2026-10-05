@@ -141,6 +141,11 @@ public final class PairingModel {
     /// This owner ended the last ceremony (Cancel, or "They're different"),
     /// so the sheet does not rejoin that phone on its own.
     private var endedHere = false
+    /// Automatic rejoins after a failure on this sheet. Each one is another
+    /// code a phone in the middle could try, so there is at most one; after
+    /// that the owner taps Try again (review round 3 of #104, ADR 0260).
+    private var automaticRejoins = 0
+    static let maxAutomaticRejoins = 1
     /// Bumped by every new attempt, by Cancel, and when the sheet goes away.
     /// A session, event, or stream ending from an older attempt is ignored.
     private var attempt = 0
@@ -176,10 +181,13 @@ public final class PairingModel {
     /// code comparison still verifies it, so joining saves the second owner
     /// a pick (ADR 0260).
     ///
-    /// After a failure, a new request from the same phone is joined too:
-    /// its owner tapped Try again, and this owner should not have to.
+    /// After a failure, a new request from the same phone is joined too, once
+    /// per sheet: its owner tapped Try again, and this owner should not have
+    /// to. Later retries take this owner's tap.
     public func refresh() async {
-        if case .failed = phase, !endedHere, let phone, await directory.requests().contains(phone.peer), case .failed = phase {
+        if case .failed = phase, !endedHere, automaticRejoins < Self.maxAutomaticRejoins, let phone,
+           await directory.requests().contains(phone.peer), case .failed = phase, automaticRejoins < Self.maxAutomaticRejoins {
+            automaticRejoins += 1
             await start(with: phone)
             return
         }

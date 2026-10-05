@@ -733,6 +733,28 @@ final class FriendActions: @unchecked Sendable {
         #expect(await extra.confirms.isEmpty)
     }
 
+    /// Review round 3 of #104: each rejoin after a failure is another code
+    /// a phone in the middle could try, so the sheet rejoins on its own once.
+    /// After that the owner taps Try again.
+    @Test func aSheetRejoinsOnItsOwnOnlyOnce() async {
+        let directory = ScriptedDirectory(candidates: []) { _, _ in PairingModelTests.TimingOutSession() }
+        let model = PairingModel(directory: directory.directory)
+        let friend = PeerID.random()
+        await model.choose(PairingCandidate(peer: friend))
+        await eventually { model.phase == .failed(.timedOut) }
+        directory.ask(from: friend)
+
+        await model.refresh()
+        await eventually { model.phase == .failed(.timedOut) && directory.starts.count == 2 }
+        #expect(directory.starts.count == 2, "the one automatic rejoin")
+        await model.refresh()
+        await model.refresh()
+        #expect(directory.starts.count == 2, "no second one without a tap")
+
+        await model.tryAgain()
+        #expect(directory.starts.count == 3, "the owner's tap still works")
+    }
+
     actor Counter {
         private var value = 0
         func next() -> Int {
