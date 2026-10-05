@@ -52,6 +52,9 @@ public struct AppServices: Sendable {
     /// The plans on this phone by origin, for skill services built in
     /// `makeSkills`. `AppModel` attaches its coordinator.
     public var plans: StandingPlans?
+    /// The holds every skill that changes a plan shares (ADR 0023), read
+    /// for the owner. Nil when no such skill is in the build.
+    public var changesInProgress: PlanChangesInProgress?
     /// Lane E's journal of sends whose egress record is not yet confirmed,
     /// on disk in the app (ADR 0021 decision 4).
     public var egressJournal: any EgressJournal
@@ -101,6 +104,7 @@ public struct AppServices: Sendable {
         stagedPlaces: StagedCandidates? = nil,
         choices: OwnerChoices? = nil,
         plans: StandingPlans? = nil,
+        changesInProgress: PlanChangesInProgress? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -133,6 +137,7 @@ public struct AppServices: Sendable {
         self.egressJournal = egressJournal
         self.placeFinder = placeFinder
         self.stagedPlaces = stagedPlaces
+        self.changesInProgress = changesInProgress
         self.choices = choices
         self.plans = plans
         self.transport = transport
@@ -422,6 +427,9 @@ public final class AppModel {
         lifecycle.restoreRequestGroups(notes.requestGroups)
         refreshCard()
         // Recovers the egress journal between loading and restoring.
+        // Each hold the skills take or release, restoring or later, reaches
+        // the cards at once (ADR 0023).
+        await services.changesInProgress?.watch()
         await lifecycle.start()
         lifecycle.tick()
         await retryRetirements()

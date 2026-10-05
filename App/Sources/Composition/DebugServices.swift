@@ -116,6 +116,7 @@ final class DebugHarness {
             stagedPlaces: places.staged,
             choices: choices,
             plans: plans,
+            changesInProgress: PlanChangesInProgress(holds),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: agent.descriptor.locality,

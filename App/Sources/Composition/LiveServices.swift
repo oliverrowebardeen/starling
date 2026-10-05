@@ -69,6 +69,7 @@ extension AppServices {
             stagedPlaces: places.staged,
             choices: choices,
             plans: plans,
+            changesInProgress: PlanChangesInProgress(holds),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
