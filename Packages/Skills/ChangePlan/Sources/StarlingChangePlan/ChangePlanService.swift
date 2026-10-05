@@ -679,8 +679,8 @@ public actor ChangePlanService: SkillService {
         switch session.step {
         case .accepting, .accepted:
             // Said yes: the confirmation may still come, resent, until its
-            // delivery ends (finding 1).
-            if let until = session.holdUntil, now() < until {
+            // delivery ends (finding 1), as long as it could still apply.
+            if let until = session.holdUntil, now() < until, await couldStillApply(session) {
                 schedule(id, at: until)
                 return
             }
@@ -833,6 +833,14 @@ public actor ChangePlanService: SkillService {
             }
         }
         return true
+    }
+
+    /// Whether a confirmation for this card could still apply: the plan
+    /// still stands at the card's basis (a friend being added has none).
+    private func couldStillApply(_ session: Session) async -> Bool {
+        guard let basis = session.basis else { return true }
+        guard let current = await planLookup(session.planConversation) else { return false }
+        return current.plan.revision == basis.revision && current.plan.attendees == basis.attendees
     }
 
     /// Whether this phone's plan already shows an applied change.

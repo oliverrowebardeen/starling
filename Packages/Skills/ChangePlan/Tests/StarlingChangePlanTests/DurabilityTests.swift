@@ -50,6 +50,26 @@ import Testing
         await network.shutdown()
     }
 
+    /// Lane F's PC06: once the plan has moved past the card's basis, its
+    /// confirmation can never apply, so the card closes with its window.
+    @Test func aYesWhosePlanMovedOnClosesWithItsWindow() async throws {
+        let group = Group()
+        let network = group.network
+        try await ReliabilityTests.agreed(group, losing: [("Alex > Jake: accept", skipping: 0), ("Alex > Jake: accept", skipping: 0)])
+        try await network.until("Maya applied") { await group.phone(maya).plan(group.origin)?.revision == 1 }
+        // Another change moves Jake's plan on before the confirmation arrives.
+        let jake = group.phone(self.jake)
+        var root = try #require(await jake.interaction(group.roots[self.jake]!.id))
+        root.record(.plan(try #require(root.plan).updating(activity: .some(Fixtures.dinner))))
+        try await jake.store.save(root)
+        group.clock.advance(to: Fixtures.date(minutes: 41))
+        try await network.until("Jake's card closed") { await jake.changes().first?.state.isFinal == true }
+        #expect(await jake.changes().first?.state == .ended(.expired))
+        #expect(await jake.plan(group.origin)?.activity == Fixtures.dinner)
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
     @Test func theSuggesterTellsEveryoneWhenTheWindowClosesSoTheirCardsClose() async throws {
         let group = Group()
         let network = group.network
