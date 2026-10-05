@@ -29,8 +29,9 @@ import Testing
         let plan = try Fixtures.plannedDownFor()
         // Ended.
         #expect(planner.changeOffer(for: plan.id, in: [plan], settings: settings, cards: cards, now: Fixtures.tonight.end) == nil)
-        // Skill off, or flagged off.
-        #expect(planner.changeOffer(for: plan.id, in: [plan], settings: SkillSettings(flags: .phase1_5), cards: cards, now: now) == nil)
+        // Flagged off.
+        let flaggedOff = SkillFlags(SkillFlags.phase1_5.enabled.subtracting([.changePlan]))
+        #expect(planner.changeOffer(for: plan.id, in: [plan], settings: SkillSettings(flags: flaggedOff), cards: cards, now: now) == nil)
         // Jake's Starling does not run it.
         var missing = cards
         missing[Fixtures.jake] = Fixtures.card(SampleSkills.all)
