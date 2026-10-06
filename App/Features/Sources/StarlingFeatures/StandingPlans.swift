@@ -27,11 +27,17 @@ public final class StandingPlans {
         holder(origin: origin, states: [.planned, .done])?.plan
     }
 
-    /// The interaction holding the plan: the one whose skill agreed it, or,
-    /// on a friend's phone who was added later, their Change the plan
-    /// interaction.
     private func holder(origin: ConversationID, states: Set<InteractionState>) -> Interaction? {
-        let holders = (lifecycle?.interactions ?? []).filter { states.contains($0.state) && $0.plan?.origin == origin }
+        (lifecycle?.interactions ?? []).planHolder(origin: origin, states: states)
+    }
+}
+
+extension Array where Element == Interaction {
+    /// The interaction holding the plan named `origin` among those in
+    /// `states`: the one whose skill agreed it, or, on a friend's phone who
+    /// was added later, their Change the plan interaction.
+    func planHolder(origin: ConversationID, states: Set<InteractionState> = [.planned]) -> Interaction? {
+        let holders = filter { states.contains($0.state) && $0.plan?.origin == origin }
         return holders.first { $0.skill.id != .changePlan } ?? holders.first
     }
 }
