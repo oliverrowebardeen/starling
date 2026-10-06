@@ -77,6 +77,24 @@ import Testing
         #expect(detail.auditIsComplete)
     }
 
+    /// ADR 0022 decision 4: a place step on a plan that ends with nobody up
+    /// leaves the plan as it was, and its line names nobody. It never reads
+    /// as if the plan itself were off.
+    @Test func aPlaceStepWithNobodyUpLeavesThePlanAsItWas() throws {
+        var root = try planned(SampleSkills.downFor, artifacts: [])
+        let place = try PlaceChoice(name: PlaceName("Boba Guys"), coordinate: Coordinate(latitude: 37.77, longitude: -122.42))
+        root.record(.plan(try bobaPlan(origin: root.conversation).updating(place: place)))
+        let link = ChainLink(parent: root.id, parentConversation: root.conversation, consumed: [.plan], trigger: .whilePlanned, optedInAt: at)
+        var pick = Interaction(skill: SampleSkills.pickAPlace.ref, role: .initiator, participants: [maya, jake],
+                               createdAt: Timestamp(millisecondsSince1970: at.millisecondsSince1970 + 60_000), chain: link)
+        try pick.apply(.started, at: pick.createdAt)
+        try pick.apply(.noAgreement, at: pick.createdAt)
+
+        let detail = PlanDetail(root: root, all: [root, pick], words: words, notes: PlanNotes(file: nil))
+        #expect(detail.timeline.map(\.text) == ["All 3 down for boba", "The plan stays as it was"])
+        #expect(detail.plan?.place == place)
+    }
+
     /// Core v2.1: a send whose items the policy could not state means
     /// nothing can be said to have stayed on the phone.
     @Test func anUnknownSendClaimsNothingStayed() throws {

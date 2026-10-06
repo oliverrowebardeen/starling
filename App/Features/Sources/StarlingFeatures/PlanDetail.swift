@@ -247,6 +247,12 @@ public struct PlanDetail: Hashable, Sendable {
                 return TimelineEntry(id: link.id.description, tag: summary.skill.wording.name, text: text, at: link.updatedAt.date,
                                      isDone: link.state.isFinal || link.state == .planned)
             }
+            // A place step on the plan that found nobody up changed nothing,
+            // and the plan still stands (ADR 0022 decision 4).
+            if link.skill.id == .pickAPlace, link.id != chain.first?.id, link.state == .ended(.nobodyUp) {
+                return TimelineEntry(id: link.id.description, tag: summary.skill.wording.name, text: InteractionWords.staysAsItWas,
+                                     at: link.updatedAt.date, isDone: true)
+            }
             let entry = entries.first { $0.id == link.id }
             // An after-plan-ends link the owner opted into, still waiting.
             if let startsAfter = entry?.startsAfter {
