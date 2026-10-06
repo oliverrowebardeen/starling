@@ -15,7 +15,7 @@ struct PlanRevisionContractTests {
             try original.updating(attendees: Attendees([P15.alice, P15.bob, P15.eve])),
             try original.updating(activity: .some(Keyword("dinner"))),
             try original.updating(time: .some(TimeSlot(startMinute: P15.slot.startMinute + 30, endMinute: P15.slot.endMinute + 30))),
-            original.updating(place: try PlaceChoice(name: PlaceName("Coffee"))),
+            try original.updating(place: PlaceChoice(name: PlaceName("Coffee"))),
         ]
         for updated in updates {
             #expect(updated.id == original.id)
@@ -66,8 +66,8 @@ struct PlanRevisionContractTests {
         let restored = try JSONDecoder().decode(Plan.self, from: JSONEncoder().encode(last))
         #expect(restored == last)
         #expect(throws: ValidationError.self) { try restored.updating(place: .some(nil)) }
-        // The nonthrowing place convenience overload traps at this revision:
-        // issue #98 already has a separate child-process reproduction. Do not
-        // crash the shared test runner or treat this generic check as its fix.
+        // Issue #98: setting a place at this revision throws too; the
+        // nonthrowing overload that trapped here is gone.
+        #expect(throws: ValidationError.self) { try restored.updating(place: PlaceChoice(name: PlaceName("Coffee"))) }
     }
 }

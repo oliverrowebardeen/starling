@@ -45,7 +45,7 @@ import Testing
         let organizer = try await phone(a, friend: b, plan: plan, role: .initiator, conversation: conversation)
         let friend = try await phone(b, friend: a, plan: plan, role: .invitee, conversation: conversation)
         let place = try PlaceChoice(name: PlaceName("Boba Guys"))
-        let agreed = plan.updating(place: place)
+        let agreed = try plan.updating(place: place)
         let terms = try Terms([.place: .places([place])])
         let roster = try Attendees([a, b])
 

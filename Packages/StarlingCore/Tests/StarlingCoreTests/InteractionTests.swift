@@ -74,7 +74,7 @@ import Testing
         let attendees = try Attendees([Fixtures.alice, Fixtures.bob])
         let plan = try Plan(origin: interaction.conversation, attendees: attendees, activity: Keyword("boba"), time: nil)
         interaction.record(.plan(plan))
-        let placed = plan.updating(place: try PlaceChoice(name: PlaceName("Boba Guys")))
+        let placed = try plan.updating(place: PlaceChoice(name: PlaceName("Boba Guys")))
         interaction.record(.plan(placed))
         #expect(interaction.artifacts.count == 1 && interaction.plan == placed)
 
