@@ -12,6 +12,8 @@ enum Fixtures {
     static let jake = try! PeerID(bytes: Data(repeating: 0xCC, count: 32))
     static let sam = try! PeerID(bytes: Data(repeating: 0xDD, count: 32))
     static let stranger = try! PeerID(bytes: Data(repeating: 0xEE, count: 32))
+    /// A friend of Maya's, added to a plan in some tests.
+    static let fay = try! PeerID(bytes: Data(repeating: 0x11, count: 32))
     /// 2026-10-02 19:00:00 UTC.
     static let start = Date(timeIntervalSince1970: 1_790_967_600)
     static func date(minutes: Int) -> Date { start.addingTimeInterval(Double(minutes) * 60) }
@@ -292,7 +294,8 @@ final class Network: Sendable {
         self.clock = clock
     }
 
-    static let names = [Fixtures.alex: "Alex", Fixtures.maya: "Maya", Fixtures.jake: "Jake", Fixtures.sam: "Sam", Fixtures.stranger: "Stranger"]
+    static let names = [Fixtures.alex: "Alex", Fixtures.maya: "Maya", Fixtures.jake: "Jake", Fixtures.sam: "Sam", Fixtures.stranger: "Stranger",
+                        Fixtures.fay: "Fay"]
 
     /// Every frame sent so far, as "Alex > Maya: propose".
     var transcript: [String] { log.withLock { $0 } }

@@ -122,4 +122,44 @@ import Testing
         try await group.network.until("Sam's card") { await group.openCard(of: sam) != nil }
         await group.network.shutdown()
     }
+
+    /// Re-review of PR #111, item 1: Sam joined through Alex's change at
+    /// revision 0. A departure passed on counts only from Alex, the
+    /// suggester who added Sam, and only for a revision Sam joined over:
+    /// nobody else can tell Sam that someone left.
+    @Test func aPassedOnDepartureCountsOnlyFromWhoAddedThisPhone() async throws {
+        let group = Group(extra: [sam])
+        let network = group.network
+        let phone = group.phone(sam)
+        try await group.suggest(.change(time: nil, activity: nil, adding: sam), by: alex)
+        await network.deliver()
+        try await network.until("cards up") { await ReliabilityTests.cardsUp(group) }
+        for person in [maya, jake] {
+            try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
+        }
+        await network.deliver()
+        try await network.until("Sam's card up") { await group.openCard(of: sam) != nil }
+        try await phone.service.answer(try await group.card(of: sam).id, with: .accept(proposal: 1))
+        await network.deliver()
+        try await network.until("Sam joined") { await phone.plan(group.origin)?.revision == 1 }
+        func passedOn(from sender: PeerID, round: UInt16, leaver: PeerID = Fixtures.jake) throws -> Envelope {
+            let digest = ChangePlanService.departureDigest(origin: group.origin, round: round, leaver: leaver)
+            return try Envelope(conversation: ConversationID(), sender: sender, recipient: sam, sequence: 0, sentAt: Timestamp(group.clock.now),
+                                body: .counter(Proposal(round: round, terms: Terms([:]), inReplyTo: digest)),
+                                skill: ChangePlan.descriptor.ref, mode: .invite, chainedFrom: group.origin)
+        }
+        let sent = await phone.transport.sent.count
+        // From Maya, who did not add Sam; and from Alex for revision 1, which Sam was in.
+        await phone.service.handle(.message(try passedOn(from: maya, round: 0)))
+        await phone.service.handle(.message(try passedOn(from: alex, round: 1)))
+        await network.settle()
+        #expect(await phone.plan(group.origin)?.attendees.peers == [alex, maya, jake, sam])
+        #expect(await phone.transport.sent.count == sent)
+        // From Alex, for revision 0: it applies, and is acknowledged.
+        await phone.service.handle(.message(try passedOn(from: alex, round: 0)))
+        try await network.until("Jake gone on Sam's phone") { await phone.plan(group.origin)?.attendees.peers == [alex, maya, sam] }
+        #expect(await phone.plan(group.origin)?.revision == 2)
+        #expect(await phone.transport.sent.count == sent + 1)
+        await network.shutdown()
+    }
 }

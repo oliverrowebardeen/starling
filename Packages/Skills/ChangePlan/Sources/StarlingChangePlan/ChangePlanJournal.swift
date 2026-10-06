@@ -71,6 +71,10 @@ public struct ConfirmationDelivery: Hashable, Sendable, Codable {
     public var pending: [PeerID: MessageID]
     /// When resending stops: the plan's end, or a bound for a plan without a time.
     public let until: Date
+    /// The friend this change adds, if any: someone who leaves before the
+    /// change reaches them never tells that friend, so this phone passes
+    /// their departure on (re-review of PR #111).
+    public var added: PeerID? = nil
 }
 
 /// A confirmation this phone applied, with the plan it applied, kept so a
@@ -105,6 +109,10 @@ public struct LeaveDelivery: Hashable, Sendable, Codable {
     /// Who has not acknowledged it yet.
     public var pending: Set<PeerID>
     public let until: Date
+    /// Set when this phone passes on someone else's departure to a friend
+    /// its change added, who was not in the plan the leaver knew: the one
+    /// who left. Nil for the owner's own leave.
+    public var forwarding: PeerID? = nil
 }
 
 /// Someone this phone saw leave a plan, so a resent notice is acknowledged again.

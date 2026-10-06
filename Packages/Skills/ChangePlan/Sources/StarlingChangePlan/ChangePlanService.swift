@@ -436,6 +436,10 @@ public actor ChangePlanService: SkillService {
         // revision (review of PR #111, finding A).
         case .propose(let offer) where offer.terms.values.isEmpty: await left(envelope, notice: offer, planConversation: planConversation)
         case .propose(let offer): await offered(envelope, offer: offer, planConversation: planConversation)
+        // Someone else's departure, passed on by the suggester who added
+        // this phone (re-review of PR #111, item 1).
+        case .counter(let notice) where notice.terms.values.isEmpty:
+            await forwardedDeparture(envelope, notice: notice, planConversation: planConversation)
         default: return
         }
     }
@@ -530,28 +534,80 @@ public actor ChangePlanService: SkillService {
         guard let current = await planLookup(planConversation), current.plan.origin == planConversation,
               current.plan.attendees.peers.contains(envelope.sender), UInt32(offer.round) <= current.plan.revision
         else { return }
+        await depart(envelope.sender, notice: noticeID, round: offer.round, envelope: envelope, plan: current)
+    }
+
+    /// Someone left at a revision before this phone joined the plan, so
+    /// their own notice never came here; the suggester who added this phone
+    /// passes it on (re-review of PR #111, item 1). It names the leaver only
+    /// by a digest this phone computes from its own plan, so it discloses
+    /// nothing, and counts only from that suggester, for a departure at or
+    /// before the revision this phone joined over. It applies, and is
+    /// acknowledged, as the leaver's own notice would be.
+    private func forwardedDeparture(_ envelope: Envelope, notice: Proposal, planConversation: ConversationID) async {
+        guard let noticeID = notice.inReplyTo, envelope.sender != me,
+              byConversation[envelope.conversation] == nil, !closed.contains(envelope.conversation),
+              applied.values.contains(where: {
+                  $0.planConversation == planConversation && $0.planInteraction == nil && $0.suggester == envelope.sender
+                      && UInt32(notice.round) <= $0.basisRevision
+              })
+        else { return }
+        if let known = departed[noticeID], known.planConversation == planConversation {
+            await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
+            await retire(envelope.conversation)
+            return
+        }
+        guard departing.insert(noticeID).inserted else { return }
+        defer { departing.remove(noticeID) }
+        // Before the confirmation that added this phone, there is nothing
+        // to apply it to: the next resend comes after.
+        guard let current = await planLookup(planConversation), current.plan.origin == planConversation else { return }
+        guard let leaver = current.plan.attendees.peers.first(where: {
+            $0 != me && $0 != envelope.sender && Self.departureDigest(origin: planConversation, round: notice.round, leaver: $0) == noticeID
+        }) else {
+            // Nobody in this phone's plan: nothing to apply, and the
+            // suggester's resends can stop.
+            await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: nil)
+            await retire(envelope.conversation)
+            return
+        }
+        await depart(leaver, notice: noticeID, round: notice.round, envelope: envelope, plan: current)
+    }
+
+    /// Applies a departure: journaled first, then the plan shrinks (or ends
+    /// if only this phone is left), the notice is acknowledged, and its
+    /// conversation is retired before the note on the timeline ends.
+    private func depart(_ leaver: PeerID, notice noticeID: MessageID, round: UInt16, envelope: Envelope, plan current: PlanRef) async {
+        let planConversation = current.plan.origin
         // Anything still open for this plan included them: it cannot go
         // through. A yes already given stays: its change may have been
         // committed, and applies over the smaller plan (final review of
         // PR #111, finding 1).
         await settle(planConversation: planConversation, keepingYes: true)
-        let departure = Departure(id: UUID(), departure: noticeID, planConversation: planConversation, peer: envelope.sender,
+        let departure = Departure(id: UUID(), departure: noticeID, planConversation: planConversation, peer: leaver,
                                   revision: current.plan.revision, until: resend.end(for: current.plan, now: now()))
         // Durable before it applies; if it cannot be, nothing happens and
         // the leaver's resend tries again (issue #117).
         guard await store(.departed(departure)) else { return }
         departed[noticeID] = departure
         startResending(departure.id)
-        // A confirmation owed to them is no longer (finding 6).
-        for (id, var delivery) in confirming where delivery.planConversation == planConversation && delivery.pending[envelope.sender] != nil {
-            delivery.pending[envelope.sender] = nil
+        // A confirmation owed to them is no longer (finding 6). A friend
+        // that change adds was not in the plan they left, so never heard
+        // from them: their departure is passed on (re-review, item 1).
+        var friends: [PeerID] = []
+        for (id, var delivery) in confirming where delivery.planConversation == planConversation && delivery.pending[leaver] != nil {
+            delivery.pending[leaver] = nil
             confirming[id] = delivery
+            if let added = delivery.added, added != leaver, added != me, UInt32(round) < delivery.plan.revision, !friends.contains(added) {
+                friends.append(added)
+            }
             await progressDelivery(.confirming(delivery))
         }
 
         let id = InteractionID()
-        let remaining = current.plan.attendees.peers.filter { $0 != envelope.sender }
-        continuation.yield(.incoming(id, conversation: envelope.conversation, from: envelope.sender, chainedFrom: planConversation))
+        let remaining = current.plan.attendees.peers.filter { $0 != leaver }
+        continuation.yield(.incoming(id, conversation: envelope.conversation, from: leaver, chainedFrom: planConversation))
+        if !friends.isEmpty { await forward(leaver, round: round, for: id, to: friends, plan: current.plan) }
         if remaining.count >= 2, let attendees = try? Attendees(remaining), let smaller = try? current.plan.updating(attendees: attendees) {
             continuation.yield(.produced(current.interaction, .plan(smaller)))
         } else {
@@ -560,6 +616,20 @@ public actor ChangePlanService: SkillService {
         }
         await acknowledge(noticeID, to: envelope.sender, in: envelope.conversation, planConversation: planConversation, interaction: id)
         if await retire(envelope.conversation) { emit(id, .withdrawn) } else { emit(id, .failed) }
+    }
+
+    /// Passes `leaver`'s departure on to friends a change of this phone's
+    /// added, resent until each acknowledges it like a leave notice. It is
+    /// journaled so a restart resends it, and sent even if it cannot be,
+    /// since the departure already applied here.
+    private func forward(_ leaver: PeerID, round: UInt16, for note: InteractionID, to friends: [PeerID], plan: Plan) async {
+        let delivery = LeaveDelivery(interaction: note, planConversation: plan.origin, revision: UInt32(round),
+                                     departure: Self.departureDigest(origin: plan.origin, round: round, leaver: leaver),
+                                     order: friends, pending: Set(friends), until: resend.end(for: plan, now: now()), forwarding: leaver)
+        await store(.leaving(delivery))
+        leaving[note] = delivery
+        await sendLeaveNotices(note)
+        startResending(note.rawValue)
     }
 
     /// The suggester withdrew an offer: the card it opened closes, or it
@@ -722,7 +792,7 @@ public actor ChangePlanService: SkillService {
             interaction: id, conversation: session.conversation, planConversation: session.planConversation,
             plan: session.proposed, planInteraction: session.planInteraction, order: order,
             pending: Dictionary(uniqueKeysWithValues: order.map { ($0, session.offers[$0]!) }),
-            until: resend.end(for: session.proposed, now: now())
+            until: resend.end(for: session.proposed, now: now()), added: session.friend
         )
         // The agreed plan and who is owed what, durable before anything is
         // published or sent (finding 3, issue #117). If it cannot be, the
@@ -1155,9 +1225,12 @@ public actor ChangePlanService: SkillService {
         // Nothing offered: the plan's origin (chainedFrom) and the revision
         // left at (round) bind it; inReplyTo is the departure.
         let round = UInt16(min(delivery.revision, UInt32(ProtocolLimits.maxNegotiationRounds - 1)))
-        guard let body = try? Proposal(round: round, terms: Terms.empty, inReplyTo: delivery.departure) else { return }
+        guard let notice = try? Proposal(round: round, terms: Terms.empty, inReplyTo: delivery.departure) else { return }
+        // Someone else's departure, passed on, is a counter, so it is never
+        // read as this phone's own leave.
+        let body: MessageBody = delivery.forwarding == nil ? .propose(notice) : .counter(notice)
         for peer in delivery.order where leaving[id]?.pending.contains(peer) == true {
-            _ = try? await outbox.send(.propose(body), to: peer, conversation: ConversationID(),
+            _ = try? await outbox.send(body, to: peer, conversation: ConversationID(),
                                        recipientCard: cards[peer], context: OutboundContext(interaction: id),
                                        skill: descriptor.ref, mode: .invite, chainedFrom: delivery.planConversation)
         }
@@ -1328,6 +1401,9 @@ public actor ChangePlanService: SkillService {
                 recovered.insert(receipt.interaction)
                 if let state = states[receipt.interaction], !state.isFinal, state != .planned { emit(receipt.interaction, .everyoneConfirmed(revision: 1)) }
                 if await !planShows(receipt) { await replay(receipt) }
+            case .leaving(let delivery) where delivery.forwarding != nil:
+                // Someone else's departure, passed on: only resent.
+                leaving[delivery.interaction] = delivery
             case .leaving(let delivery):
                 leaving[delivery.interaction] = delivery
                 recovered.insert(delivery.interaction)
@@ -1567,6 +1643,23 @@ extension ChangePlanService {
         withUnsafeBytes(of: revision.littleEndian) { hasher.update(bufferPointer: $0) }
         hasher.update(data: suggester.bytes)
         for peer in asked.sorted(by: { $0.bytes.lexicographicallyPrecedes($1.bytes) }) { hasher.update(data: peer.bytes) }
+        let digest = Array(hasher.finalize())
+        let uuid = UUID(uuid: (digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+                               digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]))
+        return MessageID(uuid)
+    }
+}
+
+extension ChangePlanService {
+    /// Names someone's departure from a plan at a revision, for a friend
+    /// who joined after it: the friend finds the leaver by computing it for
+    /// each person in its own plan, so nothing it does not hold is disclosed.
+    public static func departureDigest(origin: ConversationID, round: UInt16, leaver: PeerID) -> MessageID {
+        var hasher = SHA256()
+        hasher.update(data: Data("starling.change_plan.departed.v1".utf8))
+        withUnsafeBytes(of: origin.rawValue.uuid) { hasher.update(bufferPointer: $0) }
+        withUnsafeBytes(of: round.littleEndian) { hasher.update(bufferPointer: $0) }
+        hasher.update(data: leaver.bytes)
         let digest = Array(hasher.finalize())
         let uuid = UUID(uuid: (digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
                                digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]))
