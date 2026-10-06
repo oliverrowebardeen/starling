@@ -1,4 +1,5 @@
 import Foundation
+import StarlingChangePlan
 import StarlingCore
 import StarlingFakes
 @testable import StarlingFeatures
@@ -93,6 +94,35 @@ import Testing
         let detail = PlanDetail(root: root, all: [root, pick], words: words, notes: PlanNotes(file: nil))
         #expect(detail.timeline.map(\.text) == ["All 3 down for boba", "The plan stays as it was"])
         #expect(detail.plan?.place == place)
+    }
+
+    /// ADR 0207 decision 5: wherever a change that found nobody up is
+    /// listed (Home, a friend's History, the request's detail), it reads
+    /// "The plan stays as it was" and names nobody. A request that was not
+    /// on a plan still reads "No plan this time".
+    @Test func aChangeWithNobodyUpReadsThePlanStaysAsItWasEverywhere() throws {
+        let plan = try planned(SampleSkills.downFor, artifacts: [])
+        let link = ChainLink(parent: plan.id, parentConversation: plan.conversation, consumed: [.plan], trigger: .atConfirm, optedInAt: at)
+        func ended(_ skill: SkillDescriptor, _ role: InteractionRole, chain: ChainLink? = nil, hint: ConversationID? = nil) throws -> Interaction {
+            var item = Interaction(skill: skill.ref, role: role, participants: [maya], createdAt: at, chain: chain)
+            if let hint { try item.setFriendChainHint(hint) }
+            if role == .initiator { try item.apply(.started, at: at) }
+            try item.apply(.noAgreement, at: at)
+            return item
+        }
+        let registry = try SkillRegistry(SampleSkills.all + [ChangePlan.descriptor])
+        let words = InteractionWords(registry: registry, localPeer: me, formatter: self.words.formatter, names: { [self.maya: "Maya"] }, now: { Fixtures.noon })
+        let changes = [
+            try ended(ChangePlan.descriptor, .initiator, chain: link),
+            try ended(SampleSkills.pickAPlace, .initiator, chain: link),
+            try ended(SampleSkills.pickAPlace, .invitee, hint: plan.conversation),
+        ]
+        for change in changes {
+            #expect(words.summary(change)?.status == "The plan stays as it was")
+            #expect(words.summary(change)?.status.contains("Maya") == false)
+        }
+        #expect(words.summary(try ended(SampleSkills.pickAPlace, .initiator))?.status == "No plan this time")
+        #expect(words.summary(try ended(SampleSkills.downFor, .initiator, chain: link))?.status == "No plan this time")
     }
 
     /// Core v2.1: a send whose items the policy could not state means

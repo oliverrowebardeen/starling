@@ -131,7 +131,22 @@ public struct InteractionWords: Sendable {
         case .confirmed: return "You're in. Waiting on \(friends)"
         case .planned: return "It's a plan"
         case .done: return "Done"
+        case .ended(.nobodyUp) where Self.changesAPlan(interaction):
+            // The plan still stands, unchanged, and nobody is named (ADR
+            // 0022 decision 4, ADR 0207 decision 5).
+            return Self.staysAsItWas
         case .ended(let reason): return Self.ending(reason, skill)
+        }
+    }
+
+    /// Whether `interaction` is a change to a plan: Change the plan, or a
+    /// Pick a place run on a plan, the owner's own step (its link takes
+    /// the plan) or a friend's (grouped under the plan by its hint).
+    static func changesAPlan(_ interaction: Interaction) -> Bool {
+        switch interaction.skill.id {
+        case .changePlan: true
+        case .pickAPlace: interaction.chain?.consumed.contains(.plan) == true || interaction.friendChainHint != nil
+        default: false
         }
     }
 
