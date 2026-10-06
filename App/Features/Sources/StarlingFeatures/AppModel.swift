@@ -497,9 +497,12 @@ public final class AppModel {
                 // (device test 2, issue #95).
                 await self?.reloadFriendsIfNew(event)
                 friends?.handle(event)
-                cards.handle(event)
                 await link?.handle(event)
                 await lifecycle.route(event)
+                // Compose sees a friend's new card only once every skill has
+                // the same hello, so nothing it offers can start from an
+                // older card (issue #123).
+                cards.handle(event)
             }
         }
     }
