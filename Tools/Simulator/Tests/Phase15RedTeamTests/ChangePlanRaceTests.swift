@@ -103,7 +103,7 @@ struct ChangePlanRaceTests {
 
 extension ChangePlanRaceTests {
     @Test func pc19AChangeCannotCommitWithoutDurableConfirmationRecovery() async throws {
-        let journal = ChangeFailingJournal()
+        let journal = ChangeFailingCommitJournal()
         let world = try await ChangeWorld.make(firstJournal: journal)
         let a = world.phones[0], b = world.phones[1], c = world.phones[2]
         await b.relay.dropConfirmations()

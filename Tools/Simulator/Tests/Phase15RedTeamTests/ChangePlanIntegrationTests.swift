@@ -54,7 +54,10 @@ struct ChangePlanIntegrationTests {
         }
         // At the same deadline in both runs, the suggester closes every
         // offered card, including the friend whose yes awaits confirmation.
-        let transcript = await a.sent(change.conversation)
+        try await P15.eventually("window-close withdrawals acknowledged") {
+            try await a.journal.records().allSatisfy { if case .withdrawing = $0 { false } else { true } }
+        }
+        let transcript = await a.sent().filter { $0.chainedFrom == world.origin }
         #expect(transcript.map(\.body.kind) == [.propose, .propose, .reject, .reject])
         let offers = transcript.filter { $0.body.kind == .propose }
         let withdrawals = transcript.filter { $0.body.kind == .reject }
@@ -64,7 +67,17 @@ struct ChangePlanIntegrationTests {
             #expect(notice.body == .reject(Rejection(proposal: offer.id, reason: .declinedByOwner)))
             #expect(notice.chainedFrom == world.origin)
             #expect(notice.sentAt == Timestamp(P15.date.addingTimeInterval(300)))
+            #expect(notice.conversation != change.conversation)
+            let peer = notice.recipient == b.id ? b : c
+            let acknowledgments = await peer.sent(notice.conversation)
+            #expect(acknowledgments.count == 1)
+            #expect(acknowledgments.first?.body == .accept(Acceptance(proposal: offer.id, terms: try Terms([:]))))
+            #expect(acknowledgments.first?.chainedFrom == world.origin)
+            #expect(acknowledgments.first?.sentAt == notice.sentAt)
         }
+        #expect(Set(withdrawals.map(\.conversation)).count == 2)
+        // A decline itself stays silent. Both phones acknowledge only the
+        // later withdrawals, in the fresh conversations chosen by A.
         #expect(await b.sent(change.conversation).map(\.body.kind) == [.accept])
         #expect(await c.sent(change.conversation).isEmpty)
         await world.checkHealthy()

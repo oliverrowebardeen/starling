@@ -22,6 +22,7 @@ struct ChangePlanAttackTests {
         #expect(accepted.count == 1)
         #expect(record.offer == offer.id && record.planConversation == world.origin && record.suggester == a.id)
         let before = try await b.plan(world.origin)
+        let sentBeforeAttack = await b.sent()
         let confirmation = MessageBody.accept(Acceptance(proposal: offer.id, terms: try Terms([:])))
         _ = try await a.send(confirmation, to: b, conversation: offer.conversation, parent: ConversationID())
         // An accepted offer already exists. A confirmation for another
@@ -29,9 +30,13 @@ struct ChangePlanAttackTests {
         #expect(try await b.journal.records() == accepted)
         #expect(try await b.plan(world.origin) == before)
         #expect(try await b.events.interaction(offer.conversation)?.state == .confirmed)
+        #expect(await b.sent() == sentBeforeAttack)
         _ = try await a.send(confirmation, to: b, conversation: offer.conversation, parent: world.origin)
         _ = try await b.wait(.planned, offer.conversation)
         try await P15.eventually("legitimate confirmation commits") { try await b.plan(world.origin).revision == 1 }
+        #expect(try await b.journal.records().contains {
+            if case .applied(let value) = $0 { value.offer == offer.id && value.planConversation == world.origin } else { false }
+        })
         await world.checkHealthy()
         await world.stop()
     }
@@ -124,8 +129,11 @@ struct ChangePlanAttackTests {
         try await world.received(offer, by: 1)
         _ = try await c.wait(.proposed, change.conversation)
         await a.service.withdraw(change.id)
-        let notice = try #require(await a.sent(change.conversation).first { $0.recipient == b.id && $0.body.kind == .reject })
+        let notice = try #require(await a.sent().first { $0.recipient == b.id && $0.body.kind == .reject && $0.chainedFrom == world.origin })
+        #expect(notice.conversation != change.conversation)
+        #expect(notice.body == .reject(Rejection(proposal: offer.id, reason: .declinedByOwner)))
         try await world.received(notice, by: 1)
+        #expect(await b.sent(notice.conversation).first?.body == .accept(Acceptance(proposal: offer.id, terms: try Terms([:]))))
         _ = try await c.wait(.ended(.nobodyUp), change.conversation)
         // Finish and drain the event stream after the handled notice. This
         // observes every already-published update without a sleep.

@@ -132,7 +132,7 @@ final class ChangePhone: Sendable {
     }
     func boot(restore: Bool = false) async throws {
         let store = events.store
-        let fresh = ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, me: id, planLookup: { origin in
+        let fresh = ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, holds: PlanChangeHolds(), me: id, planLookup: { origin in
             guard let root = try? await store.all().first(where: { $0.state == .planned && $0.plan?.origin == origin }),
                   let plan = root.plan else { return nil }
             return PlanRef(interaction: root.id, plan: plan)
@@ -347,11 +347,14 @@ actor ChangeSendGate: OutboxObserver {
     }
 }
 
-actor ChangeFailingJournal: ChangePlanJournal {
+actor ChangeFailingCommitJournal: ChangePlanJournal {
     struct WriteFailed: Error {}
     let base = InMemoryChangePlanJournal()
     private(set) var attempts = 0
-    func save(_ record: ChangePlanRecord) async throws { attempts += 1; throw WriteFailed() }
+    func save(_ record: ChangePlanRecord) async throws {
+        if case .confirming = record { attempts += 1; throw WriteFailed() }
+        try await base.save(record)
+    }
     func remove(_ key: UUID) async throws { try await base.remove(key) }
     func records() async throws -> [ChangePlanRecord] { try await base.records() }
 }
