@@ -60,8 +60,40 @@ import Testing
         // Only withdrawn, for leaving.
         await lifecycle.handle(.lifecycle(plan.id, .failed), from: ChangePlan.descriptor)
         #expect(lifecycle.interaction(plan.id)?.state == .planned)
+    }
+
+    /// A leave ends only the interaction that holds the plan being left:
+    /// the owner's leave chained to it, or a friend's departure grouped
+    /// under it, which leaves only this phone. Change the plan can't end
+    /// any other plan, even one with a suggestion open on it.
+    @Test func aLeaveEndsOnlyTheInteractionHoldingThePlanBeingLeft() async throws {
+        let plan = try planned()
+        let other = try planned()
+        var suggestion = Interaction(skill: ChangePlan.descriptor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now),
+                                     chain: ChainLink(parent: other.id, parentConversation: other.planConversation, consumed: [.plan],
+                                                      trigger: .whilePlanned, optedInAt: Timestamp(clock.now)))
+        try suggestion.apply(.started, at: Timestamp(clock.now))
+        try suggestion.apply(.proposalReady(SkillProposal(revision: 1, participants: try #require(other.plan).attendees.peers,
+                                                          terms: try Terms([.activity: .keywords([try Keyword("dinner")])]))), at: Timestamp(clock.now))
+        var leave = Interaction(skill: ChangePlan.descriptor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(clock.now),
+                                chain: ChainLink(parent: plan.id, parentConversation: plan.planConversation, consumed: [.plan],
+                                                 trigger: .whilePlanned, optedInAt: Timestamp(clock.now)))
+        try leave.apply(.withdrawn, at: Timestamp(clock.now))
+        let lifecycle = await coordinator([plan, other, suggestion, leave])
+
+        await lifecycle.handle(.lifecycle(other.id, .withdrawn), from: ChangePlan.descriptor)
+        #expect(lifecycle.interaction(other.id)?.state == .planned, "a suggestion is not a leave")
         await lifecycle.handle(.lifecycle(plan.id, .withdrawn), from: ChangePlan.descriptor)
         #expect(lifecycle.interaction(plan.id)?.state == .ended(.withdrawn))
+
+        // A friend's departure grouped under the plan, which left only
+        // this phone in it.
+        var departure = Interaction(skill: ChangePlan.descriptor.ref, role: .invitee, participants: [maya], createdAt: Timestamp(clock.now))
+        try departure.setFriendChainHint(other.planConversation)
+        try departure.apply(.withdrawn, at: Timestamp(clock.now))
+        let friendSide = await coordinator([other, departure])
+        await friendSide.handle(.lifecycle(other.id, .withdrawn), from: ChangePlan.descriptor)
+        #expect(friendSide.interaction(other.id)?.state == .ended(.withdrawn))
     }
 
     /// P15-E request 15: a plan is recorded only as the next revision, from

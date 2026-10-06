@@ -265,7 +265,7 @@ public final class LifecycleCoordinator {
             insert(invitee)
         case .lifecycle(let id, let lifecycle):
             guard let current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
-            guard current.skill.id == skill.id || Self.changesThePlan(skill.id, current, lifecycle: lifecycle) else {
+            guard current.skill.id == skill.id || Self.changesThePlan(skill.id, current, lifecycle: lifecycle, among: interactions) else {
                 return drop(event, id, skill.id, .wrongSkill)
             }
             if case .awaitingConsent = current.state, Self.waitsForConsent(lifecycle) {
@@ -275,7 +275,7 @@ public final class LifecycleCoordinator {
             apply(lifecycle, to: id, reportedAs: event, skill: skill.id)
         case .produced(let id, let artifact):
             guard var current = interaction(id) else { return drop(event, id, skill.id, .unknownInteraction) }
-            guard current.skill.id == skill.id || Self.changesThePlan(skill.id, current, artifact: artifact) else {
+            guard current.skill.id == skill.id || Self.changesThePlan(skill.id, current, artifact: artifact, among: interactions) else {
                 return drop(event, id, skill.id, .wrongSkill)
             }
             if case .ended = current.state { return drop(event, id, skill.id, .afterEnd) }
@@ -289,14 +289,27 @@ public final class LifecycleCoordinator {
     /// Change the plan updates the plan where it lives: the interaction of
     /// the skill that made it (P15-E request 12, ADR 0243 decision 4). Only
     /// that skill, only a standing plan, and only these: a newer revision
-    /// of the same plan, or `withdrawn` when the owner left it or is the
-    /// last one in it. Any other skill naming another's interaction is
-    /// still dropped.
-    static func changesThePlan(_ skill: SkillID, _ target: Interaction, lifecycle: InteractionEvent? = nil, artifact: Artifact? = nil) -> Bool {
+    /// of the same plan, or `withdrawn` for the interaction holding a plan
+    /// being left (`isBeingLeft`). Any other skill naming another's
+    /// interaction is still dropped.
+    static func changesThePlan(_ skill: SkillID, _ target: Interaction, lifecycle: InteractionEvent? = nil, artifact: Artifact? = nil,
+                               among all: [Interaction]) -> Bool {
         guard skill == .changePlan, target.state == .planned, let plan = target.plan else { return false }
-        if let lifecycle { return lifecycle == .withdrawn }
+        if let lifecycle { return lifecycle == .withdrawn && isBeingLeft(target, plan: plan, among: all) }
         guard case .plan(let updated)? = artifact else { return false }
         return updated.origin == target.planConversation && updated.revision == plan.revision + 1
+    }
+
+    /// Whether `target` holds its plan on this phone (`planHolder`) and a
+    /// leave of that plan is on record: the owner's own, chained to it, or
+    /// a friend's departure grouped under it, after which only this phone
+    /// is left. A leave carries no proposal; a suggestion does.
+    static func isBeingLeft(_ target: Interaction, plan: Plan, among all: [Interaction]) -> Bool {
+        guard all.planHolder(origin: plan.origin)?.id == target.id else { return false }
+        return all.contains { item in
+            item.skill.id == .changePlan && item.id != target.id && item.proposal == nil
+                && (item.chain?.parent == target.id || item.friendChainHint == target.planConversation)
+        }
     }
 
     /// A plan is recorded only as the next revision of the one stored, or
