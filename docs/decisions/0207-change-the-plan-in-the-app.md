@@ -18,6 +18,7 @@ ADR 0022 lets a confirmed plan change, and ADR 0243 says how lane E's `StarlingC
 5. **A change lives on its plan's timeline.**
    - **Agreed:** shown as "Changed to dinner" or "Added Jake", never as a plan of its own on Home.
    - **Not agreed:** the suggester reads "The plan stays as it was". A friend's suggestion that closed is left off the timeline, so nobody is named.
+   - **A place step that finds nobody up:** a Pick a place on the plan that ends with nobody up reads the same, "The plan stays as it was", since the plan still stands unchanged. It never reads "No plan this time".
    - **Leaving:** reads "You left this plan" or "Maya left".
    - **An added friend:** their Change the plan interaction is the plan, and Home shows it as one.
 6. **The buttons say why when they are off.**
