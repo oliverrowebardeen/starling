@@ -1,6 +1,6 @@
 # P15-F device checklist
 
-Not run by the agent. Oliver runs this after the real skills and shell merge.
+Not run by the agent. The owner runs this on devices after the real skills and shell merge.
 Use paired phones and test data. Down for requires Debug until private PSI
 exists; Release shows it as unavailable (ADR 0206). The exclusion checks need a third phone.
 Issue #49 tracks automated evidence and its limits, including wire and timing

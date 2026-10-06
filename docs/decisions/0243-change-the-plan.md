@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: 2026-10-03
 - Owner: P15-E (Chaining and audit)
-- Builds on: ADR 0022 (Oliver's decision), ADR 0023 (one change to a plan at a time), ADRs 0011, 0012, 0019, 0020, 0021, 0240, 0241
+- Builds on: ADR 0022 (the owner's decision), ADR 0023 (one change to a plan at a time), ADRs 0011, 0012, 0019, 0020, 0021, 0240, 0241
 
 ## Context
 
@@ -108,6 +108,6 @@ Left open for this lane:
 
 ## Sources
 
-- ADR 0022 and Oliver's answers, 2026-10-02
+- ADR 0022 and the owner's answers, 2026-10-02
 - ADRs 0011 (amendments 13 to 16), 0017, 0019 (amendment 10), 0020, 0021; issue #105
 - `Packages/Skills/ChangePlan` and `Packages/StarlingChaining/Sources/StarlingChaining/ChangingAPlan.swift`, with their tests

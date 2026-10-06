@@ -2,7 +2,7 @@
 
 Status: **draft, secure channel section only** (lane E1, Phase 1, 2026-09-30). Other sections (policy and consent, negotiation, the relay) belong to their lanes and the Orchestrator.
 
-**No privacy claim may be made on the strength of this document yet.** ADR 0003 care requirement 7 requires a Codex review of the cryptography first. Until that review passes and is recorded here (section 6), describe Starling as "encrypted, not yet reviewed."
+**No privacy claim may be made on the strength of this document yet.** ADR 0003 care requirement 7 requires a Codex review of the cryptography first (section 6 says what such a review is). Until that review passes and is recorded here (section 6), describe Starling as "encrypted, not yet reviewed."
 
 ## 1. Scope
 
@@ -95,6 +95,8 @@ These come from the lanes' requests (`docs/requests/P15-*.md`) and the Phase 1.5
    - Hard limits are enforced only on known facts. Apple Maps supplies categories but no price or diet data, so on device most budget and diet limits are unchecked (ADR 0230).
 
 ## 6. Review history
+
+Every "Codex review" here is an automated adversarial code review by an AI model (OpenAI's Codex coding agent), run against a pull request. None of these is an independent security audit, and no independent audit of Starling has taken place.
 
 The first Codex adversarial review of PR #16 (2026-09-30) found no Noise conformance or vector issues. It reproduced three state-machine defects, fixed on the same branch, each with a regression test that reproduced it first:
 

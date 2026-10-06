@@ -21,7 +21,7 @@ One short ADR per major decision, with primary sources. Any lane may propose one
 | [0015](0015-information-architecture.md) | Home, New, Friends, You | Accepted |
 | [0016](0016-model-in-the-core-loop.md) | The model works in the core loop | Accepted |
 | [0017](0017-copy-reads-as-plans-with-friends.md) | Copy reads as plans with friends, not a dating app | Accepted |
-| [0018](0018-hand-offs.md) | Hand-offs to Calendar, Messages, Maps, and Siri | Accepted (Muse and Dots open) |
+| [0018](0018-hand-offs.md) | Hand-offs to Calendar, Messages, Maps, and Siri | Accepted |
 | [0019](0019-never-stays-on-the-phone.md) | Never keeps a value on the phone, and every topic has the same control | Accepted (amends 0014) |
 | [0020](0020-send-modes-and-audience.md) | Send modes and audience: Ask quietly, Invite, and undetectable exclusion | Accepted (amends 0010, 0011) |
 | [0021](0021-one-ledger-for-what-a-friend-was-told.md) | One ledger for what a friend was told, enforced by Outbox | Accepted (amends 0011, 0019) |

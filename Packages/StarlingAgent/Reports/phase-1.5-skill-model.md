@@ -190,10 +190,10 @@ Core v2.1 (ADR 0020) adds send modes and new audience cases, so the chip schema 
 
 ## Grounding round: chips in the owner's words (2026-10-02)
 
-Oliver's device test found chips that were not his words: "movie night tonight in Elm Hall" showed the activity "Watch Movie", and "find a time invite for IKEA trip" showed "trip". ADRs 0161 and 0212 require every keyword chip to be the owner's words as typed: a span of the input, the whole phrase, in the owner's casing, never paraphrased, title-cased, or cut off, and never repeated across chips.
+The owner's device test found chips that were not the owner's words: "movie night tonight in Elm Hall" showed the activity "Watch Movie", and "find a time invite for IKEA trip" showed "trip". ADRs 0161 and 0212 require every keyword chip to be the owner's words as typed: a span of the input, the whole phrase, in the owner's casing, never paraphrased, title-cased, or cut off, and never repeated across chips.
 
 **What changed in the sets.**
-- Both phrases and some like them went into the tuning and held-out sets together, before any measurement of them. Tuning added "movie night tonight in Elm Hall", "find a time invite for IKEA trip", "game night friday with Maya", "Costco run tomorrow afternoon", and "find a time for the Yosemite trip". Held-out added "trivia night tonight with Sam", "find a time for our NYC trip", "IHOP breakfast tomorrow morning", "karaoke night saturday", and "find a time for the Tahoe ski trip".
+- Both phrases and some like them went into the tuning and held-out sets together, before any measurement of them. Tuning added "movie night tonight in Elm Hall", "find a time invite for IKEA trip", "game night friday with Maya", "Costco run tomorrow afternoon", and "find a time for the Yosemite trip". Held-out added "trivia night tonight with Sam", "find a time for our NYC trip", "IHOP breakfast tomorrow morning", "karaoke night saturday", and "find a time for the Tahoe ski trip". The place in the first phrase was later renamed to a fictional one, so a rerun can differ slightly from the numbers below.
 - Labels may now name a skill, so Find a time phrases are scored with Find a time's slots.
 - Activity, avoid, and place chips are now scored exactly. The old word-subset match counted "trip" as "IKEA trip".
 - A new "own words" chip checks that every keyword chip is a span of the message and that no word is in two chips.

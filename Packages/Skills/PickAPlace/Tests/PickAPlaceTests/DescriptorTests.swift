@@ -41,7 +41,7 @@ struct DescriptorTests {
 
     @Test func asksForNoExpiry() {
         // Compose hides the expiry chip and keeps the request open until
-        // the plan's time (Oliver's device test, 2026-10-02).
+        // the plan's time (the owner's device test, 2026-10-02).
         #expect(descriptor.intent.asksForExpiry == false)
         #expect(descriptor.intent.asksForAudience)
     }

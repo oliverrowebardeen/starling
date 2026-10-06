@@ -6,8 +6,9 @@
 
 ## Context
 
-The Orchestrator reported Mac sleep during local gates and asked for every
-Simulator harness wait to exclude that time, preserving its existing bound.
+The host machine went to sleep during some local gate runs, and the Orchestrator
+asked for every Simulator harness wait to exclude that time, preserving its
+existing bound.
 Lane B's PR #110 documents the sleep-related failure of its native test.
 
 At baseline `78963ab`, P15.eventually and appEventually already use a 120-second
@@ -53,7 +54,7 @@ local gate once for this branch. Check that no owned test/scenario calls the
 ContinuousClock-based Simulation wait helpers or default Task.sleep anymore.
 SimulatorKit's public wait API is unchanged; this does not fix callers outside
 the owned scenario/test paths. SuspendingClock still counts awake CPU contention.
-No test forces the machine to sleep, and no device behavior changes.
+No test forces the host to sleep, and no device behavior changes.
 
 Existing device checklist docs/checklists/phase-1.5-P15-F.md items 3, 19, and 20
 remain applicable. No new phone steps are needed for a host harness change.

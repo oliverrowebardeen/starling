@@ -1,6 +1,6 @@
 # ADR 0013: Permissions belong to skills and are requested just in time
 
-- Status: Accepted (Oliver approved the one-button sheet, decision 3, on 2026-09-30)
+- Status: Accepted (the owner approved the one-button sheet, decision 3, on 2026-09-30)
 - Date: 2026-09-30
 - Owner: Orchestrator
 
@@ -65,7 +65,7 @@ The Find a time mockup ("Just-in-time permission · Find a time") shows a sheet 
 
 - First launch has no permission alerts. Each prompt appears in context with Starling's explanation, so the system alert's purpose is clear.
 - A denied permission never blocks a skill: every skill that asks has a no-permission path.
-- If Oliver prefers the mockup's two-button sheet, the alternative is to present calendar versus ask-me as an ordinary in-skill choice earlier in Find a time's first run, then show the one-button sheet only for the calendar path. Either way, two buttons never sit directly before the alert.
+- If the owner prefers the mockup's two-button sheet, the alternative is to present calendar versus ask-me as an ordinary in-skill choice earlier in Find a time's first run, then show the one-button sheet only for the calendar path. Either way, two buttons never sit directly before the alert.
 
 ## Sources
 

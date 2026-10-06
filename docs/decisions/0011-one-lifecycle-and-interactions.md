@@ -86,5 +86,5 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
 
 ## Sources
 
-- Phase 1.5 prompt, sections 3 and 7 (Oliver, 2026-09-30); mockups "Home · inbox across skills" and "Plan detail · skill chain + what left your phone"
+- Phase 1.5 prompt, sections 3 and 7 (the owner, 2026-09-30); mockups "Home · inbox across skills" and "Plan detail · skill chain + what left your phone"
 - `Packages/StarlingCore/Sources/StarlingCore/Interaction.swift` and its tests

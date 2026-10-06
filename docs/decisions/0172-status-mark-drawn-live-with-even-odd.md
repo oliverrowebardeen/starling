@@ -32,4 +32,4 @@ The app needs an animated version of the Overlap mark to show Down status: idle,
 - Apple, `TimelineView` and `AnimationTimelineSchedule` (`paused`): https://developer.apple.com/documentation/swiftui/timelineview
 - Apple, `EnvironmentValues.accessibilityReduceMotion` (read only, so previews use an explicit override): https://developer.apple.com/documentation/swiftui/environmentvalues/accessibilityreducemotion
 - Apple, "Creating your app icon using Icon Composer" (Liquid Glass groups and layers): https://developer.apple.com/documentation/xcode/creating-your-app-icon-using-icon-composer
-- Owner's motion reference: an HTML animation prototype (not in the repo).
+- The owner's motion reference: an HTML animation prototype (not in the repo).

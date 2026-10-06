@@ -7,7 +7,7 @@
 
 ## Context
 
-Oliver's two-phone test on 2026-10-02 (issue #95): "Pair a friend" kept failing after the phones paired and the code was entered, and worked after about 100 tries. The "Waiting for the other phone" progress was not centered, the flow was clearly not as clean as AirDrop, and the friend ended up named after their phone (for example "Riley's iPhone").
+The owner's two-phone test on 2026-10-02 (issue #95): "Pair a friend" kept failing after the phones paired and the code was entered, and worked after about 100 tries. The "Waiting for the other phone" progress was not centered, the flow was clearly not as clean as AirDrop, and the friend ended up named after their phone (for example "Riley's iPhone").
 
 There were no logs from the phones. So the causes were first reproduced over Loopback (`PairingReliabilityTests`, run against main at d0c9ca0 before any fix). Eight of nine cases failed:
 
@@ -19,7 +19,7 @@ There were no logs from the phones. So the causes were first reproduced over Loo
 | The link drops and returns mid-ceremony | Failed at once ("transport failed"). |
 | One phone starts over while the other is mid-handshake | Every new attempt timed out: the old ceremony ignored the new hello until both owners restarted together. |
 
-Four more causes come from reading the code against the flow Oliver used:
+Four more causes come from reading the code against the flow the owner used:
 
 - **Both owners had to start within 30 s of each other.** Each owner found the other phone in a list of hex IDs, typed a name, and tapped Pair. The first one's ceremony gave up 30 s after its tap and sent an abort that ended the second one's.
 - **The two phones could pair on different links.** `PairingRoute` waited up to 5 s, per phone, for Wi-Fi Aware to report the friend, then fell back to Nearby. Two phones that saw Wi-Fi Aware at different times ran ceremonies on different links that never heard each other.
@@ -91,7 +91,7 @@ Primary sources checked on 2026-10-02:
    - Connecting and Waiting for the other phone: the status mark.
    - Check the code: large digits, with They match and They're different.
    - Then the name, and You're paired.
-9. **Notifications after the first friend** (Oliver, 2026-10-02; amends ADR 0202 decision 3):
+9. **Notifications after the first friend** (the owner, 2026-10-02; amends ADR 0202 decision 3):
    - Right after a pairing, while iOS has not asked, the sheet shows Starling's one-button explanation: "Get a heads-up when Riley wants to make plans".
    - Its Continue leads straight to the system alert (ADR 0013 decision 3: no close, no "Not now"; iOS's Don't Allow is the opt-out).
    - The old first-request offer is recorded as made, so it never asks twice.
@@ -117,7 +117,7 @@ Primary sources checked on 2026-10-02:
 
 ## Sources
 
-- Issue #95 (Oliver's device test, 2026-10-02)
+- Issue #95 (the owner's device test, 2026-10-02)
 - Apple Developer Forums: thread 811828 (simultaneous publish and subscribe, FB21527009), 787570 (suspension, idle collection), 837110 (pairings persist, PIN once), 794271 (`NWError.wifiAware` to `WAError`), 838513 (BSD Sockets), 807134 (pairing that hangs after the PIN, no root cause)
 - Connecting paired devices: https://developer.apple.com/documentation/wifiaware/connecting-paired-devices
 - Building peer-to-peer apps (publisher and subscriber in separate roles): https://developer.apple.com/documentation/wifiaware/building-peer-to-peer-apps

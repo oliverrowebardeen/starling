@@ -1,13 +1,13 @@
 # ADR 0019: Never keeps a value on the phone, and every topic has the same control
 
-- Status: Accepted (Oliver, 2026-10-01)
+- Status: Accepted (the owner, 2026-10-01)
 - Date: 2026-10-01
 - Owner: Orchestrator
 - Amends: ADR 0014 (decisions 1, 4, and 5)
 
 ## Context
 
-On 2026-10-01 Oliver asked for two changes to the privacy topics:
+On 2026-10-01 the owner asked for two changes to the privacy topics:
 
 - Every topic gets the same Share / Ask me / Never control: budget, place, diet, photos, interests, and calendar details. Time and activity stay always shared as the overlap.
 - "Never" means the value never leaves the device. The agent still uses it locally and answers yes or no on candidates. The control itself says so.
@@ -22,7 +22,7 @@ On 2026-10-01 Oliver asked for two changes to the privacy topics:
   | Photos | Ask me |
   | Interests | Share |
 
-Asked about the open points, Oliver chose:
+Asked about the open points, the owner chose:
 
 - Location is a separate topic from place. Place is the venue options a skill sends, and location is where you are.
 - Per-friend standing rules govern the audience only (ADR 0020). Topics stay global.
@@ -41,7 +41,7 @@ The protocol already has the yes/no answer: `query` asks "which of these candida
    - `location`: where the owner is, as coordinates or a distance. Its issue key is `location` (new).
    - `calendarDetails`: event titles, places, notes, and attendees from the owner's calendar. Its issue key is `calendar_details` (new).
 
-   `place` now means only the venue options a skill sends. The full list, in the order You shows it: time, activity, place, location, budget, diet, people, photos, interests, calendar details. People is not in Oliver's list, so it keeps its control and its Ask me default.
+   `place` now means only the venue options a skill sends. The full list, in the order You shows it: time, activity, place, location, budget, diet, people, photos, interests, calendar details. People is not in the owner's list, so it keeps its control and its Ask me default.
 2. **Defaults.**
 
    | Topic | Default |
@@ -87,6 +87,6 @@ The protocol already has the yes/no answer: `query` asks "which of these candida
 
 ## Sources
 
-- Oliver's request and answers in conversation, 2026-10-01
+- The owner's request and answers in conversation, 2026-10-01
 - ADR 0014; `Packages/StarlingCore/Sources/StarlingCore/PrivacyTopics.swift`; `Messages.swift` (`Query`, `Answer`, `Rejection`)
 - App Review Guidelines 5.1.2(i): https://developer.apple.com/app-store/review/guidelines/

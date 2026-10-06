@@ -7,7 +7,7 @@
 ## Context
 
 The unchanged chaining roster and app location-denial tests hit their five-second
-condition limits in the gates for PRs #90 and #91 under load. Increasing
+condition limits in the gates for PRs #90 and #91 on a heavily loaded host. Increasing
 only those two limits would leave the other Phase 1.5 waits, real owner windows,
 and bounded wall-time transcript assertions exposed to the same scheduling load.
 

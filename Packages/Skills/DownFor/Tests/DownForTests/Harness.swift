@@ -21,8 +21,7 @@ let fastConfiguration = DownForConfiguration(
 /// faster: by default a request that expires in 5 hours does so in 18 s.
 func testClock(speedup: Int = 1_000, now: @escaping @Sendable () -> Date = { T.now }) -> SkillClock {
     SkillClock(now: now, sleep: { duration in
-        // Awake time: a Mac that sleeps mid-run (a test machine entered
-        // clamshell, maintenance, and thermal emergency sleep during lane
+        // Awake time: a host that sleeps mid-run (as one did during lane
         // F's gate of 2026-10-02, issue #109) does not run a test's windows
         // down while it sleeps.
         try await Task.sleep(for: duration >= .seconds(600) ? duration / speedup : duration, clock: .suspending)
