@@ -1,6 +1,6 @@
 # ADR 0200: Interactions persist in one JSON file
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30
 - Owner: P15-A (Shell and IA)
 

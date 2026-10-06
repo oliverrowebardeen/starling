@@ -1,6 +1,6 @@
 # ADR 0243: Change the plan: the protocol on every phone
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-03
 - Owner: P15-E (Chaining and audit)
 - Builds on: ADR 0022 (the owner's decision), ADR 0023 (one change to a plan at a time), ADRs 0011, 0012, 0019, 0020, 0021, 0240, 0241

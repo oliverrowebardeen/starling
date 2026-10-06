@@ -1,6 +1,6 @@
 # ADR 0160: Measure model quality with labeled sets, a held-out set, and Evaluations
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30
 - Owner: C2. Agent quality
 

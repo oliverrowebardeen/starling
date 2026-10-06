@@ -1,6 +1,6 @@
 # ADR 0207: Change the plan in the app
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-03
 - Owner: P15-A (Shell and IA)
 - Builds on: ADR 0022 (the owner's decision), ADR 0023 (one change per plan), ADR 0243 (lane E's protocol), ADRs 0018, 0201, 0206

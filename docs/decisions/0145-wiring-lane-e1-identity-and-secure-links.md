@@ -1,6 +1,6 @@
 # ADR 0145: Wiring lane E1's identity, pins, pairing, and secure links
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); decisions 2 and 4 amended by ADR 0260
 - Date: 2026-10-01
 - Owner: H (App features)
 

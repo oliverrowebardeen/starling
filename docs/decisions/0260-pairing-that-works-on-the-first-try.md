@@ -1,6 +1,6 @@
 # ADR 0260: Pairing that works on the first try
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-02
 - Owner: P15-G (pairing reliability)
 - Amends: ADR 0101 (decision 2's link-loss rule), ADR 0110 (decision 3, symmetric roles), ADR 0145 (decisions 2 and 4), ADR 0202 (decision 3, when notifications are offered)

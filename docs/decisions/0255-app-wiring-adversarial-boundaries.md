@@ -1,6 +1,6 @@
 # ADR 0255: Test adversarial boundaries through the installed app coordinator
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-F
 

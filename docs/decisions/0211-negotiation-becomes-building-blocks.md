@@ -1,6 +1,6 @@
 # ADR 0211: StarlingNegotiation becomes shared building blocks
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-B. Down for... skill and the model
 

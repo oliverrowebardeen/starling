@@ -1,6 +1,6 @@
 # ADR 0143: Wi-Fi Aware in the app before the secure channel
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); superseded in part by ADR 0145 decision 6
 - Date: 2026-09-30
 - Owner: H (App features)
 

@@ -1,6 +1,6 @@
 # ADR 0256: Separate protocol time from simulator scheduling
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-02
 - Owner: P15-F
 

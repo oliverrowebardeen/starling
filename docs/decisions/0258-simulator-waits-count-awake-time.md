@@ -1,6 +1,6 @@
 # ADR 0258: Simulator waits count awake time
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-03
 - Owner: P15-F
 

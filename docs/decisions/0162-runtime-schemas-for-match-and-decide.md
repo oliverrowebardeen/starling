@@ -1,6 +1,6 @@
 # ADR 0162: Build match and decide schemas at runtime, and enforce limits in them
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30
 - Owner: C2. Agent quality
 

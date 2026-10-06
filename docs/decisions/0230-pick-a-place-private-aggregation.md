@@ -1,6 +1,6 @@
 # ADR 0230: Pick a place agrees on a venue by private aggregation over place queries
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-D (Pick a place)
 

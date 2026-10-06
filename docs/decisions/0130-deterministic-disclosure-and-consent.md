@@ -1,6 +1,6 @@
 # ADR 0130: Deterministic disclosure and explicit consent
 
-- Status: Proposed. Implemented in PR #10.
+- Status: Accepted (code merged on main; status updated 2026-10-06). Implemented in PR #10.
 - Date: 2026-09-30
 - Owner: G, Policy and consent
 

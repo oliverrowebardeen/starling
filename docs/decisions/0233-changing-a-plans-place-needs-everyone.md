@@ -1,6 +1,6 @@
 # ADR 0233: Changing a plan's place needs everyone in it
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-02
 - Owner: P15-D (Pick a place)
 - Builds on: ADRs 0022, 0230

@@ -1,6 +1,6 @@
 # ADR 0170: App icon from an Icon Composer bundle, wired through XcodeGen
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30
 - Owner: BR (Brand and app icon)
 

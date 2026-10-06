@@ -1,6 +1,6 @@
 # ADR 0253: Test merged services at authenticated and persistent boundaries
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-F
 

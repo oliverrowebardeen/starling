@@ -1,6 +1,6 @@
 # ADR 0222: Find a time resumes from its own checkpoints
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-C, Find a time
 

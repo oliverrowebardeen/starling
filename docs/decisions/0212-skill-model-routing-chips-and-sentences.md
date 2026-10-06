@@ -1,6 +1,6 @@
 # ADR 0212: SkillModel: routing, chips, and proposal sentences
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01; revised the same day for Core v2.1 (ADR 0020) and the review of PR #56
 - Owner: P15-B. Down for... skill and the model
 

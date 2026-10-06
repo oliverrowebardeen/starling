@@ -1,6 +1,6 @@
 # ADR 0171: App icon group shadow at 20 percent
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30
 - Owner: BR (Brand and app icon)
 

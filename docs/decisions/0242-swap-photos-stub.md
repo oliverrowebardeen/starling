@@ -1,6 +1,6 @@
 # ADR 0242: Swap photos ships flagged off, picking with the system picker
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-E (Chaining and audit)
 

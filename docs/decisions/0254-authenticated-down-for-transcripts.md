@@ -1,6 +1,6 @@
 # ADR 0254: Verify one-to-one quiet asks through authenticated transcripts
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-F
 

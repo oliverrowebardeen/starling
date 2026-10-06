@@ -1,6 +1,6 @@
 # ADR 0100: Noise secure channel implementation
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30 (revised after five Codex reviews of PR #16, 2026-09-30 to 10-01; see decisions 5, 7, 11, and 12)
 - Owner: Lane E1 (Identity and secure channel)
 
