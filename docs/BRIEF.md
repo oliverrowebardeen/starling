@@ -2,7 +2,7 @@ Starling: Project Brief for Coding Agents
 
 Status: ideation-stage plan, researched late September 2026. Everything here is a default backed by sources, not a commitment. If you find a better approach, propose it with primary sources and a clear tradeoff, then proceed once the owner agrees. Re-verify anything time-sensitive (APIs, SDK versions, library status) before building on it.
 
-> Orchestrator note: Phase 0 verification of Sections 3.1 to 3.6 is in `docs/research/phase-0-verification.md`. Where it contradicts this brief, the ADRs in `docs/decisions/` take precedence. This file is otherwise kept verbatim as the owner wrote it.
+> Orchestrator note: Phase 0 verification of Sections 3.1 to 3.6 is in `docs/research/phase-0-verification.md`. Where it contradicts this brief, the ADRs in `docs/decisions/` take precedence. This file is otherwise kept as the owner wrote it, except that personal details were removed before publication.
 
 ---
 
@@ -28,7 +28,7 @@ Status: ideation-stage plan, researched late September 2026. Everything here is 
 
 ## 1. Owner and working norms
 
-Owner: Oliver Rowe-Bardeen. Starling is an open-source project in his bird-named "Nest" family (Pigeon, Crow, etc.).
+Starling is an open-source project in the owner's bird-named "Nest" family (Pigeon, Crow, etc.).
 
 Norms:
 
