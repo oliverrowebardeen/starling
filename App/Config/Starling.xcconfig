@@ -2,7 +2,16 @@
 //
 // Signing: create App/Config/Local.xcconfig (gitignored) containing
 //   DEVELOPMENT_TEAM = <your 10-character team ID>
-// so each developer signs with their own team without editing tracked files.
-#include? "Local.xcconfig"
+//   STARLING_BUNDLE_ID_PREFIX = <your reverse-DNS prefix, for example com.yourname>
+// so each developer signs with their own team and App ID without editing
+// tracked files. Local.xcconfig is included last, so its values win over the
+// defaults below.
 
 CODE_SIGN_STYLE = Automatic
+
+// A neutral default that builds for the Simulator. A signed device build
+// needs a prefix your team owns, set in Local.xcconfig.
+STARLING_BUNDLE_ID_PREFIX = com.example
+PRODUCT_BUNDLE_IDENTIFIER = $(STARLING_BUNDLE_ID_PREFIX).starling
+
+#include? "Local.xcconfig"
