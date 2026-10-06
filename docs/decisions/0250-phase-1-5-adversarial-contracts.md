@@ -68,5 +68,5 @@ behavior without implying execution.
 - [Core Interaction source](../../Packages/StarlingCore/Sources/StarlingCore/Interaction.swift).
 - [Real prompt renderer](../../Packages/StarlingAgent/Sources/StarlingAgent/PromptRenderer.swift).
 - [Apple Swift Testing known issues](https://developer.apple.com/tutorials/data/documentation/testing/known-issues.json), re-read 2026-10-01: a resolved non-intermittent known issue produces a failure until its marker is removed.
-- [Roster issue #46](https://github.com/oliverrowebardeen/starling-ios/issues/46).
-- [Real-skill integration gate #49](https://github.com/oliverrowebardeen/starling-ios/issues/49).
+- Roster issue #46.
+- Real-skill integration gate #49.

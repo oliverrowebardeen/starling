@@ -1,6 +1,6 @@
 # ADR 0255: Test adversarial boundaries through the installed app coordinator
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-F
 
@@ -87,7 +87,7 @@ and accessibility checks; real-model measurements remain opt-in.
 - `Packages/StarlingCore/Sources/StarlingCore/Outbox.swift` and
   `Packages/StarlingChaining/Sources/StarlingChaining/EgressRecorder.swift` at
   `ac780da`.
-- [Integration matrix](https://github.com/oliverrowebardeen/starling-ios/issues/49),
-  [withdrawal](https://github.com/oliverrowebardeen/starling-ios/issues/79),
-  [member audit](https://github.com/oliverrowebardeen/starling-ios/issues/80), and
-  [cancellation](https://github.com/oliverrowebardeen/starling-ios/issues/81).
+- Integration matrix (#49),
+  withdrawal (#79),
+  member audit (#80), and
+  cancellation (#81).

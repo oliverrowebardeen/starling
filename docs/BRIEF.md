@@ -214,7 +214,6 @@ Default design, to be validated:
 
 ```
 starling/
-  AGENTS.md                 (points to this brief + ARCHITECTURE.md; lane rules)
   docs/BRIEF.md             (this file)
   docs/ARCHITECTURE.md      (Orchestrator-owned)
   docs/THREAT_MODEL.md

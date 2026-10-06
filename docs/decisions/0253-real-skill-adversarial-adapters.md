@@ -1,6 +1,6 @@
 # ADR 0253: Test merged services at authenticated and persistent boundaries
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-F
 
@@ -66,4 +66,4 @@ proposal model facts. This does not approve exposing venue names to a real model
   `Packages/Skills/SwapPhotos/Sources/StarlingSwapPhotos/` at main `fde141f`.
 - `App/Features/Sources/StarlingFeatures/FileConversationLedger.swift`,
   `FileSentSequenceStore.swift`, and `PairingModel.swift` at main `fde141f`.
-- [Integration list](https://github.com/oliverrowebardeen/starling-ios/issues/49).
+- Integration list (#49).

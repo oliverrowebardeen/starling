@@ -1,6 +1,6 @@
 # ADR 0131: Use Core v1.1 egress context and audit callbacks
 
-- Status: Proposed. Implemented in PR #10.
+- Status: Accepted (code merged on main; status updated 2026-10-06). Implemented in PR #10.
 - Date: 2026-09-30
 - Owner: G, Policy and consent
 - Supersedes the registration, audit-wrapper, and consent-lifecycle workarounds in ADR 0130
@@ -24,7 +24,7 @@ F and H use concrete Core Outbox with an audit observer and per-send PSI context
 
 ## Sources
 
-- [Core v1.1 merge](https://github.com/oliverrowebardeen/starling-ios/commit/c4debe0).
+- Core v1.1 merge (#13).
 - [Core policy and local context contracts](../../Packages/StarlingCore/Sources/StarlingCore/Policy.swift).
 - [Core Outbox, observer, re-evaluation, and cancellation](../../Packages/StarlingCore/Sources/StarlingCore/Outbox.swift).
 - [Core Answer.issue](../../Packages/StarlingCore/Sources/StarlingCore/Messages.swift).

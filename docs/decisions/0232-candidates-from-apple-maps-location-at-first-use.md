@@ -1,6 +1,6 @@
 # ADR 0232: Candidates from Apple Maps, location at first use, typed places when denied
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-D (Pick a place)
 

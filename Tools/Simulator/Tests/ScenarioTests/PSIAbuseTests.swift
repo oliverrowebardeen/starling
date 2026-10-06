@@ -111,7 +111,7 @@ import Testing
     func malformedDigestLengthsAreRejected(length: Int) async throws {
         let session = try provider.makeSession(role: .responder, localSet: elements(1), configuration: configuration())
         let payload = try request(hashes: [Data(repeating: 0, count: length)])
-        // Regression: https://github.com/oliverrowebardeen/starling-ios/issues/7
+        // Regression: #7
         await #expect(throws: PSIError.malformedMessage) { try await session.handle(payload) }
     }
 
@@ -121,7 +121,7 @@ import Testing
         guard case .send(let first) = try await session.start() else { Issue.record("Expected request"); return }
         let sent = try JSONDecoder().decode(Request.self, from: first)
         let payload = try JSONEncoder().encode(Reply(hashes: output == .intersection ? sent.hashes : nil, count: output == .cardinality ? 2 : nil))
-        // Regression: https://github.com/oliverrowebardeen/starling-ios/issues/6
+        // Regression: #6
         await #expect(throws: PSIError.peerSetTooLarge(2)) { try await session.handle(payload) }
     }
 
@@ -130,7 +130,7 @@ import Testing
         guard case .send(let first) = try await session.start() else { Issue.record("Expected request"); return }
         let sent = try JSONDecoder().decode(Request.self, from: first)
         let payload = try JSONEncoder().encode(Reply(hashes: Array(repeating: sent.hashes[0], count: 336), count: nil))
-        // Regression: https://github.com/oliverrowebardeen/starling-ios/issues/6
+        // Regression: #6
         await #expect(throws: PSIError.peerSetTooLarge(336)) { try await session.handle(payload) }
     }
 }

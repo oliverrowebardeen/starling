@@ -1,6 +1,6 @@
 # ADR 0162: Build match and decide schemas at runtime, and enforce limits in them
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-09-30
 - Owner: C2. Agent quality
 
@@ -41,4 +41,4 @@ Measured with the real model on this Mac (see `Packages/StarlingAgent/Reports/ph
 - Xcode 27.0 SDK: `FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface`, build 27A266a
 - TN3193, on schema token cost: https://developer.apple.com/documentation/technotes/tn3193-managing-the-on-device-foundation-model-s-context-window
 - ARCHITECTURE.md rule 6 and section 7
-- Red-team issue #9: https://github.com/oliverrowebardeen/starling-ios/issues/9
+- Red-team issue #9

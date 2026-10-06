@@ -1,6 +1,6 @@
 # ADR 0111: Wi-Fi Aware services, entitlement, and pairing views
 
-- Status: Proposed (lane E2), 2026-09-30
+- Status: Accepted (lane E2, 2026-09-30; code merged on main; status updated 2026-10-06)
 - Owner: E2. Wi-Fi Aware transport
 
 ## Context

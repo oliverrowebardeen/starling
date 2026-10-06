@@ -1,6 +1,6 @@
 # ADR 0231: Venue names stay out of prompts in Phase 1.5
 
-- Status: Proposed. Needs lane P15-F's review before it moves to Accepted (requested in docs/requests/P15-D.md); the decision below is in force meanwhile.
+- Status: Accepted (code merged on main; status updated 2026-10-06). Lane P15-F's tests cover the venue-name containment this decision requires (ADR 0253); exposing venue names to a model would need a new decision.
 - Date: 2026-10-01
 - Owner: P15-D (Pick a place)
 

@@ -1,6 +1,6 @@
 # ADR 0142: Consent sheet, match notifications, and permission prompts
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); replaced for permissions by ADR 0202
 - Date: 2026-09-30
 - Owner: H (App features)
 

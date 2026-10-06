@@ -1,6 +1,6 @@
 # ADR 0220: Availability reads busy and free only, behind one seam
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-C, Find a time
 

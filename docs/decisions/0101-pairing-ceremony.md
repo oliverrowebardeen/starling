@@ -1,6 +1,6 @@
 # ADR 0101: Pairing ceremony: Noise XX plus a committed 6-digit code
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); decision 2's link-loss rule amended by ADR 0260
 - Date: 2026-09-30 (revised the same day after four Codex reviews of PR #16; see decision 2)
 - Owner: Lane E1 (Identity and secure channel)
 

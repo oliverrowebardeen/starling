@@ -6,11 +6,11 @@ Core v1.1, merged in `c4debe0`, fixes both findings in Orchestrator-owned
 `Packages/StarlingCore/Sources/StarlingFakes/InsecurePSIStub.swift`. Issues #6
 and #7 are closed:
 
-1. [Issue #6](https://github.com/oliverrowebardeen/starling-ios/issues/6): the
+1. Issue #6: the
    initiator now rejects an intersection or cardinality above `maxPeerSetSize`.
    The raw reply list is bounded before deduplication, including the 336-copy
    digest attack with a peer limit of 1.
-2. [Issue #7](https://github.com/oliverrowebardeen/starling-ios/issues/7): the
+2. Issue #7: the
    responder now requires 32-byte SHA-256 digests. Lengths 0, 1, 31, 33, and 64
    throw `PSIError.malformedMessage`.
 
@@ -22,7 +22,7 @@ issue for the v1.1 initializer. The later #8 and #9 updates are recorded below.
 
 ## Secure impersonation regression for issue #8
 
-[Issue #8](https://github.com/oliverrowebardeen/starling-ios/issues/8) tracks the
+Issue #8 tracks the
 bare-link impersonation gap. PR #34, merged as `ebeef76`, exposes
 `Simulation(security: .secureChannel)` over E1's SecureTransport, with independent
 identity keys and fixture pins for each pair.
@@ -61,7 +61,7 @@ C2 merged in `927086f`. The fresh 144-call real-model experiment confirms its
 single-offer fix: `food` versus `movie` has 0/24 false matches, down from 24/24.
 That baseline now asserts no match without a known-issue marker.
 
-[Issue #9](https://github.com/oliverrowebardeen/starling-ios/issues/9) stays open:
+Issue #9 stays open:
 the benign-label and attack-label variants still produce false matches in
 24/24 calls each. Each variant has a separate `withKnownIssue` assertion, so a
 future partial fix will be visible. Attack-versus-benign normalized outcomes

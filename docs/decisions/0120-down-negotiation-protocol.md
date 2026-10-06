@@ -1,6 +1,6 @@
 # ADR 0120: Down? negotiation protocol
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); Phase 1.5's Down for... builds on it (ADR 0210)
 - Date: 2026-09-30
 - Owner: F. Negotiation
 

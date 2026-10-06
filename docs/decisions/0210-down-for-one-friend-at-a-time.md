@@ -1,6 +1,6 @@
 # ADR 0210: Down for..., one friend at a time
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01; revised the same day for Core v2.1 (ADRs 0019, 0020, ADR 0011 amendment 15), the review rounds of PR #56, and ADR 0011 amendments 16 and 17
 - Owner: P15-B. Down for... skill and the model
 

@@ -1,6 +1,6 @@
 # ADR 0110: Wi-Fi Aware transport over TCP, with symmetric roles
 
-- Status: Proposed (lane E2), 2026-09-30
+- Status: Accepted (lane E2, 2026-09-30; code merged on main; status updated 2026-10-06); decision 3 replaced by ADR 0260
 - Owner: E2. Wi-Fi Aware transport
 
 ## Context

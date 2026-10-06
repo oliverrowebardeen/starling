@@ -1,6 +1,6 @@
 # ADR 0221: Find a time is one private query per friend, then a plan
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-C, Find a time
 

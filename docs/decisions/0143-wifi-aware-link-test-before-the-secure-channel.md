@@ -1,6 +1,6 @@
 # ADR 0143: Wi-Fi Aware in the app before the secure channel
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); superseded in part by ADR 0145 decision 6
 - Date: 2026-09-30
 - Owner: H (App features)
 
@@ -14,7 +14,7 @@ Lane E2's transport and pairing views are merged; lane E1's secure channel is no
 2. **Round trips send `hello` only.** The agent card is the only payload; lane G's policy always allows `hello`, so the test sends no owner data and shows no consent sheet. Sends go through an `Outbox` on the app's policy, consent provider, and audit log, so they are audited. A phone answers each conversation once and never its own pings, so replies cannot loop. This is why the screen can ship in Release without the fakes Nearby needed.
 3. **A stored random peer ID** stands in for the identity-key ID until E1: kept in `UserDefaults` so a relaunched phone appears once on the other phone (E2 checklist step 10), and labeled unverified on screen.
 4. **Pairing views appear only where Wi-Fi Aware runs** (`WiFiAwareSupport.isSupported`), on the pairing screen and the link-test screen. OS pairing links devices; Starling's own code check (E1) still pins the friend.
-5. **The generated `Config/Starling.entitlements` is committed.** XcodeGen writes it deterministically from `App/project.yml`, and committing it lets reviewers see the entitlement. It is not the Xcode project that AGENTS.md says not to commit.
+5. **The generated `Config/Starling.entitlements` is committed.** XcodeGen writes it deterministically from `App/project.yml`, and committing it lets reviewers see the entitlement. It is not the generated Xcode project, which stays out of the repository (ADR 0005).
 
 ## Consequences
 

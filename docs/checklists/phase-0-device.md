@@ -8,7 +8,7 @@ Record results at the bottom and paste the model reports into `docs/research/mod
 
 1. Install **Xcode 27** from the Mac App Store, open it, and let it install the iOS 27 platform.
 2. Run `brew upgrade xcodegen` (2.46.0 or later).
-3. Create `App/Config/Local.xcconfig` containing one line: `DEVELOPMENT_TEAM = <your team ID>`. It is gitignored.
+3. Create `App/Config/Local.xcconfig` with two lines: `DEVELOPMENT_TEAM = <your team ID>` and `STARLING_BUNDLE_ID_PREFIX = <your reverse-DNS prefix>`. It is gitignored.
 4. Run `xcodegen generate --spec App/project.yml && open App/Starling.xcodeproj`.
 5. On each iPhone: iOS 27, Developer Mode on, and Apple Intelligence on (Settings > Apple Intelligence & Siri).
 6. Build and run the Starling scheme on Phone A, then on Phone B.

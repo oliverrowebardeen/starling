@@ -68,4 +68,4 @@ that every skill retires on every ending. PR #50 remains draft for those passes.
 - [Outbox enforcement and observer ordering](../../Packages/StarlingCore/Sources/StarlingCore/Outbox.swift).
 - [In-memory doubles](../../Packages/StarlingCore/Sources/StarlingFakes/PolicyFakes.swift).
 - [Encrypted queue cancellation](../../Packages/StarlingIdentity/Sources/StarlingIdentity/SecureTransport.swift).
-- [Real implementation matrix](https://github.com/oliverrowebardeen/starling-ios/issues/49).
+- Real implementation matrix (#49).

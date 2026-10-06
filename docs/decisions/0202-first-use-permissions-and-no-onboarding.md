@@ -1,6 +1,6 @@
 # ADR 0202: No onboarding; Local Network and notifications at first use
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06); decision 3 amended by ADR 0260
 - Date: 2026-10-01
 - Owner: P15-A (Shell and IA)
 

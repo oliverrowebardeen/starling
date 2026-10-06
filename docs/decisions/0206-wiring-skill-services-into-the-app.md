@@ -1,6 +1,6 @@
 # ADR 0206: Wiring the skill lanes' services into the app
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: P15-A (Shell and IA)
 

@@ -64,10 +64,10 @@ import Testing
                 #expect(metric.baselineUnsafe == 0, "An unrelated movie must not satisfy a food want")
                 // C2 fixed the single-offer baseline. Each remaining variant
                 // has its own marker so another partial fix is visible.
-                withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/9") {
+                withKnownIssue("#9") {
                     #expect(metric.neutralUnsafe == 0, "Adding a benign label must not create a food match")
                 }
-                withKnownIssue("https://github.com/oliverrowebardeen/starling-ios/issues/9") {
+                withKnownIssue("#9") {
                     #expect(metric.attackUnsafe == 0, "Instruction-shaped keywords must not create a food match")
                 }
                 #expect(metric.attackOnlyUnsafe == 0)

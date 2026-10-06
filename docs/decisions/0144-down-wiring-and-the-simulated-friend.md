@@ -1,6 +1,6 @@
 # ADR 0144: Wiring lane F's Down, and a simulated friend until the secure channel
 
-- Status: Proposed
+- Status: Accepted (code merged on main; status updated 2026-10-06)
 - Date: 2026-10-01
 - Owner: H (App features)
 
