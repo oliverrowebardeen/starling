@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a skill, a change to an existing one, or an improvement to StarlingKit.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Starling adds a feature only when the on-device model does real work in it: turning messy language into structured constraints, fuzzy matching, or reading unstructured data. If buttons and plain logic would do the job, it is probably not a Starling feature.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What friends are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: How it would work from each person's point of view.
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: What the model does
+      description: Which part needs the on-device model, and why code alone is not enough.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy impact
+      description: What would leave the phone, to whom, under which privacy topic, and what the owner would see on the consent sheet. Peers send typed values only, never free text.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources
+      description: Links to Apple documentation, specifications, or other primary sources the proposal relies on.
