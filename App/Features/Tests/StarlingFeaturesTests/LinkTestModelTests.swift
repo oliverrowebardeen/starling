@@ -10,13 +10,17 @@ import Testing
     let friend = PeerID.random()
     let card = try! AgentCard(model: .onDevice, capabilities: [.down])
 
-    func model(replyTimeout: Duration = .seconds(10)) -> LinkTestModel {
+    func model(
+        replyTimeout: Duration = .seconds(10),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) -> LinkTestModel {
         let friend = friend
         return LinkTestModel(
             outbox: Outbox(transport: transport, policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.declined)),
             card: card,
             name: { $0 == friend ? "Maya" : nil },
-            replyTimeout: replyTimeout
+            replyTimeout: replyTimeout,
+            sleep: sleep
         )
     }
 
@@ -33,8 +37,11 @@ import Testing
                               sequence: sequence, sentAt: Timestamp(Date()), body: .hello(card)))
     }
 
+    /// The reply timeout expires only when the test says so: under load the
+    /// 10 s timer once fired before the reply was handled (review of #127).
     @Test func greetsAPeerThatBecomesAvailableAndTimesTheReply() async throws {
-        let model = model()
+        let timeouts = HeldTimeouts()
+        let model = model(sleep: { _ in await timeouts.wait() })
         await model.handle(.peerAvailable(friend))
         #expect(model.peers.map(\.name) == ["Maya"])
         #expect(model.peers.first?.isConnected == true)
@@ -49,6 +56,7 @@ import Testing
         #expect(model.peers.first?.isWaiting == false)
         try await Task.sleep(for: .milliseconds(20))
         #expect(try await sentEnvelopes().count == 1, "a reply to our own hello is not answered")
+        await timeouts.expire()
     }
 
     @Test func showsEachPeerOnceWithItsConnectionState() async {
@@ -107,5 +115,24 @@ import Testing
 
         await model.ping(friend)
         #expect(model.peers.first?.isWaiting == true, "retry works")
+    }
+}
+
+/// Reply timeouts that expire only when the test expires them, so no
+/// assertion depends on how busy the machine is.
+actor HeldTimeouts {
+    private var expired = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !expired else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Expires every timeout, waiting or still to come.
+    func expire() {
+        expired = true
+        for continuation in waiting { continuation.resume() }
+        waiting = []
     }
 }
