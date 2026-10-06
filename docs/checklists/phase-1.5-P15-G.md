@@ -1,6 +1,6 @@
 # Device checklist: Phase 1.5 lane P15-G (pairing)
 
-About five minutes. Phone A is Oliver's iPhone, Phone B is a friend's iPhone, both on this branch's Debug build. The steps call Phone A's owner Maya and Phone B's owner Riley, with phones named "Maya's iPhone" and "Riley's iPhone".
+About five minutes. Two iPhones, both on this branch's Debug build. The steps call Phone A's owner Maya and Phone B's owner Riley, with phones named "Maya's iPhone" and "Riley's iPhone".
 
 - To see the notification step, delete Starling from Phone A before installing. That resets its notification answer.
 - Old Wi-Fi Aware pairings between the phones can stay; step 2 covers both cases.

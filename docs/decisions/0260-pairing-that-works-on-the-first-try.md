@@ -7,7 +7,7 @@
 
 ## Context
 
-Oliver's two-phone test on 2026-10-02 (issue #95): "Pair a friend" kept failing after the phones paired and the code was entered, and worked after about 100 tries. The "Waiting for the other phone" progress was not centered, the flow was clearly not as clean as AirDrop, and the friend ended up named after their phone (for example "Riley's iPhone").
+The owner's two-phone test on 2026-10-02 (issue #95): "Pair a friend" kept failing after the phones paired and the code was entered, and worked after about 100 tries. The "Waiting for the other phone" progress was not centered, the flow was clearly not as clean as AirDrop, and the friend ended up named after their phone (for example "Riley's iPhone").
 
 There were no logs from the phones. So the causes were first reproduced over Loopback (`PairingReliabilityTests`, run against main at d0c9ca0 before any fix). Eight of nine cases failed:
 

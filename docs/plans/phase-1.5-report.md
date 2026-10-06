@@ -49,7 +49,7 @@ All five are fixed and merged (#90, #91, #92, #94).
 
 ## Feedback from Oliver's second device test (2026-10-02, two phones, issue #95)
 
-Oliver's iPhone and a friend's, on main 83329f3 or close to it.
+Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
 
 **Blocking**
 
@@ -58,7 +58,7 @@ Oliver's iPhone and a friend's, on main 83329f3 or close to it.
 
 **Wrong behavior**
 
-3. **"YOU and Riley's iPhone are both down" before Riley answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101). Whether that switch was on during the run is still Oliver's to confirm.
+3. **"YOU and [the friend's phone name] are both down" before the friend answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101). Whether that switch was on during the run is still Oliver's to confirm.
 4. **A made-up time: "Today at 1:30 PM" for dinner at 1:15 PM.** Plans now start at least an hour out, and a meal with no time gets its usual window as an editable chip (lane B, #101).
 5. **The friend was named after the device.** Pairing now asks for the name last, prefilled with a first name (lane G, #104).
 6. **"YOU" in capitals.** The sentence is put into sentence case, keeping a friend's capitals (lane B, #101).
