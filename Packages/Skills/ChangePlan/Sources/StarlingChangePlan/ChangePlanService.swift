@@ -329,11 +329,12 @@ public actor ChangePlanService: SkillService {
             inviteTerms: nil, step: .asking, isLeave: true
         )
         byConversation[request.conversation] = request.interaction
+        let firstAttempt = now()
         await sendLeaveNotices(request.interaction)
         await settle(planConversation: plan.plan.origin, keepingYes: false)
         await finish(request.interaction, with: [.withdrawn])
         await endPlan(plan)
-        startResending(request.interaction.rawValue)
+        startResending(request.interaction.rawValue, firstAttempt: firstAttempt)
     }
 
     public func answer(_ interaction: InteractionID, with answer: OwnerAnswer) async throws {
@@ -628,8 +629,9 @@ public actor ChangePlanService: SkillService {
                                      order: friends, pending: Set(friends), until: resend.end(for: plan, now: now()), forwarding: leaver)
         await store(.leaving(delivery))
         leaving[note] = delivery
+        let firstAttempt = now()
         await sendLeaveNotices(note)
-        startResending(note.rawValue)
+        startResending(note.rawValue, firstAttempt: firstAttempt)
     }
 
     /// The suggester withdrew an offer: the card it opened closes, or it
@@ -821,8 +823,9 @@ public actor ChangePlanService: SkillService {
         await close(id)
         emit(id, .everyoneConfirmed(revision: 1))
         if let plan = session.planInteraction { continuation.yield(.produced(plan, .plan(session.proposed))) }
+        let firstAttempt = now()
         await resendOnce(id.rawValue)
-        startResending(id.rawValue)
+        startResending(id.rawValue, firstAttempt: firstAttempt)
         await dequeue(session.planConversation)
     }
 
@@ -1265,17 +1268,22 @@ public actor ChangePlanService: SkillService {
     }
 
     /// Resends on the schedule until everyone acknowledged or the window
-    /// ends; a record that only waits (applied, departed) just waits.
-    private func startResending(_ key: UUID, sendingFirst: Bool = false) {
+    /// ends; a record that only waits (applied, departed) just waits. The
+    /// first retry is due `firstRetry` after `firstAttempt` (now, unless
+    /// the caller sent a round already), however late the task runs or long
+    /// the sends took, so the schedule never drifts (issue #130).
+    private func startResending(_ key: UUID, sendingFirst: Bool = false, firstAttempt: Date? = nil) {
         deliveryTasks[key]?.cancel()
-        deliveryTasks[key] = Task { [weak self] in await self?.runDelivery(key, sendingFirst: sendingFirst) }
+        let due = (firstAttempt ?? now()).addingTimeInterval(resend.firstRetry)
+        deliveryTasks[key] = Task { [weak self] in await self?.runDelivery(key, sendingFirst: sendingFirst, due: due) }
     }
 
-    private func runDelivery(_ key: UUID, sendingFirst: Bool) async {
+    private func runDelivery(_ key: UUID, sendingFirst: Bool, due first: Date) async {
         if sendingFirst { await resendOnce(key) }
         var wait = resend.firstRetry
+        var due = first
         while !Task.isCancelled, let end = until(key) {
-            let next = min(now().addingTimeInterval(wait), end)
+            let next = min(due, end)
             do { try await sleep(next) } catch { return }
             guard until(key) != nil else { return }
             if now() >= end {
@@ -1284,8 +1292,10 @@ public actor ChangePlanService: SkillService {
                 await endDelivery(key)
                 return
             }
+            let attempt = now()
             await resendOnce(key)
             wait = min(wait * 2, resend.maxBackoff)
+            due = attempt.addingTimeInterval(wait)
         }
     }
 
@@ -1433,8 +1443,9 @@ public actor ChangePlanService: SkillService {
             if record.until <= now() {
                 await endDelivery(record.key)
             } else {
+                let firstAttempt = now()
                 await resendOnce(record.key)
-                startResending(record.key)
+                startResending(record.key, firstAttempt: firstAttempt)
             }
         }
         return recovered
@@ -1454,8 +1465,9 @@ public actor ChangePlanService: SkillService {
         if let state, !state.isFinal { emit(commit.interaction, retired ? .noAgreement : .failed) }
         guard !withdrawal.pending.isEmpty else { return }
         withdrawing[commit.interaction] = withdrawal
+        let firstAttempt = now()
         await resendOnce(commit.interaction.rawValue)
-        startResending(commit.interaction.rawValue)
+        startResending(commit.interaction.rawValue, firstAttempt: firstAttempt)
     }
 
     // MARK: - Sending
@@ -1557,8 +1569,9 @@ public actor ChangePlanService: SkillService {
             if Task.isCancelled {
                 startResending(id.rawValue, sendingFirst: true)
             } else {
+                let firstAttempt = now()
                 await resendOnce(id.rawValue)
-                startResending(id.rawValue)
+                startResending(id.rawValue, firstAttempt: firstAttempt)
             }
         }
         byConversation[session.conversation] = nil
