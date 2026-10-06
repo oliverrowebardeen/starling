@@ -1,9 +1,13 @@
 # Interface change requests
 
-Lanes never edit `Packages/StarlingCore/` or files they do not own. To ask for a change, add `docs/requests/<lane>.md` (for example `F.md`) on your lane branch with:
+These files are the development record of how shared interfaces changed: each is one lane's requests to the Orchestrator, with the answers. The terms are defined in the [PROCESS.md glossary](../PROCESS.md#glossary).
 
-1. What you need changed, as a concrete Swift signature if possible.
-2. Why, with the test or scenario that shows the need.
-3. What you are doing meanwhile (a local workaround, or BLOCKED).
+During development, lanes did not edit `Packages/StarlingCore/` or files they did not own. To ask for a change, a lane added `docs/requests/<lane>.md` (for example `F.md`) on its branch with:
 
-The Orchestrator answers in the same file, makes accepted changes on its own branch, and merges them to `main`; lanes then rebase.
+1. What it needed changed, as a concrete Swift signature where possible.
+2. Why, with the test or scenario that showed the need.
+3. What it did meanwhile (a local workaround, or BLOCKED).
+
+The Orchestrator answered in the same file, made accepted changes on its own branch, and merged them to `main`; lanes then rebased. Code comments cite these files as, for example, "P15-E request 4.1" (item 4.1 in `P15-E.md`).
+
+New contributors propose interface changes in an issue instead; see [CONTRIBUTING.md](../../CONTRIBUTING.md#interfaces-and-decisions).
