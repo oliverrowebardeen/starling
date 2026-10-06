@@ -157,6 +157,37 @@ final class OfferRecorder {
         #expect(failing.starts.count == 2, "then the one automatic rejoin")
     }
 
+    /// Review of #127: the delay belongs to the failure on screen. Here the
+    /// first failure has been up long enough, refresh waits on the requests,
+    /// and meanwhile the owner taps Try again and a new failure appears.
+    /// That new one stays up for its own delay before the rejoin.
+    @Test func aFailureThatAppearsWhileRefreshWaitsKeepsItsOwnDelay() async {
+        struct NoLink: Error {}
+        let failing = ScriptedDirectory(candidates: [Self.candidate]) { _, _ in throw NoLink() }
+        let clock = PairingClock()
+        let meanwhile = Meanwhile()
+        var directory = failing.directory
+        let asking = failing.directory.requests
+        directory.requests = {
+            await meanwhile.run()
+            return await asking()
+        }
+        let model = PairingModel(directory: directory, now: clock.now)
+        await model.choose(Self.candidate)
+        #expect(model.phase == .failed(.transportFailed))
+        failing.ask(from: Self.maya.id)
+        clock.advance(PairingModel.rejoinDelay)
+
+        meanwhile.action = { await model.tryAgain() }
+        await model.refresh()
+        #expect(failing.starts.count == 2, "only the owner's Try again")
+        #expect(model.phase == .failed(.transportFailed))
+
+        clock.advance(PairingModel.rejoinDelay)
+        await model.refresh()
+        #expect(failing.starts.count == 3, "then the one automatic rejoin")
+    }
+
     /// Cancel and "They're different" stick: the sheet does not rejoin.
     @Test func aFailureThisOwnerChoseIsNotRejoined() async {
         let directory = Self.scripted()
@@ -843,6 +874,19 @@ extension PairingModel {
     func confirm(codesMatch: Bool) async {
         guard let comparison else { return }
         await confirm(codesMatch: codesMatch, for: comparison)
+    }
+}
+
+/// Something the owner does while the model waits on its directory. Runs
+/// once, the next time the directory is asked.
+@MainActor
+final class Meanwhile {
+    var action: (@MainActor () async -> Void)?
+
+    func run() async {
+        let action = self.action
+        self.action = nil
+        await action?()
     }
 }
 

@@ -195,8 +195,15 @@ public final class PairingModel {
     /// `rejoinDelay`: its owner tapped Try again, and this owner should not
     /// have to. Later retries take this owner's tap.
     public func refresh() async {
-        if case .failed = phase, !endedHere, automaticRejoins < Self.maxAutomaticRejoins, failureShownLongEnough, let phone,
-           await directory.requests().contains(phone.peer), case .failed = phase, automaticRejoins < Self.maxAutomaticRejoins {
+        if case .failed = phase {
+            guard !endedHere, automaticRejoins < Self.maxAutomaticRejoins, failureShownLongEnough, let phone else { return }
+            // The failure that has been on screen long enough. Try again
+            // while the requests are read can put up a new one, which then
+            // gets its own `rejoinDelay` (review of #127).
+            let shown = (attempt: attempt, at: failedAt)
+            guard await directory.requests().contains(phone.peer), case .failed = phase,
+                  attempt == shown.attempt, failedAt == shown.at, automaticRejoins < Self.maxAutomaticRejoins
+            else { return }
             automaticRejoins += 1
             await start(with: phone)
             return
