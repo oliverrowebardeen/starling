@@ -4,7 +4,7 @@ import StarlingCore
 import StarlingFakes
 import Testing
 
-/// Oliver's two-phone run (issue #95, 2026-10-02).
+/// The owner's two-phone run (issue #95, 2026-10-02).
 @Suite(.timeLimit(.minutes(1))) struct DeviceTestTwoTests {
     /// "dinner", Ask directly, on A; nothing on B. A is never told B is
     /// down, or shown a plan naming B, until B says I'm in: A's request

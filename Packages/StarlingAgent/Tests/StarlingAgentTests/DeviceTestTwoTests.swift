@@ -4,7 +4,7 @@ import StarlingCore
 import StarlingFakes
 import Testing
 
-/// Oliver's two-phone run (issue #95, 2026-10-02).
+/// The owner's two-phone run (issue #95, 2026-10-02).
 @Suite struct DeviceTestTwoTests {
     let utc = TimeZone(identifier: "UTC")!
     /// 2026-10-02 13:15 UTC, as in the run.

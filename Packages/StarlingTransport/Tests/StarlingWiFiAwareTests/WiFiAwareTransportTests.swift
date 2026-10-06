@@ -416,18 +416,18 @@ private func frame(_ index: Int) throws -> Frame {
     /// from it, with the system's name for the device its hello came from.
     @Test func namesThePairedDeviceBehindAPeer() async throws {
         let air = FakeAir()
-        await air.pair("riley", "oliver")
+        await air.pair("riley", "maya")
         let riley = await Phone("riley", air: air)
-        let oliver = await Phone("oliver", air: air)
-        #expect(await oliver.transport.pairedDevice(for: riley.peer) == nil)
+        let maya = await Phone("maya", air: air)
+        #expect(await maya.transport.pairedDevice(for: riley.peer) == nil)
         try await riley.transport.start()
-        try await oliver.transport.start()
-        await eventually("linked") { await oliver.available(riley) == 1 }
-        #expect(await oliver.transport.pairedDevice(for: riley.peer)?.name == "Riley's iPhone")
-        #expect(await riley.transport.pairedDevice(for: oliver.peer)?.name == "Oliver's iPhone")
-        #expect(await oliver.transport.pairedDevice(for: .random()) == nil)
+        try await maya.transport.start()
+        await eventually("linked") { await maya.available(riley) == 1 }
+        #expect(await maya.transport.pairedDevice(for: riley.peer)?.name == "Riley's iPhone")
+        #expect(await riley.transport.pairedDevice(for: maya.peer)?.name == "Maya's iPhone")
+        #expect(await maya.transport.pairedDevice(for: .random()) == nil)
         await riley.transport.stop()
-        await oliver.transport.stop()
+        await maya.transport.stop()
     }
 
     /// Debug builds show link events in the pairing log.
