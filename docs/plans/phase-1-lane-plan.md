@@ -1,6 +1,6 @@
 # Phase 1 lane plan: Down? (local)
 
-- Status: **Approved by the owner on 2026-09-30.** Owner decisions: ADR 0003 (Noise) accepted with an instruction to be careful; all 7 lanes approved to run at once; spawning and merging pre-approved; the phone-to-phone part of the Phase 0 device checklist is deferred until a friend's phone is available (the one-phone-plus-Mac variant covers it meanwhile). Xcode 27 is installed. The exact kickoff prompts are in `phase-1-kickoff-prompts.md`.
+- Status: **Approved by the owner on 2026-09-30.** Owner decisions: ADR 0003 (Noise) accepted with an instruction to be careful; all 7 lanes approved to run at once; spawning and merging pre-approved; the phone-to-phone part of the Phase 0 device checklist is deferred until a friend's phone is available (the one-phone-plus-Mac variant covers it meanwhile). Xcode 27 is installed.
 - Date: 2026-09-29
 - Author: Orchestrator
 
@@ -26,7 +26,7 @@ Phase 1 goal (brief section 5): two paired iPhones get a notification only on a 
 
 ## 2. Lanes
 
-All lanes: read `docs/BRIEF.md`, `docs/ARCHITECTURE.md`, and `AGENTS.md` first; test without devices against Loopback, `StarlingFakes`, and the simulator; end with DONE or BLOCKED plus a device checklist. The table's "agent" column is a suggestion; the brief allows Claude Code or Codex anywhere.
+All lanes: read `docs/BRIEF.md`, `docs/ARCHITECTURE.md`, and the project's rules for agents first; test without devices against Loopback, `StarlingFakes`, and the simulator; end with DONE or BLOCKED plus a device checklist. The table's "agent" column is a suggestion; the brief allows Claude Code or Codex anywhere.
 
 | Lane | Owns | Delivers | Acceptance (verifiable without a device unless noted) | Suggested agent |
 |------|------|----------|-------------------------------------------------------|-----------------|

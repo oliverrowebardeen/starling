@@ -1,6 +1,6 @@
 # Phase 1.5 lane plan
 
-Status: **Approved by the owner on 2026-09-30**, with all six lanes starting together. Kickoff prompts: `docs/plans/phase-1.5-kickoff-prompts.md`.
+Status: **Approved by the owner on 2026-09-30**, with all six lanes starting together.
 
 Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 to 0018. Interfaces: Core v2, frozen on main at c07c036 (PR #45, after five adversarial review rounds).
 
@@ -16,7 +16,7 @@ Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 
 
 ## 1. Lanes
 
-Six lanes in parallel, as the prompt proposes, with paths matched to the repo. Every lane follows AGENTS.md and ends with DONE or BLOCKED, a device checklist, and `Tools/local-gate.sh` passing.
+Six lanes in parallel, as the prompt proposes, with paths matched to the repo. Every lane follows the project's rules for agents and ends with DONE or BLOCKED, a device checklist, and `Tools/local-gate.sh` passing.
 
 | Lane | Owns | Delivers | Acceptance (without a device unless noted) | Agent |
 |---|---|---|---|---|
@@ -27,7 +27,7 @@ Six lanes in parallel, as the prompt proposes, with paths matched to the repo. E
 | **E. Chaining and audit** | `Packages/StarlingChaining/` (new), `Packages/Skills/SwapPhotos/` (new, flagged off) | Chain suggestions from the registry, per-link consent from `SkillExposure`, time-triggered chains with the opt-in recorded, "How this came together" and "What left your phone" from `Interaction` history and egress (an `OutboxObserver` that records `EgressRecord`s); Swap photos proves the after-plan-ends hook | Down for… to Pick a place chain with a fresh consent only when a topic is added; unsupported chains hidden; egress log equals what the consent sheet showed | Claude |
 | **F. Red team** | `Tools/Simulator/Scenarios/`, test targets only; files issues | Injection through chained skills and venue names; a peer trying to start a skill, a permission, or a chain (`chainedFrom`); denied-permission paths; peers missing a skill or version; replays and stale revisions against the lifecycle; roster substitution on the consent sheet (issue #46) | Every scenario passes or has a filed issue with a reproduction | Codex (an independent model is a better adversary) |
 
-Phase 1 lanes not listed here are complete. On approval, the Orchestrator updates AGENTS.md's ownership table with these paths and writes each lane's kickoff prompt, as in Phase 1.
+Phase 1 lanes not listed here are complete. On approval, the Orchestrator records these paths as each lane's ownership and writes each lane's kickoff prompt, as in Phase 1.
 
 ## 2. Order and dependencies
 
@@ -95,7 +95,7 @@ Principle: the agent knows preferences and constraints, not the user's life. Sta
 
 ### To settle when these are planned
 
-These touch current decisions or depend on facts to re-verify against primary sources first (AGENTS.md).
+These touch current decisions or depend on facts to re-verify against primary sources first.
 
 - **Pairing by link changes the trust bootstrap.**
   - Brief 2.2 ("Pair in person, coordinate anywhere") and ADR 0102 make being together the trust bootstrap; trust on first use over a link replaces that as the default.
