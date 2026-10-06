@@ -71,6 +71,29 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
 10. **Anything after decryption on the device**: other apps, the OS, backups of app data outside the Keychain, notifications on the lock screen. Those are covered by other sections.
 11. **The Phase 2 relay.** Store-and-forward needs its own design: a one-way pattern or HPKE, plus replay rules (ADR 0003 decision 3).
 
+## 5a. What Phase 1.5's skills and pairing do not protect
+
+These come from the lanes' requests (`docs/requests/P15-*.md`) and the Phase 1.5 reviews.
+
+1. **The organizer of a group step is trusted.** Friends in a plan are often not paired with each other, so a phone cannot check another friend's yes or no. Whoever organizes a step reports the outcome:
+   - Down for… and Pick a place: the organizer's final roster and place (ADR 0233 decision 13).
+   - Change the plan: the suggester reports that everyone agreed (ADR 0243). The suggester who added a friend can also tell that friend's phone, and only that phone, that another member left, because the forwarded departure carries nothing the friend can verify.
+   - A dishonest paired friend can therefore show different plans to different friends. Honest phones never diverge: a change names the revision it changes, and a phone takes part in one change per plan at a time (ADR 0023). The defense against a liar is that every friend was paired in person.
+2. **Pairing codes.** A phone in the middle of two victims learns each victim's code from that victim's message 3. Once a phone has sent its nonce, a request to start over ends the ceremony visibly, so each further guess shows a failure. A sheet rejoins on its own at most once, after the failure has been on screen for 3 seconds, so one Add friend tap gives a middle phone at most two nonces (about 2 in 10^6), within ADR 0101's bound (ADR 0260).
+3. **A third phone in range can restart or end a pairing** before this phone's nonce goes out, with IDs it overheard, and end one visibly after. It learns no code. Pairing requests are unauthenticated claims; a forged one can only start a ceremony whose code will not match. A finished ceremony replays its last encrypted messages up to 3 times, which reveals nothing new. All of this is denial of service.
+4. **Wi-Fi Aware roles.** A forged link hello from an OS-paired device can make a phone settle a role that stops the link until the next genuine hello: denial of service, and only from devices the owner paired in person (ADRs 0110, 0260).
+5. **Find a time.**
+   - A starter shows each friend up to 16 of its free times; with a calendar, the gaps show busy time in the range, never why. A friend who keeps sending requests learns 16 answers per request, at most 4 open requests at a time. Private set intersection would remove this (ADR 0221).
+   - Every no while answering is silence, and every no after the owner's tap is the same `reject(noOverlap)`. A yes from a calendar still comes faster than one from an owner (ADRs 0019, 0221).
+   - Each conversation can ask about at most 16 times, and an ended conversation is retired for good (ADR 0021). A dishonest friend can still open new conversations, at most 4 at a time.
+   - Calendar details are Never by default and are still read on the phone to judge candidates; only yes or no to the starter's own times leaves (ADR 0019).
+   - Checkpoints hold candidate times, friends' answers, and peer IDs at rest, with complete file protection, until the interaction ends (ADR 0222).
+6. **Pick a place.**
+   - The organizer learns each friend's acceptable subset of its own candidates, in order. That is the aggregation's disclosure, shown on the friend's consent sheet first.
+   - Apple Maps receives the owner's typed area, or a region around the owner for Nearby; on friends' phones, the identifiers of the venues they are asked about.
+   - Silence hides "nothing fits" from the organizer, at the cost of waiting for the answer window.
+   - Hard limits are enforced only on known facts. Apple Maps supplies categories but no price or diet data, so on device most budget and diet limits are unchecked (ADR 0230).
+
 ## 6. Review history
 
 The first Codex adversarial review of PR #16 (2026-09-30) found no Noise conformance or vector issues. It reproduced three state-machine defects, fixed on the same branch, each with a regression test that reproduced it first:
