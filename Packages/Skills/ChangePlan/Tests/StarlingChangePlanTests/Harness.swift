@@ -102,6 +102,12 @@ actor TestJournal: ChangePlanJournal {
     /// Saves that match wait for `release()`.
     func hold(when matches: @escaping @Sendable (ChangePlanRecord) -> Bool) { holding = matches }
     var held: Int { waiting.count }
+    /// The records whose saves are being held, in order.
+    private(set) var heldRecords: [ChangePlanRecord] = []
+    /// Writes a record at once, as the save a crash interrupted had.
+    func saveNow(_ record: ChangePlanRecord) async throws { try await stored.save(record) }
+    /// Later saves go through; those already held wait for `release()`.
+    func stopHolding() { holding = { _ in false } }
     func release() {
         holding = { _ in false }
         for continuation in waiting { continuation.resume() }
@@ -109,7 +115,10 @@ actor TestJournal: ChangePlanJournal {
     }
 
     func save(_ record: ChangePlanRecord) async throws {
-        if holding(record) { await withCheckedContinuation { waiting.append($0) } }
+        if holding(record) {
+            heldRecords.append(record)
+            await withCheckedContinuation { waiting.append($0) }
+        }
         if failing(record) { throw Unavailable() }
         try await stored.save(record)
     }

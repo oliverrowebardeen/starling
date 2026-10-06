@@ -1301,15 +1301,24 @@ public actor ChangePlanService: SkillService {
             case .withdrawing(let delivery):
                 withdrawing[delivery.interaction] = delivery
             case .confirming(let delivery):
+                recovered.insert(delivery.interaction)
+                // The record is written before the commit's last check, so
+                // it may hold a commit that never applied here. Only one this
+                // phone applied, or can still apply over its basis, is
+                // finished and resent; any other is withdrawn (final review
+                // of PR #111, finding 5).
+                let state = states[delivery.interaction]
+                let current = await planLookup(delivery.planConversation)
+                let replays = current.map { $0.plan.revision + 1 == delivery.plan.revision } ?? false
+                guard state == .planned || current?.plan == delivery.plan || (replays && state?.isFinal != true) else {
+                    await abandonCommit(delivery, state: state)
+                    continue
+                }
                 confirming[delivery.interaction] = delivery
                 confirmingByConversation[delivery.conversation] = delivery.interaction
-                recovered.insert(delivery.interaction)
                 // Finish a commit the crash interrupted (finding 3).
-                if let state = states[delivery.interaction], !state.isFinal, state != .planned { emit(delivery.interaction, .everyoneConfirmed(revision: 1)) }
-                if let holder = delivery.planInteraction, let current = await planLookup(delivery.planConversation),
-                   current.plan.revision + 1 == delivery.plan.revision {
-                    continuation.yield(.produced(holder, .plan(delivery.plan)))
-                }
+                if let state, !state.isFinal, state != .planned { emit(delivery.interaction, .everyoneConfirmed(revision: 1)) }
+                if let holder = delivery.planInteraction, replays { continuation.yield(.produced(holder, .plan(delivery.plan))) }
             case .applied(let receipt):
                 applied[receipt.conversation] = receipt
                 recovered.insert(receipt.interaction)
@@ -1349,6 +1358,24 @@ public actor ChangePlanService: SkillService {
             }
         }
         return recovered
+    }
+
+    /// A commit a restart found that never applied here and no longer can:
+    /// nothing is confirmed. Everyone still owed a confirmation is told the
+    /// offer is withdrawn instead, so their cards close and release the
+    /// plan, and the suggester's card ends as "The plan stays as it was".
+    private func abandonCommit(_ commit: ConfirmationDelivery, state: InteractionState?) async {
+        let withdrawal = WithdrawalDelivery(interaction: commit.interaction, planConversation: commit.planConversation, order: commit.order,
+                                            pending: commit.pending, until: now().addingTimeInterval(resend.holdGrace))
+        // It replaces the commit's record (one key); if it cannot, the next
+        // launch finds the commit again and withdraws it then.
+        if withdrawal.pending.isEmpty { await forget(commit.interaction.rawValue) } else { await store(.withdrawing(withdrawal)) }
+        let retired = await retire(commit.conversation)
+        if let state, !state.isFinal { emit(commit.interaction, retired ? .noAgreement : .failed) }
+        guard !withdrawal.pending.isEmpty else { return }
+        withdrawing[commit.interaction] = withdrawal
+        await resendOnce(commit.interaction.rawValue)
+        startResending(commit.interaction.rawValue)
     }
 
     // MARK: - Sending

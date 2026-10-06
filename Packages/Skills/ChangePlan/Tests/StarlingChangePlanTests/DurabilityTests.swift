@@ -195,6 +195,80 @@ import Testing
         await network.shutdown()
     }
 
+    /// Final review of PR #111, finding 5: Alex's commit was journaled but
+    /// the app died before it applied, and by the relaunch another change
+    /// had moved Alex's plan. The commit is not resent: Maya and Jake are
+    /// told it is withdrawn, and no phone applies it.
+    @Test func aCommitThatWasNeverAppliedIsAbandonedOnRestart() async throws {
+        let group = Group()
+        let network = group.network
+        let phone = group.phone(alex)
+        await phone.journal.hold { $0.isConfirming }
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards up") { await ReliabilityTests.cardsUp(group) }
+        for person in [maya, jake] {
+            try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
+        }
+        let delivering = Task { await network.deliver() }
+        try await network.until("commit being written") { await phone.journal.held == 1 }
+        // The write lands, and the app dies before anything else happens.
+        let record = try #require(await phone.journal.heldRecords.first)
+        try await phone.journal.saveNow(record)
+        await phone.journal.stopHolding()
+        // Another change moved Alex's plan meanwhile.
+        var root = try #require(await phone.interaction(group.roots[alex]!.id))
+        root.record(.plan(try #require(root.plan).updating(activity: .some(Fixtures.dinner))))
+        try await phone.store.save(root)
+        await phone.restart()
+        await network.deliver()
+        try await network.until("cards closed") {
+            for person in [maya, jake] where await group.phone(person).changes().first?.state.isFinal != true { return false }
+            return true
+        }
+        #expect(Self.sent(network, "Alex > Maya: accept") == 0 && Self.sent(network, "Alex > Jake: accept") == 0)
+        #expect(await ReliabilityTests.revisions(group, [maya, jake]) == [0, 0])
+        #expect(await phone.plan(group.origin)?.activity == Fixtures.dinner)
+        #expect(await phone.interaction(link.id)?.state == .ended(.nobodyUp))
+        // Let the first launch's write finish, after the checks.
+        await phone.journal.release()
+        _ = await delivering.value
+        await network.shutdown()
+    }
+
+    /// The other side of finding 5: Alex's commit applied and its
+    /// confirmations went out, but the app died before it saved anything
+    /// the service told it. The plan still stands at the basis, so the
+    /// commit is finished on relaunch, not withdrawn.
+    @Test func aCommitWhoseEventsWereAllLostIsFinishedOnRestart() async throws {
+        let group = Group()
+        let network = group.network
+        let phone = group.phone(alex)
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards up") { await ReliabilityTests.cardsUp(group) }
+        phone.losingEverything.set(true)
+        for person in [maya, jake] {
+            try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
+        }
+        // The yeses go through; the acknowledgments are lost.
+        network.drop("Maya > Alex: accept", skipping: 1)
+        network.drop("Jake > Alex: accept", skipping: 1)
+        await network.deliver()
+        try await network.until("Maya and Jake applied") { await ReliabilityTests.revisions(group, [maya, jake]) == [1, 1] }
+        #expect(await phone.plan(group.origin)?.revision == 0)
+        #expect(await phone.interaction(link.id)?.state != .planned)
+        await phone.restart()
+        try await network.until("Alex's commit finished") { await phone.interaction(link.id)?.state == .planned }
+        #expect(await phone.plan(group.origin)?.time == Fixtures.later)
+        #expect(await phone.plan(group.origin)?.revision == 1)
+        await network.deliver()
+        try await network.until("Alex's delivery done") { (try? await phone.journal.records().isEmpty) == true }
+        #expect(Self.sent(network, "Alex > Maya: reject") == 0 && Self.sent(network, "Alex > Jake: reject") == 0)
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
     // MARK: Issue #117: what cannot be recorded does not happen
 
     @Test func aCommitThatCannotBeRecordedChangesNothing() async throws {
