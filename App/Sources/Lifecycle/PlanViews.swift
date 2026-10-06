@@ -1,4 +1,5 @@
 import StarlingChaining
+import StarlingChangePlan
 import StarlingCore
 import StarlingDesign
 import StarlingFeatures
@@ -102,16 +103,20 @@ struct KeepItGoingList: View {
             if let draft = detail.calendar {
                 HStack {
                     VStack(alignment: .leading) {
-                        Text("Add to Calendar")
-                        Text("No permission needed").font(.subheadline).foregroundStyle(.secondary)
+                        // After a change, the event added before is out of
+                        // date (ADR 0022). Without calendar access Starling
+                        // can't edit it, only add the new details.
+                        Text(detail.calendarIsOutdated ? "Update in Calendar" : "Add to Calendar")
+                        Text(detail.calendarIsOutdated ? "Adds the new details. Remove the old event in Calendar." : "No permission needed")
+                            .font(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Add") { addingToCalendar = true }.buttonStyle(.bordered)
+                    Button(detail.calendarIsOutdated ? "Update" : "Add") { addingToCalendar = true }.buttonStyle(.bordered)
                 }
                 .sheet(isPresented: $addingToCalendar) {
                     CalendarEventEditor(draft: draft) { saved in
                         addingToCalendar = false
-                        if saved { app.notes.record(.calendar, for: root.id) }
+                        if saved { app.notes.record(.calendar, for: root.id, revision: detail.plan?.revision) }
                     }
                     .ignoresSafeArea()
                 }
@@ -332,6 +337,7 @@ struct PlanDetailView: View {
             }
             if root.state == .planned {
                 KeepItGoingList(app: app, root: root, detail: detail, continueWith: continueWith)
+                ChangeThePlanSection(app: app, root: root, continueWith: continueWith)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -366,7 +372,9 @@ struct InteractionDetailView: View {
                 Section("What left your phone") {
                     EgressAuditView(shared: detail.shared, kept: detail.kept, isComplete: detail.auditIsComplete)
                 }
-                if interaction.role == .initiator, !interaction.state.isFinal, interaction.state != .planned {
+                if app.placeYesIsFinal(interaction) {
+                    Section { Text(AppModel.placeYesIsFinalNote).foregroundStyle(.secondary) }
+                } else if interaction.role == .initiator, !interaction.state.isFinal, interaction.state != .planned {
                     Section {
                         Button("Take it back", role: .destructive) { Task { await app.lifecycle.withdraw(id) } }
                     } footer: {
@@ -383,5 +391,141 @@ struct InteractionDetailView: View {
 
     private var friendNames: [PeerID: String] {
         Dictionary((app.friends?.friends ?? []).map { ($0.id, $0.nickname) }, uniquingKeysWith: { first, _ in first })
+    }
+}
+
+/// "Suggest a change" and "Leave this plan" (ADR 0022). A suggestion goes
+/// to everyone else in the plan and applies only if they all say yes;
+/// leaving needs nobody's agreement.
+struct ChangeThePlanSection: View {
+    let app: AppModel
+    let root: Interaction
+    let continueWith: (ChainSuggestion) -> Void
+    @State private var suggesting = false
+    @State private var confirmingLeave = false
+    @State private var notice: String?
+
+    var body: some View {
+        Section {
+            Button("Suggest a change") { suggesting = true }
+                .disabled(app.changeUnavailableReason(for: root) != nil)
+            if let reason = app.changeUnavailableReason(for: root) {
+                Text(reason).font(.footnote).foregroundStyle(.secondary)
+            }
+            Button("Leave this plan", role: .destructive) { confirmingLeave = true }
+            if let notice {
+                Text(notice).font(.footnote).foregroundStyle(.orange)
+            }
+        } footer: {
+            Text("A change happens only if everyone says yes. If anyone passes, the plan stays as it was.")
+        }
+        .sheet(isPresented: $suggesting) {
+            SuggestChangeSheet(app: app, root: root) { row in
+                suggesting = false
+                continueWith(row)
+            }
+        }
+        .confirmationDialog("Leave this plan?", isPresented: $confirmingLeave, titleVisibility: .visible) {
+            Button("Leave this plan", role: .destructive) {
+                Task { notice = await app.leavePlan(root) }
+            }
+        } message: {
+            Text("The others see that you left. Nobody else has to agree.")
+        }
+    }
+}
+
+/// What a suggestion changes: a new time, a new activity, a friend to add.
+/// A new place or budget goes through Pick a place ("Somewhere else?").
+struct SuggestChangeSheet: View {
+    let app: AppModel
+    let root: Interaction
+    let somewhereElse: (ChainSuggestion) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var changesTime = false
+    @State private var start: Date
+    @State private var end: Date
+    @State private var activity = ""
+    @State private var adding: PeerID?
+    @State private var problem: String?
+    @State private var isSending = false
+
+    init(app: AppModel, root: Interaction, somewhereElse: @escaping (ChainSuggestion) -> Void) {
+        self.app = app
+        self.root = root
+        self.somewhereElse = somewhereElse
+        let time = root.plan?.time
+        let start = time?.start ?? Date().addingTimeInterval(3600)
+        _start = State(initialValue: start)
+        _end = State(initialValue: time?.end ?? start.addingTimeInterval(2 * 3600))
+    }
+
+    var body: some View {
+        // The row this sheet shows; tapping Suggest it approves what it adds.
+        let shown = app.changeOffer(for: root)
+        NavigationStack {
+            Form {
+                Section("New time") {
+                    Toggle("Change the time", isOn: $changesTime)
+                    if changesTime {
+                        DatePicker("From", selection: $start)
+                        DatePicker("Until", selection: $end, in: start.addingTimeInterval(60)...)
+                    }
+                }
+                Section("New activity") {
+                    TextField(root.plan?.activity?.value ?? "Dinner, a walk", text: $activity)
+                }
+                let friends = app.friendsToAdd(to: root)
+                if !friends.isEmpty {
+                    Section("Add a friend") {
+                        Picker("Friend", selection: $adding) {
+                            Text("Nobody").tag(PeerID?.none)
+                            ForEach(friends, id: \.id) { friend in Text(friend.nickname).tag(PeerID?.some(friend.id)) }
+                        }
+                    }
+                }
+                if let place = app.chainSuggestions(after: root).first(where: { $0.id == .pickAPlace }) {
+                    Section {
+                        Button("Somewhere else?") { somewhereElse(place) }
+                    } footer: {
+                        Text("A new place or budget goes through Pick a place.")
+                    }
+                }
+                Section {
+                    if let row = shown, let note = app.changeAddsNote(row) {
+                        Text(note)
+                    }
+                    Text("Everyone in the plan has to say yes. If anyone passes, the plan stays as it was.")
+                        .foregroundStyle(.secondary)
+                    if let problem { Text(problem).foregroundStyle(.orange) }
+                }
+            }
+            .navigationTitle("Suggest a change")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Suggest it") { Task { await suggest(shown) } }.disabled(isSending)
+                }
+            }
+        }
+    }
+
+    /// - Parameter shown: the row this sheet showed, whose additions the
+    ///   tap approves.
+    private func suggest(_ shown: ChainSuggestion?) async {
+        let words = activity.trimmingCharacters(in: .whitespacesAndNewlines)
+        let time = changesTime ? try? TimeSlot(start: start, end: end) : nil
+        if changesTime, time == nil { problem = "That time can't be used. Try a shorter one."; return }
+        let keyword: Keyword?
+        if words.isEmpty { keyword = nil } else {
+            guard let parsed = try? Keyword(words) else { problem = "Starling can't use that. Try a few plain words."; return }
+            keyword = parsed
+        }
+        guard time != nil || keyword != nil || adding != nil else { problem = "Pick what to change."; return }
+        isSending = true
+        defer { isSending = false }
+        problem = await app.suggestChange(.change(time: time, activity: keyword, adding: adding), on: root, shown: shown)
+        if problem == nil { dismiss() }
     }
 }

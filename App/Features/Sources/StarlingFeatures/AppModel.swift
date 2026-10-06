@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import PickAPlace
 import StarlingChaining
+import StarlingChangePlan
 import StarlingCore
 
 /// Everything the app's features are built from. The app target assembles
@@ -48,6 +49,12 @@ public struct AppServices: Sendable {
     /// The owner's live choices, for skill services built in `makeSkills`.
     /// `AppModel` attaches itself; nil when no service needs them.
     public var choices: OwnerChoices?
+    /// The plans on this phone by origin, for skill services built in
+    /// `makeSkills`. `AppModel` attaches its coordinator.
+    public var plans: StandingPlans?
+    /// The holds every skill that changes a plan shares (ADR 0023), read
+    /// for the owner. Nil when no such skill is in the build.
+    public var changesInProgress: PlanChangesInProgress?
     /// Lane E's journal of sends whose egress record is not yet confirmed,
     /// on disk in the app (ADR 0021 decision 4).
     public var egressJournal: any EgressJournal
@@ -96,6 +103,8 @@ public struct AppServices: Sendable {
         placeFinder: PlaceFinder? = nil,
         stagedPlaces: StagedCandidates? = nil,
         choices: OwnerChoices? = nil,
+        plans: StandingPlans? = nil,
+        changesInProgress: PlanChangesInProgress? = nil,
         transport: (any Transport)? = nil,
         afterStart: (@Sendable () async -> Void)? = nil,
         agentLocality: ModelLocality? = nil,
@@ -128,7 +137,9 @@ public struct AppServices: Sendable {
         self.egressJournal = egressJournal
         self.placeFinder = placeFinder
         self.stagedPlaces = stagedPlaces
+        self.changesInProgress = changesInProgress
         self.choices = choices
+        self.plans = plans
         self.transport = transport
         self.afterStart = afterStart
         self.agentLocality = agentLocality
@@ -283,8 +294,13 @@ public final class AppModel {
             places: services.placeFinder.flatMap { finder in services.stagedPlaces.map { PlacePicker(finder: finder, staging: $0) } }
         )
         composer.beforeFirstRequest = { [weak self] in await self?.ensureLocalNetwork() }
+        composer.planIsChanging = { [weak self] id in
+            guard let self, let origin = lifecycle.interaction(id)?.plan?.origin else { return false }
+            return services.changesInProgress?.isHeld(origin) == true
+        }
 
         services.choices?.attach(self)
+        services.plans?.attach(lifecycle)
         rulesEditor.onSaved = { [weak self] in await self?.refreshPolicy() }
         settings.beforeSave = { [weak self] interim in
             guard let self else { return }
@@ -310,6 +326,12 @@ public final class AppModel {
         lifecycle.onChange = { [weak self] before, after in
             if after.state == .planned, before?.state != .planned, words.isVisible(after) { self?.celebrating = after.id }
             self?.updateParent(of: after)
+            // Any plan update: an open suggestion checks its basis still
+            // stands (P15-E request 15).
+            if let plan = after.plan, before?.plan != plan, let change = self?.lifecycle.service(for: .changePlan) as? ChangePlanService {
+                let origin = plan.origin
+                Task { await change.planDidChange(origin) }
+            }
             // A friend's request just installed: write any send its skill
             // made before the coordinator saw it (lane E's recorder).
             if before == nil, let egress = self?.egress {
@@ -318,7 +340,8 @@ public final class AppModel {
             }
             // A card the owner passed stays quiet until its skill ends it.
             if self?.lifecycle.passed.contains(after.id) == true { return }
-            guard let notice = LifecycleNotice.make(before: before, after: after, words: words) else { return }
+            let basis = self.map { InteractionWords.basis(of: after, among: $0.lifecycle.interactions) } ?? nil
+            guard let notice = LifecycleNotice.make(before: before, after: after, words: words, basis: basis) else { return }
             Task { await notifier.post(notice) }
         }
     }
@@ -408,6 +431,9 @@ public final class AppModel {
         lifecycle.restoreRequestGroups(notes.requestGroups)
         refreshCard()
         // Recovers the egress journal between loading and restoring.
+        // Each hold the skills take or release, restoring or later, reaches
+        // the cards at once (ADR 0023).
+        await services.changesInProgress?.watch()
         await lifecycle.start()
         lifecycle.tick()
         await retryRetirements()
@@ -527,11 +553,23 @@ public final class AppModel {
         syncNames()
     }
 
+    /// The plan a Change the plan interaction is about on this phone, for its
+    /// card's words.
+    public func changeBasis(for item: Interaction) -> Plan? {
+        InteractionWords.basis(of: item, among: lifecycle.interactions)
+    }
+
     /// A chained Pick a place that agreed on a place moves its parent's plan
     /// there (lane E's `ChainPlanner.parent(_:updatedBy:)`, P15-E 4.6).
+    /// The plan a Pick a place result moves, on every phone: lane E's
+    /// planner finds it, through the link's chain for this phone's own
+    /// link and through the hint for a friend's request, which has no
+    /// chain (P15-E request 6, review of #118), and applies the result only
+    /// over the plan's revision just before the one it names. The
+    /// coordinator also takes a plan only as its next revision.
     private func updateParent(of link: Interaction) {
-        guard let me = localPeer, let parentID = link.chain?.parent, let parent = lifecycle.interaction(parentID),
-              let updated = ChainPlanner(registry: services.registry, me: me).parent(parent, updatedBy: link)
+        guard let me = localPeer,
+              let updated = ChainPlanner(registry: services.registry, me: me).parent(updatedBy: link, in: lifecycle.interactions)
         else { return }
         lifecycle.update(updated)
     }

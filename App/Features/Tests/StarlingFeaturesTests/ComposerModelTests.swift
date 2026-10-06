@@ -443,6 +443,28 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(model.notice?.contains("can't start now") == true)
     }
 
+    /// ADR 0023: a place for a plan another change holds says why Start
+    /// is off, and starts nothing.
+    @Test func aPlaceForAPlanAnotherChangeHoldsWaits() async throws {
+        let h = try await ComposerHarness()
+        try h.give(h.maya.id, [SampleSkills.downFor.ref, SampleSkills.pickAPlace.ref])
+        let slot = try TimeSlot(start: h.clock.now.addingTimeInterval(3600), end: h.clock.now.addingTimeInterval(7200))
+        let parent = try h.plannedParent(SampleSkills.downFor, attendees: [h.me, h.maya.id], activity: try Keyword("boba"), time: slot)
+        let pick = ScriptedSkillService(descriptor: SampleSkills.pickAPlace)
+        let lifecycle = LifecycleCoordinator(registry: SampleSkills.registry, services: [h.down, pick], store: InMemoryInteractionStore([parent]), now: h.clock.closure)
+        await lifecycle.start()
+        let model = ComposerModel(skillModel: nil, lifecycle: lifecycle, settings: h.settings, cards: h.cards, permissions: h.permissions,
+                                  friends: { [h] in h.friends }, savedRules: { nil }, localPeer: h.me, now: h.clock.closure)
+        var held = true
+        model.planIsChanging = { $0 == parent.id && held }
+        model.continuePlan(parent, with: try #require(h.suggestion(after: parent, .pickAPlace)))
+        #expect(model.blocker == PlanChangesInProgress.note)
+        #expect(await model.send() == nil)
+        #expect(await pick.started.isEmpty)
+        held = false
+        #expect(model.blocker == nil)
+    }
+
     // MARK: Review of PR #54, finding 5
 
     /// A parser that finishes after the owner narrowed the audience never

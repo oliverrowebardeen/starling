@@ -168,6 +168,9 @@ public final class ComposerModel {
     /// Runs before every send: the first time, the deliberate Local Network
     /// prompt and the radios (ADR 0013).
     public var beforeFirstRequest: @MainActor () async -> Void
+    /// Whether a change holds the plan an interaction holds (ADR 0023).
+    /// `AppModel` sets it.
+    public var planIsChanging: @MainActor (InteractionID) -> Bool = { _ in false }
     let now: @Sendable () -> Date
     let timeZone: TimeZone
 
@@ -214,8 +217,10 @@ public final class ComposerModel {
         return registry.availability(of: skill, in: settings.skillSettings)
     }
 
+    /// Skills New can start: not ones that only run on a plan (Change the
+    /// plan starts from the plan's detail; Swap photos after it ends).
     public var tiles: [Tile] {
-        registry.inBuild(settings.flags).map { skill in
+        registry.inBuild(settings.flags).filter { $0.chainTrigger == .atConfirm }.map { skill in
             let availability = availability(of: skill.id)
             return Tile(skill: skill, canStart: availability.isAvailable, subtitle: Self.subtitle(skill, availability))
         }
@@ -302,7 +307,8 @@ public final class ComposerModel {
             await fill(from: words, for: descriptor, model: skillModel, draft: draft, key: key)
             return
         }
-        let available = registry.available(in: settings.skillSettings).filter { lifecycle.skillsInBuild.contains($0.id) }
+        let available = registry.available(in: settings.skillSettings)
+            .filter { lifecycle.skillsInBuild.contains($0.id) && $0.chainTrigger == .atConfirm }
         let routed: SkillID?
         do {
             routed = try await skillModel.route(words, among: available).value
@@ -634,6 +640,10 @@ public final class ComposerModel {
         }
         let missing = descriptor.intent.requiredIssues.subtracting(constraints.constraints.keys)
         if let issue = missing.sorted().first { return Self.missingSlotNote(issue, descriptor) }
+        // One change per plan at a time (ADR 0023).
+        if let chain, PlanChangesInProgress.skills.contains(descriptor.id), planIsChanging(chain.suggestion.parent) {
+            return PlanChangesInProgress.note
+        }
         if descriptor.id == .pickAPlace, let places {
             if places.chosen.isEmpty { return "Find a few places, or type one." }
             if places.askable(limits: requestLimits).isEmpty { return "None of these fit your limits." }
@@ -811,6 +821,7 @@ public final class ComposerModel {
         case .blockedByPrivacy(let topics): blockedReason(skill, topics)
         case .failed: "Starling couldn't start this. Try again."
         case .notSaved: "Starling couldn't save this on your phone, so nothing was sent. Try again."
+        case .planChangeInProgress: PlanChangesInProgress.note
         }
     }
 

@@ -1,5 +1,6 @@
 import DownFor
 import FindATime
+import StarlingChangePlan
 import Foundation
 import Network
 import PickAPlace
@@ -37,6 +38,7 @@ extension AppServices {
         // One change to a plan at a time (ADR 0023): every skill that
         // changes a plan shares these.
         let holds = PlanChangeHolds()
+        let plans = StandingPlans()
         return AppServices(
             agent: agent,
             skillModel: agent,
@@ -45,8 +47,9 @@ extension AppServices {
                 [
                     LiveServices.findATime(me: identity.peerID, outbox: outbox, friends: links.friends, ledger: ledger, choices: choices),
                     LiveServices.pickAPlace(me: identity.peerID, outbox: outbox, friends: links.friends, staged: places.staged, rules: rules, ledger: ledger,
-                                            interactions: interactions, holds: holds),
-                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, interactions: interactions),
+                                            plans: plans, holds: holds),
+                    LiveServices.swapPhotos(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans),
+                    LiveServices.changePlan(me: identity.peerID, outbox: outbox, ledger: ledger, plans: plans, holds: holds),
                 ]
             },
             interactions: interactions,
@@ -65,6 +68,8 @@ extension AppServices {
             placeFinder: places.finder,
             stagedPlaces: places.staged,
             choices: choices,
+            plans: plans,
+            changesInProgress: PlanChangesInProgress(holds),
             transport: links.transport,
             afterStart: links.startPairing,
             agentLocality: .onDevice,
@@ -89,6 +94,7 @@ enum LiveServices {
         FindATimeSkill.descriptor,
         PickAPlaceSkill.descriptor,
         SwapPhotos.descriptor,
+        ChangePlan.descriptor,
     ])
 
     /// The app's one EventKit store: the permission sheet asks through it,
@@ -164,10 +170,13 @@ enum LiveServices {
 
     /// Lane D's service over the app's one Outbox and the same conversation
     /// ledger the Outbox enforces (P15-D request 3). A friend checks a
-    /// change of a plan's place against the plan saved on this phone
-    /// (ADR 0233, P15-D request 15).
+    /// change of a plan's place against this phone's plan (ADR 0233, P15-D
+    /// request 15), read from the coordinator's interactions in memory:
+    /// the interaction store is written asynchronously and can lag them,
+    /// or stay stale after a failed save, so a yes to change B could be
+    /// checked against the plan from before change A (review of #118).
     static func pickAPlace(me: PeerID, outbox: Outbox, friends: any PairedPeerStore, staged: StagedCandidates,
-                           rules: any RulesStore, ledger: any ConversationLedger, interactions: any InteractionStore,
+                           rules: any RulesStore, ledger: any ConversationLedger, plans: StandingPlans,
                            holds: any PlanChangeHolding) -> any SkillService {
         PickAPlaceService(
             localPeer: me, outbox: outbox, pairedPeers: friends, candidates: staged, maps: MapKitPlaceSearch(),
@@ -175,7 +184,8 @@ enum LiveServices {
             // a friend asks; the organizer's own come with its request.
             ownerLimits: { (try? await rules.load())?.rules.constraints ?? .empty },
             ledger: UserDefaultsPickAPlaceLedger(), conversations: ledger,
-            plans: PickAPlaceService.plans(in: interactions), holds: holds
+            plans: { conversation in await plans.plan(origin: conversation) },
+            holds: holds
         )
     }
 
@@ -183,9 +193,24 @@ enum LiveServices {
     /// conversation ledger it enforces (P15-E request 4.8). An offer is
     /// checked against the plan saved on this phone. Runs only while its
     /// flag is on (AppModel drops a flagged-off service).
-    static func swapPhotos(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, interactions: any InteractionStore) -> any SkillService {
+    static func swapPhotos(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, plans: StandingPlans) -> any SkillService {
+        // By the plan's origin, so a friend added later is part of it too
+        // (P15-E request 14).
         SwapPhotosService(outbox: outbox, ledger: ledger, me: me, planLookup: { conversation in
-            try? await interactions.interaction(conversation: conversation)?.plan
+            await plans.plan(origin: conversation)
+        })
+    }
+
+    /// Lane E's Change the plan over the app's one Outbox and the ledger it
+    /// enforces, finding each plan by its origin (P15-E request 10), and
+    /// sharing the holds with Pick a place (ADR 0023). Its journal of
+    /// confirmations and leave notices still owed an acknowledgment is on
+    /// disk, so a restart keeps resending them.
+    static func changePlan(me: PeerID, outbox: Outbox, ledger: any ConversationLedger, plans: StandingPlans,
+                           holds: any PlanChangeHolding) -> any SkillService {
+        let journal: any ChangePlanJournal = (try? FileChangePlanJournal.standard()) ?? UnavailableChangePlanJournal()
+        return ChangePlanService(outbox: outbox, ledger: ledger, journal: journal, holds: holds, me: me, planLookup: { conversation in
+            await plans.standing(origin: conversation)
         })
     }
 

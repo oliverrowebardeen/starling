@@ -11,10 +11,15 @@ public struct HandOffRecord: Hashable, Sendable, Codable {
 
     public let kind: Kind
     public let at: Timestamp
+    /// The plan's revision when the hand-off was made, so a later change
+    /// can offer it again ("Update in Calendar", ADR 0022). Nil in records
+    /// from before plans could change, which count as revision 0.
+    public let revision: UInt32?
 
-    public init(kind: Kind, at: Timestamp) {
+    public init(kind: Kind, at: Timestamp, revision: UInt32? = nil) {
         self.kind = kind
         self.at = at
+        self.revision = revision
     }
 }
 
@@ -88,8 +93,8 @@ public final class PlanNotes {
         save()
     }
 
-    public func record(_ kind: HandOffRecord.Kind, for plan: InteractionID) {
-        handOffs[plan, default: []].append(HandOffRecord(kind: kind, at: Timestamp(now())))
+    public func record(_ kind: HandOffRecord.Kind, for plan: InteractionID, revision: UInt32? = nil) {
+        handOffs[plan, default: []].append(HandOffRecord(kind: kind, at: Timestamp(now()), revision: revision))
         save()
     }
 
@@ -165,6 +170,9 @@ public struct PlanDetail: Hashable, Sendable {
     /// v2.1, `EgressRecord.itemsUnknown`).
     public let auditIsComplete: Bool
     public let calendar: CalendarDraft?
+    /// The plan changed after it was added to the calendar: offer "Update
+    /// in Calendar" (ADR 0022 decision 8).
+    public let calendarIsOutdated: Bool
     public let message: MessageDraft
     public let place: PlaceChoice?
 
@@ -184,11 +192,12 @@ public struct PlanDetail: Hashable, Sendable {
         self.root = root
         self.chain = chain.isEmpty ? [root] : chain
 
-        var plan = root.plan
-        // A chained Pick a place that reached a plan moves the plan there.
-        for link in self.chain where link.id != root.id && (link.state == .planned || link.state == .done) {
-            for case .placeChoice(let choice) in link.artifacts { plan = plan?.updating(place: choice) }
-        }
+        // The plan as stored. A place result reaches it only through the
+        // coordinator, with lane E's ChainPlanner.parent(_:updatedBy:),
+        // which applies it at the parent's next revision and ignores
+        // anything older; nothing here writes a place into it (Codex review
+        // of PR #118).
+        let plan = root.plan
         self.plan = plan
         place = plan?.place
 
@@ -207,6 +216,8 @@ public struct PlanDetail: Hashable, Sendable {
         auditIsComplete = !auditUnknown && whatLeft.unconfirmed.isEmpty
         (shared, kept) = Self.audit(whatLeft, complete: auditIsComplete, words: words)
 
+        let added = notes.handOffs[root.id]?.last { $0.kind == .calendar }
+        calendarIsOutdated = added.map { ($0.revision ?? 0) < (plan?.revision ?? 0) } ?? false
         if let plan, let time = plan.time {
             calendar = CalendarDraft(title: title, start: time.start, end: time.end, location: plan.place?.name.rawValue)
         } else {
@@ -226,8 +237,16 @@ public struct PlanDetail: Hashable, Sendable {
 
     @MainActor
     static func timeline(_ chain: [Interaction], entries: [PlanTimeline.Entry], words: InteractionWords, notes: PlanNotes) -> [TimelineEntry] {
+        let basis = chain.first?.plan
         var rows: [TimelineEntry] = chain.compactMap { link in
             guard let summary = words.summary(link) else { return nil }
+            // Change the plan: what changed, who left, or "The plan stays as
+            // it was"; a friend's suggestion that closed is left off.
+            if link.skill.id == .changePlan, link.id != chain.first?.id {
+                guard let text = words.changeTimeline(link, basis: basis) else { return nil }
+                return TimelineEntry(id: link.id.description, tag: summary.skill.wording.name, text: text, at: link.updatedAt.date,
+                                     isDone: link.state.isFinal || link.state == .planned)
+            }
             let entry = entries.first { $0.id == link.id }
             // An after-plan-ends link the owner opted into, still waiting.
             if let startsAfter = entry?.startsAfter {
