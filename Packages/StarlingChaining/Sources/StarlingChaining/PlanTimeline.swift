@@ -50,7 +50,9 @@ public struct PlanTimeline: Hashable, Sendable {
         func parent(of item: Interaction) -> Interaction? {
             if let id = item.chain?.parent { return interactions.first { $0.id == id } }
             // Only a friend's request without an owner link groups by a hint.
-            if item.role == .invitee, let hint = item.friendChainHint { return interactions.first { $0.conversation == hint } }
+            if item.role == .invitee, let hint = item.friendChainHint {
+                return interactions.first { $0.id != item.id && $0.plan != nil && $0.planConversation == hint }
+            }
             return nil
         }
 

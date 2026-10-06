@@ -140,11 +140,37 @@ import Testing
         #expect(throws: ChainError.notScheduled(started.id)) { try planner.optOut(started, tap: tap) }
     }
 
+    /// The plan a place link agrees for `parent`: the next revision, as
+    /// Pick a place puts it on every phone's proposal (#118).
+    static func agreedPlan(_ parent: Interaction, place: PlaceChoice = Fixtures.place("Boba Guys on Franklin"), roster: [PeerID]? = nil) throws -> Plan {
+        let plan = try #require(parent.plan)
+        return try plan.updating(attendees: roster.map { try Attendees($0) } ?? plan.attendees, place: .some(place))
+    }
+
+    /// This phone's place link for `parent`, planned, its artifacts not yet in.
+    static func ownLink(after parent: Interaction, roster: [PeerID]? = nil) throws -> Interaction {
+        try KeepItGoingTests.link(after: parent, reaching: KeepItGoingTests.agreed(plan: agreedPlan(parent, roster: roster)))
+    }
+
+    /// A friend's place request on Maya's phone, grouped under `parent`.
+    static func friendsLink(under parent: Interaction, roster: [PeerID]) throws -> Interaction {
+        var link = Interaction(skill: SampleSkills.pickAPlace.ref, role: .invitee, participants: [Fixtures.jake], createdAt: Fixtures.at(minutes: 9))
+        try link.setFriendChainHint(parent.planConversation)
+        for event in [InteractionEvent.proposalReady(SkillProposal(revision: 1, participants: roster,
+                                                                   terms: try Terms([.place: .places([Fixtures.place()])]),
+                                                                   plan: try agreedPlan(parent, place: Fixtures.place()))),
+                      .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try link.apply(event, at: Fixtures.at(minutes: 10))
+        }
+        return link
+    }
+
     @Test func aFinishedPickAPlaceLinkMovesThePlan() throws {
         let plan = try Fixtures.plannedDownFor()
-        var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        var link = try Self.ownLink(after: plan)
         #expect(planner.parent(plan, updatedBy: link) == nil)
         link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        link.record(.attendees(try #require(plan.plan).attendees))
         let updated = try #require(planner.parent(plan, updatedBy: link))
         #expect(updated.plan?.place == Fixtures.place("Boba Guys on Franklin"))
         #expect(updated.plan?.id == plan.plan?.id)
@@ -154,36 +180,148 @@ import Testing
         #expect(planner.parent(other, updatedBy: link) == nil)
     }
 
-    @Test func theRosterAPlaceLinkAgreedCarriesIntoThePlanAndLaterChains() throws {
-        // Issue #66: Jake passed on the place; Maya and you agreed.
+    @Test func thisPhonesPlaceLinkNarrowsThePlanToThoseWhoAccepted() throws {
+        // Issue #66: this phone organized the place; Jake passed, Maya and
+        // you accepted. The plan takes the place and its people, once.
         let plan = try Fixtures.plannedDownFor()
-        var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
+        var link = try Self.ownLink(after: plan, roster: [Fixtures.me, Fixtures.maya])
         link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
-        link.record(.attendees(try Attendees([Fixtures.me, Fixtures.maya])))
+        link.record(.attendees(try Attendees([Fixtures.maya, Fixtures.me])))
         let updated = try #require(planner.parent(plan, updatedBy: link))
         #expect(updated.plan?.attendees.peers == [Fixtures.me, Fixtures.maya])
         #expect(updated.plan?.place == Fixtures.place("Boba Guys on Franklin"))
-        #expect(updated.plan?.id == plan.plan?.id)
+        #expect(updated.plan?.revision == 1)
+        #expect(planner.parent(updated, updatedBy: link) == nil)
         // The next chain goes only to Maya.
-        let swapOn = SkillSettings(flags: Fixtures.flagsWithSwapPhotos)
-        let row = try #require(planner.suggestions(after: updated.id, in: [updated, link], settings: swapOn, cards: Fixtures.cards()).first { $0.id == .swapPhotos })
+        let row = try #require(planner.suggestions(after: updated.id, in: [updated, link], settings: SkillSettings(flags: Fixtures.flagsWithSwapPhotos),
+                                                   cards: Fixtures.cards()).first { $0.id == .swapPhotos })
         #expect(row.participants == [Fixtures.maya])
-    }
-
-    @Test func aLinkCanOnlyNarrowTheRoster() throws {
-        let plan = try Fixtures.plannedDownFor()
-        // A roster with someone the plan never had, or without this phone, is ignored.
+        // A roster with someone the plan never had, or without this phone, changes nothing.
         for roster in [[Fixtures.me, Fixtures.maya, Fixtures.stranger], [Fixtures.maya, Fixtures.jake]] {
-            var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
             link.record(.attendees(try Attendees(roster)))
             #expect(planner.parent(plan, updatedBy: link) == nil)
-            link.record(.placeChoice(Fixtures.place()))
-            #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees == plan.plan?.attendees)
         }
-        // A narrower roster alone, with no new place, still updates the plan.
-        var link = try KeepItGoingTests.link(after: plan, reaching: KeepItGoingTests.agreed())
-        link.record(.attendees(try Attendees([Fixtures.me, Fixtures.jake])))
-        #expect(planner.parent(plan, updatedBy: link)?.plan?.attendees.peers == [Fixtures.me, Fixtures.jake])
-        #expect(planner.parent(plan, updatedBy: link)?.plan?.place == nil)
+    }
+
+    @Test func aFriendsPlaceLinkNeedsTheWholePlanAndRemovesNobody() throws {
+        // Review of PR #111, finding D: Jake organized a place, Maya accepted,
+        // and this phone's owner did not. A friend's link, grouped under the
+        // plan, is not authority to narrow it.
+        let plan = try Fixtures.plannedDownFor(role: .invitee)
+        var fromJake = try Self.friendsLink(under: plan, roster: [Fixtures.jake, Fixtures.maya])
+        fromJake.record(.placeChoice(Fixtures.place()))
+        fromJake.record(.attendees(try Attendees([Fixtures.jake, Fixtures.maya])))
+        #expect(planner.parent(plan, updatedBy: fromJake) == nil)
+    }
+
+    @Test func aPlaceEveryoneAgreedAppliesOnceInAnyRosterOrder() throws {
+        let plan = try Fixtures.plannedDownFor()
+        var link = try Self.ownLink(after: plan)
+        link.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        // The organizer first: the same people, in another order.
+        link.record(.attendees(try Attendees([Fixtures.maya, Fixtures.me, Fixtures.jake])))
+        let updated = try #require(planner.parent(plan, updatedBy: link))
+        #expect(updated.plan?.place == Fixtures.place("Boba Guys on Franklin"))
+        #expect(updated.plan?.attendees == plan.plan?.attendees)
+        #expect(updated.plan?.revision == 1)
+        // Once: not again, whatever arrives later.
+        #expect(planner.parent(updated, updatedBy: link) == nil)
+    }
+
+    /// Review of PR #111, finding 5, and the review of #118: a place result
+    /// applies only over the revision just before the one it names.
+    @Test func aPlaceResultAppliesOnlyAtThePlansNextRevision() throws {
+        let plan = try Fixtures.plannedDownFor()
+        let moved = try Self.movedTo(revision: 1, plan)
+        // Agreed over revision 0, arriving once the plan is at 1: ignored, so
+        // revision 2 is never reused for it.
+        var stale = try Self.ownLink(after: plan)
+        stale.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        stale.record(.attendees(try #require(plan.plan).attendees))
+        #expect(planner.parent(moved, updatedBy: stale) == nil)
+        // Agreed over revision 1: applies, keeping the revision it names.
+        var fresh = try Self.ownLink(after: moved)
+        fresh.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        fresh.record(.attendees(try #require(moved.plan).attendees))
+        let updated = try #require(planner.parent(moved, updatedBy: fresh))
+        #expect(updated.plan?.revision == 2)
+        // A result naming a revision past the next is not applied either.
+        #expect(planner.parent(plan, updatedBy: fresh) == nil)
+    }
+
+    /// Issue #119 (PC37): a friend was added after a place step was asked;
+    /// the step's result arrives late and cannot take them out.
+    @Test func aStalePlaceResultCannotRemoveSomeoneAddedSince() throws {
+        let plan = try Fixtures.plannedDownFor()
+        var stale = try Self.ownLink(after: plan, roster: [Fixtures.me, Fixtures.maya])
+        stale.record(.placeChoice(Fixtures.place("Boba Guys on Franklin")))
+        stale.record(.attendees(try Attendees([Fixtures.me, Fixtures.maya])))
+        var added = plan
+        added.record(.plan(try #require(plan.plan).updating(attendees: Attendees([Fixtures.me, Fixtures.maya, Fixtures.jake, Fixtures.stranger]))))
+        #expect(planner.parent(added, updatedBy: stale) == nil)
+    }
+
+    /// Review of PR #111, finding 6, and issue #119 (PC38): the coordinator
+    /// applies each event as it comes and asks for the parent after each.
+    /// Place and roster arrive one at a time, in either order, and a
+    /// shortened roster may follow; the plan moves exactly once.
+    @Test(arguments: [false, true])
+    func aPlaceResultDeliveredOneArtifactAtATimeMovesThePlanOnce(placeFirst: Bool) throws {
+        var parent = try Fixtures.plannedDownFor()
+        let original = try #require(parent.plan)
+        let place = Fixtures.place("Boba Guys on Franklin")
+        let roster = try Attendees([Fixtures.me, Fixtures.maya])
+        var link = Interaction(
+            skill: SampleSkills.pickAPlace.ref, role: .initiator, participants: [Fixtures.maya, Fixtures.jake], createdAt: Fixtures.at(minutes: 10),
+            chain: ChainLink(parent: parent.id, parentConversation: parent.conversation, consumed: [.plan], trigger: .atConfirm,
+                             optedInAt: Fixtures.at(minutes: 10))
+        )
+        let produced: [Artifact] = placeFirst ? [.placeChoice(place), .attendees(roster)] : [.attendees(roster), .placeChoice(place)]
+        let events: [SkillEvent] = try KeepItGoingTests.agreed(plan: Self.agreedPlan(parent, place: place, roster: roster.peers))
+            .map { SkillEvent.lifecycle(link.id, $0) }
+            + produced.map { SkillEvent.produced(link.id, $0) }
+            + [.produced(link.id, .attendees(try Attendees([Fixtures.me, Fixtures.maya])))]
+        var revisions: [UInt32] = []
+        for (minute, event) in events.enumerated() {
+            switch event {
+            case .lifecycle(_, let lifecycle): try link.apply(lifecycle, at: Fixtures.at(minutes: 11 + minute))
+            case .produced(_, let artifact): link.record(artifact)
+            case .incoming: break
+            }
+            if let updated = planner.parent(parent, updatedBy: link) {
+                parent = updated
+                revisions.append(try #require(updated.plan).revision)
+            }
+        }
+        #expect(revisions == [1])
+        #expect(parent.plan?.place == place)
+        #expect(parent.plan?.attendees == roster)
+        #expect(parent.plan?.id == original.id)
+    }
+
+    @Test func aFriendsPlaceRequestUpdatesThePlanOnThisPhoneToo() throws {
+        // On Maya's phone: Jake's agent asked to pick a place for the plan.
+        let plan = try Fixtures.plannedDownFor(role: .invitee)
+        var fromJake = try Self.friendsLink(under: plan, roster: [Fixtures.me, Fixtures.maya, Fixtures.jake])
+        fromJake.record(.placeChoice(Fixtures.place()))
+        // A friend's request changes nothing until it names its roster, and
+        // then only if that is the whole plan (review of PR #111, finding D).
+        #expect(planner.parent(plan, updatedBy: fromJake) == nil)
+        fromJake.record(.attendees(try Attendees([Fixtures.jake, Fixtures.me, Fixtures.maya])))
+        let updated = try #require(planner.parent(plan, updatedBy: fromJake))
+        #expect(updated.plan?.place == Fixtures.place())
+        #expect(updated.plan?.revision == 1)
+        // A friend's request for another plan does not.
+        let other = try Fixtures.plannedDownFor(role: .invitee)
+        #expect(planner.parent(other, updatedBy: fromJake) == nil)
+    }
+
+    /// `parent` with its plan moved to `revision` by another change.
+    static func movedTo(revision: UInt32, _ parent: Interaction) throws -> Interaction {
+        var moved = parent
+        var plan = try #require(parent.plan)
+        while plan.revision < revision { plan = try plan.updating(activity: .some(try Keyword("dinner"))) }
+        moved.record(.plan(plan))
+        return moved
     }
 }

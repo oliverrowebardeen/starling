@@ -16,7 +16,7 @@ public enum IncomingChain {
     /// never in, or to a conversation that never became a plan.
     public static func timelineParent(chainedFrom: ConversationID?, sender: PeerID, interactions: [Interaction]) -> ConversationID? {
         guard let chainedFrom,
-              let parent = interactions.first(where: { $0.conversation == chainedFrom }),
+              let parent = interactions.first(where: { $0.plan != nil && $0.planConversation == chainedFrom }),
               parent.state == .planned || parent.state == .done,
               let plan = parent.plan
         else { return nil }

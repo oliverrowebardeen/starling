@@ -18,6 +18,16 @@ enum Fixtures {
     /// Tonight, 8:30 to 10:30, as in the plan detail mockup.
     static let tonight = try! TimeSlot(start: date(minutes: 90), end: date(minutes: 210))
 
+    /// A stand-in for the Change the plan skill's descriptor (the real one
+    /// is in Packages/Skills/ChangePlan).
+    static let changePlan = try! SkillDescriptor(
+        ref: SkillRef(.changePlan, SkillVersion(1)), wording: SampleSkills.pickAPlace.wording, buildingBlock: .negotiationWithPrivateLimits,
+        topicsUsed: [.time, .activity, .people], topicsRequired: [], accepts: [.plan], produces: [.plan],
+        intent: try! IntentSchema(slots: [IntentSlot(.time, required: false, hint: "the new time")], asksForAudience: false, asksForExpiry: false),
+        chainTrigger: .whilePlanned
+    )
+    static let withChangePlan = SkillSettings(flags: SkillFlags(SkillFlags.phase1_5.enabled.union([.changePlan])))
+
     static let flagsWithSwapPhotos = SkillFlags(SkillFlags.phase1_5.enabled.union([.swapPhotos]))
 
     static func card(_ skills: [SkillDescriptor], model: ModelLocality = .onDevice) -> AgentCard {

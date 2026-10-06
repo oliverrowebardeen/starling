@@ -427,12 +427,16 @@ import Testing
         )
         let id = try await app.lifecycle.start(request, chain: link, settings: app.settings.skillSettings)
         let place = try PlaceChoice(name: PlaceName("Boba Guys"))
-        let offer = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.place: .places([place])]))
+        // As the real Pick a place sends since #118: the agreed plan, naming
+        // its revision, then the place and the roster (ADR 0243).
+        let agreed = try #require(parent.plan).updating(place: .some(place))
+        let offer = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.place: .places([place])]), plan: agreed)
         await pick.emit(.lifecycle(id, .proposalReady(offer)))
         await eventually { app.lifecycle.interaction(id)?.state == .proposed }
         await app.lifecycle.answer(id, with: .accept(proposal: 1))
         await pick.emit(.lifecycle(id, .everyoneConfirmed(revision: 1)))
         await pick.emit(.produced(id, .placeChoice(place)))
+        await pick.emit(.produced(id, .attendees(try Attendees([me, maya.id]))))
         await eventually { app.lifecycle.interaction(parent.id)?.plan?.place == place }
         #expect(app.lifecycle.interaction(parent.id)?.plan?.place == place)
         #expect(app.lifecycle.interaction(parent.id)?.state == .planned)

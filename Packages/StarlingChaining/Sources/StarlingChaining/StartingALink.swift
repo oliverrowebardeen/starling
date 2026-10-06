@@ -21,6 +21,10 @@ public enum ChainError: Error, Hashable, Sendable {
     case alreadyScheduled(InteractionID)
     /// The interaction is not an after-plan-ends link waiting to start.
     case notScheduled(InteractionID)
+    /// The friend a change would add is already in the plan, is this phone,
+    /// is not a friend whose card runs the skill, or the roster changes more
+    /// than one person (ADR 0022 decision 5).
+    case cannotAdd
 }
 
 /// A link ready to start: the interaction to save first, then the request
@@ -81,30 +85,85 @@ extension ChainPlanner {
         return waiting.id
     }
 
-    /// The parent with its plan updated by what a finished link agreed:
-    /// the place ("Somewhere else?") and the people who agreed to it. A
-    /// friend who passed on the link drops out of the plan, so no later chain
-    /// reaches them (ADR 0020 decision 9.3). A link can only narrow the
-    /// roster: attendees outside the plan, or a roster without this phone,
-    /// are ignored. Nil if the link is not a planned link of this parent or
-    /// agreed nothing new. The app saves the result.
+    /// The parent with its plan updated by what a finished place link
+    /// agreed (ADR 0022, ADR 0243).
+    ///
+    /// - Bound to a revision (review of PR #111, findings 5 and 6; issue
+    ///   #119): the link's agreed plan (`proposal?.plan`) names the revision
+    ///   it makes, and it applies only if that is the parent's next revision,
+    ///   which the updated plan keeps. A result over an older revision, or
+    ///   one already applied, changes nothing; it is never narrowed onto the
+    ///   plan as it stands now.
+    /// - Whole (finding 6): it applies only once both final artifacts, the
+    ///   place and the roster, are in, place and roster together, in
+    ///   whichever order they arrived.
+    /// - This phone's own link (it organized the step and saw who accepted):
+    ///   the roster narrows to those who accepted (issue #66). Nobody is
+    ///   removed by someone else: each person left out was asked and did
+    ///   not accept. A roster with anyone outside the plan, or without this
+    ///   phone, is ignored.
+    /// - A friend's link, grouped under the plan by its hint: grouping is not
+    ///   authority (finding D). It applies only if its roster is the plan's
+    ///   whole current roster, and never removes anyone.
+    ///
+    /// Nil if the link is not a planned link of this parent, or its result
+    /// does not apply. The app saves the result.
     public func parent(_ parent: Interaction, updatedBy link: Interaction) -> Interaction? {
-        guard link.chain?.parent == parent.id, link.state == .planned || link.state == .done,
-              let plan = parent.plan
+        guard Self.isLink(link, of: parent), link.state == .planned || link.state == .done,
+              let plan = parent.plan, let agreed = link.proposal?.plan, agreed.revision == plan.revision &+ 1,
+              let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).last,
+              let roster = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).last
         else { return nil }
-        let place = link.artifacts.lazy.compactMap({ if case .placeChoice(let place) = $0 { place } else { nil } }).first
-        var agreed: Attendees?
-        if let attendees = link.artifacts.lazy.compactMap({ if case .attendees(let attendees) = $0 { attendees } else { nil } }).first,
-           attendees.peers.contains(me), Set(attendees.peers).isSubset(of: plan.attendees.peers) {
-            agreed = attendees
+        let agreedPeople = Set(roster.peers)
+        let attendees: Attendees
+        if link.chain?.parent == parent.id {
+            guard agreedPeople.contains(me), agreedPeople.isSubset(of: plan.attendees.peers),
+                  let narrowed = try? Attendees(plan.attendees.peers.filter(agreedPeople.contains))
+            else { return nil }
+            attendees = narrowed
+        } else {
+            guard agreedPeople == Set(plan.attendees.peers) else { return nil }
+            attendees = plan.attendees
         }
-        guard place != nil || (agreed != nil && agreed != plan.attendees) else { return nil }
-        guard let updatedPlan = try? Plan(id: plan.id, origin: plan.origin, attendees: agreed ?? plan.attendees,
-                                          activity: plan.activity, time: plan.time, place: place ?? plan.place)
+        guard let updatedPlan = try? plan.updating(attendees: attendees, place: .some(place)), updatedPlan.revision == agreed.revision
         else { return nil }
         var updated = parent
         updated.record(.plan(updatedPlan))
         return updated
+    }
+
+    /// The stored interaction that holds the plan a link's result updates,
+    /// updated by it: for this phone's own link, its chain's parent; for a
+    /// friend's request grouped under a plan, the planned interaction that
+    /// holds that plan here, matched through the request's
+    /// `friendChainHint` (review of PR #118: a friend's phone must store the
+    /// agreed place too, or its plan falls a revision behind). Nil when
+    /// there is none or the result does not apply (`parent(_:updatedBy:)`).
+    /// The coordinator calls it after applying any event to a link and
+    /// saves the result.
+    public func parent(updatedBy link: Interaction, in interactions: [Interaction]) -> Interaction? {
+        let holder: Interaction?
+        if let parentID = link.chain?.parent {
+            holder = interactions.first { $0.id == parentID }
+        } else if link.role == .invitee, let hint = link.friendChainHint {
+            holder = interactions
+                .filter { $0.id != link.id && ($0.state == .planned || $0.state == .done) && $0.plan?.origin == hint }
+                .max { ($0.plan?.revision ?? 0) < ($1.plan?.revision ?? 0) }
+        } else {
+            holder = nil
+        }
+        guard let holder else { return nil }
+        return parent(holder, updatedBy: link)
+    }
+
+    /// Whether `link` continues `parent`'s plan: an owner link, or a friend's
+    /// request the coordinator grouped under the plan by its hint. Both
+    /// update the plan on this phone, so every phone keeps the same plan and
+    /// revision.
+    static func isLink(_ link: Interaction, of parent: Interaction) -> Bool {
+        if link.chain?.parent == parent.id { return true }
+        guard link.role == .invitee, link.chain == nil, let hint = link.friendChainHint else { return false }
+        return hint == parent.planConversation
     }
 
     // MARK: - Helpers

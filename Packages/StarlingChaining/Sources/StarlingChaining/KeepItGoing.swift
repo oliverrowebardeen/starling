@@ -124,7 +124,7 @@ public struct ChainPlanner: Sendable {
             return ChainSuggestion(
                 skill: next,
                 parent: root.id,
-                parentConversation: root.conversation,
+                parentConversation: root.planConversation,
                 consumes: consumes,
                 participants: others,
                 adds: next.exposure.adding(over: granted),
