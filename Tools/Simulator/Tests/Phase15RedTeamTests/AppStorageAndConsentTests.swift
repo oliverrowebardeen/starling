@@ -148,14 +148,46 @@ struct AppStorageAndConsentTests {
         }
     }
 
+    @Test func shutdownDrainsAdmittedJournalWritesBeforeDiskFaultInjection() async throws {
+        let world = try await AppWorld.make(2)
+        defer { Task { await world.stop() } }
+        let (a, b) = (world.phones[0], world.phones[1])
+        let journal = try #require(a.journal), outbox = a.outbox
+        let conversation = ConversationID()
+        await journal.holdWrite(in: conversation)
+        let send = Task { try await outbox.send(.hello(#require(a.app.agentCard)), to: b.id, conversation: conversation) }
+        defer { send.cancel() }
+        try await appEventually("old graph has an admitted journal writer") { await journal.holding }
+        let damaged = Data("{broken".utf8)
+        // Negative control for the former ordering: damage a live journal
+        // while a cached writer is admitted but has not committed yet.
+        try damaged.write(to: a.file("journal.json").url)
+        var stopped = false
+        let shutdown = Task { await a.shutdownGraph(); stopped = true }
+        try await appEventually("journal rejects new old-graph operations") { await journal.closed }
+        #expect(!stopped)
+        await journal.release()
+        await shutdown.value
+        _ = await send.result
+        #expect(try Data(contentsOf: a.file("journal.json").url) != damaged)
+        // Inject the actual launch fault only after every admitted write.
+        try damaged.write(to: a.file("journal.json").url)
+        // A late callback into the old graph cannot load its cached entries
+        // and replace the fault after the drain barrier returns.
+        await #expect(throws: AppJournalLifetime.Closed.self) { try await journal.forget(MessageID()) }
+        #expect(try Data(contentsOf: a.file("journal.json").url) == damaged)
+        try await a.boot()
+        #expect(a.app.egressJournalUnreadable)
+    }
+
     @Test(arguments: ["ledger.json", "journal.json", "settings.json", "rules.json"])
     func unreadableInstalledStoresNeverBecomeFreshPermissiveState(name: String) async throws {
         let world = try await AppWorld.make(2)
         defer { Task { await world.stop() } }
         let (a, b) = (world.phones[0], world.phones[1])
-        await a.app.lifecycle.flush()
+        await a.shutdownGraph()
         try Data("{broken".utf8).write(to: a.file(name).url)
-        try await a.restart()
+        try await a.boot()
         let conversation = ConversationID()
         await #expect(throws: (any Error).self) {
             try await a.outbox.send(.query(Query(issue: .time, candidates: .slots(AppPhone.slots()))),

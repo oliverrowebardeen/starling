@@ -10,6 +10,37 @@ import Testing
 @MainActor
 @Suite("P15-F app audience and ingress", .serialized)
 struct AppAudienceAndIngressTests {
+    @Test func aVisibleSupportUpgradeMustNotEndAsUnsupported() async throws {
+        let world = try await AppWorld.make(2)
+        defer { Task { await world.stop() } }
+        let (a, b) = (world.phones[0], world.phones[1])
+        let old = try await b.outbox.send(.hello(b.agent.card), to: a.id, conversation: ConversationID())
+        try await appEventually("old support card authenticated") { await a.agent.received.contains(old) }
+        a.input?.yield(.message(old))
+        try await a.handledHello(old)
+        try await appEventually("old support card published") { a.app.cards.cards[b.id] == b.agent.card }
+        await a.delivery.holdHello(from: b.id)
+        let updated = try await b.outbox.send(.hello(#require(b.app.agentCard)), to: a.id, conversation: ConversationID())
+        try await appEventually("new support card authenticated") { await a.agent.received.contains(updated) }
+        a.input?.yield(.message(updated))
+        try await appEventually("hello held before Down for handles it") { await a.delivery.holding }
+        #expect(a.app.cards.cards[b.id] == b.agent.card)
+        try await a.compose(.downFor, with: [b.id])
+        #expect(a.app.composer.participants.isEmpty && a.app.composer.leftOutNote != nil)
+        #expect(await a.app.composer.send() == nil)
+        #expect(a.app.lifecycle.interactions.isEmpty)
+        #expect(await a.wire.records.allSatisfy { $0.envelope.skill == nil })
+        await a.delivery.release()
+        try await a.handledHello(updated)
+        try await appEventually("new support card published after skill delivery") { a.app.cards.cards[b.id] == b.app.agentCard }
+        #expect(a.app.composer.participants == [b.id])
+        let id = try #require(await a.app.composer.send())
+        let owner = try #require(a.app.lifecycle.interaction(id))
+        let card = try await b.incoming(owner.conversation)
+        _ = try await b.wait(.proposed, card.id)
+        #expect(a.app.lifecycle.interaction(id)?.state != .ended(.unsupported))
+    }
+
     @Test func parsedExclusionsAndSavedRulesResolveBeforeAnyWireSend() async throws {
         let world = try await AppWorld.make()
         defer { Task { await world.stop() } }
