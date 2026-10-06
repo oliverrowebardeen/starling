@@ -1,4 +1,5 @@
 import Foundation
+import StarlingChaining
 import StarlingChangePlan
 import StarlingCore
 import StarlingFakes
@@ -272,7 +273,7 @@ import Testing
     @Test func aSuggestionStartsAndThePlanSaysWhyItCantChangeMeanwhile() async throws {
         let (app, root) = try await makeApp(withCard: true)
         #expect(app.changeUnavailableReason(for: root) == nil)
-        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("dinner"), adding: nil), on: root) == nil)
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("dinner"), adding: nil), on: root, shown: app.changeOffer(for: root)) == nil)
         let request = try #require(await changeService?.started.first)
         #expect(request.chainedFrom == root.planConversation)
         #expect(request.participants == [maya.id])
@@ -280,15 +281,41 @@ import Testing
         let link = try #require(app.lifecycle.interaction(request.interaction))
         #expect(link.chain?.parent == root.id)
         #expect(app.changeUnavailableReason(for: root) == PlanChangesInProgress.note)
-        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("tacos"), adding: nil), on: root) == PlanChangesInProgress.note)
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("tacos"), adding: nil), on: root, shown: app.changeOffer(for: root)) == PlanChangesInProgress.note)
         #expect(await changeService?.started.count == 1)
+    }
+
+    /// The tap approves only what the sheet showed (ADR 0240). A row that
+    /// adds more by the time of the tap is refused, and nothing starts.
+    @Test func aSuggestionThatNowUsesMoreThanTheSheetShowedIsRefused() async throws {
+        let (app, root) = try await makeApp(withCard: true)
+        // When the sheet drew, a Find a time step on the plan had already
+        // allowed people, so the row added nothing.
+        var step = Interaction(skill: SampleSkills.findATime.ref, role: .initiator, participants: [maya.id], createdAt: Timestamp(Date()),
+                               chain: ChainLink(parent: root.id, parentConversation: root.planConversation, consumed: [.plan],
+                                                trigger: .atConfirm, optedInAt: Timestamp(Date())))
+        let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
+        for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
+            try step.apply(event, at: Timestamp(Date()))
+        }
+        let registry = try SkillRegistry(SampleSkills.registry.descriptors + [ChangePlan.descriptor])
+        let shown = try #require(ChainPlanner(registry: registry, me: me)
+            .changeOffer(for: root.id, in: [root, step], settings: app.settings.skillSettings, cards: app.cards.cards, now: Date()))
+        #expect(!shown.needsConsent)
+        // Now the row adds people, which the owner never saw.
+        #expect(app.changeOffer(for: root)?.needsConsent == true)
+
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("dinner"), adding: nil), on: root, shown: shown)
+            == AppModel.changeUsesMoreNote)
+        #expect(await changeService?.started.isEmpty == true)
+        #expect(!app.lifecycle.interactions.contains { $0.skill.id == .changePlan })
     }
 
     @Test func nothingChangesWithoutEveryonesStarlingAndTheSameActivityIsNoChange() async throws {
         let (app, root) = try await makeApp(withCard: false)
         #expect(app.changeUnavailableReason(for: root) == "Not everyone's Starling can change plans yet.")
         let (withCard, plan) = try await makeApp(withCard: true)
-        #expect(await withCard.suggestChange(.change(time: nil, activity: try Keyword("boba"), adding: nil), on: plan) == "That's how the plan is already.")
+        #expect(await withCard.suggestChange(.change(time: nil, activity: try Keyword("boba"), adding: nil), on: plan, shown: withCard.changeOffer(for: plan)) == "That's how the plan is already.")
     }
 
     @Test func leavingStartsWithNobodysAgreement() async throws {

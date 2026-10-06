@@ -87,7 +87,7 @@ import Testing
         #expect(await holds.hold(origin, for: ConversationID()))
         await eventually { app.services.changesInProgress?.isHeld(origin) == true }
         #expect(app.changeUnavailableReason(for: root) == PlanChangesInProgress.note)
-        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("dinner"), adding: nil), on: root) == PlanChangesInProgress.note)
+        #expect(await app.suggestChange(.change(time: nil, activity: try Keyword("dinner"), adding: nil), on: root, shown: app.changeOffer(for: root)) == PlanChangesInProgress.note)
         // Keep it going's Pick a place says the same before the tap.
         #expect(app.composer.planIsChanging(root.id))
         // Leaving needs no hold (ADR 0023 decision 4).

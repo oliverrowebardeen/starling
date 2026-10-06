@@ -51,9 +51,13 @@ extension AppModel {
 
     /// Suggests `change` for the plan `root` holds. Returns why it could not
     /// start, in plain words, or nil once it is on its way.
-    public func suggestChange(_ change: PlanChange, on root: Interaction) async -> String? {
+    ///
+    /// - Parameter shown: the row the sheet showed when the owner tapped.
+    ///   The tap approves only what that row adds, so if the row now adds
+    ///   more, lane E refuses it and nothing starts (ADR 0240).
+    public func suggestChange(_ change: PlanChange, on root: Interaction, shown row: ChainSuggestion?) async -> String? {
         if let reason = changeUnavailableReason(for: root) { return reason }
-        guard let me = localPeer, let plan = root.plan, let row = changeOffer(for: root) else { return "This plan can't change right now." }
+        guard let me = localPeer, let plan = root.plan, let row else { return "This plan can't change right now." }
         let now = Date()
         let tap = Timestamp(now)
         do {
@@ -69,12 +73,16 @@ extension AppModel {
             return "That's how the plan is already."
         } catch ChainError.cannotAdd {
             return "That friend can't be added to this plan."
+        } catch ChainError.consentRequired {
+            return Self.changeUsesMoreNote
         } catch let refusal as StartRefusal {
             return ComposerModel.refusalNote(refusal, ChangePlan.descriptor)
         } catch {
             return "This plan can't change right now. Open it again."
         }
     }
+
+    nonisolated public static let changeUsesMoreNote = "This suggestion now uses more than the sheet showed. Check it and tap again."
 
     /// Leaves the plan `root` holds. The others see that you left; nobody
     /// else is asked. Returns why it could not, or nil.

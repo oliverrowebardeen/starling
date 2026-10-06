@@ -461,6 +461,8 @@ struct SuggestChangeSheet: View {
     }
 
     var body: some View {
+        // The row this sheet shows; tapping Suggest it approves what it adds.
+        let shown = app.changeOffer(for: root)
         NavigationStack {
             Form {
                 Section("New time") {
@@ -490,7 +492,7 @@ struct SuggestChangeSheet: View {
                     }
                 }
                 Section {
-                    if let row = app.changeOffer(for: root), let note = app.changeAddsNote(row) {
+                    if let row = shown, let note = app.changeAddsNote(row) {
                         Text(note)
                     }
                     Text("Everyone in the plan has to say yes. If anyone passes, the plan stays as it was.")
@@ -503,13 +505,15 @@ struct SuggestChangeSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Suggest it") { Task { await suggest() } }.disabled(isSending)
+                    Button("Suggest it") { Task { await suggest(shown) } }.disabled(isSending)
                 }
             }
         }
     }
 
-    private func suggest() async {
+    /// - Parameter shown: the row this sheet showed, whose additions the
+    ///   tap approves.
+    private func suggest(_ shown: ChainSuggestion?) async {
         let words = activity.trimmingCharacters(in: .whitespacesAndNewlines)
         let time = changesTime ? try? TimeSlot(start: start, end: end) : nil
         if changesTime, time == nil { problem = "That time can't be used. Try a shorter one."; return }
@@ -521,7 +525,7 @@ struct SuggestChangeSheet: View {
         guard time != nil || keyword != nil || adding != nil else { problem = "Pick what to change."; return }
         isSending = true
         defer { isSending = false }
-        problem = await app.suggestChange(.change(time: time, activity: keyword, adding: adding), on: root)
+        problem = await app.suggestChange(.change(time: time, activity: keyword, adding: adding), on: root, shown: shown)
         if problem == nil { dismiss() }
     }
 }
