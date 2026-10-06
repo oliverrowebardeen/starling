@@ -2,8 +2,8 @@ import StarlingChaining
 import StarlingCore
 import StarlingFeatures
 
-/// Observes completion in the real services, after AppModel updates its UI
-/// card cache. Seeing a card on screen alone is not an ingress barrier.
+/// Observes hello completion in the real services independently of the UI
+/// card cache. The app publishes support only after this delivery completes.
 actor AppSkillDelivery {
     private var handled: [MessageID: Set<SkillID>] = [:]
     private var heldHello: PeerID?
