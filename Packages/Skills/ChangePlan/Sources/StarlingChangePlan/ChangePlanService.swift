@@ -1137,11 +1137,13 @@ public actor ChangePlanService: SkillService {
     }
 
     /// Saves a delivery's progress; one that everyone acknowledged is done.
+    /// A withdrawal is done only once every offer's send has returned too:
+    /// one still sending is withdrawn when it returns (re-review of PR #111).
     private func progressDelivery(_ record: ChangePlanRecord) async {
         switch record {
         case .confirming(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
         case .leaving(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
-        case .withdrawing(let delivery) where delivery.pending.isEmpty: await endDelivery(record.key)
+        case .withdrawing(let delivery) where delivery.pending.isEmpty && offerSends[delivery.interaction] == nil: await endDelivery(record.key)
         default: await store(record)
         }
     }

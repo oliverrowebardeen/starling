@@ -17,6 +17,21 @@ actor FailingObserver: OutboxObserver {
     func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
 }
 
+/// Holds the first offer to one person once it has left, before Outbox
+/// returns it: an offer still sending while the others have returned.
+actor OfferGate: OutboxObserver {
+    let gate = Gate()
+    let recipient: PeerID
+    private var done = false
+    init(recipient: PeerID) { self.recipient = recipient }
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        guard !done, envelope.recipient == recipient, case .propose = envelope.body else { return }
+        done = true
+        await gate.pass()
+    }
+}
+
 /// Final review of PR #111, finding 3: a yes holds the plan no longer than
 /// the window and a grace, and a suggestion that ends without a change is
 /// withdrawn from everyone it reached, resent until acknowledged.
@@ -150,6 +165,34 @@ actor FailingObserver: OutboxObserver {
             return await group.phone(maya).changes().allSatisfy(\.state.isFinal)
         }
         #expect(await released(group, maya))
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
+    /// Re-review of PR #111, item 2: Maya acknowledges the withdrawal of
+    /// her offer while Alex's offer to Jake is still sending. The delivery
+    /// stays open until that send returns, and Jake's offer is withdrawn too.
+    @Test func aWithdrawalAcknowledgedWhileAnotherOfferSendsStillWithdrawsThatOne() async throws {
+        let observer = OfferGate(recipient: Fixtures.jake)
+        let group = Group(observer: { person, _ in person == Fixtures.alex ? observer : nil })
+        let network = group.network
+        let suggesting = Task { try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex) }
+        await observer.gate.arrived()
+        let link = try #require(await group.phone(alex).changes().first)
+        await group.phone(alex).service.withdraw(link.id)
+        // Maya gets her offer and its withdrawal, and acknowledges it.
+        await network.deliver()
+        try await network.until("Maya acknowledged") { network.transcript.contains("Maya > Alex: accept") }
+        await network.settle()
+        await observer.gate.open()
+        _ = try? await suggesting.value
+        try await network.until("Jake's card closed") {
+            await network.deliver()
+            return await group.phone(jake).changes().allSatisfy(\.state.isFinal)
+        }
+        #expect(network.transcript.contains("Alex > Jake: reject"))
+        #expect(await released(group, jake))
+        try await network.until("acknowledged") { (try? await group.phone(alex).journal.records().isEmpty) == true }
         #expect(await network.problems().isEmpty)
         await network.shutdown()
     }
