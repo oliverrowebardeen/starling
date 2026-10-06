@@ -34,6 +34,9 @@ public final class LinkTestModel {
     private let name: @MainActor (PeerID) -> String?
     /// How long a round trip waits for its reply before it counts as lost.
     private let replyTimeout: Duration
+    /// Waits out `replyTimeout`. Tests pass one they control, so a busy
+    /// machine cannot expire a ping before its reply is handled.
+    private let sleep: @Sendable (Duration) async throws -> Void
     private let clock = ContinuousClock()
     /// Our hellos awaiting a reply: conversation to peer and start time.
     private var pending: [ConversationID: (peer: PeerID, start: ContinuousClock.Instant)] = [:]
@@ -46,12 +49,14 @@ public final class LinkTestModel {
         outbox: Outbox,
         card: AgentCard,
         name: @escaping @MainActor (PeerID) -> String?,
-        replyTimeout: Duration = .seconds(10)
+        replyTimeout: Duration = .seconds(10),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.outbox = outbox
         self.card = card
         self.name = name
         self.replyTimeout = replyTimeout
+        self.sleep = sleep
     }
 
     /// Every event from the app's Inbox loop. Returns quickly: sends run on
@@ -100,8 +105,9 @@ public final class LinkTestModel {
             // the Inbox, for example for clock skew), so stop waiting after a
             // while and let the owner try again.
             let timeout = replyTimeout
+            let sleep = sleep
             Task { [weak self] in
-                try? await Task.sleep(for: timeout)
+                try? await sleep(timeout)
                 self?.giveUp(on: conversation, after: timeout)
             }
         } catch {
