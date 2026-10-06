@@ -100,6 +100,7 @@ Left open for this lane:
   - It words a change that ended with nobody up as "The plan stays as it was".
 - **Known limits:**
   - **The suggester is trusted to report that everyone agreed, as the organizer of any group step is** (finding G). Attendees are often not paired with each other, so a phone cannot verify another attendee's yes. What it can check, it does: the offer names everyone asked, and the confirmation is applied only on the basis it was made for. The Orchestrator adds this to the threat model.
+  - **The suggester who added a friend can tell that friend's phone that another member left** (re-review of PR #111). The departure it passes on (decision 7) names the leaver by a digest of values the suggester knows (the plan, the revision, and the leaver), and the friend cannot verify that the leaver really left. Only that friend's phone is affected, only for a revision at or before the one it joined over, and an honest phone never sends one for someone who did not leave. It falls under the paired friend who lies (ADR 0023, Not covered). The Orchestrator adds it to the threat model.
   - Two suggestions that cross usually both close without changing anything; the owner can suggest again (accepted).
   - A phone that stays unreachable until the plan's time has passed never receives the confirmation or notice and keeps its plan as it was. Resending stops then because the plan is over.
   - Until Pick a place names the revision on every phone's agreed plan (PR #118), no place result applies.
