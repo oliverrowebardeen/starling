@@ -264,7 +264,7 @@ final class OfferRecorder {
         if case .naming = model.phase {} else { Issue.record("still naming") }
     }
 
-    /// Oliver's request: after the first friend, one button leads straight
+    /// The owner's request: after the first friend, one button leads straight
     /// to iOS's notification alert, and only while iOS has not asked.
     @Test func notificationsAreOfferedOnceAfterPairingWhileNotAsked() async {
         let recorder = OfferRecorder(notAsked: true)
@@ -539,7 +539,7 @@ final class FriendActions: @unchecked Sendable {
     }
 }
 
-/// Oliver's request (ADR 0260): notifications are asked right after a
+/// The owner's request (ADR 0260): notifications are asked right after a
 /// pairing, never at launch, and never again once iOS has an answer.
 @MainActor
 @Suite struct PairingNotificationTests {

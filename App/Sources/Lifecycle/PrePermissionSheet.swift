@@ -3,7 +3,7 @@ import StarlingFeatures
 import SwiftUI
 
 /// Starling's own sheet before a system permission alert (ADR 0013,
-/// approved by Oliver): what the agent reads, what never leaves the phone,
+/// approved by the owner): what the agent reads, what never leaves the phone,
 /// what friends see, and one "Continue" button with no cancel, as the HIG
 /// asks. The system alert that follows is where the owner says no.
 struct PrePermissionSheet: View {

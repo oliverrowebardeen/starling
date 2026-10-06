@@ -38,7 +38,7 @@ Facts about a venue are needed to judge it against a limit. Apple Maps does not 
    - People is used, because the roster travels. Time and activity are used, because a chained proposal repeats them.
    - Location, budget, and diet are used on the phone only, so Never on them does not block the skill.
    - It sends as an invite only, and it also produces `Attendees`.
-   - It asks for no expiry: Compose keeps a request open until the plan's time, or the parent plan's start for a chained pick, clamped to 1 to 7 days (Oliver's device test, 2026-10-02).
+   - It asks for no expiry: Compose keeps a request open until the plan's time, or the parent plan's start for a chained pick, clamped to 1 to 7 days (the owner's device test, 2026-10-02).
 6. **Restart.** The store keeps state and the current proposal. Anything with a proposal resumes:
    - The organizer re-proposes.
    - A friend who said yes says it again until confirmed.

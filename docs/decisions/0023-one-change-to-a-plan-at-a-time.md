@@ -9,7 +9,7 @@
 
 ADR 0022 lets anyone in a confirmed plan suggest a change, and the change applies only when everyone agrees. Two skills make changes: Change the plan (time, activity, people) and Pick a place on the plan (place, with a budget for the search). Each change names the plan revision it changes, and a phone applies a change only over that revision.
 
-The second review of lane D's PR #118 found that this is not enough when two changes are open at once. Maya suggests 8:30 while Oliver picks a new place, both over revision 3:
+The second review of lane D's PR #118 found that this is not enough when two changes are open at once. Maya suggests 8:30 while Jake picks a new place, both over revision 3:
 
 - Every friend says yes to both, because neither has applied yet and both still name revision 3.
 - Both reach everyone's yes, and each phone applies whichever confirmation arrives first as revision 4.

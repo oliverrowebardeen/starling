@@ -292,7 +292,7 @@ func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}",
         #expect(await h.time.started.first?.intent.expiresAt == Timestamp(h.clock.now.addingTimeInterval(day)))
     }
 
-    /// Oliver's device test (2026-10-02): every chip is applied and
+    /// The owner's device test (2026-10-02): every chip is applied and
     /// tappable; optional ones can be removed, required ones only edited.
     @Test func everyChipIsEditableAndOnlyOptionalOnesRemovable() async throws {
         let h = try await ComposerHarness()

@@ -8,7 +8,7 @@
 
 The device review found the main screen reading like a dating app: "Down?" with no activity, "How keen are you?", and "only if they're interested too". The Phase 1.5 prompt (section 9) listed banned words.
 
-Oliver clarified on 2026-09-30 that the goal is tone, not a word list: Starling should not look like a dating app, and a crush feature could be fine sometime later, just not now. A hard ban would also block that future skill.
+The owner clarified on 2026-09-30 that the goal is tone, not a word list: Starling should not look like a dating app, and a crush feature could be fine sometime later, just not now. A hard ban would also block that future skill.
 
 ## Decision
 
@@ -29,5 +29,5 @@ Oliver clarified on 2026-09-30 that the goal is tone, not a word list: Starling 
 
 ## Sources
 
-- Phase 1.5 prompt, section 9; Oliver's clarification in conversation, 2026-09-30
+- Phase 1.5 prompt, section 9; the owner's clarification in conversation, 2026-09-30
 - Mockups "Home", "New", and "It's a plan"

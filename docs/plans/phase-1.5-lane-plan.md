@@ -1,6 +1,6 @@
 # Phase 1.5 lane plan
 
-Status: **Approved by Oliver on 2026-09-30**, with all six lanes starting together. Kickoff prompts: `docs/plans/phase-1.5-kickoff-prompts.md`.
+Status: **Approved by the owner on 2026-09-30**, with all six lanes starting together. Kickoff prompts: `docs/plans/phase-1.5-kickoff-prompts.md`.
 
 Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 to 0018. Interfaces: Core v2, frozen on main at c07c036 (PR #45, after five adversarial review rounds).
 
@@ -9,10 +9,10 @@ Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 
 | # | Item | Who | Why |
 |---|---|---|---|
 | 1 | ~~Merge Core v2 (PR #45)~~ Done, c07c036 | Orchestrator | Lanes build on the frozen interfaces |
-| 2 | ~~Agree or redirect ADRs 0010 decision 2, 0013, and 0018~~ All three approved | Oliver | Lanes A, B, C, and E build on these |
-| 3 | Say what Muse and Dots are, or drop them from hand-offs | Oliver | Hand-off scope |
-| 4 | Re-enable hosted CI | Oliver | CI is the merge gate; until then the Orchestrator gates locally |
-| 5 | Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling` and sign in again in Xcode | Oliver | Signed device builds with Wi-Fi Aware, needed for the exit test |
+| 2 | ~~Agree or redirect ADRs 0010 decision 2, 0013, and 0018~~ All three approved | Owner | Lanes A, B, C, and E build on these |
+| 3 | Say what Muse and Dots are, or drop them from hand-offs | Owner | Hand-off scope |
+| 4 | Re-enable hosted CI | Owner | CI is the merge gate; until then the Orchestrator gates locally |
+| 5 | Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling` and sign in again in Xcode | Owner | Signed device builds with Wi-Fi Aware, needed for the exit test |
 
 ## 1. Lanes
 
@@ -37,21 +37,21 @@ Phase 1 lanes not listed here are complete. On approval, the Orchestrator update
 
 ## 3. Exit criteria, as adjusted
 
-The prompt's section 12, on two real iPhones, with criterion 7 changed by Oliver's clarification: no screen reads like a dating app, and no Down screen lacks an activity, checked by eye on the device checklist (ADR 0017). Criterion 5 follows ADR 0013 once Oliver agrees.
+The prompt's section 12, on two real iPhones, with criterion 7 changed by the owner's clarification: no screen reads like a dating app, and no Down screen lacks an activity, checked by eye on the device checklist (ADR 0017). Criterion 5 follows ADR 0013 once the owner agrees.
 
 ## 4. Risks
 
 - **The iOS 27 on-device model is new.** Routing and chips are measured on the macOS 26.7 model first. The device numbers decide whether New leads with free text or with tiles.
 - **CI.** Six lanes push often. While hosted CI is not running, merges wait on the local gate, which runs one at a time.
-- **The device test needs two people.** Oliver and a friend run the checklists. Everything before that is covered by Loopback and the simulator.
+- **The device test needs two people.** The owner and a friend run the checklists. Everything before that is covered by Loopback and the simulator.
 
 ## 5. Queued for after Phase 1.5
 
-Oliver queued these on 2026-10-01, to plan once this run is done. Each gets its own ADRs and lane prompt.
+The owner queued these on 2026-10-01, to plan once this run is done. Each gets its own ADRs and lane prompt.
 
 ### Pairing methods, as its own lane
 
-Updated by Oliver later on 2026-10-01; this replaces the earlier note that treated links as unverified requests.
+Updated by the owner later on 2026-10-01; this replaces the earlier note that treated links as unverified requests.
 
 - **Remote pairing by link is first-class.**
   - The link carries the public key fingerprint and a one-time token, and is shared through any existing channel (Messages, Instagram, and so on).
