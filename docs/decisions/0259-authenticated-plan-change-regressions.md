@@ -7,7 +7,7 @@
 
 ## Decision
 
-Exercise the real ChangePlanService and ChainPlanner on lane E's PR #111.
+Exercise the real ChangePlanService and ChainPlanner merged by PR #111.
 Simulation's secure channel and sole Inbox establish the sender. Requests and
 attacks use Outbox, with deterministic policy and consent; a malicious peer
 may replace its own outgoing ledger, but cannot replace the receiver's ledger.
@@ -53,26 +53,37 @@ fixes the finding; an unexpected pass is not silently accepted.
 
 ## Evidence and limits
 
-On lane E `e8892a1`, the targeted change-plan/updater rerun passes 38 tests in
-8 suites with zero known issues. All assertions for #114, #116, #117 and #119
-are ordinary regressions again; PC06 and #113 also pass. PC04/PC32 distinguish
-a durable accepted offer from an applied receipt and require the journal to
-stay unchanged after forged confirmation. PC08 requires the intended
-window-close withdrawals to name the original offers at the same deadline,
-while the declining phone still sends nothing.
+After #111 merged, rebase F's commits onto main `7e285f5`. The complete
+`Tools/test-all.sh Tools/Simulator` run passes 218 tests, including 167 Phase
+1.5 tests in 33 suites, with zero warnings or known issues. The original 42
+added tests and the three new test functions pass. All former #113, #114,
+#116, #117, and #119 findings use ordinary assertions.
 
-The stacked branch's standalone Simulator run has three failures in two older
-place integration tests because E's new updater needs the next-revision
-proposal plan supplied by #118. Main `500599e` contains #118; an isolated merge
-validates the combined code without rebasing #107 before #111 merges. The
-integration assertions remain unchanged. A `waitRevision` predicate treats a
-joining friend's absent plan artifact as pending rather than throwing an
-assertion before the event arrives. Intermittent older app/place cases remain
-tracked in #121; the final integrated Simulator run still times out in the
-unchanged shortened-place-roster test, so full-suite verification is not green.
-See the request log for every failed run and the passing targeted checks.
-Exact evidence and remaining matrix
-subcases are in docs/requests/P15-F.md; device steps 22 to 34 remain unrun.
+PC04/PC32 keep an accepted offer unchanged and send no acknowledgment after a
+forged confirmation; only the genuine confirmation produces an applied receipt.
+PC08 inspects withdrawals across fresh conversations at the same virtual
+answer deadline. Both decline and silence acknowledge them with no values;
+the decline itself sends nothing in the original conversation. PC18 likewise
+checks the acknowledgment of a withdrawal whose offer was lost. PC19 now fails
+only confirmation-record writes, after the newly required opening journal
+writes, so it still tests the commit boundary. The harness supplies a fresh
+PlanChangeHolds to each replacement service.
+
+PC39 forces both arrival orders of a leave and a committed confirmation, with
+and without an added friend. Every remaining phone reaches revision 2 with the
+same roster and fields, then a further change reaches revision 3. PC40 loses
+the value-free departure forwarded to the added friend, checking its digest
+and retained delivery, then recovers by retry or suggester replacement. PC41
+loses a withdrawal or its acknowledgment, with and without replacement. Each
+retry names the same offer in a fresh conversation, settles the retained
+withdrawal, and leaves the parent unchanged. These three test functions have
+ten parameterized cases.
+
+Earlier isolated-merge failures are recorded in the issues and previous request
+log revisions. They are superseded by the passing main run, including the
+existing app/place integration tests. No host bound or protocol deadline
+increased. Exact evidence and remaining matrix subcases are in
+`docs/requests/P15-F.md`; device steps 23 to 38 remain unrun.
 
 The requested ack/resend behavior is an invariant, not a best-effort exception:
 bounded losses while a plan remains live must recover. The documented limit
@@ -90,10 +101,11 @@ Orchestrator runs #107's gate; F does not rerun it in this increment.
 ## Sources
 
 - ADR 0022, accepted product behavior, read 2026-10-03.
-- ADR 0243 and PR #111 at e8892a1, including AcceptedOffer, recovery ordering,
-  window-close withdrawals, and the plan updater, read 2026-10-05.
-- The Orchestrator's 2026-10-05 instructions: update PC04/PC08/PC32 for those
-  intended changes; keep #107 draft and rebase onto main after #111 merges.
+- ADRs 0023 and 0243, PR #111 merged at 7e285f5, including acknowledged
+  withdrawals, leave/confirmation commutation, and forwarded departures,
+  read 2026-10-05.
+- The Orchestrator's 2026-10-05 confirmation that #111 merged: rebase #107,
+  update changed expectations, run the Simulator suite, and mark it ready.
 - Issues [#113](https://github.com/oliverrowebardeen/starling-ios/issues/113),
   [#114](https://github.com/oliverrowebardeen/starling-ios/issues/114),
   [#116](https://github.com/oliverrowebardeen/starling-ios/issues/116), and
