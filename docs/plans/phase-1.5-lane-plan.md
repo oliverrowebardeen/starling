@@ -10,8 +10,8 @@ Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 
 |---|---|---|---|
 | 1 | ~~Merge Core v2 (PR #45)~~ Done, c07c036 | Orchestrator | Lanes build on the frozen interfaces |
 | 2 | ~~Agree or redirect ADRs 0010 decision 2, 0013, and 0018~~ All three approved | Owner | Lanes A, B, C, and E build on these |
-| 3 | Say what Muse and Dots are, or drop them from hand-offs | Owner | Hand-off scope |
-| 4 | Re-enable hosted CI | Owner | CI is the merge gate; until then the Orchestrator gates locally |
+| 3 | ~~Say what Muse and Dots are, or drop them from hand-offs~~ Out of scope (ADR 0018) | Owner | Hand-off scope |
+| 4 | Restore hosted CI (not running again since about 02:52Z on 2026-10-01) | Owner | CI is the merge gate; until then the Orchestrator gates locally (ADR 0007) |
 | 5 | Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling` and sign in again in Xcode | Owner | Signed device builds with Wi-Fi Aware, needed for the exit test |
 
 ## 1. Lanes
@@ -42,7 +42,7 @@ The prompt's section 12, on two real iPhones, with criterion 7 changed by the ow
 ## 4. Risks
 
 - **The iOS 27 on-device model is new.** Routing and chips are measured on the macOS 26.7 model first. The device numbers decide whether New leads with free text or with tiles.
-- **CI.** Six lanes push often. While hosted CI is not running, merges wait on the local gate, which runs one at a time.
+- **Hosted CI is off.** Six lanes push often. Until CI runs again, merges wait on the local gate, which checks one branch at a time.
 - **The device test needs two people.** The owner and a friend run the checklists. Everything before that is covered by Loopback and the simulator.
 
 ## 5. Queued for after Phase 1.5

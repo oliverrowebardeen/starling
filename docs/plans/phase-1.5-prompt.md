@@ -7,7 +7,7 @@ The owner's Phase 1.5 prompt, 2026-09-30, kept as written below this note. Where
 - **Banned words** (section 9, exit criterion 7): The owner clarified on 2026-09-30 that the goal is not looking like a dating app, not a word list, and that a crush skill could come later. Tone is reviewed by eye (ADR 0017).
 - **New (+) button** (section 7): a `Tab(role: .prominent)` whose screen is the composer. iOS has no action-button tab, and the HIG reserves tab bars for navigation. ADR 0015.
 - **Message the group** (section 4): Starling has no phone numbers. The owner may link a friend to a contact on this phone. ADR 0018; approved by the owner.
-- **Muse and Dots** (section 3): open question. They are not in the brief or the repo.
+- **Muse and Dots** (section 3): out of scope. They are not in the brief or the repo (ADR 0018, decision 5).
 - **DESIGN.md** did not exist when the prompt was written. It now does (`docs/DESIGN.md`).
 
 ---

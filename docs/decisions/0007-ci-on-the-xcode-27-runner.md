@@ -26,13 +26,13 @@ The brief asks for GitHub Actions on macOS, provided runner images carry the nee
 - Device-only behavior (LocalP2P radios, Wi-Fi Aware, on-device model numbers) is never covered by CI. Each lane's device checklist covers it.
 - If minutes run short on the private repo, CI can move to push-to-`main` only, or the repo can go public when the owner is ready.
 
-## Amendment, 2026-09-30: CI not running
+## Amendment, 2026-09-30: a local gate while hosted CI does not run
 
-From 22:53Z, hosted CI did not start jobs, so every merge went through the local gate.
+From 22:53Z, GitHub Actions stopped starting jobs for this private repository, so every check failed with an empty log. No code change can fix this; it is an account setting, not the workflow.
 
 Until CI runs again, nothing merges on a red check alone. Before each merge, the Orchestrator runs `Tools/local-gate.sh <branch>`. It merges the branch into the current `origin/main` in a throwaway worktree, then runs both CI jobs in the same order. The host is macOS 26.7 with Xcode 27.0 (27A266a), the same Xcode that CI pins. The PR gets a comment that names the commits tested and the result. Branch protection is not available on this private repo's plan, so nothing enforces the gate. It holds because the Orchestrator does the merging.
 
-CI ran again from about 00:42Z on 2026-10-01. Main's first run after that, at 84461c5, passed both jobs, including the Release no-fakes step. CI on the pull request is the merge gate again. `Tools/local-gate.sh` stays in the repo for the next outage, and for checking a branch against a newer main than its last CI run.
+CI ran again from about 00:42Z on 2026-10-01. Main's first run after that, at 84461c5, passed both jobs, including the Release no-fakes step. CI on the pull request is the merge gate again. `Tools/local-gate.sh` stays in the repo for the next time hosted CI does not run, and for checking a branch against a newer main than its last CI run.
 
 ## Sources
 

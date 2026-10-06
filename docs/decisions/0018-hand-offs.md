@@ -1,6 +1,6 @@
 # ADR 0018: Hand-offs to Calendar, Messages, Maps, and Siri
 
-- Status: Accepted (the owner approved the contact link, decision 2, on 2026-09-30). Decision 5, Muse and Dots, stays open and out of Phase 1.5 scope.
+- Status: Accepted (the owner approved the contact link, decision 2, on 2026-09-30). Decision 5 leaves Muse and Dots out of scope.
 - Date: 2026-09-30
 - Owner: Orchestrator
 
@@ -30,7 +30,7 @@ Starling has no phone numbers by design: no accounts, and pairing exchanges keys
    - Without links, Messages opens with no recipients.
 3. **Directions** opens Apple Maps at the `PlaceChoice`, by Maps item identifier when known, or by coordinate and name.
 4. **Siri and system intents.** Plans are exposed through App Intents (for example "What's my next plan?"), so Siri, Shortcuts, and Spotlight can read them. App Intents is the system surface; no third-party integration is assumed.
-5. **Muse and Dots: open question.** The prompt names them as hand-off targets. They are not in the brief or the repo. Oliver to say what they are before any work is planned.
+5. **Muse and Dots: out of scope.** The prompt names them as hand-off targets. They are not in the brief or the repo, so no hand-off to them is planned.
 
 ## Consequences
 

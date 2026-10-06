@@ -78,7 +78,7 @@ Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
 
 - **A friend's fast answer could be dropped (issue #105).** Lane F confirmed that Pick a place recorded a query's ID only after its send returned, while Outbox runs the audit observer after the transport delivers. A reply that arrived in that window was dropped as unsolicited, and the plan waited for the deadline. Find a time had the same ordering. Both now hold an authenticated early reply only while its own send is in flight, and count it only if it names something sent to that friend in that conversation (#106, #108). Down for… was already safe: each friend's sends and replies run on one serial queue.
 - **The friend's side of #105 (#121).** A friend dropped a proposal or confirmation that arrived while its own answer was still being recorded, so Pick a place stalled under load (#124). A friend added right after pairing could also see a Down for… invite end as unsupported, because Compose learned the friend's card before the skill did (#123, fixed in #128).
-- **Gate failures came from waits that counted wall time.** Waits that measured wall time ran out while the services could not run. Tests now advance virtual time or measure awake time (#110, closes #109).
+- **Some gate failures were test timing, not code.** When the host went to sleep during a run, waits that measured wall-clock time ran out while the services, which only run while the machine is awake, could not finish. Tests now advance virtual time or measure awake time (#110, closes #109), and local gate runs now keep the host from sleeping.
 
 ## Where reality contradicted the prompt
 
@@ -96,7 +96,7 @@ Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
    - The mockup's "All 3 of you said yes" is reached through that invite.
 10. **Silent noes.** Every no in Find a time is silent, so a starter whose friends all decline waits for the 30-minute deadline (ADR 0221).
 11. **Envelope versions.** Envelope version 1 could not carry a send mode safely, so version 2 retired it (ADR 0020).
-12. **Hosted CI did not run for most of the phase.** Every merge went through the local gate (ADR 0007).
+12. **No hosted CI during the run.** CI was disabled while the repository was private; every merge went through the local gate (ADR 0007).
 
 ## Decisions made during the run
 
@@ -131,11 +131,10 @@ Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
 ## Needs the owner
 
 1. **Device run.**
-   - Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling`, and sign back into Xcode, so a Debug build can be installed and paired on two iPhones.
+   - Enable the Wi-Fi Aware capability for the app's identifier, so a signed Debug build can be installed and paired on two iPhones.
    - Then run the checklists in `docs/checklists/phase-1.5-*.md`.
-2. **Re-enable hosted CI.**
-3. **What are Muse and Dots?** Still open from ADR 0018.
-4. **Queued next** (`docs/plans/phase-1.5-lane-plan.md` section 5):
+2. **Turn hosted CI back on**, so CI gates pull requests again (ADR 0007).
+3. **Queued next** (`docs/plans/phase-1.5-lane-plan.md` section 5):
    - the pairing-methods lane;
    - onboarding and personalization.
 
