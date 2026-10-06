@@ -1,6 +1,6 @@
 # Phase 1.5 report: from a Down app to an agent interaction platform
 
-- Date: 2026-10-01, updated 2026-10-03
+- Date: 2026-10-01, updated 2026-10-05
 - Owner: Orchestrator
 - Status: open. The code is merged, but Phase 1.5 ends only after Oliver's run on two iPhones (Oliver, 2026-10-02).
 
@@ -54,7 +54,7 @@ Oliver's iPhone and a friend's, on main 83329f3 or close to it.
 **Blocking**
 
 1. **"See who's up for it" was greyed out almost every time.** The button was off while the model read the text, the text was re-read on every edit, and the off state did not say why. Start now always says why it is off, re-reads wait for a 0.8 second pause and skip spacing and case changes, and a re-read keeps every chip the owner edited (lane A, #100; lane B's read cache, #101).
-2. **Pairing failed until about the hundredth try.** Lane G reproduced eight of nine failure causes over Loopback: lost frames stalled the ceremony, a lost final accept left pairing one-sided, a dropped link ended it, and a restarted phone was ignored. Every phone also published and subscribed on Wi-Fi Aware at once, which a developer reports never connects (FB21527009). The ceremony now resends, survives drops, and restarts with fresh keys when the other phone starts over; one phone picks and the other joins; Wi-Fi Aware roles are fixed per pair (lane G, #104, ADR 0260). Status: in review. Two Codex reviews found races between Cancel, retries, and the code on screen, so a confirm could reach a session whose code the owner did not compare. Lane G is binding every code and confirm to its own attempt.
+2. **Pairing failed until about the hundredth try.** Lane G reproduced eight of nine failure causes over Loopback: lost frames stalled the ceremony, a lost final accept left pairing one-sided, a dropped link ended it, and a restarted phone was ignored. Every phone also published and subscribed on Wi-Fi Aware at once, which a developer reports never connects (FB21527009). The ceremony now resends, survives drops, and restarts with fresh keys when the other phone starts over; one phone picks and the other joins; Wi-Fi Aware roles are fixed per pair (lane G, #104, ADR 0260). Four review rounds found races between Cancel, retries, and the code on screen, and then a silent restart that let a phone in the middle retry the code; each is fixed with a test. A ceremony now gives out one code per visible failure (#104, #127).
 
 **Wrong behavior**
 
@@ -71,12 +71,13 @@ Oliver's iPhone and a friend's, on main 83329f3 or close to it.
 
 **Asked for during the run**
 
-- **Plans can change after they are confirmed** (ADR 0022). Anyone in the plan can propose a new time, place, budget, or who is coming; everyone must agree; anyone can leave; nobody removes someone else. Core is merged (#96); lanes E, D, A, and F are building the service, the place change, the screens, and the red-team cases.
+- **Plans can change after they are confirmed** (ADR 0022). Anyone in the plan can propose a new time, place, budget, or who is coming; everyone must agree; anyone can leave; nobody removes someone else. Merged: Core (#96, #115), Change the place (#118, #122), Change the plan (#111), the screens (#102), and lane F's red-team cases (#107). Five review rounds of #111 found ways for phones to end on different plans (a lost confirmation, a leave racing a change, a friend added while someone leaves, a crash mid-commit); each is fixed with a test, and confirmations, leaves, and withdrawals are acknowledged and resent. Two changes at once could still diverge, so a phone now takes part in one change per plan at a time (ADR 0023, #120). The organizer of a change is trusted to report that everyone agreed; that limit is in THREAT_MODEL section 5a.
 - **A notification prompt after the first friend.** Right after a pairing, one Continue button opens the system alert (lane G, #104).
 
 ## Found after the second device test
 
 - **A friend's fast answer could be dropped (issue #105).** Lane F confirmed that Pick a place recorded a query's ID only after its send returned, while Outbox runs the audit observer after the transport delivers. A reply that arrived in that window was dropped as unsolicited, and the plan waited for the deadline. Find a time had the same ordering. Both now hold an authenticated early reply only while its own send is in flight, and count it only if it names something sent to that friend in that conversation (#106, #108). Down for… was already safe: each friend's sends and replies run on one serial queue.
+- **The friend's side of #105 (#121).** A friend dropped a proposal or confirmation that arrived while its own answer was still being recorded, so Pick a place stalled under load (#124). A friend added right after pairing could also see a Down for… invite end as unsupported, because Compose learned the friend's card before the skill did (#123, fixed in #128).
 - **Gate failures came from waits that counted wall time.** Waits that measured wall time ran out while the services could not run. Tests now advance virtual time or measure awake time (#110, closes #109).
 
 ## Where reality contradicted the prompt
