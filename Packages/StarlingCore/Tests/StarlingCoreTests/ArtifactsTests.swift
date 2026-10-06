@@ -36,7 +36,7 @@ import Testing
         let slot = try TimeSlot(start: Fixtures.now, end: Fixtures.now.addingTimeInterval(7200))
         let plan = try Plan(origin: ConversationID(), attendees: attendees, activity: Keyword("boba"), time: slot)
         let place = try PlaceChoice(name: PlaceName("Boba Guys"))
-        let updated = plan.updating(place: place)
+        let updated = try plan.updating(place: place)
         #expect(updated.id == plan.id && updated.place == place && updated.time == slot)
         #expect(plan.endsAt == slot.end)
         #expect(try JSONDecoder().decode(Plan.self, from: JSONEncoder().encode(updated)) == updated)
@@ -87,13 +87,26 @@ import Testing
         let later = try plan.updating(time: .some(try TimeSlot(startMinute: 630, endMinute: 720)))
         #expect(later.revision == 1 && later.id == plan.id && later.activity == plan.activity && later.attendees == plan.attendees)
         let place = try PlaceChoice(name: try PlaceName("Boba Guys"))
-        let placed = later.updating(place: place)
+        let placed = try later.updating(place: place)
         #expect(placed.revision == 2 && placed.place == place && placed.time == later.time)
         let carol = try PeerID(bytes: Data(repeating: 0xCC, count: 32))
         let bigger = try placed.updating(attendees: try Attendees([Fixtures.alice, Fixtures.bob, carol]))
         #expect(bigger.revision == 3 && bigger.attendees.peers.contains(carol))
         // A change cannot leave a plan with neither an activity nor a time.
         #expect(throws: ValidationError.self) { try plan.updating(activity: .some(nil), time: .some(nil)) }
+    }
+
+    /// Issue #98: setting a place on a plan already at the highest revision
+    /// throws instead of trapping, so a restored or peer-sent plan at
+    /// `UInt32.max` cannot crash the app.
+    @Test func aPlaceAtTheHighestRevisionThrowsInsteadOfTrapping() throws {
+        let plan = try Self.plan()
+        let last = try Plan(id: plan.id, origin: plan.origin, attendees: plan.attendees, activity: plan.activity,
+                            time: plan.time, place: nil, revision: .max)
+        let place = try PlaceChoice(name: try PlaceName("Boba Guys"))
+        #expect(throws: ValidationError.self) { try last.updating(place: place) }
+        #expect(throws: ValidationError.self) { try last.updating(place: .some(nil)) }
+        #expect(try plan.updating(place: place).revision == 1)
     }
 
     @Test func plansSavedBeforeRevisionsDecodeAtZero() throws {

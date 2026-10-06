@@ -370,7 +370,7 @@ import Testing
         var root = Interaction(skill: SampleSkills.downFor.ref, role: .initiator, participants: [maya], createdAt: Timestamp(Date()))
         let start = Date().addingTimeInterval(3 * 3600)
         var plan = try Plan(origin: root.conversation, attendees: Attendees([me, maya]), activity: Keyword("boba"), time: TimeSlot(start: start, end: start.addingTimeInterval(3600)))
-        if planHasPlace { plan = plan.updating(place: try PlaceChoice(name: PlaceName("Boba Guys"))) }
+        if planHasPlace { plan = try plan.updating(place: PlaceChoice(name: PlaceName("Boba Guys"))) }
         let proposal = SkillProposal(revision: 1, participants: [me, maya], terms: try Terms([.activity: .keywords([try Keyword("boba")])]), plan: plan)
         for event: InteractionEvent in [.started, .proposalReady(proposal), .ownerAccepted(revision: 1), .everyoneConfirmed(revision: 1)] {
             try root.apply(event, at: Timestamp(Date()))

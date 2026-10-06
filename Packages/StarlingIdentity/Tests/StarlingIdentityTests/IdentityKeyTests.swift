@@ -119,7 +119,7 @@ final class InMemoryKeychain: KeychainBackend, @unchecked Sendable {
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["STARLING_KEYCHAIN_TESTS"] == "1"))
 struct SystemKeychainTests {
     @Test func identityRoundTripsThroughTheRealKeychain() async throws {
-        let service = "com.oliverrowebardeen.starling.tests.\(UUID().uuidString)"
+        let service = "starling.tests.\(UUID().uuidString)"
         let store = KeychainIdentityKeyStore(service: service)
         defer { try? SystemKeychain().delete(service: service, account: KeychainIdentityKeyStore.account) }
         let created = try await store.loadOrCreate()

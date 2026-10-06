@@ -119,7 +119,7 @@ public final class LifecycleCoordinator {
     private let services: [SkillID: any SkillService]
     private let store: any InteractionStore
     private let now: @Sendable () -> Date
-    private let logger = Logger(subsystem: "com.oliverrowebardeen.starling", category: "lifecycle")
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "starling", category: "lifecycle")
     private var loops: [Task<Void, Never>] = []
     private var starting: Task<Void, Never>?
     private var dirty: [InteractionID] = []

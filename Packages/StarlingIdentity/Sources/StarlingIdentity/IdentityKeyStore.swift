@@ -20,7 +20,7 @@ public protocol IdentityKeyStore: Sendable {
 /// The production store: one generic-password item in the Keychain, written
 /// with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (see `KeychainBackend`).
 public actor KeychainIdentityKeyStore: IdentityKeyStore {
-    public static let defaultService = "com.oliverrowebardeen.starling.identity"
+    public static let defaultService = "starling.identity"
     static let account = "x25519-static-v1"
 
     private let backend: any KeychainBackend

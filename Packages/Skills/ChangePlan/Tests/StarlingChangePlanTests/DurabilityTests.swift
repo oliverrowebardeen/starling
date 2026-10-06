@@ -155,6 +155,40 @@ import Testing
         await network.shutdown()
     }
 
+    /// A journal restored with someone listed twice in a suggestion's asked
+    /// roster (a corrupted file, or one an older build wrote) must not trap
+    /// the app on launch. Everyone is still told once that it is withdrawn.
+    @Test func aRestoredSuggestionThatNamesSomeoneTwiceIsStillWithdrawn() async throws {
+        let group = Group()
+        let network = group.network
+        let phone = group.phone(alex)
+        _ = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards up") { await ReliabilityTests.cardsUp(group) }
+        let open = try #require(try await phone.journal.records().lazy.compactMap { record -> OpenSuggestion? in
+            if case .asking(let open) = record { open } else { nil }
+        }.first)
+        #expect(Set(open.offers.keys) == [maya, jake])
+        // Everyone asked is listed twice, as a damaged journal read back
+        // from disk could have them.
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(open)) as? [String: Any])
+        let asked = try #require(object["asked"] as? [Any])
+        object["asked"] = asked + asked
+        let doubled = try JSONDecoder().decode(OpenSuggestion.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(doubled.asked == open.asked + open.asked)
+        try await phone.journal.saveNow(.asking(doubled))
+        await phone.restart()
+        await network.deliver()
+        try await network.until("cards closed") {
+            for person in [maya, jake] where await group.phone(person).changes().first?.state.isFinal != true { return false }
+            return true
+        }
+        try await network.until("Alex's withdrawal done") { (try? await phone.journal.records().isEmpty) == true }
+        #expect(await ReliabilityTests.revisions(group, [alex, maya, jake]) == [0, 0, 0])
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
     // MARK: Finding 3: a commit or update the crash interrupted is replayed
 
     @Test func theSuggestersCommitIsReplayedIfItsUpdateWasLost() async throws {

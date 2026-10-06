@@ -15,7 +15,7 @@ public enum PairedPeerStoreError: Error, Hashable, Sendable {
 /// Keychain keeps it out of backups and away from other apps. Written with
 /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` like every Starling item.
 public actor KeychainPairedPeerStore: PairedPeerStore {
-    public static let defaultService = "com.oliverrowebardeen.starling.paired-peers"
+    public static let defaultService = "starling.paired-peers"
     static let account = "paired-peers-v1"
 
     private let backend: any KeychainBackend

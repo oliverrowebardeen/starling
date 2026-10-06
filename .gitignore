@@ -17,3 +17,24 @@ App/*.xcodeproj/
 
 # Per-developer signing settings
 App/Config/Local.xcconfig
+
+# Build output from Tools/local-gate.sh and the app build commands
+.build-app/
+.build-release/
+*.xcresult
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Signing material and secrets: never commit these
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+.env
+.env.*
+
+# Editors
+.vscode/
+.idea/

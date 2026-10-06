@@ -2,7 +2,6 @@
 # The generated App/Starling.xcodeproj is gitignored; never edit it by hand.
 name: Starling
 options:
-  bundleIdPrefix: com.oliverrowebardeen
   deploymentTarget:
     iOS: "27.0"
   createIntermediateGroups: true
@@ -65,12 +64,13 @@ targets:
       path: Config/Starling.entitlements
       properties:
         com.apple.developer.wifi-aware: [Publish, Subscribe]
+    # The bundle identifier comes from Config/Starling.xcconfig, which a
+    # developer overrides in the gitignored Config/Local.xcconfig.
     configFiles:
       Debug: Config/Starling.xcconfig
       Release: Config/Starling.xcconfig
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.oliverrowebardeen.starling
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Sources/Info.plist

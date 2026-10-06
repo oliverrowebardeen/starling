@@ -789,11 +789,11 @@ public actor ChangePlanService: SkillService {
         // or the window from here aborts the commit instead.
         sessions[id]?.advance(to: .committing)
         guard let step = sessions[id]?.stepID else { return }
-        let order = session.asked.filter { session.offers[$0] != nil }
+        let (order, pending) = Self.owed(session.asked, offers: session.offers)
         let delivery = ConfirmationDelivery(
             interaction: id, conversation: session.conversation, planConversation: session.planConversation,
             plan: session.proposed, planInteraction: session.planInteraction, order: order,
-            pending: Dictionary(uniqueKeysWithValues: order.map { ($0, session.offers[$0]!) }),
+            pending: pending,
             until: resend.end(for: session.proposed, now: now()), added: session.friend
         )
         // The agreed plan and who is owed what, durable before anything is
@@ -1376,9 +1376,9 @@ public actor ChangePlanService: SkillService {
             case .asking(let open):
                 // A suggestion still asking cannot resume (its card is
                 // reported failed below); everyone it asked is told.
-                let order = open.asked.filter { open.offers[$0] != nil }
+                let (order, pending) = Self.owed(open.asked, offers: open.offers)
                 let delivery = WithdrawalDelivery(interaction: open.interaction, planConversation: open.planConversation, order: order,
-                                                  pending: Dictionary(uniqueKeysWithValues: order.map { ($0, open.offers[$0]!) }), until: open.until)
+                                                  pending: pending, until: open.until)
                 if delivery.pending.isEmpty {
                     await forget(record.key)
                     continue
@@ -1526,6 +1526,18 @@ public actor ChangePlanService: SkillService {
         Task { [weak self] in await self?.endDelivery(id.rawValue) }
     }
 
+    /// Everyone asked who was sent an offer, in order and each once, and
+    /// the offer each is owed a reply about. Never traps on a roster that
+    /// names someone twice: the asked roster can come back from the
+    /// journal, which a crash, an older build, or damage on disk could have
+    /// left that way, and `Dictionary(uniqueKeysWithValues:)` would stop
+    /// the app on launch.
+    private static func owed(_ asked: [PeerID], offers: [PeerID: MessageID]) -> (order: [PeerID], pending: [PeerID: MessageID]) {
+        var seen: Set<PeerID> = []
+        let order = asked.filter { offers[$0] != nil && seen.insert($0).inserted }
+        return (order, offers.filter { seen.contains($0.key) })
+    }
+
     private func cancelSends(of id: InteractionID) {
         if let tasks = inFlight.removeValue(forKey: id) { for task in tasks.values { task.cancel() } }
     }
@@ -1548,10 +1560,10 @@ public actor ChangePlanService: SkillService {
         // review of PR #111, finding 3).
         var withdrawal: WithdrawalDelivery?
         if session.role == .suggester, !session.isLeave, confirming[id] == nil {
-            let order = session.asked.filter { session.offers[$0] != nil }
+            let (order, pending) = Self.owed(session.asked, offers: session.offers)
             let delivery = WithdrawalDelivery(
                 interaction: id, planConversation: session.planConversation, order: order,
-                pending: Dictionary(uniqueKeysWithValues: order.map { ($0, session.offers[$0]!) }),
+                pending: pending,
                 until: (deadline ?? now()).addingTimeInterval(resend.holdGrace)
             )
             asking[id] = nil

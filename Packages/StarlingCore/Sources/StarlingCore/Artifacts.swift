@@ -151,12 +151,6 @@ public struct Plan: Hashable, Sendable, Codable, Identifiable {
         self.revision = revision
     }
 
-    /// The same plan at a newly agreed place (Pick a place, "Somewhere else?").
-    public func updating(place: PlaceChoice) -> Plan {
-        // Cannot throw: activity or time already satisfied the check.
-        try! updating(attendees: attendees, activity: activity, time: time, place: place)
-    }
-
     /// The same plan after a change the group agreed to (ADR 0022): any of
     /// who, what, when, and where, with the revision one higher. Throws if
     /// the result would have neither an activity nor a time, or if the
