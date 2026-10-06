@@ -1,0 +1,15 @@
+Starling
+Copyright 2026 The Starling Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+The Starling Authors are listed in the AUTHORS file.
+
+Third-party material:
+
+The Noise protocol test vectors in
+Packages/StarlingIdentity/Tests/StarlingIdentityTests/Vectors/ are taken
+unmodified from snow (https://github.com/mcginty/snow), used under the MIT
+License, and from cacophony (https://github.com/haskell-cryptography/cacophony),
+released under the Unlicense. The snow MIT license notice is reproduced in
+Packages/StarlingIdentity/Tests/StarlingIdentityTests/Vectors/README.md.
+These files are used only by tests and are not built into the app.
