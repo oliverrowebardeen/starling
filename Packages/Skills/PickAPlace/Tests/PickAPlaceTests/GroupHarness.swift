@@ -280,12 +280,15 @@ final class Phone: Sendable {
     /// This phone's own plans, by plan conversation, as the app's store
     /// holds them.
     let plans = PlanBook()
+    /// The app's holds (ADR 0023). In memory, so a restart gets new ones.
+    private let currentHolds = Mutex(PlanChangeHolds())
+    var holds: PlanChangeHolds { currentHolds.withLock { $0 } }
     /// Wraps `sends`; holds nothing unless a test asks (issue #105).
     let hold: DidSendHold
     let outbox: Outbox
     let card: AgentCard
     private let current: Mutex<PickAPlaceService>
-    private let makeService: @Sendable () -> PickAPlaceService
+    private let makeService: @Sendable (PlanChangeHolds) -> PickAPlaceService
     private let tasks = Mutex<[Task<Void, Never>]>([])
     /// Each terminal event the service reported, and whether its
     /// conversation was already retired when it did (ADR 0021).
@@ -300,7 +303,8 @@ final class Phone: Sendable {
         _ name: String, hub: LoopbackHub, maps: FakeMaps, limits: ConstraintSet = .empty,
         ownerLimits: (@Sendable () async -> ConstraintSet)? = nil, placeLedger: (any PickAPlaceLedger)? = nil,
         policy: any PolicyEngine = FixedPolicyEngine(.allow), consent outcome: ConsentOutcome = .approved, gate: ConsentGate? = nil,
-        skills: [SkillRef] = [PickAPlaceSkill.ref], model: ModelLocality = .onDevice, configuration: PickAPlaceConfiguration = fastConfiguration
+        skills: [SkillRef] = [PickAPlaceSkill.ref], model: ModelLocality = .onDevice, configuration: PickAPlaceConfiguration = fastConfiguration,
+        wrapHolds: (@Sendable (PlanChangeHolds) -> any PlanChangeHolding)? = nil
     ) {
         self.name = name
         key = try! IdentityPublicKey(bytes: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }))
@@ -313,12 +317,13 @@ final class Phone: Sendable {
         let ledger: any PickAPlaceLedger = placeLedger ?? self.ledger
         let readLimits: @Sendable () async -> ConstraintSet = ownerLimits ?? { limits }
         let book = plans
-        makeService = {
+        makeService = { holds in
             PickAPlaceService(localPeer: peer, outbox: outbox, pairedPeers: store, candidates: staged, maps: maps,
                               ownerLimits: readLimits, ledger: ledger, conversations: conversations,
-                              plans: { await book.plan(for: $0) }, clock: .system, configuration: configuration)
+                              plans: { await book.plan(for: $0) }, holds: wrapHolds?(holds) ?? holds, clock: .system,
+                              configuration: configuration)
         }
-        current = Mutex(makeService())
+        current = Mutex(makeService(currentHolds.withLock { $0 }))
     }
 
     func start() async throws {
@@ -335,9 +340,14 @@ final class Phone: Sendable {
 
     /// The app quits and launches again: a new service, restored from the
     /// coordinator's store before it handles anything.
-    func restart() async {
+    /// A relaunch: a new service with new, empty holds, which `beforeRestore`
+    /// can fill as another skill restoring first would.
+    func restart(beforeRestore: (@Sendable (PlanChangeHolds) async -> Void)? = nil) async {
         await service.shutdown()
-        let fresh = makeService()
+        let holds = PlanChangeHolds()
+        await beforeRestore?(holds)
+        currentHolds.withLock { $0 = holds }
+        let fresh = makeService(holds)
         let coordinator = coordinator
         tasks.withLock { $0.append(Task { [self] in for await event in fresh.events { await self.deliver(event) } }) }
         await fresh.restore(Array(await coordinator.interactions.values))
@@ -475,11 +485,35 @@ actor EventHold {
     }
 }
 
+/// Holds that wait for the test before granting a hold, so a test can end
+/// a card while its yes waits on one.
+actor GatedHolds: PlanChangeHolding {
+    let base: PlanChangeHolds
+    private var isOpen = false
+    private(set) var waiting = 0
+
+    init(_ base: PlanChangeHolds) { self.base = base }
+
+    func open() { isOpen = true }
+
+    func hold(_ plan: ConversationID, for change: ConversationID) async -> Bool {
+        waiting += 1
+        while !isOpen { try? await Task.sleep(for: .milliseconds(5)) }
+        return await base.hold(plan, for: change)
+    }
+
+    func release(_ plan: ConversationID, for change: ConversationID) async { await base.release(plan, for: change) }
+    func holder(of plan: ConversationID) async -> ConversationID? { await base.holder(of: plan) }
+}
+
 /// A phone's own plans, by the conversation that agreed them (`Plan.origin`).
 actor PlanBook {
     private var plans: [ConversationID: Plan] = [:]
 
     func hold(_ plan: Plan) { plans[plan.origin] = plan }
+    /// Holds `plan` under another conversation, as when a request names the
+    /// plan by a conversation other than its origin.
+    func hold(_ plan: Plan, under conversation: ConversationID) { plans[conversation] = plan }
     func plan(for conversation: ConversationID) -> Plan? { plans[conversation] }
 }
 

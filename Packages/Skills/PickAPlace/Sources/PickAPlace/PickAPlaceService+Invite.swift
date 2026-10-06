@@ -46,6 +46,9 @@ struct Invite {
     /// What the request is on this phone's plan, from this phone's own copy
     /// of it; nil when the request is not chained from a plan.
     var kind: PlaceRequestKind?
+    /// The origin of this phone's own plan the request names, which keys
+    /// its hold, as on the organizer's side (ADR 0023, decision 3).
+    var planOrigin: ConversationID?
     /// The newest proposal that arrived while this phone's own list or yes
     /// was still on its way, handled once that send returns. The organizer
     /// may send it the moment it has the list or yes, before this phone's
@@ -62,6 +65,14 @@ struct Invite {
     /// A change of a plan's place: the plan's whole roster must agree, and
     /// a yes is final once sent (ADR 0233).
     var isChange: Bool { if case .placeChange? = kind { true } else { false } }
+    /// The plan a yes holds, named by its origin: a request on a plan this
+    /// phone holds, a first place too (ADR 0023).
+    var holdKey: ConversationID? {
+        switch kind {
+        case .firstPlace?, .placeChange?: planOrigin ?? chainedFrom
+        case .planNotHeld?, nil: nil
+        }
+    }
 }
 
 extension PickAPlaceService {
@@ -101,9 +112,11 @@ extension PickAPlaceService {
                 // What the request is on this phone's own plan, recorded for
                 // its whole life before anything is answered (ADR 0233).
                 if let chainedFrom = envelope.chainedFrom {
-                    let kind = Self.kind(of: await service.plans(chainedFrom))
+                    let plan = await service.plans(chainedFrom)
+                    let kind = Self.kind(of: plan)
                     try await service.ledger.recordRequestKind(kind, for: conversation, at: now)
                     service.invites[conversation]?.kind = kind
+                    service.invites[conversation]?.planOrigin = plan?.origin
                 }
             } catch {
                 service.endInvite(conversation, event: nil, reply: nil)
@@ -313,7 +326,7 @@ extension PickAPlaceService {
         else { return }
         // A change of place asks this phone's plan's whole roster, over the
         // plan's own revision: anything else is not shown (ADR 0233).
-        if case .placeChange(let everyone, let revision, let time, let activity)? = invite.kind {
+        if case .placeChange(let everyone, let revision, _, let time, let activity)? = invite.kind {
             guard Set(roster) == Set(everyone), revision < UInt32(ProtocolLimits.maxNegotiationRounds - 1),
                   UInt32(proposal.round) == revision + 1,
                   // Only the place changes: the time and activity stay.
@@ -402,9 +415,11 @@ extension PickAPlaceService {
             // A change applies only over the plan it was made for: if the
             // plan moved on meanwhile, the card closes and nothing is sent
             // (ADR 0233).
-            if case .placeChange(_, let planRevision, _, _)? = invite.kind {
+            if case .placeChange(_, let planRevision, let planPlace, _, _)? = invite.kind {
                 let current: Plan? = if let chainedFrom = invite.chainedFrom { await plans(chainedFrom) } else { nil }
-                guard let current, current.revision == planRevision, current.place != nil else {
+                // The place too, so a second change over the same revision
+                // is caught even if a stored revision lags.
+                guard let current, current.revision == planRevision, current.place != nil, current.place == planPlace else {
                     invites[conversation]?.accepting = false
                     endInvite(conversation, event: .noAgreement, reply: nil)
                     throw PickAPlaceError.planChangedMeanwhile
@@ -415,40 +430,70 @@ extension PickAPlaceService {
                 invites[conversation]?.accepting = false
                 return
             }
-            // What this yes names is recorded before it goes, so only a
-            // confirmation of it is taken, across relaunches.
-            guard let named = await recordYes(in: conversation) else {
+            // One change to a plan at a time on this phone: no yes while
+            // another change holds the plan (ADR 0023).
+            if let plan = current.holdKey {
+                guard await holds.hold(plan, for: conversation) else {
+                    invites[conversation]?.accepting = false
+                    throw PickAPlaceError.planChangeInProgress
+                }
+                guard let held = invites[conversation], !held.isFinished, held.proposal?.revision == revision else {
+                    // The card ended while the hold was taken: let it go.
+                    await holds.release(plan, for: conversation)
+                    invites[conversation]?.accepting = false
+                    return
+                }
+            }
+            // What this yes names, so only a confirmation of it is taken. It
+            // is recorded as a yes only once it has gone (below).
+            guard let named = prepareYes(in: conversation), invites[conversation]?.isFinished == false else {
                 invites[conversation]?.accepting = false
-                throw PickAPlaceError.ledgerUnavailable
+                return
             }
             let acceptance = Acceptance(proposal: named, terms: proposal.terms)
             let result = await trackedSend(.accept(acceptance), to: invite.organizer, conversation: conversation, chainedFrom: invite.chainedFrom,
                                            accepting: invite.offer)
-            invites[conversation]?.accepting = false
-            // A yes to a proposal that has since been replaced reports
-            // nothing (ADR 0011, amendment 14).
-            guard invites[conversation]?.proposal?.revision == revision else { return }
+            // The yes stays on its way until it counts, through the ledger
+            // write below, so a confirmation waits for it and a change's
+            // final-yes guard holds (review of #122).
+            guard invites[conversation]?.proposal?.revision == revision else {
+                // A yes to a proposal that has since been replaced reports
+                // nothing (ADR 0011, amendment 14).
+                invites[conversation]?.accepting = false
+                return
+            }
             switch result {
             case nil:
                 break
             case is CancellationError?:
                 // Withdrawn or ended while the send waited; nothing left.
+                invites[conversation]?.accepting = false
                 return
             case OutboxError.consentDeclined?:
                 // The coordinator applies the pass; like any pass, nothing
                 // is sent.
+                invites[conversation]?.accepting = false
                 endInvite(conversation, event: nil, reply: nil)
                 return
             case OutboxError.denied?:
                 // No yes left the phone, so this looks like a pass.
+                invites[conversation]?.accepting = false
                 endInvite(conversation, event: .blockedByPrivacy, reply: nil)
                 return
             case let error?:
                 // Unreachable for now: the owner can tap again.
+                invites[conversation]?.accepting = false
                 throw error
             }
-            guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else { return }
+            // The yes has gone: recorded now, so a relaunch keeps it. A yes
+            // still on a consent sheet when the app stopped is not one.
+            await saveYes(in: conversation, revision: revision)
+            guard let current = invites[conversation], !current.isFinished, current.proposal?.revision == revision else {
+                invites[conversation]?.accepting = false
+                return
+            }
             invites[conversation]?.accepted = true
+            invites[conversation]?.accepting = false
             emit(invite.id, .ownerAccepted(revision: revision))
             spawnWaitForConfirmation(conversation)
         case .pass:
@@ -464,35 +509,47 @@ extension PickAPlaceService {
     func spawnAcceptance(_ conversation: ConversationID) {
         guard let invite = invites[conversation], let proposal = invite.proposal else { return }
         spawn(conversation) { service in
-            // Recorded before it goes; a yes that cannot be recorded is not
-            // sent.
-            guard let named = await service.recordYes(in: conversation),
+            guard let named = service.prepareYes(in: conversation), service.invites[conversation]?.isFinished == false,
                   service.invites[conversation]?.proposal?.revision == proposal.revision
             else { return }
-            await service.trySend(.accept(Acceptance(proposal: named, terms: proposal.terms)), to: invite.organizer, conversation: conversation,
-                                  chainedFrom: invite.chainedFrom, accepting: invite.offer)
+            do {
+                try await service.send(.accept(Acceptance(proposal: named, terms: proposal.terms)), to: invite.organizer,
+                                       conversation: conversation, chainedFrom: invite.chainedFrom, accepting: invite.offer)
+                await service.saveYes(in: conversation, revision: proposal.revision)
+            } catch OutboxError.consentDeclined {
+                // The owner declined the sheet for a yes said again, as after
+                // a relaunch before the friend's card is known: the card
+                // ends, and its hold with it. The coordinator applies the
+                // pass (review of #122).
+                service.endInvite(conversation, event: nil, reply: nil)
+            } catch OutboxError.denied {
+                service.endInvite(conversation, event: .blockedByPrivacy, reply: nil)
+            } catch {
+                // Unreachable or cancelled: the yes is said again later.
+            }
         }
     }
 
-    /// Adds the proposal this phone's next yes names to the ones its yes
-    /// has named for the current card, and records them, before the yes is
-    /// sent. Returns the proposal it names, or nil if it could not be
-    /// recorded.
-    func recordYes(in conversation: ConversationID) async -> MessageID? {
-        guard let invite = invites[conversation], let proposal = invite.proposal else { return nil }
+    /// Adds the proposal this phone's next yes names to the ones its yes has
+    /// named for the current card, so only a confirmation of it is taken.
+    /// Returns the proposal it names.
+    func prepareYes(in conversation: ConversationID) -> MessageID? {
+        guard let invite = invites[conversation], invite.proposal != nil else { return nil }
         let named = invite.proposeID ?? MessageID()
         var yesNamed = invite.yesNamed.filter { $0 != named } + [named]
         if yesNamed.count > Self.maxRememberedProposals { yesNamed.removeFirst(yesNamed.count - Self.maxRememberedProposals) }
-        do {
-            try await ledger.recordYes(RecordedYes(revision: proposal.revision, proposals: yesNamed, at: clock.now()), for: conversation)
-        } catch {
-            return nil
-        }
-        // A newer card arrived while the record was written: this yes is
-        // not for it.
-        guard invites[conversation]?.proposal?.revision == proposal.revision else { return nil }
         invites[conversation]?.yesNamed = yesNamed
         return named
+    }
+
+    /// Records the yes for the card of `revision` once it has gone, with the
+    /// proposals it named, so a relaunch keeps it and its confirmation. A
+    /// yes not yet sent, such as one on a consent sheet, is never recorded
+    /// (review of #122). If the record cannot be written, the yes has still
+    /// gone; a relaunch then does not count it.
+    func saveYes(in conversation: ConversationID, revision: UInt32) async {
+        guard let yesNamed = invites[conversation]?.yesNamed, !yesNamed.isEmpty else { return }
+        try? await ledger.recordYes(RecordedYes(revision: revision, proposals: yesNamed, at: clock.now()), for: conversation)
     }
 
     /// Repeats the yes until the organizer confirms, in case either message
@@ -534,10 +591,16 @@ extension PickAPlaceService {
         invites[conversation]?.finalRoster = final
         cancelTasks(conversation)
         remember(conversation)
-        emit(invite.id, .everyoneConfirmed(revision: proposal.revision))
-        continuation.yield(.produced(invite.id, .placeChoice(place)))
-        if let attendees = try? Attendees(final) {
-            continuation.yield(.produced(invite.id, .attendees(attendees)))
+        let attendees = try? Attendees(final)
+        guard invite.holdKey != nil else {
+            reportPlanned(invite.id, revision: proposal.revision, place: place, attendees: attendees)
+            return
+        }
+        // Released before the plan is reported (ADR 0023).
+        let plan = heldPlan(of: conversation)
+        spawn(conversation) { service in
+            await service.release(plan, for: conversation)
+            service.reportPlanned(invite.id, revision: proposal.revision, place: place, attendees: attendees)
         }
     }
 
@@ -672,6 +735,12 @@ extension PickAPlaceService {
         guard let invite = invites[conversation], !invite.isFinished else { return }
         invites[conversation]?.finished = true
         cancelTasks(conversation)
+        if !retiring {
+            // The card closes without an ending of its own yet: its hold
+            // ends now (ADR 0023).
+            let plan = heldPlan(of: conversation)
+            spawn(conversation) { await $0.release(plan, for: conversation) }
+        }
         if retiring {
             let goodbye: [(PeerID, MessageBody)] = reply.map {
                 [(invite.organizer, .reject(Rejection(proposal: invite.proposeID ?? invite.lastQuery ?? MessageID(), reason: $0)))]

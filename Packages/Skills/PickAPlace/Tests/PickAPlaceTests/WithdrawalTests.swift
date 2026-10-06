@@ -160,6 +160,28 @@ struct WithdrawalTests {
         #expect(await group.lifecyclesWereLegal())
     }
 
+    /// Review of #118, round 2 follow-up: after Oliver's app restarts, Jake
+    /// leaves the plan; Maya still gets the shorter roster, because Oliver's
+    /// confirmation names the proposal her yes named, kept in his ledger.
+    @Test func aRosterShrinksAfterTheOrganizerRestarts() async throws {
+        let (group, oliver, maya, jake) = try await threeFriends()
+        defer { Task { await group.stop() } }
+        let conversation = try await oliver.organize(Venues.all, with: [maya, jake]).conversation
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: conversation)) }
+        for phone in [maya, jake, oliver] { try await phone.accept(in: conversation) }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.planned, in: conversation)) }
+        #expect(await eventually { await oliver.ledger.state.acceptances[conversation]?.proposals.count == 2 })
+
+        await oliver.restart()
+        let jakes = try #require(await jake.interaction(conversation)?.id)
+        await jake.service.withdraw(jakes)
+        #expect(await jake.reaches(.ended(.withdrawn), in: conversation))
+        for phone in [oliver, maya] {
+            #expect(await eventually { await phone.attendees(in: conversation) == [oliver.id, maya.id] }, "\(phone.name)")
+        }
+        #expect(await group.lifecyclesWereLegal())
+    }
+
     /// After a relaunch, a friend's phone never answers the organizer's
     /// acknowledgment, so the two phones cannot acknowledge each other
     /// forever.

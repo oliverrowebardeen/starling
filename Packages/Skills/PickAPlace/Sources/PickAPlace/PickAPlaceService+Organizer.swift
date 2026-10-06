@@ -27,6 +27,9 @@ struct Organizer {
     /// once the change is confirmed. The first place for a plan still goes
     /// ahead with whoever agrees, as a chain does.
     var everyoneMustAgree: Bool { if case .placeChange? = kind { true } else { false } }
+    /// The plan this request holds while it is open, named by its origin:
+    /// any request on a plan, a first place too (ADR 0023).
+    var holdKey: ConversationID? { kind == nil ? nil : base?.origin ?? chainedFrom }
     let time: TimeSlot?
     let activity: Keyword?
     var phase: Phase = .asking
@@ -151,6 +154,13 @@ extension PickAPlaceService {
             !everyoneMustAgree || Set(plan.attendees.peers).subtracting([localPeer]) == Set(friends)
         } ?? true
 
+        // One change to a plan at a time on this phone (ADR 0023): a request
+        // on a plan holds it before anything is sent.
+        if let base {
+            guard await holds.hold(base.origin, for: request.conversation) else { throw PickAPlaceError.planChangeInProgress }
+            guard isNew(request) else { throw PickAPlaceError.alreadyStarted }
+        }
+
         let conversation = request.conversation
         conversationOf[request.interaction] = conversation
         organized[conversation] = Organizer(
@@ -175,6 +185,7 @@ extension PickAPlaceService {
             try await ledger.recordDeadlines(RequestDeadlines(expiresAt: expiry), for: conversation)
             if let kind { try await ledger.recordRequestKind(kind, for: conversation, at: clock.now()) }
         } catch {
+            await release(heldPlan(of: conversation), for: conversation)
             organized[conversation] = nil
             conversationOf[request.interaction] = nil
             throw PickAPlaceError.ledgerUnavailable
@@ -275,6 +286,7 @@ extension PickAPlaceService {
             }
             organizer.accepted.insert(sender)
             organizer.acceptedProposal[sender] = acceptance.proposal
+            saveAcceptedProposals(conversation)
         case (.proposing, .reject):
             guard organizer.invited.contains(sender) else { return }
             organizer.accepted.remove(sender)
@@ -541,7 +553,7 @@ extension PickAPlaceService {
         // the confirm deadline, so nobody can tell the two apart by when the
         // plan is confirmed (ADR 0017; ADR 0020, decision 9).
         guard organizer.invited.allSatisfy({ organizer.accepted.contains($0) || organizer.timedOut.contains($0) }) else { return }
-        guard case .placeChange(_, let revision, _, _)? = organizer.kind else {
+        guard case .placeChange(_, let revision, let place, _, _)? = organizer.kind else {
             finalize(conversation)
             return
         }
@@ -554,7 +566,9 @@ extension PickAPlaceService {
             let current: Plan? = if let chainedFrom { await service.plans(chainedFrom) } else { nil }
             service.organized[conversation]?.checkingPlan = false
             guard service.organized[conversation]?.phase == .proposing else { return }
-            guard let current, current.revision == revision else {
+            // The place too, so a second change over the same revision is
+            // caught even if a stored revision lags.
+            guard let current, current.revision == revision, current.place == place else {
                 service.endOrganizer(conversation, event: .noAgreement, reason: .noOverlap)
                 return
             }
@@ -613,6 +627,9 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         cancelTasks(conversation)
         rememberOrganizer(conversation)
+        // Saved again after the cancel, which may have stopped a save that
+        // had not run yet.
+        saveAcceptedProposals(conversation)
 
         for friend in yes { spawnConfirmation(conversation, to: friend, organizer: organizer) }
         let chainedFrom = organizer.chainedFrom
@@ -623,13 +640,28 @@ extension PickAPlaceService {
                                       conversation: conversation, chainedFrom: chainedFrom)
             }
         }
-        emit(organizer.id, .everyoneConfirmed(revision: proposal.revision))
-        continuation.yield(.produced(organizer.id, .placeChoice(place)))
         // The proposal's roster may name friends who passed or never
         // answered; these are the people actually in the plan.
-        if let attendees = try? Attendees([localPeer] + yes) {
-            continuation.yield(.produced(organizer.id, .attendees(attendees)))
+        let attendees = try? Attendees([localPeer] + yes)
+        let (id, revision) = (organizer.id, proposal.revision)
+        guard organizer.holdKey != nil else {
+            reportPlanned(id, revision: revision, place: place, attendees: attendees)
+            return
         }
+        // The plan is released before the plan is reported, so a change
+        // started once it is planned finds the plan free (ADR 0023).
+        let plan = heldPlan(of: conversation)
+        spawn(conversation) { service in
+            await service.release(plan, for: conversation)
+            service.reportPlanned(id, revision: revision, place: place, attendees: attendees)
+        }
+    }
+
+    /// Reports a confirmed plan: the event, then the place and the people.
+    func reportPlanned(_ id: InteractionID, revision: UInt32, place: PlaceChoice, attendees: Attendees?) {
+        emit(id, .everyoneConfirmed(revision: revision))
+        continuation.yield(.produced(id, .placeChoice(place)))
+        if let attendees { continuation.yield(.produced(id, .attendees(attendees))) }
     }
 
     /// The owner withdraws a confirmed plan. Confirmations still on their
@@ -677,6 +709,17 @@ extension PickAPlaceService {
         organized[conversation] = organizer
         for other in remaining where other != localPeer { spawnConfirmation(conversation, to: other, organizer: organizer) }
         continuation.yield(.produced(organizer.id, .attendees(attendees)))
+    }
+
+    /// Saves the proposal each counted yes named, as it stands when the
+    /// write runs, so a restored organizer's confirmations still name them.
+    /// A failed write leaves a restored organizer naming nothing a friend
+    /// knows, and the friend keeps its roster.
+    func saveAcceptedProposals(_ conversation: ConversationID) {
+        spawn(conversation) { service in
+            guard let proposals = service.organized[conversation]?.acceptedProposal else { return }
+            try? await service.ledger.recordAcceptedProposals(proposals, for: conversation, at: service.clock.now())
+        }
     }
 
     /// Confirms to `friend`, naming the proposal its yes named.

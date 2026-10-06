@@ -50,7 +50,7 @@ struct GroupFlowTests {
         for phone in [oliver, maya, jake] { try await phone.accept(in: conversation) }
         for phone in [oliver, maya, jake] {
             #expect(await phone.reaches(.planned, in: conversation))
-            #expect(await phone.agreedPlace(in: conversation) == typed[0].choice)
+            #expect(await eventually { await phone.agreedPlace(in: conversation) == typed[0].choice })
         }
         // A typed place has no coordinate, and nobody's position travels.
         let places: [PlaceChoice] = await group.wire.values.flatMap { (_, value) -> [PlaceChoice] in
@@ -79,7 +79,8 @@ struct GroupFlowTests {
         for phone in [oliver, maya, jake] { try await phone.accept(in: conversation) }
         for phone in [oliver, maya, jake] {
             #expect(await phone.reaches(.planned, in: conversation), "\(phone.name) has a plan")
-            #expect(await phone.agreedPlace(in: conversation) == Venues.bobaGuys.choice)
+            // The place follows the confirmation as its own event.
+            #expect(await eventually { await phone.agreedPlace(in: conversation) == Venues.bobaGuys.choice })
         }
         #expect(await group.lifecyclesWereLegal())
     }

@@ -30,7 +30,7 @@ struct RestoreTests {
         try await oliver.accept(in: conversation)
         #expect(await oliver.reaches(.planned, in: conversation))
         #expect(await maya.reaches(.planned, in: conversation))
-        #expect(await oliver.agreedPlace(in: conversation) == Venues.teaLab.choice)
+        #expect(await eventually { await oliver.agreedPlace(in: conversation) == Venues.teaLab.choice })
         #expect(await group.lifecyclesWereLegal())
     }
 
@@ -351,7 +351,8 @@ struct RestoreTests {
         let service = PickAPlaceService(
             localPeer: .random(), outbox: Outbox(transport: RecordingTransport(), policy: FixedPolicyEngine(.allow), consent: ScriptedConsentProvider(.approved)),
             pairedPeers: InMemoryPairedPeerStore(), candidates: StagedCandidates(), maps: FakeMaps(), ownerLimits: { .empty },
-            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger(), plans: { _ in nil }
+            ledger: InMemoryPickAPlaceLedger(), conversations: InMemoryConversationLedger(), plans: { _ in nil },
+            holds: PlanChangeHolds()
         )
         let now = Timestamp(Date())
         let otherVersion = Interaction(skill: SkillRef(.pickAPlace, SkillVersion(2, 0)), role: .invitee, participants: [.random()], createdAt: now)
