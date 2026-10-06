@@ -23,7 +23,7 @@ References written as "#NN" in these docs, ADRs, and code comments point to issu
 - **The owner** set direction, approved each phase's lane plan, accepted decisions that changed the brief, ran the device tests on two iPhones, and approved merges.
 - **The Orchestrator** was a coordinating AI agent. It wrote the interface freezes in `StarlingCore`, owned the shared docs, answered lanes' requests, and ran the merge gate.
 - **Lane agents** each owned specific directories in their own git worktree and branch. A lane ended with **DONE** (tests passing, ADRs for new decisions, a device checklist) or **BLOCKED** (exactly what it needed, and from whom).
-- **Reviewers** were AI models from a different vendor than the one that wrote most of the code: OpenAI's Codex reviewed work written mostly with Anthropic's Claude (the commits carry `Co-Authored-By` trailers). The lane plans give the reasoning: an independent model is a better adversary.
+- **Reviewers** were separate AI agents told only to find defects. Most rounds used OpenAI's Codex, a model from a different vendor than the one that wrote most of the code (Anthropic's Claude; the commits carry `Co-Authored-By` trailers), because an independent model is a better adversary. Later rounds added separate Claude reviewer agents with fresh context, which caught defects the Codex rounds had passed, among them the pairing-code restart below.
 
 ## A change, end to end
 
