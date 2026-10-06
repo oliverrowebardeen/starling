@@ -1,14 +1,22 @@
 name: CI
 
-# Pull requests and main only: the repo is private and pays for macOS minutes (ADR 0007).
+# Pull requests, and pushes to main. The steps match Tools/local-gate.sh, which
+# runs the same checks locally when Actions is unavailable (ADR 0007).
 on:
   pull_request:
   push:
     branches: [main]
 
+# Read-only token: the jobs only check out and build, and a pull request from
+# a fork must not get write access.
+permissions:
+  contents: read
+
+# A new push to a pull request supersedes its older run. Every run on main
+# finishes, so each merged commit keeps its own result.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   packages:
