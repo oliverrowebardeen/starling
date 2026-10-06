@@ -119,6 +119,42 @@ import Testing
         await network.shutdown()
     }
 
+    /// The commit's record lands after the withdrawal's and replaces it (one
+    /// key per suggestion). The withdrawal must still be on record, so a
+    /// restart resends the ones Maya and Jake lost.
+    @Test func aWithdrawalDuringTheCommitIsStillResentAfterARestart() async throws {
+        let group = Group()
+        let network = group.network
+        let phone = group.phone(alex)
+        await phone.journal.hold { $0.isConfirming }
+        let link = try await group.suggest(.change(time: Fixtures.later, activity: nil, adding: nil), by: alex)
+        await network.deliver()
+        try await network.until("cards up") { await ReliabilityTests.cardsUp(group) }
+        for person in [maya, jake] {
+            try await group.phone(person).service.answer(try await group.card(of: person).id, with: .accept(proposal: 1))
+        }
+        network.drop("Alex > Maya: reject")
+        network.drop("Alex > Jake: reject")
+        let delivering = Task { await network.deliver() }
+        try await network.until("commit held") { await phone.journal.held == 1 }
+        await phone.service.withdraw(link.id)
+        await phone.journal.release()
+        await delivering.value
+        await network.deliver()
+        await network.settle()
+        for person in [maya, jake] { #expect(await group.phone(person).changes().first?.state.isFinal == false) }
+        await phone.restart()
+        await network.deliver()
+        try await network.until("cards closed") {
+            for person in [maya, jake] where await group.phone(person).changes().first?.state.isFinal != true { return false }
+            return true
+        }
+        try await network.until("Alex's withdrawal done") { (try? await phone.journal.records().isEmpty) == true }
+        #expect(await ReliabilityTests.revisions(group, [alex, maya, jake]) == [0, 0, 0])
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
     // MARK: Finding 3: a commit or update the crash interrupted is replayed
 
     @Test func theSuggestersCommitIsReplayedIfItsUpdateWasLost() async throws {

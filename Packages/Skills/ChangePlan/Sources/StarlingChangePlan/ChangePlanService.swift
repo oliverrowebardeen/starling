@@ -734,7 +734,9 @@ public actor ChangePlanService: SkillService {
         // Still ours, and the plan still stands as the basis.
         let current = await planLookup(session.planConversation)
         guard sessions[id]?.stepID == step else {
-            await forget(id.rawValue)
+            // Withdrawn meanwhile: the commit's record replaced the
+            // withdrawal's (one key), which must stay on record.
+            if let withdrawal = withdrawing[id] { await store(.withdrawing(withdrawal)) } else { await forget(id.rawValue) }
             return
         }
         guard let current, current.plan.revision == session.basis?.revision, current.plan.attendees == session.basis?.attendees else {
