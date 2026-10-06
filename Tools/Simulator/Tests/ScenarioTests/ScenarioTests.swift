@@ -56,7 +56,7 @@ import Testing
         #expect(outcome.accepted.allSatisfy { $0.body.kind == .hello })
     }
 
-    /// Regression: https://github.com/oliverrowebardeen/starling-ios/issues/8
+    /// Regression: #8
     @Test func impersonationIsDroppedBeforeTheInbox() async throws {
         let outcome = try await ScenarioRunner.run(.impersonation)
         #expect(!outcome.accepted.contains { $0.body.kind == .reject })

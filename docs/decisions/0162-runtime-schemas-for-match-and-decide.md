@@ -41,4 +41,4 @@ Measured with the real model on this Mac (see `Packages/StarlingAgent/Reports/ph
 - Xcode 27.0 SDK: `FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface`, build 27A266a
 - TN3193, on schema token cost: https://developer.apple.com/documentation/technotes/tn3193-managing-the-on-device-foundation-model-s-context-window
 - ARCHITECTURE.md rule 6 and section 7
-- Red-team issue #9: https://github.com/oliverrowebardeen/starling-ios/issues/9
+- Red-team issue #9

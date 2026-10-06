@@ -63,4 +63,4 @@ until the Orchestrator requests its integration passes.
 - [Outbox numbering, consent, and observer](../../Packages/StarlingCore/Sources/StarlingCore/Outbox.swift).
 - [Audience resolver](../../Packages/StarlingCore/Sources/StarlingCore/Audience.swift).
 - [Real policy](../../Packages/StarlingPolicy/Sources/StarlingPolicy/Policy.swift).
-- [Integration cases](https://github.com/oliverrowebardeen/starling-ios/issues/49).
+- Integration cases (#49).

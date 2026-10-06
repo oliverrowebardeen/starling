@@ -36,4 +36,4 @@ The brief (section 3.6) asks for the Evaluations framework "to measure negotiati
 - `Evaluation` protocol: https://developer.apple.com/documentation/evaluations/evaluation
 - Xcode 27.0 SDK: `Evaluations.swiftmodule/arm64-apple-macos.swiftinterface` and `.swiftdoc`, build 27A266a
 - Phase 0 findings: `docs/research/model-budget.md`, section 3
-- Red-team issue #9: https://github.com/oliverrowebardeen/starling-ios/issues/9
+- Red-team issue #9

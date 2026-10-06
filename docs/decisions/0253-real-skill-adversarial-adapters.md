@@ -66,4 +66,4 @@ proposal model facts. This does not approve exposing venue names to a real model
   `Packages/Skills/SwapPhotos/Sources/StarlingSwapPhotos/` at main `fde141f`.
 - `App/Features/Sources/StarlingFeatures/FileConversationLedger.swift`,
   `FileSentSequenceStore.swift`, and `PairingModel.swift` at main `fde141f`.
-- [Integration list](https://github.com/oliverrowebardeen/starling-ios/issues/49).
+- Integration list (#49).

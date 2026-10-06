@@ -106,11 +106,11 @@ Orchestrator runs #107's gate; F does not rerun it in this increment.
   read 2026-10-05.
 - The Orchestrator's 2026-10-05 confirmation that #111 merged: rebase #107,
   update changed expectations, run the Simulator suite, and mark it ready.
-- Issues [#113](https://github.com/oliverrowebardeen/starling-ios/issues/113),
-  [#114](https://github.com/oliverrowebardeen/starling-ios/issues/114),
-  [#116](https://github.com/oliverrowebardeen/starling-ios/issues/116), and
-  [#117](https://github.com/oliverrowebardeen/starling-ios/issues/117): executed
+- Issues #113,
+  #114,
+  #116, and
+  #117: executed
   reproductions and controls from this lane.
-- Issue [#119](https://github.com/oliverrowebardeen/starling-ios/issues/119):
+- Issue #119:
   four findings already routed by the Orchestrator's re-review, reproduced
   as PC35 to PC38 on b785f29 and passing without wrappers on e8892a1.

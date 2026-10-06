@@ -64,7 +64,7 @@ PR #107 and the pending Change the plan coverage remain separate.
 
 - [Swift SE-0329, SuspendingClock](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0329-clock-instant-duration.md#suspendingclock),
   read 2026-10-03: its clock does not advance during machine sleep.
-- [PR #110](https://github.com/oliverrowebardeen/starling-ios/pull/110),
+- PR #110,
   read 2026-10-03: native Down test evidence and virtual-time fixes.
 - ADRs 0256 and 0257; SimulatorKit/Simulation.swift and the test harnesses at
   `78963ab`, read 2026-10-03.

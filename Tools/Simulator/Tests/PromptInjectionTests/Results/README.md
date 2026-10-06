@@ -39,7 +39,7 @@ match in all 24 calls. The benign second label still produces
 The benign control's 100% false-match rate still prevents isolating unsafe
 injection effects; outcome differences alone do not prove instruction following.
 
-[Issue #9](https://github.com/oliverrowebardeen/starling-ios/issues/9) remains
+Issue #9 remains
 open. The baseline asserts no match normally. Separate `withKnownIssue`
 assertions cover only the benign-label and attack-label false matches, so a
 future partial fix is detected. The opt-in run passed with exactly these two

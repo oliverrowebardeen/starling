@@ -72,5 +72,5 @@ to remove another lane's code or the still-used legacy test infrastructure.
 - `docs/requests/P15-B.md` at `8c52f25`.
 - PR #86 at `29e58fb`, including ADR 0210 decision 13 and the service and
   coordinator delivery tests.
-- [Integration list](https://github.com/oliverrowebardeen/starling-ios/issues/49)
-  and [lost final resend](https://github.com/oliverrowebardeen/starling-ios/issues/76).
+- Integration list (#49)
+  and lost final resend (#76).
