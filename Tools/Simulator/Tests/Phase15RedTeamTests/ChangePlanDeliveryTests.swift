@@ -1,0 +1,225 @@
+import Foundation
+import StarlingChangePlan
+import StarlingCore
+import Testing
+
+struct ChangePlanDeliveryTests {
+    private func advance(_ world: ChangeWorld, seconds: TimeInterval) async throws {
+        let next = world.clock.now.addingTimeInterval(seconds)
+        // The absolute retry must be armed before virtual time moves. Awake
+        // host time bounds only this condition, never the protocol deadline.
+        try await P15.eventually("reliable-delivery timer registered") { world.clock.deadlines.contains(next) }
+        world.clock.advance(to: next)
+    }
+    private func delivery(_ phone: ChangePhone) async throws -> ConfirmationDelivery? {
+        try await phone.journal.records().compactMap { if case .confirming(let value) = $0 { value } else { nil } }.first
+    }
+    private func agree(_ world: ChangeWorld) async throws -> Interaction {
+        let change = try await world.start()
+        try await world.phones[1].accept(change.conversation)
+        try await world.phones[2].accept(change.conversation)
+        _ = try await world.phones[0].wait(.planned, change.conversation)
+        return change
+    }
+
+    @Test func pc29ADroppedConfirmationIsResentAndAllPlansConverge() async throws {
+        let world = try await ChangeWorld.make()
+        let a = world.phones[0], b = world.phones[1], c = world.phones[2]
+        await b.relay.dropConfirmations()
+        let change = try await agree(world)
+        try await P15.eventually("one confirmation lost") { await b.relay.lost.count == 1 }
+        _ = try await c.wait(.planned, change.conversation)
+        #expect(try await b.plan(world.origin).revision == 0)
+        try await advance(world, seconds: 5)
+        _ = try await b.wait(.planned, change.conversation)
+        try await P15.eventually("all confirmation acknowledgments arrive") { try await delivery(a) == nil }
+        for phone in [a, b, c] {
+            #expect(try await phone.plan(world.origin).revision == 1)
+            #expect(try await phone.plan(world.origin).activity == ChangeWorld.changedActivity)
+        }
+        #expect(await a.sent(change.conversation).filter { $0.recipient == b.id && $0.body.kind == .accept }.count == 2)
+        await world.checkHealthy()
+        await world.stop()
+    }
+
+    @Test(arguments: [false, true])
+    func pc30ALostAckAndDuplicateConfirmationApplyOnceAcrossReplacement(restart: Bool) async throws {
+        let world = try await ChangeWorld.make()
+        let a = world.phones[0], b = world.phones[1], c = world.phones[2]
+        await a.relay.dropConfirmations()
+        let change = try await agree(world)
+        for phone in [b, c] { _ = try await phone.wait(.planned, change.conversation) }
+        try await P15.eventually("exactly one acknowledgment remains") { try await delivery(a)?.pending.count == 1 }
+        let lost = try #require(await a.relay.lost.first)
+        let peer = try #require(world.phones.first { $0.id == lost.sender })
+        let before = try await peer.plan(world.origin)
+        if restart {
+            try await peer.restart()
+            try await a.restart()
+        } else {
+            try await advance(world, seconds: 5)
+        }
+        try await P15.eventually("resent confirmation is acknowledged") { try await delivery(a) == nil }
+        #expect(try await peer.plan(world.origin) == before)
+        let confirmation = try #require(await a.sent(change.conversation).first { $0.recipient == peer.id && $0.body.kind == .accept })
+        await peer.relay.repeatDelivery(confirmation)
+        #expect(try await peer.plan(world.origin) == before)
+        #expect(try await a.ledger.isRetired(change.conversation))
+        await world.checkHealthy()
+        await world.stop()
+    }
+
+    @Test func pc31ALostLeaveNoticeReachesTheRemainingPhoneOnRetry() async throws {
+        let world = try await ChangeWorld.make()
+        let a = world.phones[0], b = world.phones[1], c = world.phones[2]
+        await a.relay.drop(.propose)
+        _ = try await world.start(.leave, by: 1)
+        try await P15.eventually("leave notice lost") { await a.relay.lost.count == 1 }
+        try await P15.eventually("other friend observes departure") { try await c.plan(world.origin).revision == 1 }
+        #expect(try await a.plan(world.origin).revision == 0)
+        try await advance(world, seconds: 5)
+        try await P15.eventually("lost departure recovered") { try await a.plan(world.origin).revision == 1 }
+        #expect(try await a.plan(world.origin).attendees == c.plan(world.origin).attendees)
+        #expect(try await a.plan(world.origin).attendees.peers == [a.id, c.id])
+        try await P15.eventually("leave delivery acknowledged") {
+            try await b.journal.records().allSatisfy { if case .leaving = $0 { false } else { true } }
+        }
+        await world.checkHealthy()
+        await world.stop()
+    }
+
+    @Test func pc32AStrangersAckOrConfirmationCannotEndDeliveryOrCommitAPlan() async throws {
+        let world = try await ChangeWorld.make()
+        let a = world.phones[0], b = world.phones[1], x = world.phones[3]
+        await b.relay.dropConfirmations()
+        let change = try await agree(world)
+        try await P15.eventually("confirmation is awaiting B") { try await delivery(a)?.pending.count == 1 }
+        let offer = try #require(await world.offers(change.conversation).first { $0.recipient == b.id })
+        let accepted = try await b.journal.records()
+        #expect(accepted.count == 1)
+        #expect(accepted.contains {
+            if case .accepted(let yes) = $0 {
+                yes.offer == offer.id && yes.planConversation == world.origin && yes.suggester == a.id
+            } else { false }
+        })
+        let empty = MessageBody.accept(Acceptance(proposal: offer.id, terms: try Terms([:])))
+        let sentBeforeAttack = await b.sent()
+        _ = try await x.send(empty, to: a, conversation: change.conversation, parent: world.origin)
+        _ = try await x.send(empty, to: b, conversation: change.conversation, parent: world.origin)
+        #expect(try await delivery(a)?.pending[b.id] == offer.id)
+        #expect(try await b.journal.records() == accepted)
+        #expect(try await b.plan(world.origin).revision == 0)
+        #expect(await b.sent() == sentBeforeAttack)
+        try await advance(world, seconds: 5)
+        _ = try await b.wait(.planned, change.conversation)
+        try await P15.eventually("real friend's acknowledgment settles delivery") { try await delivery(a) == nil }
+        #expect(try await b.journal.records().contains {
+            if case .applied(let value) = $0 { value.offer == offer.id && value.planConversation == world.origin } else { false }
+        })
+        await world.checkHealthy()
+        await world.stop()
+    }
+    @Test func pc33ConfirmationRecoveryOutlivesTheOriginalAnswerWindow() async throws {
+        let world = try await ChangeWorld.make()
+        let a = world.phones[0], b = world.phones[1], c = world.phones[2]
+        // Initial confirmation and retries at 5, 15, 35, 75, 155 are lost.
+        // The next at 315 must still work: the plan ends at second 3600.
+        await b.relay.dropConfirmations(6)
+        let change = try await agree(world)
+        _ = try await c.wait(.planned, change.conversation)
+        var losses = 1
+        try await P15.eventually("initial confirmation lost") { await b.relay.lost.count == losses }
+        for delay: TimeInterval in [5, 10, 20, 40, 80] {
+            try await advance(world, seconds: delay)
+            losses += 1
+            try await P15.eventually("retry confirmation lost") { await b.relay.lost.count == losses }
+        }
+        let deadline = P15.date.addingTimeInterval(300)
+        // Advance the original window separately from the next retry. This
+        // fixes the interleaving instead of racing two newly resumed tasks.
+        world.clock.advance(to: deadline)
+        // The old implementation expires an accepted voter here. A correct
+        // receiver instead retains the accepted session for delivery.
+        try await P15.eventually("answer-window timer consumed") { !world.clock.deadlines.contains(deadline) }
+        try await advance(world, seconds: 15)
+        try await P15.eventually("post-window confirmation delivered") {
+            let sends = await a.sent(change.conversation).filter { $0.recipient == b.id && $0.body.kind == .accept }
+            guard sends.count == 7, let last = sends.last else { return false }
+            return await b.relay.handled.contains(last.id)
+        }
+        await b.stop()
+        let recovered = try await b.plan(world.origin)
+        #expect(recovered.revision == 1)
+        #expect(recovered.activity == ChangeWorld.changedActivity)
+        await world.checkHealthy()
+        await world.stop()
+    }
+
+    @Test func pc34AnAcceptedVoterCanRecoverBeforeItsConfirmationArrives() async throws {
+        let world = try await ChangeWorld.make()
+        let a = world.phones[0], b = world.phones[1]
+        await b.relay.dropConfirmations()
+        let change = try await agree(world)
+        try await P15.eventually("first confirmation lost before restart") { await b.relay.lost.count == 1 }
+        _ = try await b.wait(.confirmed, change.conversation)
+        try await b.restart()
+        try await advance(world, seconds: 5)
+        try await P15.eventually("confirmation retried after recipient restart") {
+            let sends = await a.sent(change.conversation).filter { $0.recipient == b.id && $0.body.kind == .accept }
+            guard sends.count == 2, let last = sends.last else { return false }
+            return await b.relay.handled.contains(last.id)
+        }
+        await b.stop()
+        let recovered = try await b.plan(world.origin)
+        #expect(recovered.revision == 1)
+        #expect(recovered.activity == ChangeWorld.changedActivity)
+        await world.checkHealthy()
+        await world.stop()
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func pc41LostWithdrawalsAndAcknowledgmentsRecoverWithoutChangingThePlan(losingAck: Bool, restart: Bool) async throws {
+        let world = try await ChangeWorld.make()
+        defer { Task { await world.stop() } }
+        let a = world.phones[0], b = world.phones[1], c = world.phones[2]
+        let before = try await [a.plan(world.origin), b.plan(world.origin), c.plan(world.origin)]
+        let change = try await world.start()
+        try await b.accept(change.conversation)
+        _ = try await c.wait(.proposed, change.conversation)
+        if losingAck { await a.relay.dropConfirmations() } else { await b.relay.drop(.reject) }
+        await a.service.withdraw(change.id)
+        // The app records its owner's withdrawal after the service returns.
+        await a.events.record(.lifecycle(change.id, .withdrawn))
+        try await P15.eventually("one withdrawal acknowledgment remains") {
+            try await a.journal.records().contains {
+                if case .withdrawing(let delivery) = $0 { delivery.pending.count == 1 } else { false }
+            }
+        }
+        let losing = losingAck ? a : b
+        try await P15.eventually("withdrawal or acknowledgment lost") { await losing.relay.lost.count == 1 }
+        let first = await a.sent().filter { $0.body.kind == .reject }
+        #expect(first.count == 2)
+        if restart { try await a.restart() } else { try await advance(world, seconds: 5) }
+        try await P15.eventually("withdrawals fully acknowledged after recovery") {
+            try await a.journal.records().allSatisfy { if case .withdrawing = $0 { false } else { true } }
+        }
+        for phone in [b, c] { _ = try await phone.wait(.ended(.nobodyUp), change.conversation) }
+        let notices = await a.sent().filter { $0.body.kind == .reject }
+        #expect(notices.count == 3)
+        #expect(Set(notices.map(\.conversation)).count == 3)
+        let resent = try #require(notices.last)
+        #expect(first.contains { $0.recipient == resent.recipient && $0.body == resent.body })
+        for notice in notices {
+            #expect(notice.conversation != change.conversation && notice.chainedFrom == world.origin)
+            let peer = notice.recipient == b.id ? b : c
+            let records = await peer.observer.records.filter { $0.envelope.conversation == notice.conversation }
+            #expect(records.allSatisfy { $0.disclosed?.isEmpty == true })
+        }
+        for (index, phone) in [a, b, c].enumerated() {
+            #expect(try await phone.plan(world.origin) == before[index])
+            #expect(try await phone.ledger.isRetired(change.conversation))
+        }
+        await world.checkHealthy()
+    }
+
+}
