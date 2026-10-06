@@ -118,6 +118,27 @@ import Testing
         await network.shutdown()
     }
 
+    /// Issue #130: the resend schedule counts from the first attempt, not
+    /// from whenever the delivery's task first runs. Jake's notices take 5
+    /// seconds to go out (the clock moves while the one to Maya is sent),
+    /// and that one is lost. It is due again at once, with no further wait.
+    @Test func aResendIsDueFiveSecondsAfterTheFirstAttemptHoweverLongItTook() async throws {
+        let slow = SlowSend(to: Fixtures.maya)
+        let group = Group(observer: { person, _ in person == Fixtures.jake ? slow : nil })
+        let network = group.network
+        await slow.use(group.clock)
+        network.drop("Jake > Maya: propose")
+        try await group.suggest(.leave, by: jake)
+        #expect(group.clock.now == Fixtures.date(minutes: 10).addingTimeInterval(5))
+        try await network.until("Maya's plan shrank") {
+            await network.deliver()
+            return await group.phone(maya).plan(group.origin)?.attendees.peers == [alex, maya]
+        }
+        #expect(await Self.revisions(group, [alex, maya]) == [1, 1])
+        #expect(await network.problems().isEmpty)
+        await network.shutdown()
+    }
+
     @Test func aConfirmationOwedSurvivesTheSuggestersRestart() async throws {
         let group = Group()
         let network = group.network
@@ -184,5 +205,20 @@ import Testing
         for person in [alex, maya] { #expect(await group.phone(person).plan(group.origin)?.attendees.peers == [alex, maya]) }
         #expect(await network.problems().isEmpty)
         await network.shutdown()
+    }
+}
+
+/// Moves the clock on 5 seconds while a send to one person goes out, once:
+/// a round of sends that took that long.
+actor SlowSend: OutboxObserver {
+    let recipient: PeerID
+    private var clock: TestClock?
+    init(to recipient: PeerID) { self.recipient = recipient }
+    func use(_ clock: TestClock) { self.clock = clock }
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        guard envelope.recipient == recipient, let clock else { return }
+        self.clock = nil
+        clock.advance(to: clock.now.addingTimeInterval(5))
     }
 }
