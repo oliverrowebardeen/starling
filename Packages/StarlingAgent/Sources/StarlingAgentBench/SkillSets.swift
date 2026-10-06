@@ -166,7 +166,7 @@ public enum ChipSet {
         .init("boba tonight with everyone except Jake", day: .today, from: evening, to: lateEnd, wants: ["boba"], audience: "except", names: ["Jake"]),
         // Device test, 2026-10-02 (ADRs 0161 and 0212): a keyword chip is the
         // owner's words as typed, the whole phrase, in a span of the input.
-        // Oliver's two phrases and some like them, added with their
+        // The owner's two phrases and some like them, added with their
         // held-out items before any measurement of them.
         .init("movie night tonight in Elm Hall", day: .today, from: evening, to: lateEnd, wants: ["movie night"], place: ["Elm Hall"]),
         // Find a time only invites, so it shows no mode chip.
