@@ -14,9 +14,22 @@ actor ChangeRelay: AgentBehavior {
     var service: ChangePlanService?
     private(set) var handled: Set<MessageID> = []
     private(set) var lost: [Envelope] = []
+    private(set) var buffered: [Envelope] = []
     private var drops: [MessageBody.Kind: Int] = [:]
     private var droppingConfirmations = 0
-    func attach(_ service: ChangePlanService?) { self.service = service }
+    func attach(_ service: ChangePlanService?) async {
+        self.service = nil
+        guard let service else { return }
+        // AppModel starts routing its buffered Inbox only after restore.
+        // Recovery may send before returning, so retain replies received
+        // while detached and drain them before admitting live delivery.
+        while !buffered.isEmpty {
+            let envelope = buffered.removeFirst()
+            await service.handle(.message(envelope))
+            handled.insert(envelope.id)
+        }
+        self.service = service
+    }
     func drop(_ kind: MessageBody.Kind, count: Int = 1) { drops[kind, default: 0] += count }
     func dropConfirmations(_ count: Int = 1) { droppingConfirmations += count }
     func respond(to envelope: Envelope, in agent: SimulatedAgent) async {
@@ -26,8 +39,11 @@ actor ChangeRelay: AgentBehavior {
         } else if drops[envelope.body.kind, default: 0] > 0 {
             drops[envelope.body.kind, default: 0] -= 1
             lost.append(envelope)
+        } else if let service {
+            await service.handle(.message(envelope))
         } else {
-            await service?.handle(.message(envelope))
+            buffered.append(envelope)
+            return
         }
         handled.insert(envelope.id)
     }
@@ -316,7 +332,10 @@ struct ChangeWorld: Sendable {
         await simulation.stop()
     }
     func checkHealthy() async {
-        for phone in phones { #expect(await phone.events.invalid.isEmpty) }
+        for phone in phones {
+            let invalid = await phone.events.invalid
+            #expect(invalid.isEmpty, "Invalid events on \(phone.agent.name): \(invalid)")
+        }
     }
 }
 
@@ -357,4 +376,20 @@ actor ChangeFailingCommitJournal: ChangePlanJournal {
     }
     func remove(_ key: UUID) async throws { try await base.remove(key) }
     func records() async throws -> [ChangePlanRecord] { try await base.records() }
+}
+
+/// Hold a recovery send after transport delivered it, so the real peer's
+/// acknowledgment reaches the detached relay before restore can finish.
+actor ChangeRecoverySendGate: OutboxObserver {
+    private var recipient: PeerID?
+    private var waiter: CheckedContinuation<Void, Never>?
+    private(set) var held: Envelope?
+    func holdWithdrawal(to peer: PeerID) { recipient = peer }
+    func release() { recipient = nil; waiter?.resume(); waiter = nil }
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision) async {}
+    func outbox(didSend envelope: Envelope, context: OutboundContext, decision: PolicyDecision, disclosed: [DisclosedItem]?) async {
+        guard envelope.recipient == recipient, envelope.body.kind == .reject else { return }
+        held = envelope
+        await withCheckedContinuation { waiter = $0 }
+    }
 }

@@ -184,6 +184,9 @@ struct ChangePlanDeliveryTests {
         let a = world.phones[0], b = world.phones[1], c = world.phones[2]
         let before = try await [a.plan(world.origin), b.plan(world.origin), c.plan(world.origin)]
         let change = try await world.start()
+        // Owner actions below write to the event store directly. Observe
+        // the service's queued startup events before recording withdrawal.
+        _ = try await a.wait(.confirmed, change.conversation)
         try await b.accept(change.conversation)
         _ = try await c.wait(.proposed, change.conversation)
         if losingAck { await a.relay.dropConfirmations() } else { await b.relay.drop(.reject) }
