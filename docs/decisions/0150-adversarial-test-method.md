@@ -69,8 +69,8 @@ model behavior without establishing instruction following, so report neutral
 control changes alongside attack changes and avoid claiming causation from
 an outcome difference alone. No model result is sent through a live transport.
 
-The bare simulator's impersonation finding remains open until the E1 secure
-stack is exercised. The Orchestrator owns simulator production wiring. PSI
+The bare simulator's impersonation finding was closed once the scenario ran
+over the E1 secure channel (`impersonationIsDroppedBeforeTheInbox`). The Orchestrator owns simulator production wiring. PSI
 findings and that integration request are recorded in `docs/requests/I.md`.
 
 ## Initial measurements

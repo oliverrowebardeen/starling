@@ -51,8 +51,8 @@ Usability: in comparative studies, compare-and-confirm had 0 to 20% security fai
 ## Consequences
 
 - The ceremony adds one message (the reveal) beyond XX's three. It takes about the same time as the handshake alone.
-- **Pairing can end one-sided.** If the last `accept` is lost, the side that sent it has not seen the other's and does not save; the other side does. The paired side's KK handshakes then fail silently (ADR 0100). The owner sees the friend as offline until they pair again. Detecting this needs a message both apps understand after pairing. Deferred.
-- Compare-and-confirm relies on people actually comparing. The studies above show many do not. ADR 0102 recommends removing this step on Wi-Fi Aware links by binding to the OS pairing, and keeping the code for other links.
+- **Pairing can end one-sided.** If the last `accept` is lost, the side that sent it has not seen the other's and does not save; the other side does. The paired side's KK handshakes then fail silently (ADR 0100). The owner sees the friend as offline until they pair again. ADR 0260 decision 2 later made a finished ceremony resend its last messages, so a single lost final `accept` still arrives.
+- Compare-and-confirm relies on people actually comparing. The studies above show many do not. ADR 0102 considered removing this step on Wi-Fi Aware links by binding to the OS pairing; Starling keeps the code on every link.
 - `PairingFailure` has no storage case. A Keychain write failure after both confirmations surfaces as `.protocolError` (`docs/requests/E1.md`).
 
 ## Sources

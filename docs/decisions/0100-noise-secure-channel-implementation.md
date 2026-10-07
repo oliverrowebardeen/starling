@@ -153,8 +153,8 @@ Noise revision 34 facts this design relies on:
 ## Consequences
 
 - One small, spec-shaped implementation to audit; the Codex review required by ADR 0003 care requirement 7 has a clear boundary: the `Noise/` directory, `SecureTransport.swift`, `SecureWire.swift`, and the pairing code (ADR 0101).
-- Message sizes are visible on the wire. Noise section 13 recommends padding; there is none yet. Revisit before the relay (Phase 2) makes traffic observable by a third party.
-- The session design assumes a live, in-order link. The Phase 2 relay needs a one-way pattern or HPKE (ADR 0003 decision 3) and its own replay rules.
+- Message sizes are visible on the wire; there is no padding (Noise section 13 recommends it).
+- The session design assumes a live, in-order link between two phones.
 - Frames that arrive on a receive-only session (decisions 5 and 7) are delivered even while the peer is reported unavailable after a rollover. They are authenticated; only sending is paused.
 - Once the restart budget is spent, the peer stays unreachable until a session is confirmed (for example the peer reconnects), the link comes back, or the app calls `reconnect(_:)` with no current session.
 - A link-level attacker can still deny service: drop frames, or replay old message 1s to fill the pending slots during a real handshake. Retries recover from the second once the attacker stops.

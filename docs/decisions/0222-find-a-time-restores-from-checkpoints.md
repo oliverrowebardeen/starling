@@ -32,7 +32,6 @@ Core has no place for per-skill state, and changing `Interaction` waits on the O
 
 - Restarts resume in every phase the tests cover: an invitee's open question, a starter collecting answers, a starter after "That works", a friend after "That works" whose confirmation was lost, revisions after a restart, and the three crash windows.
 - Friends' answers live on the phone at rest until the interaction ends. File protection covers them when the phone is locked.
-- If Core later adds per-skill state to `Interaction` (requested), the checkpoint store can move into the coordinator's storage without changing the restore rules.
 
 ## Sources
 

@@ -65,8 +65,8 @@ The test graph executes the merged feature package and services. The iOS-only
 LiveServices/DebugHarness factories are source-reviewed and compiled by the
 local gate; this host fixture does not execute their Keychain, EventKit, Maps,
 notifications, or system picker UI. Down for runs in Debug on InsecurePSIStub
-only; Release intentionally has no service until a private PSI provider exists
-(ADR 0206 decision 8). Swap photos remains flagged off in normal builds.
+only; Release intentionally has no service, because that stub is the only PSI
+provider (ADR 0206 decision 8). Swap photos remains flagged off in normal builds.
 
 Existing native app suites also run in Tools/test-all.sh: startup recovery,
 consent queuing and deferred progress, audience/settings recovery races, stale

@@ -16,7 +16,7 @@ The mockups put the venue in the card's text: "Boba Guys on Franklin at 8:30?". 
 2. **The card is split.** `PickAPlaceCopy.proposal(_:model:)` gives the model the facts with `place` removed (`modelFacts`), takes one line of up to 80 characters for the headline ("Boba with Maya and Jake"), and falls back to the template otherwise. Code writes the detail line with the name ("Boba Guys at 8:30 PM?"). People see the name; the model never does.
 3. **Nothing in Pick a place lets a model decide.** The service has no model. Fit is judged in code (ADR 0230). The model's work in this skill is the intent chips (lane B, from the owner's own words) and the headline.
 4. **Lanes A and B:** a Pick a place card goes through `PickAPlaceCopy`. `SkillModel.proposalText` must never receive `ProposalFacts.place` for this skill, and StarlingAgent's renderer keeps showing "N place options" for `IssueValue.places`.
-5. **Conditions for letting the model see names later,** for example to estimate price or menu where Apple Maps has neither:
+5. **Conditions any decision to show a model venue names must meet:**
    - the name comes only from this phone's own lookup by Maps identifier, never from a friend's message;
    - it is rendered as numbered, quoted data, never inside instructions;
    - the output is a closed schema (an enum of price tiers or diet tags), so the worst case is one mislabeled venue;
@@ -27,7 +27,7 @@ The mockups put the venue in the card's text: "Boba Guys on Franklin at 8:30?". 
 
 - A hostile name can only be displayed. Tests send one end to end over Loopback and check the model on the friend's phone never receives it, and that the card still waits for its owner.
 - Proposal headlines lose the venue. The detail line right under it carries it, as in the Home mockup's two-line card.
-- Price and diet facts stay as thin as Apple Maps makes them until condition 5 is met (ADR 0230, consequences).
+- Price and diet facts are as thin as Apple Maps makes them (ADR 0230, consequences).
 
 ## Sources
 

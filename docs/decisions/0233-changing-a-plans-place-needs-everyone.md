@@ -45,7 +45,7 @@ A request with a `Plan` input runs on that plan. Two cases differ.
 8. **Only the plan's people are asked.** Participants who are not in the plan are not asked: adding someone is a Change the plan suggestion.
 9. **A new budget is the owner's limit for this search only.** It comes from the request's intent, as always, filters the candidates on the phone, and never leaves it. Nothing from an earlier pick on the plan carries over.
 10. **Every phone names the plan's new revision.**
-   - The organizer's proposal carries it in `Proposal.round`, as Change the plan does until Core has a field for it (P15-E request 2c).
+   - The organizer's proposal carries it in `Proposal.round`, as Change the plan does; Core has no separate field for it (P15-E request 2c).
    - Each phone's agreed plan (`SkillProposal.plan`) has that revision. On the organizer, it is the parent plan updated; on a friend's phone, it is built from the terms.
    - Lane E applies a link only over the revision just before, so it applies once and never over a newer revision.
    - A plan whose next revision would not fit in a round (revision 15 and up) takes no further place, and nothing is sent.

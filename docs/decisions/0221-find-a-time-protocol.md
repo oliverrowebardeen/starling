@@ -69,7 +69,7 @@ Constraints:
 
 - A calendar owner and a no-calendar owner complete the same exchange; the only difference is whether their agent answers alone or asks them one question.
 - Nothing needs consent under the default topics (time and activity Share) with on-device friends, and a two-person plan never touches the people topic.
-- **Remaining leak.** A starter shows friends up to 16 of its free times. A dishonest friend who keeps starting requests learns 16 of the owner's answers per request; the per-friend cap of 4 open requests bounds the rate, not the total. A private PSI (Nightjar) would remove this; recorded for the threat model.
+- **Remaining leak.** A starter shows friends up to 16 of its free times. A dishonest friend who keeps starting requests learns 16 of the owner's answers per request; the per-friend cap of 4 open requests bounds the rate, not the total. Recorded in the threat model (section 5a).
 - Picking "the most friends" can leave a friend out of a group plan. The friend left out sees "no plan", like a pass.
 - **Silence costs time.** A starter whose friends all say no hears nothing and ends at the answer deadline (up to 12 hours, sooner for a request that ends sooner) or, at a proposal, the confirm deadline (up to 12 hours), instead of at once. The Orchestrator confirmed this trade (brief 2.6, silence by default; ADR 0017). The starter's card says it is still checking until then, never that a friend said no.
 - Withdrawing after a plan is made ends it on this phone only; friends are not told. Cancelling a confirmed plan is out of scope for Phase 1.5.

@@ -13,7 +13,7 @@ Numbers: 0001 to 0099 are project-wide decisions; 0100 to 0179 were written by P
 | [0005](0005-xcodegen-for-the-app-project.md) | Generate the app project with XcodeGen | Accepted |
 | [0006](0006-one-swiftpm-package-per-lane.md) | One SwiftPM package per lane | Accepted |
 | [0007](0007-ci-on-the-xcode-27-runner.md) | CI on the GitHub `xcode-27` runner | Accepted |
-| [0008](0008-repo-name-and-visibility.md) | Repo name `starling-ios`, private for now | Accepted |
+| [0008](0008-repo-name-and-visibility.md) | Repo name `starling-ios`, private | Accepted |
 | [0009](0009-task-level-agent-model-interface.md) | Task-level `AgentModel` interface | Accepted |
 | [0010](0010-skills-platform.md) | Starling is a platform of skills | Accepted |
 | [0011](0011-one-lifecycle-and-interactions.md) | One lifecycle for every skill, recorded as Interactions | Accepted |
@@ -31,7 +31,7 @@ Numbers: 0001 to 0099 are project-wide decisions; 0100 to 0179 were written by P
 | [0023](0023-one-change-to-a-plan-at-a-time.md) | One change to a plan at a time | Accepted (amends 0022) |
 | [0100](0100-noise-secure-channel-implementation.md) | Noise secure channel implementation | Accepted |
 | [0101](0101-pairing-ceremony.md) | Pairing ceremony: Noise XX plus a committed 6-digit code | Accepted (amended by 0260) |
-| [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet | Proposed (needs the owner's agreement) |
+| [0102](0102-pairing-bootstrap-wifi-aware-pin-vs-qr.md) | Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback | Proposed (needs the owner's agreement) |
 | [0110](0110-wifi-aware-transport-tcp-with-symmetric-roles.md) | Wi-Fi Aware transport over TCP, with symmetric roles | Accepted (decision 3 replaced by 0260) |
 | [0111](0111-wifi-aware-services-entitlement-and-pairing.md) | Wi-Fi Aware services, entitlement, and pairing views | Accepted |
 | [0120](0120-down-negotiation-protocol.md) | Down? negotiation protocol | Accepted (Down for... builds on it, 0210) |

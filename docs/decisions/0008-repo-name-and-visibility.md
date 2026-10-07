@@ -1,4 +1,4 @@
-# ADR 0008: Repo name `starling-ios`, private for now
+# ADR 0008: Repo name `starling-ios`, private
 
 - Status: Accepted
 - Date: 2026-09-29
@@ -12,11 +12,11 @@ Brief open question 8 lists two "Starling" collisions: an ETHGlobal P2P agent sw
 
 - Repository: `github.com/oliverrowebardeen/starling-ios`. The suffix separates it from the protocol and agent projects above while keeping the product name.
 - Swift module names keep the `Starling` prefix (`StarlingCore`, `StarlingTransport`, ...). They are namespaced by the package, so no collision at build time.
-- Visibility: **private**, at the owner's request (2026-09-29). Flip to public for Phase 3 open-source readiness.
+- Visibility: **private**, at the owner's request (2026-09-29). A filtered copy of `main` is published as `github.com/oliverrowebardeen/starling`.
 
 ## Consequences
 
-- When the repo goes public, the README should say plainly that Starling is unrelated to the BLE routing protocol of the same name.
+- The public README says plainly that Starling is unrelated to the BLE routing protocol of the same name.
 - Private repos consume GitHub Actions minutes (ADR 0007).
 
 ## Sources

@@ -103,7 +103,7 @@ Primary sources checked on 2026-10-02:
 
 - On real phones, pairing needs one owner to pick and both to confirm one code, and survives lost frames, link flaps, and a restart on either phone. Every failure above has a regression test.
 - **Pairing a new friend restarts the publisher's listener**, which closes the links it accepted for other friends until their subscribers redial (about a second).
-- **A phone with friends in both roles still publishes and subscribes at once**, to different devices. If the reported failure is per device rather than per pair, a later change can use one global role per phone. The device checklist and the pairing log will show it.
+- **A phone with friends in both roles still publishes and subscribes at once**, to different devices.
 - The ceremony now sends a frame per second while it waits, on every link, for at most its 60 s and 120 s windows.
 - Threat model input (`docs/requests/P15-G.md`):
   - **The other phone in the ceremony**, including a phone in the middle, gets one nonce, so one code, per ceremony from each victim. Any further try needs a new ceremony.

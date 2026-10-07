@@ -8,7 +8,7 @@
 
 The device review found the main screen reading like a dating app: "Down?" with no activity, "How keen are you?", and "only if they're interested too". The Phase 1.5 prompt (section 9) listed banned words.
 
-Oliver clarified on 2026-09-30 that the goal is tone, not a word list: Starling should not look like a dating app, and a crush feature could be fine sometime later, just not now. A hard ban would also block that future skill.
+Oliver clarified on 2026-09-30 that the goal is tone, not a word list: Starling should not look like a dating app. A hard ban would also block ordinary words where they read well.
 
 ## Decision
 
@@ -25,7 +25,7 @@ Oliver clarified on 2026-09-30 that the goal is tone, not a word list: Starling 
 ## Consequences
 
 - The first-run and main screens read as making plans with friends.
-- A future skill with different needs, a crush skill for example, can choose its own words without fighting a lint rule. It would still go through the skill registry, consent, and mutual reveal like any other.
+- A skill with different needs can choose its own words without fighting a lint rule, and still goes through the skill registry, consent, and mutual reveal like any other.
 
 ## Sources
 
