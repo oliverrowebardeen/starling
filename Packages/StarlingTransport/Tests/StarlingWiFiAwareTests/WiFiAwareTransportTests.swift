@@ -58,18 +58,23 @@ private struct Phone {
     func frames(from other: Phone) async -> [Data] { await log.received(from: other.peer) }
 }
 
-/// Polls until `condition` holds, failing the test after `timeout`.
+/// Polls until `condition` holds, failing the test after `timeout` of the
+/// host's awake time. `SuspendingClock` stops while the host sleeps, so a
+/// sleep mid-run does not use up the wait (ADR 0258). The condition is
+/// checked once more at the deadline before giving up.
 private func eventually(
     _ what: String,
-    timeout: Duration = .seconds(5),
+    timeout: Duration = .seconds(30),
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: () async -> Bool
 ) async {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
+    let clock = SuspendingClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
         if await condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
+        try? await clock.sleep(for: .milliseconds(10))
     }
+    if await condition() { return }
     Issue.record("timed out waiting for \(what)", sourceLocation: sourceLocation)
 }
 
@@ -197,6 +202,7 @@ private func frame(_ index: Int) throws -> Frame {
         await eventually("a activates after its grace period") { await a.available(b) == 1 }
         #expect(await b.available(a) == 0)
         try await a.transport.send(try frame(5), to: b.peer)
+        // Well inside b's 30 s grace, so only the frame can activate it.
         await eventually("b activates on the frame", timeout: .seconds(2)) {
             let first = await b.available(a) == 1
             let second = await b.frames(from: a) == [Data("frame-5".utf8)]

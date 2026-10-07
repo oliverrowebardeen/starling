@@ -47,13 +47,18 @@ import Testing
         func sees(_ other: Phone) async -> Bool { await available.peers.contains(other.peer) }
     }
 
-    private func linked(_ a: Phone, _ b: Phone, within timeout: Duration = .seconds(5)) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
+    /// Whether both phones see each other within `timeout` of the host's
+    /// awake time (`SuspendingClock`, as in ADR 0258), checking once more
+    /// at the deadline.
+    private func linked(_ a: Phone, _ b: Phone, within timeout: Duration = .seconds(30)) async -> Bool {
+        let clock = SuspendingClock()
+        let deadline = clock.now + timeout
+        while clock.now < deadline {
             if await a.sees(b), await b.sees(a) { return true }
-            try? await Task.sleep(for: .milliseconds(10))
+            try? await clock.sleep(for: .milliseconds(10))
         }
-        return false
+        guard await a.sees(b) else { return false }
+        return await b.sees(a)
     }
 
     /// The hazard itself: symmetric roles on a platform that breaks them.
@@ -146,7 +151,7 @@ import Testing
         let b = await Phone("b", air: air, timing: Self.timing(slot: .milliseconds(60)))
         try await a.transport.start()
         try await b.transport.start()
-        #expect(await linked(a, b, within: .seconds(10)))
+        #expect(await linked(a, b))
         try await eventually { !a.roles.load().isEmpty && !b.roles.load().isEmpty }
         await a.transport.stop()
         await b.transport.stop()
@@ -166,6 +171,7 @@ import Testing
         let b = await Phone("b", air: air, timing: Self.timing(slot: .seconds(60)), roles: InMemoryAwareRoleStore([aOnB: .subscriber]), peer: bPeer)
         try await a.transport.start()
         try await b.transport.start()
+        // At once: without the saved roles they would wait for a 60 s slot.
         #expect(await linked(a, b, within: .seconds(2)))
         #expect(await air.dials(from: "a", to: "b") == 0, "the publisher never dials")
         await a.transport.stop()
@@ -185,8 +191,10 @@ import Testing
         let bOnA = try #require(await air.deviceID(of: "b", seenBy: "a"))
         try await eventually { await a.transport.role(for: bOnA) == .publisher }
         var sawSubscriber = false
-        for _ in 0..<100 where !sawSubscriber {
-            try await Task.sleep(for: .milliseconds(20))
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(30)
+        while !sawSubscriber, clock.now < deadline {
+            try await clock.sleep(for: .milliseconds(20))
             sawSubscriber = await a.transport.role(for: bOnA) == .subscriber
         }
         #expect(sawSubscriber, "after the lapse the role follows the random slots")
@@ -194,11 +202,15 @@ import Testing
     }
 }
 
-private func eventually(timeout: Duration = .seconds(5), _ condition: () async -> Bool) async throws {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
+/// Polls until `condition` holds, for up to `timeout` of the host's awake
+/// time (ADR 0258), checking once more at the deadline.
+private func eventually(timeout: Duration = .seconds(30), _ condition: () async -> Bool) async throws {
+    let clock = SuspendingClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
         if await condition() { return }
-        try await Task.sleep(for: .milliseconds(10))
+        try await clock.sleep(for: .milliseconds(10))
     }
+    if await condition() { return }
     Issue.record("condition not met in time")
 }
