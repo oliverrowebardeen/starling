@@ -1,18 +1,18 @@
 # ADR 0020: Send modes and audience: Ask quietly, Invite, and undetectable exclusion
 
-- Status: Accepted (the owner, 2026-10-01)
+- Status: Accepted (Oliver, 2026-10-01)
 - Date: 2026-10-01
 - Owner: Orchestrator
 - Amends: ADR 0010 (envelope version), ADR 0011 (Compose)
 
 ## Context
 
-On 2026-10-01 the owner asked for two changes to the shared Compose step and the message envelope:
+On 2026-10-01 Oliver asked for two changes to the shared Compose step and the message envelope:
 
 - **Send modes.** "Ask quietly" uses mutual reveal; "Invite" means recipients see the request directly.
 - **Audience.** "Everyone except…", saved private groups, and per-friend standing rules. Exclusion must be undetectable.
 
-Asked about the open points, the owner chose:
+Asked about the open points, Oliver chose:
 
 - Ask quietly only for skills built on mutual reveal, which today is Down for… alone.
 - Standing rules govern the audience only.
@@ -76,6 +76,6 @@ Core v2 (c07c036) differs:
 
 ## Sources
 
-- The owner's request and answers in conversation, 2026-10-01
+- Oliver's request and answers in conversation, 2026-10-01
 - Brief 2.6 (silence by default) and the mutual reveal building block (brief section 4)
 - ADRs 0010, 0011, 0012, 0017; `Packages/StarlingCore/Sources/StarlingCore/Messages.swift` and `SkillService.swift`

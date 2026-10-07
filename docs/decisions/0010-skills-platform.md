@@ -1,12 +1,12 @@
 # ADR 0010: Starling is a platform of skills
 
-- Status: Accepted (decision 2, the intent schema as data rather than `@Generable`, approved by the owner on 2026-09-30)
+- Status: Accepted (decision 2, the intent schema as data rather than `@Generable`, approved by Oliver on 2026-09-30)
 - Date: 2026-09-30
 - Owner: Orchestrator
 
 ## Context
 
-The Phase 1 device review found the whole app built around Down. The Phase 1.5 prompt (the owner, 2026-09-30) makes features into **skills**: Down for…, Find a time, Pick a place, and Swap photos now; Gift pool, Vouch, and Keep in touch later. A skill provides only what is unique to it: an id and version, an intent schema the model fills from free text, its building block, the privacy topics it touches and requires, the system permissions it may need, the artifacts it accepts and produces, and its proposal wording.
+The Phase 1 device review found the whole app built around Down. The Phase 1.5 prompt (Oliver, 2026-09-30) makes features into **skills**: Down for…, Find a time, Pick a place, and Swap photos now; Gift pool, Vouch, and Keep in touch later. A skill provides only what is unique to it: an id and version, an intent schema the model fills from free text, its building block, the privacy topics it touches and requires, the system permissions it may need, the artifacts it accepts and produces, and its proposal wording.
 
 The prompt asks for a `StarlingSkill` protocol with an `@Generable` intent schema. Two constraints shape that:
 

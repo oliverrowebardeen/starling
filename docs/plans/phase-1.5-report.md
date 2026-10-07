@@ -2,7 +2,7 @@
 
 - Date: 2026-10-01, updated 2026-10-05
 - Owner: Orchestrator
-- Status: open. The code is merged, but Phase 1.5 ends only after the owner's device run on two iPhones (the owner, 2026-10-02).
+- Status: open. The code is merged, but Phase 1.5 ends only after Oliver's run on two iPhones (Oliver, 2026-10-02).
 
 ## Summary
 
@@ -22,7 +22,7 @@ Adversarial review drove most of the late work:
 
 ## Exit criteria
 
-The prompt's section 12 is run on two real iPhones. "Ready for device" means the code, its tests, and the lane's device checklist (`docs/checklists/phase-1.5-*.md`) are merged. Only the owner's device run closes a criterion.
+The prompt's section 12 is run on two real iPhones. "Ready for device" means the code, its tests, and the lane's device checklist (`docs/checklists/phase-1.5-*.md`) are merged. Only Oliver's run closes a criterion.
 
 | # | Criterion | Status |
 |---|---|---|
@@ -37,7 +37,7 @@ The prompt's section 12 is run on two real iPhones. "Ready for device" means the
 | 9 | Red-team scenarios pass | Done in code: 119 tests, zero known issues (ADRs 0250 to 0255). |
 | 10 | Release builds contain no Developer tab or test-build notices | Done: enforced on every gate and in CI (#62). |
 
-## Feedback from the owner's first device test (2026-10-02, one phone)
+## Feedback from Oliver's first device test (2026-10-02, one phone)
 
 All five are fixed and merged (#90, #91, #92, #94).
 
@@ -47,9 +47,9 @@ All five are fixed and merged (#90, #91, #92, #94).
 4. **The mode chip "Invite" next to "Down for…" read oddly.** It will read "Ask quietly" or "Ask directly", and only for Down for… (lane A).
 5. **Chips paraphrased the owner's words.** "movie night" became "Watch Movie" and "IKEA trip" became "trip". Chips will use the owner's own words, without repeats (lane B, ADRs 0161 and 0212).
 
-## Feedback from the owner's second device test (2026-10-02, two phones, issue #95)
+## Feedback from Oliver's second device test (2026-10-02, two phones, issue #95)
 
-Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
+Two iPhones, Oliver's and a friend's, on main 83329f3 or close to it.
 
 **Blocking**
 
@@ -58,7 +58,7 @@ Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
 
 **Wrong behavior**
 
-3. **"YOU and [the friend's phone name] are both down" before the friend answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101). Whether that switch was on during the run is still the owner's to confirm.
+3. **"YOU and [the friend's phone name] are both down" before the friend answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101). Whether that switch was on during the run is still Oliver's to confirm.
 4. **A made-up time: "Today at 1:30 PM" for dinner at 1:15 PM.** Plans now start at least an hour out, and a meal with no time gets its usual window as an editable chip (lane B, #101).
 5. **The friend was named after the device.** Pairing now asks for the name last, prefilled with a first name (lane G, #104).
 6. **"YOU" in capitals.** The sentence is put into sentence case, keeping a friend's capitals (lane B, #101).
@@ -83,7 +83,7 @@ Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
 ## Where reality contradicted the prompt
 
 1. **No DESIGN.md existed.** The Orchestrator wrote one from the mockups (#44).
-2. **Copy.** The mockups said "match". The owner clarified that the goal is tone, not a word list (ADR 0017).
+2. **Copy.** The mockups said "match". Oliver clarified that the goal is tone, not a word list (ADR 0017).
 3. **No action-button tab.** New uses iOS 27's prominent tab (ADR 0015).
 4. **Pre-permission screens.** The HIG wants one "Continue" button before a system alert, not two choices (ADR 0013).
 5. **Messages.** It needs phone numbers, and Starling has none by design, so Message the group uses an optional local contact link (ADR 0018).
@@ -128,7 +128,7 @@ Two iPhones, the owner's and a friend's, on main 83329f3 or close to it.
   - per-skill state on `Interaction` (lane C's request 7);
   - the threat model additions the lanes asked for in `docs/requests/P15-*.md`.
 
-## Needs the owner
+## Needs Oliver
 
 1. **Device run.**
    - Enable the Wi-Fi Aware capability for the app's identifier, so a signed Debug build can be installed and paired on two iPhones.

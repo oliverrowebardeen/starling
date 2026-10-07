@@ -2,7 +2,7 @@
 
 Owned by the Orchestrator. Lanes that build screens read this with `docs/brand/README.md`. Decisions behind it live in ADRs 0013 to 0018 and 0170 to 0172.
 
-Status: **Phase 1.5.** Created 2026-09-30. The Phase 1.5 prompt referred to this file before it existed; it now collects the design rules from that prompt, the brand lane's work, and the owner's six mockups.
+Status: **Phase 1.5.** Created 2026-09-30. The Phase 1.5 prompt referred to this file before it existed; it now collects the design rules from that prompt, the brand lane's work, and Oliver's six mockups.
 
 ## 1. Principles
 
@@ -63,7 +63,7 @@ Mockups are in `docs/design/phase-1.5/` (exported from Claude Design on 2026-09-
 |---|---|---|
 | Home: inbox across skills | `home.png` | Needs you, In progress, Coming up. Decline note per ADR 0017: "If you pass, they just won't see it." |
 | New: composer routes to a skill | `new.png` | Free text, "Starling understood" chips with Edit, Ask (All friends / Close friends / Pick) with pair symbols, skill tiles, primary button. New is a prominent tab (ADR 0015). |
-| Just-in-time permission: Find a time | `find-a-time-permission.png` | Keep the three-row explanation. One "Continue" button before the system alert (ADR 0013, approved by the owner). |
+| Just-in-time permission: Find a time | `find-a-time-permission.png` | Keep the three-row explanation. One "Continue" button before the system alert (ADR 0013, pending Oliver). |
 | It's a plan: chained skills | `its-a-plan.png` | Lit logo, plan card, "Keep it going": Add to Calendar, Swap photos after (only when its flag is on), Somewhere else?, Message the group. |
 | Plan detail | `plan-detail.png` | Message group, Directions, "How this came together", "What left your phone": shared versus kept on your phone. |
 | You: privacy topics and skills | `you.png` | Agent card, topics with Share / Ask me / Never, skills with permission lines and switches. The time and activity note per ADR 0017. Swap photos appears only when its flag is on. v2.1 (ADR 0019): location and calendar details join the topics, each choice shows its one-line explanation on the control, and the defaults are the protective ones. |

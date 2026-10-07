@@ -1,13 +1,13 @@
 # ADR 0022: Plans can change after they are confirmed
 
-- Status: Accepted (the owner, 2026-10-02)
+- Status: Accepted (Oliver, 2026-10-02)
 - Date: 2026-10-02
 - Owner: Orchestrator
 - Builds on: ADRs 0011, 0012, 0019, 0020, 0021
 
 ## Context
 
-After a two-phone test on 2026-10-02, the owner asked for confirmed plans to be editable: anyone in the plan can suggest a change, for example to the budget, place, or people, and it must work well.
+After his two-phone test on 2026-10-02, Oliver asked for confirmed plans to be editable: anyone in the plan can suggest a change, for example to the budget, place, or people, and it must work well.
 
 Asked about the open points, he chose:
 
@@ -59,5 +59,5 @@ Starling already has the pieces:
 
 ## Sources
 
-- The owner's request and answers in conversation, 2026-10-02
+- Oliver's request and answers in conversation, 2026-10-02
 - ADRs 0011, 0012, 0017, 0019, 0020, 0021
