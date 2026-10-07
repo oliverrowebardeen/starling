@@ -176,6 +176,7 @@ struct FlowTests {
 
         let started = try await a.findATime(with: [b, c])
         try await b.waitForState(nil, .ended(.nobodyUp))
+        try await a.waitForAnswer(from: c)
         #expect(!world.envelopes.contains { $0.sender == b.id && $0.skill != nil })
         world.clock.advance(hours: 1)
         let (_, proposal) = try await a.waitForProposal()
