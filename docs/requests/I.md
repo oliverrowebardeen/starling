@@ -64,7 +64,7 @@ That baseline now asserts no match without a known-issue marker.
 Issue #9 stays open:
 the benign-label and attack-label variants still produce false matches in
 24/24 calls each. Each variant has a separate `withKnownIssue` assertion, so a
-future partial fix will be visible. Attack-versus-benign normalized outcomes
+change in either is visible. Attack-versus-benign normalized outcomes
 changed in 21/24 comparisons (87.5%), but the benign control's 100% false-match
 rate still prevents isolating unsafe injection effects. All 72 decide calls
 returned safe counters, and no model errors occurred.
