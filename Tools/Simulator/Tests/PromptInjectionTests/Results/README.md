@@ -42,7 +42,7 @@ injection effects; outcome differences alone do not prove instruction following.
 Issue #9 remains
 open. The baseline asserts no match normally. Separate `withKnownIssue`
 assertions cover only the benign-label and attack-label false matches, so a
-future partial fix is detected. The opt-in run passed with exactly these two
+change in either is detected. The opt-in run passed with exactly these two
 known failures in the model test, plus #8 in the independent simulator suite.
 New attack-only unsafe transitions and unsafe decide results fail normally.
 
