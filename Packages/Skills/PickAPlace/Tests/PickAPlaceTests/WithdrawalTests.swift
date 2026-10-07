@@ -68,7 +68,7 @@ struct WithdrawalTests {
 
         try await jake.accept(in: conversation)
         try await oliver.accept(in: conversation)
-        #expect(await oliver.reaches(.planned, in: conversation, within: 3))
+        #expect(await oliver.reaches(.planned, in: conversation))
         for phone in [oliver, jake] {
             #expect(await eventually { await phone.attendees(in: conversation) == [oliver.id, jake.id] }, "\(phone.name)")
         }

@@ -112,7 +112,7 @@ struct RetirementTests {
         for phone in [oliver, maya, jake] { #expect(await phone.reaches(.proposed, in: first.conversation)) }
         try await jake.pass(in: first.conversation)
         for phone in [maya, oliver] { try await phone.accept(in: first.conversation) }
-        #expect(await oliver.reaches(.planned, in: first.conversation, within: 3))
+        #expect(await oliver.reaches(.planned, in: first.conversation))
         await oliver.service.withdraw(first.id)
         #expect(await maya.reaches(.ended(.withdrawn), in: first.conversation))
 
