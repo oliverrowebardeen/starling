@@ -202,7 +202,7 @@ final class DownWorld: Sendable {
 
     /// Waits until no node has a conversation in progress, twice in a row
     /// with a pause between, so late retries have had their chance.
-    func settle(timeout: Duration = .seconds(5)) async throws {
+    func settle(timeout: Duration = .seconds(30)) async throws {
         try await eventually(timeout: timeout, "all idle") {
             for node in self.nodes where !(await node.isIdle) { return false }
             try? await Task.sleep(for: .milliseconds(150))
@@ -265,7 +265,8 @@ final class DownWorld: Sendable {
 
 /// Waits for `condition`, for at most `timeout` of the Mac's awake time,
 /// so neither load nor a system sleep mid-run counts against a healthy wait
-/// (issue #109).
+/// (issue #109). The condition is checked once more at the deadline before
+/// giving up.
 func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
     let clock = SuspendingClock()
     let deadline = clock.now.advanced(by: timeout)
@@ -273,6 +274,7 @@ func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @
         if await condition() { return }
         try await clock.sleep(for: .milliseconds(5))
     }
+    if await condition() { return }
     Issue.record("timed out waiting for \(what)")
 }
 

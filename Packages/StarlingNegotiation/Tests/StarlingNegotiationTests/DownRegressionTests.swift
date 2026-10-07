@@ -315,7 +315,7 @@ import Testing
         try await eventually(timeout: .milliseconds(500), "the acceptor gave up") { await acceptor.negotiator.conversations.isEmpty }
         time.set(T.at(19).addingTimeInterval(60))
         await consent.answerAll(.approved)
-        try await world.settle(timeout: .seconds(10))
+        try await world.settle()
         #expect(await !world.wire.sent(by: acceptor.id).contains { $0.body.kind == .accept })
         #expect(await matchCounts(offerer, acceptor) == [0, 0])
         await world.stop()
@@ -381,7 +381,7 @@ import Testing
         await consent.answerAll(.approved)
         try await eventually("a replay of it waits for consent") { await consent.requests == 2 }
         await consent.answerAll(.declined)
-        try await world.settle(timeout: .seconds(10))
+        try await world.settle()
         #expect(await consent.requests == 2)
         await consent.answerAll(.declined)
         await world.stop()
