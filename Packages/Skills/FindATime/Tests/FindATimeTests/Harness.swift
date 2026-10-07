@@ -501,7 +501,7 @@ final class Phone: Sendable {
         return (interaction.id, interaction.proposal!)
     }
 
-    func waitForState(_ id: InteractionID? = nil, _ state: InteractionState, timeout: Duration = .seconds(5)) async throws {
+    func waitForState(_ id: InteractionID? = nil, _ state: InteractionState, timeout: Duration = .seconds(30)) async throws {
         try await eventually("\(name) reaches \(state)", timeout: timeout) {
             // A plan's artifacts follow the state change as their own events.
             await self.coordinator.all().contains {
@@ -562,13 +562,19 @@ final class World: Sendable {
     var wireText: String { frames.withLock { $0 }.map { String(decoding: $0.bytes, as: UTF8.self) }.joined(separator: "\n") }
 }
 
-func eventually(_ what: String, timeout: Duration = .seconds(5), _ condition: @Sendable () async -> Bool) async throws {
-    let clock = ContinuousClock()
+/// Waits for `condition`, counting only time this process could run
+/// (`SuspendingClock`), so a slow or sleeping host does not fail a test
+/// whose services were simply not scheduled yet (ADR 0258). The bound only
+/// matters when the condition never holds, so it is generous; the condition
+/// is checked once more at the deadline before giving up.
+func eventually(_ what: String, timeout: Duration = .seconds(30), _ condition: @Sendable () async -> Bool) async throws {
+    let clock = SuspendingClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
         if await condition() { return }
         try await Task.sleep(for: .milliseconds(5))
     }
+    if await condition() { return }
     Issue.record("timed out waiting for \(what)")
     throw CancellationError()
 }
