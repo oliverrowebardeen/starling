@@ -349,6 +349,7 @@ final class World: Sendable {
 
 /// Waits for `condition`, for at most `timeout` of the Mac's awake time,
 /// so a system sleep mid-run never counts against the wait (issue #109).
+/// The condition is checked once more at the deadline before giving up.
 func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @Sendable () async -> Bool) async throws {
     let clock = SuspendingClock()
     let deadline = clock.now.advanced(by: timeout)
@@ -356,6 +357,7 @@ func eventually(timeout: Duration = .seconds(30), _ what: String, _ condition: @
         if await condition() { return }
         try await clock.sleep(for: .milliseconds(5))
     }
+    if await condition() { return }
     Issue.record("timed out waiting for \(what)")
 }
 
@@ -470,6 +472,7 @@ extension VirtualTime {
             advance(to: min(due.first ?? now + step, now + step))
             try await clock.sleep(for: .milliseconds(5))
         }
+        if await condition() { return }
         Issue.record("timed out waiting for \(what)")
     }
 }
