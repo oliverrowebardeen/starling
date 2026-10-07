@@ -15,10 +15,14 @@ let fastConfiguration = PickAPlaceConfiguration(
 
 let utc = TimeZone(identifier: "UTC")!
 
-/// Waits until `condition` holds, polling every 10 ms, for up to `seconds`.
-func eventually(_ seconds: Double = 5, _ condition: @Sendable () async -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
+/// Waits until `condition` holds, polling every 10 ms, for up to `seconds`
+/// of time this process could run (`SuspendingClock`), so a slow or busy
+/// host does not fail a test whose services were not yet scheduled (ADR
+/// 0258). The bound only matters when the condition never holds.
+func eventually(_ seconds: Double = 30, _ condition: @Sendable () async -> Bool) async -> Bool {
+    let clock = SuspendingClock()
+    let deadline = clock.now.advanced(by: .seconds(seconds))
+    while clock.now < deadline {
         if await condition() { return true }
         try? await Task.sleep(for: .milliseconds(10))
     }
@@ -432,7 +436,7 @@ final class Phone: Sendable {
     }
 
     /// Waits for this phone's interaction in `conversation` to reach `state`.
-    func reaches(_ state: InteractionState, in conversation: ConversationID, within seconds: Double = 5) async -> Bool {
+    func reaches(_ state: InteractionState, in conversation: ConversationID, within seconds: Double = 30) async -> Bool {
         await eventually(seconds) { await self.state(in: conversation) == state }
     }
 

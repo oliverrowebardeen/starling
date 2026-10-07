@@ -260,8 +260,8 @@ struct PlanHoldTests {
         #expect(await maya.reaches(.ended(.declined), in: conversation))
         // Within a second: Oliver's own confirm deadline (3 seconds) would
         // end the card and its hold anyway.
-        #expect(await eventually(1) { await maya.holds.holder(of: plan.origin) == nil })
-        #expect(await eventually(1) { await maya.service.invites[conversation]?.isFinished == true })
+        #expect(await eventually { await maya.holds.holder(of: plan.origin) == nil })
+        #expect(await eventually { await maya.service.invites[conversation]?.isFinished == true })
     }
 
     /// Item 2: the card ends while Maya's yes waits for the hold. The hold

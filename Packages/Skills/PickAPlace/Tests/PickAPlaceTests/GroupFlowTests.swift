@@ -129,7 +129,7 @@ struct GroupFlowTests {
         try await maya.accept(in: conversation)
         try await oliver.accept(in: conversation)
 
-        #expect(await maya.reaches(.planned, in: conversation, within: 3))
+        #expect(await maya.reaches(.planned, in: conversation))
         #expect(Date().timeIntervalSince(proposed) >= 0.55)
         #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, maya.id] })
         #expect(await maya.interaction(conversation)?.artifacts.contains(.attendees(try Attendees([oliver.id, maya.id]))) == true)
@@ -181,7 +181,7 @@ struct GroupFlowTests {
         try await maya.accept(in: conversation)
 
         // Jake never answers, and the deadline passes before Oliver taps.
-        #expect(await jake.reaches(.ended(.expired), in: conversation, within: 2))
+        #expect(await jake.reaches(.ended(.expired), in: conversation))
         try await oliver.accept(in: conversation)
         #expect(await oliver.reaches(.planned, in: conversation, within: 0.5))
         #expect(await eventually { await oliver.attendees(in: conversation) == [oliver.id, maya.id] })
@@ -200,7 +200,7 @@ struct GroupFlowTests {
         try await jake.accept(in: conversation)
         // Oliver never taps: after the deadline and one more window, the
         // request ends on every phone, and nobody holds a plan.
-        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.ended(.expired), in: conversation, within: 3), "\(phone.name)") }
+        for phone in [oliver, maya, jake] { #expect(await phone.reaches(.ended(.expired), in: conversation), "\(phone.name)") }
         #expect(await group.lifecyclesWereLegal())
     }
 

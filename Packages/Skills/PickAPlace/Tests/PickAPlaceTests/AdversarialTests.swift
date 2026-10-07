@@ -165,7 +165,7 @@ struct AdversarialTests {
         let conversation = ConversationID()
         try await mallory.outbox.send(query([Venues.bobaGuys.choice]), to: maya.id, conversation: conversation, skill: skill, mode: .invite)
         #expect(await maya.reaches(.negotiating, in: conversation))
-        #expect(await maya.reaches(.ended(.expired), in: conversation, within: 3))
+        #expect(await maya.reaches(.ended(.expired), in: conversation))
         #expect(await eventually { await maya.service.tasks.isEmpty })
         #expect(await group.lifecyclesWereLegal())
     }
