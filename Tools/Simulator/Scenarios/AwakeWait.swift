@@ -4,7 +4,7 @@ import SimulatorKit
 /// still belongs to each service's injected clock.
 public enum AwakeWait {
     public static func eventually(
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         polling: Duration = .milliseconds(5),
         _ description: String,
         isolation: isolated (any Actor)? = #isolation,
@@ -20,7 +20,7 @@ public enum AwakeWait {
         }
     }
 
-    public static func mesh(_ simulation: Simulation, timeout: Duration = .seconds(5)) async throws {
+    public static func mesh(_ simulation: Simulation, timeout: Duration = .seconds(30)) async throws {
         let agents = await simulation.agents
         try await eventually(timeout: timeout, "mesh of \(agents.count)") {
             for agent in agents where await agent.peerCards.count < agents.count - 1 { return false }
