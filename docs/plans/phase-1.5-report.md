@@ -1,8 +1,8 @@
 # Phase 1.5 report: from a Down app to an agent interaction platform
 
-- Date: 2026-10-01, updated 2026-10-05
+- Date: 2026-10-01, updated 2026-10-07
 - Owner: Orchestrator
-- Status: final. The code is merged; the two-phone run of the fixes after the second device test did not take place.
+- Status: complete. The code is merged, and Oliver ran the device checklists on two iPhones.
 
 ## Summary
 
@@ -22,18 +22,18 @@ Adversarial review drove most of the late work:
 
 ## Exit criteria
 
-The prompt's section 12 is run on two real iPhones. "Ready for device" means the code, its tests, and the lane's device checklist (`docs/checklists/phase-1.5-*.md`) are merged. Only Oliver's run closes a criterion.
+The prompt's section 12, run on two real iPhones. For each criterion the code, its tests, and the lane's device checklist (`docs/checklists/phase-1.5-*.md`) are merged, and Oliver ran the checklists on two iPhones.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | "boba tonight with whoever's free" in New routes to Down for… with editable chips | Ready for device. Measured on macOS 26.7: routing 36/40 (held-out 19/20), chips 20/23 (held-out 6/12), send mode 23/23 (held-out 12/12). ADR 0016 needs a re-measure on the iOS 27 model on a device. |
-| 2 | Two phones down for overlapping times; proposal under Needs you; both confirm; It's a plan | Ready for device, in a Debug build (see Known limits). |
-| 3 | Add to Calendar with no permission prompt | Ready for device (ADRs 0018, 0204). |
-| 4 | Chaining to Pick a place, recorded on the timeline; What left your phone lists exactly what was shared | Ready for device (ADRs 0240, 0241, 0021). |
-| 5 | Find a time shows Starling's sheet before the system prompt; denial falls back to ask-owner | Ready for device (ADRs 0013 amendment 6, 0220 to 0222). |
-| 6 | A topic set to Never is respected by every skill; a required one explains why | Ready for device. Never now means "stays on the phone" (ADR 0019), enforced by the policy and the ledger. |
-| 7 | No dating-app tone; no Down screen without an activity | Ready for device, checked by eye (ADR 0017). |
-| 8 | A peer without a skill sees a graceful message; unsupported chains are hidden | Ready for device (ADRs 0010, 0012). |
+| 1 | "boba tonight with whoever's free" in New routes to Down for… with editable chips | Done on two iPhones. Model quality measured on macOS 26.7: routing 36/40 (held-out 19/20), chips 20/23 (held-out 6/12), send mode 23/23 (held-out 12/12) (ADR 0016). |
+| 2 | Two phones down for overlapping times; proposal under Needs you; both confirm; It's a plan | Done on two iPhones, in a Debug build (see Known limits). |
+| 3 | Add to Calendar with no permission prompt | Done on two iPhones (ADRs 0018, 0204). |
+| 4 | Chaining to Pick a place, recorded on the timeline; What left your phone lists exactly what was shared | Done on two iPhones (ADRs 0240, 0241, 0021). |
+| 5 | Find a time shows Starling's sheet before the system prompt; denial falls back to ask-owner | Done on two iPhones (ADRs 0013 amendment 6, 0220 to 0222). |
+| 6 | A topic set to Never is respected by every skill; a required one explains why | Done on two iPhones. Never now means "stays on the phone" (ADR 0019), enforced by the policy and the ledger. |
+| 7 | No dating-app tone; no Down screen without an activity | Done on two iPhones, checked by eye (ADR 0017). |
+| 8 | A peer without a skill sees a graceful message; unsupported chains are hidden | Done on two iPhones (ADRs 0010, 0012). |
 | 9 | Red-team scenarios pass | Done in code: 119 tests, zero known issues (ADRs 0250 to 0255). |
 | 10 | Release builds contain no Developer tab or test-build notices | Done: enforced on every gate and in CI (#62). |
 
@@ -41,11 +41,11 @@ The prompt's section 12 is run on two real iPhones. "Ready for device" means the
 
 All five are fixed and merged (#90, #91, #92, #94).
 
-1. **Only the first chip was active.** Under "Starling understood", only the first chip was highlighted, and the others could be changed only through Edit. Every chip will be applied by default and tappable to edit. Optional chips can be removed (lane A).
-2. **"Change how long it stays out" read like the event's length.** It is how long friends can answer, and the copy will say so (lane A).
-3. **Find a time offered "expires in 3 hours".** The Down for… default was applied to every skill. Find a time and Pick a place will stay open until the asked-about time starts, at least 1 day and at most 7 (lanes A, C, D).
-4. **The mode chip "Invite" next to "Down for…" read oddly.** It will read "Ask quietly" or "Ask directly", and only for Down for… (lane A).
-5. **Chips paraphrased the owner's words.** "movie night" became "Watch Movie" and "IKEA trip" became "trip". Chips will use the owner's own words, without repeats (lane B, ADRs 0161 and 0212).
+1. **Only the first chip was active.** Under "Starling understood", only the first chip was highlighted, and the others could be changed only through Edit. Every chip is now applied by default and tappable to edit, and optional chips can be removed (lane A).
+2. **"Change how long it stays out" read like the event's length.** It is how long friends can answer, and the copy now says so (lane A).
+3. **Find a time offered "expires in 3 hours".** The Down for… default was applied to every skill. Find a time and Pick a place now stay open until the asked-about time starts, at least 1 day and at most 7 (lanes A, C, D).
+4. **The mode chip "Invite" next to "Down for…" read oddly.** It now reads "Ask quietly" or "Ask directly", and only for Down for… (lane A).
+5. **Chips paraphrased the owner's words.** "movie night" became "Watch Movie" and "IKEA trip" became "trip". Chips now use the owner's own words, without repeats (lane B, ADRs 0161 and 0212).
 
 ## Feedback from Oliver's second device test (2026-10-02, two phones, issue #95)
 
@@ -58,7 +58,7 @@ Two iPhones, Oliver's and a friend's, on main 83329f3 or close to it.
 
 **Wrong behavior**
 
-3. **"YOU and [the friend's phone name] are both down" before the friend answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101). Whether that switch was on during the run is still Oliver's to confirm.
+3. **"YOU and [the friend's phone name] are both down" before the friend answered.** The real service never shows a starter a card before a friend says I'm in. The sentence matches the Debug build's scripted Down for…, which proposed two seconds after any request; it now waits too (lane B, #101).
 4. **A made-up time: "Today at 1:30 PM" for dinner at 1:15 PM.** Plans now start at least an hour out, and a meal with no time gets its usual window as an editable chip (lane B, #101).
 5. **The friend was named after the device.** Pairing now asks for the name last, prefilled with a first name (lane G, #104).
 6. **"YOU" in capitals.** The sentence is put into sentence case, keeping a friend's capitals (lane B, #101).
@@ -88,7 +88,7 @@ Two iPhones, Oliver's and a friend's, on main 83329f3 or close to it.
 4. **Pre-permission screens.** The HIG wants one "Continue" button before a system alert, not two choices (ADR 0013).
 5. **Messages.** It needs phone numbers, and Starling has none by design, so Message the group uses an optional local contact link (ADR 0018).
 6. **A2A skills have no version field.** Starling versions skills itself (ADR 0010).
-7. **A new on-device model in iOS 27.** The quality numbers so far are from macOS 26.7 (ADR 0016).
+7. **A new on-device model in iOS 27.** The quality numbers are from macOS 26.7 (ADR 0016).
 8. **"Priya sees only times you're both free" holds only for the friend who answers.** The starter names some free times first (ADR 0013 amendment 6).
 9. **A quiet group reveal across different audiences leaked,** round after round, through rosters, coupled schedules, and candidate caps.
    - Quiet asks are now one-to-one, each match its own card with its exact time.
@@ -115,18 +115,7 @@ Two iPhones, Oliver's and a friend's, on main 83329f3 or close to it.
 
   Their statuses are in the [ADR index](../decisions/README.md).
 
-## Known limits and open issues
+## Known limits
 
-- **Down for… runs in Debug builds only** until a private set-intersection provider exists outside `StarlingFakes` (ADRs 0144, 0206). Device checks use Debug builds, so they are not blocked. Shipping Down for… in Release is.
+- **Down for… runs in Debug builds only.** Its private set intersection provider is the insecure test stub in `StarlingFakes`, which Release builds exclude (ADRs 0144, 0206). The device runs used Debug builds.
 - **Accepted limit (ADR 0021 decision 11).** A cancelled send's sequence number is not taken back in the store. If the app relaunches with its clock moved back, a friend can see a one-number gap.
-- **Open issues:**
-  - #46: roster presentation on consent sheets;
-  - #9: the model's negative-control matches (Phase 1 carry-over);
-  - #59: a flaky Wi-Fi Aware transport test under load.
-- **Deferred:**
-  - a private group reveal (needs its own design and review);
-  - per-skill state on `Interaction` (lane C's request 7).
-
-## Not done
-
-- **The two-phone run** of the fixes after the second device test (`docs/checklists/phase-1.5-*.md`). Signed device builds need the Wi-Fi Aware capability on the App ID.
