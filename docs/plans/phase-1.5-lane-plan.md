@@ -45,9 +45,9 @@ The prompt's section 12, on two real iPhones, with criterion 7 changed by Oliver
 - **Hosted CI is off.** Six lanes push often. Until CI runs again, merges wait on the local gate, which checks one branch at a time.
 - **The device test needs two people.** Oliver and a friend run the checklists. Everything before that is covered by Loopback and the simulator.
 
-## 5. Queued for after Phase 1.5
+## 5. Ideas recorded after Phase 1.5
 
-Oliver queued these on 2026-10-01, to plan once this run is done. Each gets its own ADRs and lane prompt.
+Oliver recorded these on 2026-10-01. They were not started.
 
 ### Pairing methods, as its own lane
 

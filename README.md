@@ -8,9 +8,9 @@ The repository holds two things, both under Apache-2.0: **StarlingKit**, the Swi
 
 ## Status
 
-- **Research prototype.** Phase 1.5 is complete in code: the app runs the skills Down for..., Find a time, Pick a place, and Change the plan on one shared lifecycle, with Swap photos behind a flag. The [Phase 1.5 report](docs/plans/phase-1.5-report.md) lists what works on two iPhones and what is open.
+- **A research prototype, shared as is.** It is not under active development. The app runs the skills Down for..., Find a time, Pick a place, and Change the plan on one shared lifecycle, with Swap photos behind a flag.
 - **Not on the App Store** or TestFlight.
-- **Down for... runs in Debug builds only** until a private set intersection provider exists. The only one today is an insecure test stub, which Release builds exclude.
+- **Down for... runs in Debug builds only.** It needs a private set intersection provider, and the only one here is an insecure test stub, which Release builds exclude.
 - **Encrypted, not independently audited.** Links use a Noise secure channel with keys pinned at pairing. It has had automated adversarial reviews by AI models, not an independent security audit ([threat model](docs/THREAT_MODEL.md)).
 
 ## Privacy by design
@@ -78,7 +78,7 @@ The generated project is gitignored; regenerate it after pulling. In the Simulat
    The app's identifier becomes `<prefix>.starling`. The default, `com.example.starling`, is meant only for Simulator builds.
 2. Enable the **Wi-Fi Aware** capability for that App ID in your Apple Developer account. The app requests `com.apple.developer.wifi-aware` (Publish and Subscribe) ([ADR 0111](docs/decisions/0111-wifi-aware-services-entitlement-and-pairing.md)).
 3. Turn on Developer Mode on both iPhones, regenerate the project, and run the Debug build on each.
-4. Pair the two phones in person (Friends › Add friend), then follow a device checklist in [`docs/checklists/`](docs/checklists/), for example [`phase-1.5-P15-G.md`](docs/checklists/phase-1.5-P15-G.md) for pairing.
+4. Pair the two phones in person (Friends › Add friend). The numbered device checklists used during development are in [`docs/checklists/`](docs/checklists/).
 
 ### Release checks and the gate
 
@@ -123,7 +123,7 @@ Starling was built by one developer directing several AI coding agents in parall
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Starling is not under active development, so issues and pull requests may not get a response. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

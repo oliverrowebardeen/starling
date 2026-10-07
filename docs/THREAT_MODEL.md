@@ -32,7 +32,7 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
 | **Attacker in the room during pairing** | Runs a man-in-the-middle between two phones that are pairing, including grinding keys to make codes collide. | Yes |
 | **Thief of a device's static private key** | Has the key; does not control that device. | Partly (section 5) |
 | **Attacker with code execution on an unlocked phone, a jailbreak, or a compromised OS** | Everything. | No |
-| **Global passive observer** (ISP, relay operator) | No relay exists in Phase 1. | Phase 2 |
+| **Global passive observer** (ISP, relay operator) | Starling has no relay, so there is no server-side traffic to observe. | Not applicable |
 
 ## 4. What the secure channel protects
 
@@ -69,7 +69,7 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
 8. **Content from a paired friend is still untrusted input.** Authentication says who sent a message, not that it is benign. Prompt-injection defenses are structural (typed values only; the model never decides egress) and belong to the Agent, Negotiation, and Policy lanes.
 9. **Replays across app restarts at the `Inbox` layer.** `Inbox` replay state is in memory, but each secure session has fresh keys and nonces, so a frame captured in an old session cannot decrypt in a new one. Replay protection below `Inbox` therefore survives restarts.
 10. **Anything after decryption on the device**: other apps, the OS, backups of app data outside the Keychain, notifications on the lock screen. Those are covered by other sections.
-11. **The Phase 2 relay.** Store-and-forward needs its own design: a one-way pattern or HPKE, plus replay rules (ADR 0003 decision 3).
+11. **A relay.** Starling has none. Store-and-forward would need its own design: a one-way pattern or HPKE, plus replay rules (ADR 0003 decision 3).
 
 ## 5a. What Phase 1.5's skills and pairing do not protect
 
@@ -161,7 +161,7 @@ The sixth Codex review (2026-10-01, at 1ca5ca3) found no high findings and confi
 |------|-------|
 | Codex review of the issue #32 follow-up (ADR 0003 care requirement 7) | Orchestrator |
 | Wi-Fi Aware pairing binding with `deriveSharedSecret` and XXpsk3 (ADR 0102) | Owner decision, then E1 and E2 |
-| Padding to hide message sizes, before the relay | Phase 2 |
-| Rotating link-visible `PeerID`s, or hiding them in hellos | Phase 2 or later |
+| Padding to hide message sizes | Not addressed |
+| Rotating link-visible `PeerID`s, or hiding them in hellos | Not addressed |
 | Detecting one-sided pairing | E1 follow-up |
 | Simulator `impersonation` scenario: switch it to run over `SecureTransport` and remove the known-issue marker | Lane I |
