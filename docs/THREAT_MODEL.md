@@ -1,8 +1,8 @@
 # Starling threat model
 
-Status: **draft, secure channel section only** (lane E1, Phase 1, 2026-09-30). Other sections (policy and consent, negotiation, the relay) belong to their lanes and the Orchestrator.
+Scope: the secure channel and pairing (lane E1, Phase 1, 2026-09-30), and what Phase 1.5's skills and pairing do not protect (section 5a).
 
-**No privacy claim may be made on the strength of this document yet.** ADR 0003 care requirement 7 requires a Codex review of the cryptography first (section 6 says what such a review is). Until that review passes and is recorded here (section 6), describe Starling as "encrypted, not yet reviewed."
+**This document is not a security audit, and no privacy claim should rest on it alone.** The secure channel has had the automated adversarial reviews by an AI model listed in section 6 (ADR 0003 care requirement 7), and no independent audit. Describe Starling as "encrypted, not independently audited."
 
 ## 1. Scope
 
@@ -62,14 +62,14 @@ Design references: ADR 0003 (why message-layer Noise), ADR 0100 (secure channel 
    - A thief of Bob's key can read nothing already sent (forward secrecy), but can pose as Bob to Bob's friends.
    - There is no key rotation or revocation. Recovery is to reset the identity and pair every friend again.
    - Keys are not in the Secure Enclave, because CryptoKit's `SecureEnclave` offers only P-256, ML-KEM, and ML-DSA keys, not X25519 (https://developer.apple.com/documentation/cryptokit/secureenclave). Keys in memory are not zeroized.
-4. **Pairing when owners do not compare.** Compare-and-confirm has measured failure rates of up to 20% in user studies (ADR 0102). An owner who taps "match" without looking gives an attacker in the room the pairing. ADR 0102 proposes binding pairing to the Wi-Fi Aware PIN to remove this step.
+4. **Pairing when owners do not compare.** Compare-and-confirm has measured failure rates of up to 20% in user studies (ADR 0102). An owner who taps "match" without looking gives an attacker in the room the pairing.
 5. **One-sided pairing** (ADR 0101). If the last confirmation is lost, one phone pins the friend and the other does not. The pinned side's handshakes then fail silently.
 6. **Model locality is self-declared.** An `AgentCard` says where the peer's model runs (on-device, PCC, or a named cloud). The secure channel authenticates which device is talking, not what software or model runs on it. A modified app can lie. Brief open question 4 (App Attest) is unanswered. The UI must say "declared", not "verified".
-7. **The PSI stub is not private.** `InsecurePSIStub` reveals the initiator's set to the responder. The secure channel hides it from the network, not from the peer. Until a real `PSIProvider` (Nightjar) exists, mutual reveal leaks one side's candidate slots to the other, and policy requires consent for it (ARCHITECTURE section 7).
+7. **The PSI stub is not private.** `InsecurePSIStub` reveals the initiator's set to the responder. The secure channel hides it from the network, not from the peer. It is the only `PSIProvider` in the repository, so mutual reveal leaks one side's candidate slots to the other; policy requires consent for it (ARCHITECTURE section 7), and Release builds leave Down for… out.
 8. **Content from a paired friend is still untrusted input.** Authentication says who sent a message, not that it is benign. Prompt-injection defenses are structural (typed values only; the model never decides egress) and belong to the Agent, Negotiation, and Policy lanes.
 9. **Replays across app restarts at the `Inbox` layer.** `Inbox` replay state is in memory, but each secure session has fresh keys and nonces, so a frame captured in an old session cannot decrypt in a new one. Replay protection below `Inbox` therefore survives restarts.
-10. **Anything after decryption on the device**: other apps, the OS, backups of app data outside the Keychain, notifications on the lock screen. Those are covered by other sections.
-11. **A relay.** Starling has none. Store-and-forward would need its own design: a one-way pattern or HPKE, plus replay rules (ADR 0003 decision 3).
+10. **Anything after decryption on the device**: other apps, the OS, backups of app data outside the Keychain, notifications on the lock screen. This document does not cover them.
+11. **A relay.** Starling has none. Every link is direct between two phones, so nothing here covers store-and-forward delivery.
 
 ## 5a. What Phase 1.5's skills and pairing do not protect
 
@@ -83,7 +83,7 @@ These come from the lanes' requests (`docs/requests/P15-*.md`) and the Phase 1.5
 3. **A third phone in range can restart or end a pairing** before this phone's nonce goes out, with IDs it overheard, and end one visibly after. It learns no code. Pairing requests are unauthenticated claims; a forged one can only start a ceremony whose code will not match. A finished ceremony replays its last encrypted messages up to 3 times, which reveals nothing new. All of this is denial of service.
 4. **Wi-Fi Aware roles.** A forged link hello from an OS-paired device can make a phone settle a role that stops the link until the next genuine hello: denial of service, and only from devices the owner paired in person (ADRs 0110, 0260).
 5. **Find a time.**
-   - A starter shows each friend up to 16 of its free times; with a calendar, the gaps show busy time in the range, never why. A friend who keeps sending requests learns 16 answers per request, at most 4 open requests at a time. Private set intersection would remove this (ADR 0221).
+   - A starter shows each friend up to 16 of its free times; with a calendar, the gaps show busy time in the range, never why. A friend who keeps sending requests learns 16 answers per request, at most 4 open requests at a time (ADR 0221).
    - Every no while answering is silence, and every no after the owner's tap is the same `reject(noOverlap)`. A yes from a calendar still comes faster than one from an owner (ADRs 0019, 0221).
    - Each conversation can ask about at most 16 times, and an ended conversation is retired for good (ADR 0021). A dishonest friend can still open new conversations, at most 4 at a time.
    - Calendar details are Never by default and are still read on the phone to judge candidates; only yes or no to the starter's own times leaves (ADR 0019).
@@ -151,17 +151,6 @@ The sixth Codex review (2026-10-01, at 1ca5ca3) found no high findings and confi
 
 - CryptoKit's X25519, ChaChaPoly, SHA-256, HMAC, and system random number generator are correct.
 - The Keychain enforces its accessibility classes.
-- The Noise implementation matches the spec. Two independent vector files pass, and the first Codex review found no conformance issues; a review of the state-machine fixes is pending.
+- The Noise implementation matches the spec. Two independent vector files pass, and the first Codex review found no conformance issues; the later reviews in section 6 covered the state-machine fixes.
 - Transports report peers by key-derived `PeerID` (ADR 0100 decision 8).
 - Both owners of a pairing are physically together and look at both screens.
-
-## 8. Open items
-
-| Item | Owner |
-|------|-------|
-| Codex review of the issue #32 follow-up (ADR 0003 care requirement 7) | Orchestrator |
-| Wi-Fi Aware pairing binding with `deriveSharedSecret` and XXpsk3 (ADR 0102) | Owner decision, then E1 and E2 |
-| Padding to hide message sizes | Not addressed |
-| Rotating link-visible `PeerID`s, or hiding them in hellos | Not addressed |
-| Detecting one-sided pairing | E1 follow-up |
-| Simulator `impersonation` scenario: switch it to run over `SecureTransport` and remove the known-issue marker | Lane I |
