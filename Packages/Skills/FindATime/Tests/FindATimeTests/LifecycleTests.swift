@@ -530,6 +530,7 @@ struct LifecycleTests {
 
         let started = try await a.findATime(with: [b, c], expiresIn: 2)
         _ = try await c.waitForQuestion()
+        try await a.waitForAnswer(from: b)
         world.clock.advance(hours: 1.1)
         let (_, proposal) = try await a.waitForProposal()
         #expect(proposal.plan?.attendees.peers == [a.id, b.id].sorted())
@@ -556,7 +557,7 @@ struct LifecycleTests {
         // answers.
         let started = try await a.findATime(with: [b, c], expiresIn: 24)
         _ = try await c.waitForQuestion()
-        try await eventually("Ana has Ben's answer") { await a.service.initiating.values.first?.answers[b.id] != nil }
+        try await a.waitForAnswer(from: b)
         world.clock.advance(hours: 6.5)
 
         // Read the proposals off the wire, which keeps them, rather than a
@@ -623,6 +624,7 @@ struct LifecycleTests {
 
         let started = try await a.findATime(with: [b, c])
         let (cAsked, _) = try await c.waitForQuestion()
+        try await a.waitForAnswer(from: b)
         // Cy never answers. After the answer wait, Ana goes ahead with Ben.
         world.clock.advance(hours: 1)
         let (_, proposal) = try await a.waitForProposal()

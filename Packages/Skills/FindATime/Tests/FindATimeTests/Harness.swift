@@ -501,6 +501,16 @@ final class Phone: Sendable {
         return (interaction.id, interaction.proposal!)
     }
 
+    /// Waits until this phone, as the starter, has recorded `friend`'s
+    /// answer. A test that moves the clock past the answer deadline waits
+    /// for this first: on a phone an answer takes time to arrive, and one
+    /// that arrives after the deadline rightly counts for nothing.
+    func waitForAnswer(from friend: Phone) async throws {
+        try await eventually("\(name) has \(friend.name)'s answer") {
+            await self.service.initiating.values.contains { $0.answers[friend.id] != nil }
+        }
+    }
+
     func waitForState(_ id: InteractionID? = nil, _ state: InteractionState, timeout: Duration = .seconds(30)) async throws {
         try await eventually("\(name) reaches \(state)", timeout: timeout) {
             // A plan's artifacts follow the state change as their own events.
