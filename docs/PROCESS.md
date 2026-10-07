@@ -69,7 +69,7 @@ Examples:
 - **A friend's fast reply was dropped (#105).** Pick a place recorded a query's ID only after `Outbox.send` returned, but a reply could arrive before that. It was dropped as unsolicited and the plan waited for its deadline. Find a time had the same ordering. Both now hold an authenticated early reply while its own send is in flight and count it only if it names something sent to that friend.
 - **Answers naming queries that were never sent (#63, #68)** could advance an organizer. Both skills now check against what they actually sent.
 - **The PSI stub accepted replies above its set-size bound, and malformed digests (#6, #7).** The bound is what stops a dishonest peer from submitting every time slot and learning a whole week of free time.
-- **The model's negative controls fail (#9).** Paired injection measurements show the on-device model matching "food" to "movie" even without an attack. The issue stays open, marked with known-issue assertions so a partial fix shows up ([results](../Tools/Simulator/Tests/PromptInjectionTests/Results/README.md)).
+- **The model's negative controls fail (#9).** Paired injection measurements show the on-device model matching "food" to "movie" even without an attack. The tests mark it with known-issue assertions, so any change in that behavior shows up ([results](../Tools/Simulator/Tests/PromptInjectionTests/Results/README.md)).
 
 ## Device testing
 
@@ -83,14 +83,14 @@ Tests that passed alone failed in the gate when many packages built at once. The
 2. **Waits on a suspending clock.** Condition waits measure time the test process could actually run, and check the condition once more before declaring a timeout. A false condition at the deadline still fails ([ADR 0258](decisions/0258-simulator-waits-count-awake-time.md)).
 3. **Explicit barriers.** Tests wait for an observable event (a skill handled the hello, a journal drained its writes) instead of a fixed sleep ([ADR 0257](decisions/0257-observe-service-completion-in-red-team-tests.md), #125).
 
-One known flaky test remains (#59).
+One known flaky test remains: a Wi-Fi Aware transport test under load.
 
 ## What went wrong, and what changed
 
 | Problem | Change |
 |---|---|
 | Patching races one await at a time | After repeated findings of one class, redesign the mechanism (the `PinAuthority` epoch) |
-| Privacy designs for group asks kept leaking | Narrow the product: quiet asks are one-to-one until a private group reveal has its own design and review |
+| Privacy designs for group asks kept leaking | Narrow the product: quiet asks are one-to-one, and a group plan is an explicit invite |
 | Tests passed while pairing failed on phones | Reproduce device failures over Loopback first; a Debug-only pairing log that never records keys or codes |
 | A revision check was trusted to order concurrent changes | One change per plan at a time, shared by every skill that changes a plan |
 | Code assumed a send returns before its reply arrives (#105) | Hold early authenticated replies while their send is in flight |
@@ -118,4 +118,4 @@ The ADRs, request files, and checklists were written during development and use 
 - [ADR index](decisions/README.md).
 - [Interface requests](requests/README.md) and [device checklists](checklists/).
 - [Adversarial tests](../Tools/Simulator/Tests) and the [simulator](../Tools/Simulator/README.md).
-- [Phase 1.5 report](plans/phase-1.5-report.md): exit criteria, device test findings, and open issues.
+- [Phase 1.5 report](plans/phase-1.5-report.md): exit criteria, device test findings, and known limits.
