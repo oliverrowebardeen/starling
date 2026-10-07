@@ -1,6 +1,6 @@
 # ADR 0018: Hand-offs to Calendar, Messages, Maps, and Siri
 
-- Status: Accepted (the owner approved the contact link, decision 2, on 2026-09-30). Decision 5 leaves Muse and Dots out of scope.
+- Status: Accepted (Oliver approved the contact link, decision 2, on 2026-09-30). Decision 5 leaves Muse and Dots out of scope.
 - Date: 2026-09-30
 - Owner: Orchestrator
 

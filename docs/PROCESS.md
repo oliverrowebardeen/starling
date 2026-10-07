@@ -1,6 +1,6 @@
 # How this was built
 
-Starling was built from 2026-09-29 to 2026-10-05 by one developer (called "the owner" throughout the docs) directing several AI coding agents in parallel. This document describes how that work was organized, what the checks caught, and what went wrong, with links to the records behind each claim.
+Starling was built from 2026-09-29 to 2026-10-05 by one developer, Oliver Rowe-Bardeen, directing several AI coding agents in parallel. This document describes how that work was organized, what the checks caught, and what went wrong, with links to the records behind each claim.
 
 ## At a glance
 
@@ -20,19 +20,19 @@ References written as "#NN" in these docs, ADRs, and code comments point to issu
 
 ## Roles
 
-- **The owner** set direction, approved each phase's lane plan, accepted decisions that changed the brief, ran the device tests on two iPhones, and approved merges.
+- **Oliver** set direction, approved each phase's lane plan, accepted decisions that changed the brief, ran the device tests on two iPhones, and approved merges.
 - **The Orchestrator** was a coordinating AI agent. It wrote the interface freezes in `StarlingCore`, owned the shared docs, answered lanes' requests, and ran the merge gate.
 - **Lane agents** each owned specific directories in their own git worktree and branch. A lane ended with **DONE** (tests passing, ADRs for new decisions, a device checklist) or **BLOCKED** (exactly what it needed, and from whom).
 - **Reviewers** were separate AI agents told only to find defects. Most rounds used OpenAI's Codex, a model from a different vendor than the one that wrote most of the code (Anthropic's Claude; the commits carry `Co-Authored-By` trailers), because an independent model is a better adversary. Later rounds added separate Claude reviewer agents with fresh context, which caught defects the Codex rounds had passed, among them the pairing-code restart below.
 
 ## A change, end to end
 
-1. The owner approves a lane plan: each lane's directories, deliverables, and acceptance criteria.
+1. Oliver approves a lane plan: each lane's directories, deliverables, and acceptance criteria.
 2. The Orchestrator merges the phase's Core freeze, and every lane branches from it.
 3. A lane builds and tests against fakes and the Loopback transport, and writes ADRs for its decisions.
 4. Risky pull requests go through adversarial review rounds until every finding is fixed with a test or tracked as an issue.
 5. The Orchestrator runs the gate on the branch merged into the current `main`.
-6. The owner merges, then runs the lane's device checklist on two iPhones; findings come back as issues.
+6. Oliver merges, then runs the lane's device checklist on two iPhones; findings come back as issues.
 
 ## Interfaces first: the Core freeze
 
@@ -46,7 +46,7 @@ Fixes several lanes needed went into Core once. The final reviews of three skill
 
 ## Decisions as ADRs
 
-Every decision with a trade-off is an ADR with primary sources (Apple documentation, specifications, source code). Each lane wrote ADRs in its own number range, so parallel lanes never edited the same file; the Orchestrator indexed them on merge. Decisions that changed the brief waited for the owner. When a later finding changed a decision, the ADR was amended in place with a numbered amendment, so the reasoning stays traceable (for example, [ADR 0011](decisions/0011-one-lifecycle-and-interactions.md) amendments 13 to 17).
+Every decision with a trade-off is an ADR with primary sources (Apple documentation, specifications, source code). Each lane wrote ADRs in its own number range, so parallel lanes never edited the same file; the Orchestrator indexed them on merge. Decisions that changed the brief waited for Oliver. When a later finding changed a decision, the ADR was amended in place with a numbered amendment, so the reasoning stays traceable (for example, [ADR 0011](decisions/0011-one-lifecycle-and-interactions.md) amendments 13 to 17).
 
 ## Adversarial review
 
@@ -73,7 +73,7 @@ Examples:
 
 ## Device testing
 
-No agent can hold an iPhone, so every lane ended with a short, numbered device checklist, and a criterion counted as done only after the owner's run on two phones. Two runs found what the simulations had not: pairing failed until about the hundredth try, a button stayed disabled with no reason given, and chips paraphrased the owner's words. Lane P15-G then reproduced eight of nine pairing failure causes over the Loopback transport before fixing them ([ADR 0260](decisions/0260-pairing-that-works-on-the-first-try.md), [Phase 1.5 report](plans/phase-1.5-report.md)).
+No agent can hold an iPhone, so every lane ended with a short, numbered device checklist, and a criterion counted as done only after Oliver's run on two phones. Two runs found what the simulations had not: pairing failed until about the hundredth try, a button stayed disabled with no reason given, and chips paraphrased the owner's words. Lane P15-G then reproduced eight of nine pairing failure causes over the Loopback transport before fixing them ([ADR 0260](decisions/0260-pairing-that-works-on-the-first-try.md), [Phase 1.5 report](plans/phase-1.5-report.md)).
 
 ## Test reliability
 
@@ -104,11 +104,11 @@ The ADRs, request files, and checklists were written during development and use 
 
 - **Lane**: a parallel workstream run by one AI coding agent in its own git worktree, owning specific directories. Phase 1: BR (brand), C2 (agent quality), E1 (identity and secure channel), E2 (Wi-Fi Aware), F (negotiation), G (policy and consent), H (app), I (red team). Phase 1.5: P15-A (shell), P15-B (Down for... and the model), P15-C (Find a time), P15-D (Pick a place), P15-E (chaining and audit), P15-F (red team), P15-G (pairing reliability).
 - **Orchestrator**: the coordinating agent that owned `StarlingCore`, the shared docs, request answers, and the merge gate.
-- **The owner**: the project's maintainer, who approved plans and decisions, ran device tests, and approved merges.
+- **Oliver**: Oliver Rowe-Bardeen, the project's developer and maintainer, who approved plans and decisions, ran device tests, and approved merges. Elsewhere, "the owner" means a phone's owner: the person the app works for.
 - **Core freeze**: a version of `StarlingCore`'s protocols and message types merged before a phase's lanes started. Lanes could not edit it; changes went through request files. Versions: v0, v1, v1.1, v2, v2.1.
 - **Gate**: `Tools/local-gate.sh <branch>`, which merges a branch into `main` in a throwaway worktree and runs CI's checks (every package's tests, the app build, the Release checks). "GATE PASS" was the merge condition.
 - **Request file**: `docs/requests/<lane>.md`, where a lane asked for a change outside its directories and the Orchestrator answered. "Request P15-E 4.1" means item 4.1 in `docs/requests/P15-E.md`.
-- **Device checklist**: `docs/checklists/<phase>-<lane>.md`, the numbered steps a lane left for the owner to run on real iPhones.
+- **Device checklist**: `docs/checklists/<phase>-<lane>.md`, the numbered steps a lane left for Oliver to run on real iPhones.
 - **Codex review**: an automated adversarial code review by OpenAI's Codex agent. Not a human or third-party audit.
 - **ADR number ranges**: 0001 to 0099 project-wide; 0100 to 0179 Phase 1 lanes; 0200 to 0269 Phase 1.5 lanes.
 

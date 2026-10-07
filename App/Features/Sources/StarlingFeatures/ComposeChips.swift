@@ -1,7 +1,7 @@
 import Foundation
 import StarlingCore
 
-/// One chip under "Starling understood" (the owner's device test, 2026-10-02).
+/// One chip under "Starling understood" (Oliver's device test, 2026-10-02).
 /// Every chip is applied and tappable: a tap edits that one thing in place,
 /// an optional chip can be removed, and a required one (the activity, Find
 /// a time's range) can be edited but not removed. Edit still opens the full

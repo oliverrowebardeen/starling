@@ -1,12 +1,12 @@
 # Starling Phase 1.5: From a Down app to an agent interaction platform
 
-The owner's Phase 1.5 prompt, 2026-09-30, kept as written below this note. Where it and an ADR differ, the ADR wins:
+Oliver's Phase 1.5 prompt, 2026-09-30, kept as written below this note. Where it and an ADR differ, the ADR wins:
 
-- **Intent schema** (section 2): data in `IntentSchema`, turned into a guided-generation schema by StarlingAgent at runtime, not an `@Generable` type in each skill. ADR 0010, decision 2; approved by the owner.
-- **Pre-permission sheet** (sections 5 and 10.3): one "Continue" button before the system alert, per the HIG. "Just ask me" is the fallback on denial and a switch in You. ADR 0013; approved by the owner.
-- **Banned words** (section 9, exit criterion 7): The owner clarified on 2026-09-30 that the goal is not looking like a dating app, not a word list, and that a crush skill could come later. Tone is reviewed by eye (ADR 0017).
+- **Intent schema** (section 2): data in `IntentSchema`, turned into a guided-generation schema by StarlingAgent at runtime, not an `@Generable` type in each skill. ADR 0010, decision 2; approved by Oliver.
+- **Pre-permission sheet** (sections 5 and 10.3): one "Continue" button before the system alert, per the HIG. "Just ask me" is the fallback on denial and a switch in You. ADR 0013; approved by Oliver.
+- **Banned words** (section 9, exit criterion 7): Oliver clarified on 2026-09-30 that the goal is not looking like a dating app, not a word list, and that a crush skill could come later. Tone is reviewed by eye (ADR 0017).
 - **New (+) button** (section 7): a `Tab(role: .prominent)` whose screen is the composer. iOS has no action-button tab, and the HIG reserves tab bars for navigation. ADR 0015.
-- **Message the group** (section 4): Starling has no phone numbers. The owner may link a friend to a contact on this phone. ADR 0018; approved by the owner.
+- **Message the group** (section 4): Starling has no phone numbers. The owner may link a friend to a contact on this phone. ADR 0018; approved by Oliver.
 - **Muse and Dots** (section 3): out of scope. They are not in the brief or the repo (ADR 0018, decision 5).
 - **DESIGN.md** did not exist when the prompt was written. It now does (`docs/DESIGN.md`).
 
@@ -14,7 +14,7 @@ The owner's Phase 1.5 prompt, 2026-09-30, kept as written below this note. Where
 
 You are the Orchestrator for Starling. Read docs/BRIEF.md, docs/ARCHITECTURE.md and docs/DESIGN.md before doing anything. This prompt supersedes them wherever they conflict; fold its decisions into those docs as ADRs and doc updates before any lane starts.
 
-Status: still ideation-grade. These are researched defaults. If you find something better, propose it with primary sources and a clear tradeoff, then proceed once the owner agrees.
+Status: still ideation-grade. These are researched defaults. If you find something better, propose it with primary sources and a clear tradeoff, then proceed once Oliver agrees.
 
 Owner norms (unchanged): no sycophancy, push back when warranted; no em dashes in any prose you write (docs, UI copy, commit messages); cite primary sources.
 
@@ -119,7 +119,7 @@ Apple's guidance: request permission only when the app clearly needs it, ideally
 
 ## 10. Mockups
 
-The owner has a canvas with six screens for this phase (ask the owner for exports if you need images):
+Oliver has a canvas with six screens for this phase (ask him for exports if you need images):
 1. **Home**: Needs you (a Down proposal with I'm in / Not tonight; a Find a time consent request), In progress (Pick a place, Find a time with status marks), Coming up (a plan with a "Photos after" chip).
 2. **New**: free-text composer, "Starling understood" chips, audience picker with pair symbols, skill tiles, "See who's up for it".
 3. **Just-in-time permission**: Find a time calendar sheet with reads / never leaves / friend sees, "Use my calendar", "Just ask me instead".
@@ -131,7 +131,7 @@ Treat them as layout and content guidance, not pixel specs. Use system component
 
 ## 11. Lane plan for Superset
 
-Run the Orchestrator lane alone first. Spawn the others only after the owner approves your lane plan.
+Run the Orchestrator lane alone first. Spawn the others only after Oliver approves your lane plan.
 
 **Orchestrator (first, solo):** ADRs for Sections 2 to 9; `StarlingSkill` protocol; skill registry and feature flags; artifact types (`Plan`, `TimeSlot`, `PlaceChoice`, `Attendees`); lifecycle state machine and `Interaction` store; global privacy topics in the policy layer; agent card skill advertisement; envelope skill id/version. Freeze these interfaces and merge to main.
 
@@ -145,7 +145,7 @@ Then in parallel:
 
 ## 12. Exit criteria
 
-On two real iPhones (the owner runs the device checklists):
+On two real iPhones (Oliver runs the device checklists):
 1. Typing "boba tonight with whoever's free" in New routes to Down for… and shows editable chips.
 2. Both phones go down for overlapping times; Home shows the proposal under Needs you; both confirm; It's a plan appears.
 3. Add to Calendar works with no permission prompt.

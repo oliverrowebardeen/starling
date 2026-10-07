@@ -24,7 +24,7 @@ import Testing
         #expect(settings.neverTopics == [.place, .budget, .calendarDetails])
     }
 
-    /// The owner's defaults, 2026-10-01 (ADR 0019).
+    /// Oliver's defaults, 2026-10-01 (ADR 0019).
     @Test func defaultsProtectPrivacy() {
         let expected: [PrivacyTopic: SharingChoice] = [
             .time: .share, .activity: .share, .place: .askMe, .location: .askMe, .budget: .never,

@@ -72,7 +72,7 @@ Existing native app suites also run in Tools/test-all.sh: startup recovery,
 consent queuing and deferred progress, audience/settings recovery races, stale
 draft parsing, scheduler claims, and durable storage errors. Their focused
 checks complement this authenticated integration graph. Timing and delivery
-limits from ADR 0254 still apply. The owner's numbered checklist retains device
+limits from ADR 0254 still apply. Oliver's numbered checklist retains device
 and accessibility checks; real-model measurements remain opt-in.
 
 ## Sources

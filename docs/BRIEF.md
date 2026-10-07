@@ -246,7 +246,7 @@ Conventions:
 
 ## 5. Phases
 
-Each phase has exit criteria. Do not start a phase until the previous one's exit criteria are met or explicitly waived by the owner.
+Each phase has exit criteria. Do not start a phase until the previous one's exit criteria are met or explicitly waived by Oliver.
 
 ### Phase 0: Foundations and spike
 
