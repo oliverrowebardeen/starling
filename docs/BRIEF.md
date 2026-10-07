@@ -28,7 +28,7 @@ Status: ideation-stage plan, researched late September 2026. Everything here is 
 
 ## 1. Owner and working norms
 
-Starling is an open-source project in the owner's bird-named "Nest" family (Pigeon, Crow, etc.).
+Owner: Oliver Rowe-Bardeen. Starling is an open-source project in his bird-named "Nest" family (Pigeon, Crow, etc.).
 
 Norms:
 
