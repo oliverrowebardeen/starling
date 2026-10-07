@@ -251,10 +251,16 @@ extension FindATimeService {
 
     /// The time the most friends can make, earliest first; friends who
     /// cannot make it are told "no plan".
+    ///
+    /// Only times that have not begun count. Answers are collected until
+    /// halfway to the last offered time, so the earliest ones may have begun
+    /// by then, and a plan cannot be agreed once its time has begun: the
+    /// confirm deadline would already have passed.
     private func decide(_ id: ConversationID) {
         guard let value = initiating[id], value.phase == .collecting else { return }
+        let now = now()
         let free = { (peer: PeerID, slot: TimeSlot) in value.answers[peer]?.contains(slot) == true }
-        let counts = value.candidates.map { slot in value.invitees.filter { free($0, slot) }.count }
+        let counts = value.candidates.map { slot in slot.start > now ? value.invitees.filter { free($0, slot) }.count : 0 }
         guard let best = counts.max(), best > 0, let index = counts.firstIndex(of: best) else {
             return endWithoutPlan(id, .noAgreement)
         }

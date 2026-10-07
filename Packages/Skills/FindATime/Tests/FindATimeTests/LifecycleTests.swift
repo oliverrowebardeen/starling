@@ -540,6 +540,45 @@ struct LifecycleTests {
         await world.stop()
     }
 
+    /// Answers are collected until halfway to the last offered time, so the
+    /// earliest times may have begun by then. The starter proposes the
+    /// earliest time that has not: a plan cannot be agreed once its time has
+    /// begun, so a proposal for a begun time would expire at once.
+    @Test func theStarterNeverProposesATimeThatHasBegun() async throws {
+        let world = World()
+        let a = world.phone("Ana", configuration: shippedWaits)
+        let b = world.phone("Ben", configuration: shippedWaits)
+        let c = world.phone("Cy", calendar: FakeCalendarStore(status: .denied), configuration: shippedWaits)
+        try await world.start()
+
+        // At 8:00, times from 9:00 to 20:00 today. Answers are collected
+        // until 14:00, halfway to the last one. Ben is free all day; Cy never
+        // answers.
+        let started = try await a.findATime(with: [b, c], expiresIn: 24)
+        _ = try await c.waitForQuestion()
+        try await eventually("Ana has Ben's answer") { await a.service.initiating.values.first?.answers[b.id] != nil }
+        world.clock.advance(hours: 6.5)
+
+        // Read the proposals off the wire, which keeps them, rather than a
+        // card state a later tick could end before it is seen.
+        try await eventually("Ana proposes or ends") {
+            let proposed = world.envelopes.contains { $0.sender == a.id && $0.body.kind == .propose }
+            let ended = await a.coordinator.interaction(started)?.state.isFinal == true
+            return proposed || ended
+        }
+        let proposed = world.envelopes.compactMap { envelope -> TimeSlot? in
+            guard envelope.sender == a.id, case .propose(let proposal) = envelope.body, case .slots(let slots)? = proposal.terms[.time] else { return nil }
+            return slots.first
+        }
+        #expect(proposed == [T.slot(15, 16)])
+        let (bCard, _) = try await b.waitForProposal()
+        try await a.accept(started)
+        try await b.accept(bCard)
+        try await a.waitForState(started, .planned)
+        #expect(await a.coordinator.interaction(started)?.plan?.time == T.slot(15, 16))
+        await world.stop()
+    }
+
     /// A friend's request lasts until its last offered time begins, never
     /// longer, so an old question does not linger.
     @Test func aFriendsRequestLastsUntilItsLastTimeBegins() async throws {
