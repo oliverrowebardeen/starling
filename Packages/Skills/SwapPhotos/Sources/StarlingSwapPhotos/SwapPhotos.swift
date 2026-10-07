@@ -2,16 +2,16 @@ import Foundation
 import StarlingCore
 
 /// Swap photos: after a plan ends, offer the photos you took to the people
-/// who were there (brief 2.8, Phase 4). In Phase 1.5 it ships flagged off,
+/// who were there. In Phase 1.5 it ships flagged off,
 /// built only far enough to prove the after-plan-ends chain hook (ADR 0242):
 /// it starts when the plan ends, only if the owner opted in at Confirm; the
 /// owner picks photos with the system picker, which needs no photo library
 /// permission; and the offer leaves through the Outbox with `chainedFrom`.
-/// Moving the photos themselves is Phase 4's.
+/// This stub does not move the photos themselves.
 public enum SwapPhotos {
     /// The skill's descriptor, the same as `StarlingFakes.SampleSkills.swapPhotos`.
-    /// It declares `photoLibrary` because the full skill matches photos to the
-    /// plan's time, which reads the library; this stub only uses the picker.
+    /// It declares `photoLibrary` because matching photos to the plan's time
+    /// reads the library; this stub only uses the picker.
     public static let descriptor = try! SkillDescriptor(
         ref: SkillRef(.swapPhotos, SkillVersion(1)),
         wording: SkillWording(

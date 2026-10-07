@@ -2,12 +2,12 @@ import CryptoKit
 import Foundation
 import StarlingCore
 
-/// **INSECURE. Development only.** A stand-in for Nightjar's PSI.
+/// **INSECURE. Development only.** A stand-in for a private PSI provider.
 ///
 /// The initiator sends salted SHA-256 hashes of its whole set. Anyone can
 /// brute-force small domains (time slots, yes/no, short keywords) from those
 /// hashes, so this reveals the initiator's set to the responder. It exists so
-/// mutual-reveal logic can be built and tested before real PSI lands.
+/// mutual-reveal logic can be built and tested without a private provider.
 /// `descriptor.isPrivate` is false; policy and UI must treat it that way.
 ///
 /// It does enforce the set-size limits a real provider must enforce.

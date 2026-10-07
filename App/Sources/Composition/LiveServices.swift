@@ -21,9 +21,9 @@ extension AppServices {
     /// (ADR 0140). Lane E1's identity, pinned friends, pairing, and secure
     /// links; lane G's policy and audit log; lane E2's Wi-Fi Aware; Find a
     /// time, Pick a place, and Swap photos (behind its flag) from lanes C, D,
-    /// and E. Down for... has no service until a private PSI provider exists
-    /// outside StarlingFakes (ADR 0144 decision 3), so its tile says "Not in
-    /// this build yet" instead of running on the insecure stub.
+    /// and E. Down for... has no service: its only PSI provider is the
+    /// insecure stub in StarlingFakes (ADR 0144 decision 3), so its tile says
+    /// "Not in this build yet" instead of running on that stub.
     @MainActor
     static func release() async throws -> AppServices {
         let identity = try await KeychainIdentityKeyStore().loadOrCreate()
@@ -86,7 +86,7 @@ extension AppServices {
 enum LiveServices {
     /// Every Phase 1.5 skill's descriptor, from each lane's package. Data
     /// only: a descriptor runs nothing without its service. Down for... has
-    /// no service in Release until a private PSI provider exists outside
+    /// no service in Release, because its only PSI provider is the stub in
     /// StarlingFakes (ADR 0144 decision 3), so its tile says "Not in this
     /// build yet".
     static let registry: SkillRegistry = try! SkillRegistry([
