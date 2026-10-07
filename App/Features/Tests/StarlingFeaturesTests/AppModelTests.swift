@@ -176,7 +176,7 @@ import Testing
 
         let friend = PeerID.random()
         continuation.yield(.peerAvailable(friend))
-        for _ in 0..<2000 where await transport.sent.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await !transport.sent.isEmpty }
         let sent = try #require(await transport.sent.first)
         #expect(try EnvelopeCodec().decode(sent.frame.bytes).body == .hello(card))
     }
@@ -207,7 +207,7 @@ import Testing
         let events: [InboxEvent] = [.peerAvailable(friend), .message(envelope), .dropped(from: friend, reason: .replay), .peerUnavailable(friend)]
         events.forEach { continuation.yield($0) }
         for service in built.services {
-            for _ in 0..<2000 where await service.handled.count < events.count { try await Task.sleep(for: .milliseconds(1)) }
+            await waitUntil { await service.handled.count >= events.count }
             #expect(await service.handled == events)
         }
     }
@@ -291,7 +291,7 @@ import Testing
         let proposal = SkillProposal(revision: 1, participants: [me, maya.id], terms: try Terms([.activity: .keywords([try Keyword("boba")])]))
         await down.emit(.lifecycle(id, .proposalReady(proposal)))
         await eventually { app.home.needsYou.count == 1 }
-        for _ in 0..<2000 where await notifier.posted.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await !notifier.posted.isEmpty }
         #expect(await notifier.posted.map(\.title) == ["Down for boba"])
         #expect(await notifier.posted.map(\.body) == ["You and Maya are both down for boba."])
     }
@@ -350,7 +350,7 @@ import Testing
         try await app.lifecycle.start(request, settings: app.settings.skillSettings)
         #expect(try await !ledger.isRetired(request.conversation))
         await app.lifecycle.withdraw(request.interaction)
-        for _ in 0..<2000 where try await !ledger.isRetired(request.conversation) { try await Task.sleep(for: .milliseconds(1)) }
+        try await waitUntil { try await ledger.isRetired(request.conversation) }
         #expect(try await ledger.isRetired(request.conversation))
     }
 
@@ -386,7 +386,7 @@ import Testing
 
         // The skill's schedule ended: now the pass is applied and retired.
         await down.emit(.lifecycle(request.interaction, .ownerPassed))
-        for _ in 0..<2000 where try await !ledger.isRetired(request.conversation) { try await Task.sleep(for: .milliseconds(1)) }
+        try await waitUntil { try await ledger.isRetired(request.conversation) }
         #expect(try await ledger.isRetired(request.conversation))
         #expect(app.lifecycle.interaction(request.interaction)?.state == .ended(.declined))
         await app.shutdown()

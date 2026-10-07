@@ -263,7 +263,7 @@ actor GatedSettingsStore: OwnerSettingsStore {
         await model.load()
         await store.block()
         let editing = Task { await model.setRule(.neverInclude, for: jake) }
-        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await store.waiting > 0 }
         #expect(model.rule(for: jake) == nil)
         await store.release()
         #expect(await editing.value)
@@ -280,7 +280,7 @@ actor GatedSettingsStore: OwnerSettingsStore {
         #expect(model.loadFailed)
         await store.block()
         let recovering = Task { await model.recover() }
-        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await store.waiting > 0 }
         let editing = Task { await model.setRule(.neverInclude, for: jake) }
         try await Task.sleep(for: .milliseconds(30))
         #expect(model.rule(for: jake) == nil, "the edit waits for recovery")

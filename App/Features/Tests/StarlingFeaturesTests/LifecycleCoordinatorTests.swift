@@ -655,7 +655,7 @@ actor FailingSkillService: SkillService {
         let sent = request(to: [maya])
         await store.block()
         let starting = Task { try await lifecycle.start(sent, settings: Self.settings) }
-        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await store.waiting > 0 }
         #expect(await store.waiting == 1)
         #expect(await down.started.isEmpty, "nothing is sent while the save is pending")
         #expect(lifecycle.interaction(sent.interaction) == nil)
