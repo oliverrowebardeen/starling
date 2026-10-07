@@ -657,7 +657,7 @@ final class FriendActions: @unchecked Sendable {
 
         // The owner picks the friend; the pair call is still sending its hello.
         let picking = Task { await model.choose(PairingCandidate(peer: friend, deviceName: "Riley's iPhone")) }
-        for _ in 0..<2000 where !(await gate.waiting) { try? await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await gate.waiting }
         #expect(model.phase == .connecting)
 
         // Cancel, then a nearby phone's request is joined.
@@ -771,7 +771,7 @@ final class FriendActions: @unchecked Sendable {
         let gate = Gate()
         await old.holdCancel(at: gate)
         let retrying = Task { await model.tryAgain() }
-        for _ in 0..<2000 where !(await gate.waiting) { try? await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await gate.waiting }
         await model.tryAgain()
         #expect(await old.cancels == 1, "a second Try again while one runs does nothing")
 

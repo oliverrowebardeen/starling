@@ -24,12 +24,27 @@ actor Recorder<Value: Sendable> {
     func record(_ value: Value) { values.append(value) }
 }
 
-/// Polls until `condition` holds or two seconds pass. Models consume event
-/// streams on their own tasks, so tests wait for those tasks to catch up.
+/// Polls until `condition` holds, for up to 30 s of the host's awake time.
+/// Models consume event streams on their own tasks, so tests wait for those
+/// tasks to catch up. `SuspendingClock` stops while the host sleeps, so a
+/// sleep mid-run does not use up the wait (ADR 0258). The bound only
+/// matters when the condition never holds, and the condition is checked
+/// once more at the deadline.
 @MainActor
 func eventually(_ condition: () -> Bool) async {
-    for _ in 0..<2000 where !condition() {
-        try? await Task.sleep(for: .milliseconds(1))
+    let clock = SuspendingClock()
+    let deadline = clock.now + .seconds(30)
+    while !condition(), clock.now < deadline, !Task.isCancelled {
+        try? await clock.sleep(for: .milliseconds(1))
+    }
+}
+
+/// `eventually` for a condition that awaits, from any isolation.
+func waitUntil(isolation: isolated (any Actor)? = #isolation, _ condition: () async throws -> Bool) async rethrows {
+    let clock = SuspendingClock()
+    let deadline = clock.now + .seconds(30)
+    while try await !condition(), clock.now < deadline, !Task.isCancelled {
+        try? await clock.sleep(for: .milliseconds(1))
     }
 }
 

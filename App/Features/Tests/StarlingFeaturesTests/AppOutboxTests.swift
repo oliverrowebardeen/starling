@@ -110,14 +110,14 @@ import Testing
 
         await store.block()
         let tightening = Task { await app.settings.set(.never, for: .place) }
-        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await store.waiting > 0 }
         #expect(await policy.evaluate(message) == .deny(PolicyViolation(rule: "never", issue: .place)), "Never applies before the write returns")
         await store.release()
         await tightening.value
 
         await store.block()
         let loosening = Task { await app.settings.set(.share, for: .place) }
-        for _ in 0..<2000 where await store.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await store.waiting > 0 }
         #expect(await policy.evaluate(message) == .deny(PolicyViolation(rule: "never", issue: .place)), "a loosening waits for its save")
         await store.release()
         await loosening.value
@@ -142,7 +142,7 @@ import Testing
         let conversation = ConversationID()
         // The first send holds in the transport; the second waits behind it.
         let first = Task { try await outbox.send(.propose(try Proposal(round: 0, terms: .empty)), to: maya.id, conversation: conversation) }
-        for _ in 0..<2000 where await transport.waiting == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await transport.waiting > 0 }
         let second = Task { try await outbox.send(.propose(try Proposal(round: 1, terms: .empty)), to: maya.id, conversation: conversation) }
         try await Task.sleep(for: .milliseconds(30))
 

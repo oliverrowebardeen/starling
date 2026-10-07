@@ -109,7 +109,7 @@ public actor Simulation {
     }
 
     /// Waits until every agent has every other agent's card.
-    public func waitForMesh(timeout: Duration = .seconds(5)) async throws {
+    public func waitForMesh(timeout: Duration = .seconds(30)) async throws {
         let expected = agents.count - 1
         let agents = agents
         try await Self.eventually(timeout: timeout, "mesh of \(agents.count)") {
@@ -129,18 +129,23 @@ public actor Simulation {
         return lines
     }
 
-    /// Polls `condition` until it holds or `timeout` passes.
+    /// Polls `condition` until it holds or `timeout` of the host's awake
+    /// time passes. `SuspendingClock` stops while the host sleeps, so a
+    /// sleep mid-run does not use up the wait before the agents, paused
+    /// with it, have run (ADR 0258). The condition is checked once more at
+    /// the deadline before giving up.
     public static func eventually(
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         _ what: String,
         _ condition: @Sendable () async -> Bool
     ) async throws {
-        let clock = ContinuousClock()
+        let clock = SuspendingClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
             if await condition() { return }
-            try await Task.sleep(for: .milliseconds(5))
+            try await clock.sleep(for: .milliseconds(5))
         }
+        if await condition() { return }
         throw SimulationError.timedOut(what)
     }
 }

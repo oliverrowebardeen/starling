@@ -29,7 +29,7 @@ import Testing
     }
 
     func waitForSends(_ count: Int) async throws {
-        for _ in 0..<2000 where await transport.sent.count < count { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await transport.sent.count >= count }
     }
 
     func hello(conversation: ConversationID, sequence: UInt64 = 0) throws -> InboxEvent {

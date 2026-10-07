@@ -142,13 +142,18 @@ import Testing
         )
     }
 
-    /// Waits for `condition`, failing after ten seconds of real time. Only
-    /// work already due is waited for; no deadline depends on it.
+    /// Waits for `condition`, failing after 30 s of the host's awake time
+    /// (`SuspendingClock`, ADR 0258). Only work already due is waited for;
+    /// no deadline depends on it. The condition is checked once more at the
+    /// deadline.
     static func until(_ what: String, _ condition: () async -> Bool) async throws {
-        for _ in 0..<2000 {
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(30)
+        while clock.now < deadline {
             if await condition() { return }
-            try await Task.sleep(for: .milliseconds(5))
+            try await clock.sleep(for: .milliseconds(5))
         }
+        if await condition() { return }
         Issue.record("timed out waiting for \(what)")
         throw CancellationError()
     }
@@ -185,11 +190,16 @@ actor FriendOnTheWire {
 
     func sentKinds() async -> [MessageBody.Kind] { await sent().map(\.body.kind) }
 
+    /// The first envelope of `kind` sent to the friend, waiting up to 30 s of
+    /// the host's awake time for it.
     private func next(_ kind: MessageBody.Kind) async throws -> Envelope {
-        for _ in 0..<2000 {
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(30)
+        while clock.now < deadline {
             if let envelope = await sent().first(where: { $0.body.kind == kind }) { return envelope }
-            try await Task.sleep(for: .milliseconds(1))
+            try await clock.sleep(for: .milliseconds(1))
         }
+        if let envelope = await sent().first(where: { $0.body.kind == kind }) { return envelope }
         throw ValidationError("FriendOnTheWire", "no \(kind.rawValue)")
     }
 

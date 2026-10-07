@@ -104,7 +104,7 @@ import Testing
 
         let friend = friend
         let sending = Task { try await composite.send(try Frame(Data([7])), to: friend) }
-        for _ in 0..<2000 where await gated.attempts == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        await waitUntil { await gated.attempts > 0 }
         sending.cancel()
         await gated.open()
         await #expect(throws: CancellationError.self) { try await sending.value }

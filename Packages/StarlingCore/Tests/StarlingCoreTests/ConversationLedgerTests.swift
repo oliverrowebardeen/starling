@@ -189,11 +189,18 @@ import Testing
         }
     }
 
+    /// Polls until `condition` holds, for up to 30 s of the host's awake
+    /// time: `SuspendingClock` stops while the host sleeps, so a sleep
+    /// mid-run does not use up the wait (ADR 0258). The condition is
+    /// checked once more at the deadline before giving up.
     func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
-        for _ in 0..<400 {
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(30)
+        while clock.now < deadline {
             if await condition() { return }
-            try await Task.sleep(for: .milliseconds(5))
+            try await clock.sleep(for: .milliseconds(5))
         }
+        if await condition() { return }
         Issue.record("timed out")
     }
 }
