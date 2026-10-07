@@ -1,5 +1,7 @@
 # Contributing to Starling
 
+Starling is a research prototype shared as is and is not under active development, so issues and pull requests may not get a response. The notes below describe how the code is built and checked, for anyone working from a fork.
+
 Starling is a research prototype. Contributions that help most right now:
 
 - bug reports with the iPhone model, iOS version, build, and exact steps;

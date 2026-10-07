@@ -2,7 +2,7 @@
 
 - Date: 2026-10-01, updated 2026-10-05
 - Owner: Orchestrator
-- Status: open. The code is merged, but Phase 1.5 ends only after Oliver's run on two iPhones (Oliver, 2026-10-02).
+- Status: final. The code is merged; the two-phone run of the fixes after the second device test did not take place.
 
 ## Summary
 
@@ -113,7 +113,7 @@ Two iPhones, Oliver's and a friend's, on main 83329f3 or close to it.
   - lane E: 0240 to 0242;
   - lane F: 0250 to 0255.
 
-  All are Proposed, except lane F's test-only ADRs 0250 to 0252.
+  Their statuses are in the [ADR index](../decisions/README.md).
 
 ## Known limits and open issues
 
@@ -125,17 +125,8 @@ Two iPhones, Oliver's and a friend's, on main 83329f3 or close to it.
   - #59: a flaky Wi-Fi Aware transport test under load.
 - **Deferred:**
   - a private group reveal (needs its own design and review);
-  - per-skill state on `Interaction` (lane C's request 7);
-  - the threat model additions the lanes asked for in `docs/requests/P15-*.md`.
+  - per-skill state on `Interaction` (lane C's request 7).
 
-## Needs Oliver
+## Not done
 
-1. **Device run.**
-   - Enable the Wi-Fi Aware capability for the app's identifier, so a signed Debug build can be installed and paired on two iPhones.
-   - Then run the checklists in `docs/checklists/phase-1.5-*.md`.
-2. **Turn hosted CI back on**, so CI gates pull requests again (ADR 0007).
-3. **Queued next** (`docs/plans/phase-1.5-lane-plan.md` section 5):
-   - the pairing-methods lane;
-   - onboarding and personalization.
-
-   Planning starts with that section's "To settle" list.
+- **The two-phone run** of the fixes after the second device test (`docs/checklists/phase-1.5-*.md`). Signed device builds need the Wi-Fi Aware capability on the App ID.
