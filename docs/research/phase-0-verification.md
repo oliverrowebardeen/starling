@@ -9,11 +9,10 @@ Primary sources are Apple documentation (read through the DocC JSON behind each 
 | # | Finding | Effect | ADR |
 |---|---------|--------|-----|
 | 1 | The on-device context window is no longer a fixed 4096. WWDC26-241 shows `SystemLanguageModel().contextSize` returning 8192, and Apple says to use the token APIs "to adapt your app to the hardware it's running on." TN3193 still says 4096. | Budget against `contextSize` at runtime; design schemas to fit 4096 as the floor. | [0002](../decisions/0002-context-budget-is-device-dependent.md) |
-| 2 | Network framework cannot do "QUIC/TLS with pinned raw keys" directly: TLS-PSK does not work with QUIC or TLS 1.3 or the new Swift API, and Apple platforms have no API to create a self-signed identity. | Put authentication and encryption at the message layer (Noise-style, CryptoKit), not in TLS. The relay needs message-layer encryption anyway. | [0003](../decisions/0003-message-layer-security.md) |
+| 2 | Network framework cannot do "QUIC/TLS with pinned raw keys" directly: TLS-PSK does not work with QUIC or TLS 1.3 or the new Swift API, and Apple platforms have no API to create a self-signed identity. | Put authentication and encryption at the message layer (Noise-style, CryptoKit), not in TLS. | [0003](../decisions/0003-message-layer-security.md) |
 | 3 | Wi-Fi Aware plus QUIC is not supported before iOS 27 (TN3213, r. 175046087). | A second, independent reason for the iOS 27 minimum. | [0001](../decisions/0001-minimum-ios-27-and-xcode-27.md) |
 | 4 | The host Mac has Xcode 26.1.1 (Swift 6.2.1, iOS 26.1 SDK). Xcode 27 (Swift 6.4, iOS 27 SDK) shipped 2026-09-14 and needs macOS 26.6+ on Apple silicon. | Owner must install Xcode 27. Packages keep a macOS 26 floor so `swift test` runs on macOS 26 hosts. | [0001](../decisions/0001-minimum-ios-27-and-xcode-27.md), [0006](../decisions/0006-one-swiftpm-package-per-lane.md) |
 | 5 | A `starling-protocol/starling` repository (BLE ad hoc routing for smartphones, Apache-2.0, dormant since 2024) exists in addition to the collisions the brief lists. | Repo name `starling-ios` still avoids confusion. | [0008](../decisions/0008-repo-name-and-visibility.md) |
-| 6 | iroh 1.0 shipped 2026-06-15 with officially supported Swift bindings (iroh-ffi, `IrohLib`). | Answers the brief's open question for Phase 2; no Phase 0 change. | none (Phase 2 lane L) |
 
 ## 3.1 Platform
 
@@ -47,16 +46,15 @@ No external claims to verify. The layer list is the basis for the package layout
 | Pairing uses a PIN and appears in Settings > Privacy & Security > Paired Devices. | Unverified by a primary source | Only a secondary source says this (Espressif blog, 2026-08: https://developer.espressif.com/blog/2026/08/wifi-aware-esp-to-iphone/). Phase 1 lane E confirms on device. |
 | Wi-Fi Aware needs the entitlement and `WiFiAwareServices`. | Confirmed | Entitlement value is an array containing `Publish` and/or `Subscribe`. `WiFiAwareServices` maps service names (15 chars max, `_name._tcp` or `_name._udp`) to `Publishable` and/or `Subscribable` dictionaries. An invalid name crashes the app. https://developer.apple.com/documentation/wifiaware/adopting-wi-fi-aware |
 | Wi-Fi Aware roles (not in brief) | New | Roles are asymmetric: publisher (listener) and subscriber (outgoing connection). An app may publish and subscribe the same service at once, but may publish a given service only once per device. The Transport implementation has to hide this so the rest of StarlingKit sees symmetric peers. |
-| Wi-Fi Aware in the background (not in brief) | New | "Your app may connect to paired Wi-Fi Aware devices whenever it's running, in both foreground and background states." Relevant to Phase 2: this helps only while the app has runtime; it does not wake a suspended app. |
+| Wi-Fi Aware in the background (not in brief) | New | "Your app may connect to paired Wi-Fi Aware devices whenever it's running, in both foreground and background states." This helps only while the app has runtime; it does not wake a suspended app. |
 | BLE background advertising: no local name, service UUIDs move to overflow. | Confirmed (verbatim) | `startAdvertising(_:)`: "While your app is in the background, the local name isn't advertised and all service UUIDs are in the overflow area." |
 
-## 3.4 Remote coordination (Phase 2 research; claims checked now)
+## 3.4 Background limits
 
 | Claim | Verdict | Evidence |
 |-------|---------|----------|
 | Foundation Models requests in the background may be throttled or canceled. | Confirmed | Apple engineer in thread 833642: "On iOS, we might limit access to the model on background tasks. We recommend designing your code around the assumption that excessive requests to the model made in the background might be throttled or canceled." |
-| A backgrounded app cannot keep listening sockets open; waking needs APNs; APNs needs a server. | Consistent with Apple docs, not re-derived in Phase 0 | Wi-Fi Aware docs above only promise connections while the app is running. Phase 2 lane L owns the detailed check. |
-| iroh 1.0 is released; Swift bindings unknown. | Confirmed and answered | iroh 1.0 released 2026-06-15 (https://www.iroh.computer/blog/v1). The team now officially supports Swift bindings through iroh-ffi (`IrohLib` on Swift Package Index), v1.1.0 on 2026-07-16. |
+| A backgrounded app cannot keep listening sockets open; waking needs APNs; APNs needs a server. | Consistent with Apple docs, not re-derived in Phase 0 | Wi-Fi Aware docs above only promise connections while the app is running. |
 
 ## 3.5 Identity and security
 
@@ -99,7 +97,7 @@ No external claims to verify. The layer list is the basis for the package layout
 | Rene (Second Enlightenment, 2026-09) | iMessage agent; two users' agents exchange calendar availability and propose a slot, both humans approve. Runs in the cloud via OpenRouter with OAuth access to calendars and mail. https://www.progressiverobot.com/2026/09/16/multiplayer-ai-agent-rene-imessage-calendar-coordination/ (secondary) | Starling's calendar never leaves the device, and no server holds identity or the social graph. |
 | Blockit | Cloud agent-to-agent calendar negotiation for work, over email and Slack (brief 2.6). | Personal and family scheduling, on device. |
 | "Device-Native Autonomous Agents for Privacy-Preserving Negotiations" (arXiv 2601.00911) | Research system: 500M distilled on-device model, ZK proofs, insurance and B2B price negotiation. No iOS detail, no code. | Starling targets shipping iPhones with Apple's model and friend-scale social coordination. |
-| A2A v1.0 | Web-native (HTTP, JSON, SSE) agent protocol. | Starling runs over intermittent local links first; A2A mapping is Phase 3. |
+| A2A v1.0 | Web-native (HTTP, JSON, SSE) agent protocol. | Starling runs over intermittent local links with its own typed messages and does not use A2A. |
 | Bitchat | BLE mesh messenger with Noise; not an agent system. | Borrow the handshake idea and its lessons on premature security claims. |
 
 No existing system found that runs negotiating agents on phones over local peer-to-peer links. A deeper search is still worth doing before the README makes a "first" claim.

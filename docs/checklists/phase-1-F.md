@@ -1,6 +1,6 @@
 # Phase 1 device checklist: F. Negotiation (Down?)
 
-Lane F ships a library (`StarlingNegotiation.DownNegotiator`), not a screen. Run steps 2 to 9 once lane H has wired it into the Down screen, on two phones paired through lane E1 and E2's flow. Until real PSI lands, the PSI stub makes the policy ask for consent on PSI frames: approve every consent sheet unless a step says otherwise. Times below are examples; use a window that starts after the current time.
+Lane F ships a library (`StarlingNegotiation.DownNegotiator`), not a screen. Run steps 2 to 9 once lane H has wired it into the Down screen, on two phones paired through lane E1 and E2's flow. The PSI stub is not private, so the policy asks for consent on PSI frames: approve every consent sheet unless a step says otherwise. Times below are examples; use a window that starts after the current time.
 
 ## On the Mac (no phone)
 

@@ -11,7 +11,7 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 - Delivery is best effort (ARCHITECTURE rule 2.5). Any step can be lost, and the app may be closed.
 - Set sizes are visible in DH-based PSI, and a dishonest peer can submit every slot in a small domain to learn the whole set (brief 3.9).
 - `InsecurePSIStub` reveals the initiator's set to the responder, so while it is in use the policy layer asks for consent on PSI frames (section 7, step 4). A consent sheet shows the recipient, so it is itself a notification.
-- The frozen v1 messages had no field for the level (`down`/`maybe`) and have no way to tag a conversation as Down. Core v1.1 added `IssueKey.downLevel` for the first; the second is deferred to Phase 2.
+- The frozen v1 messages had no field for the level (`down`/`maybe`) and have no way to tag a conversation as Down. Core v1.1 added `IssueKey.downLevel` for the first; Core v2's `Envelope.skill` later tagged every skill's messages (ADR 0010).
 
 ## Decision
 
@@ -60,10 +60,10 @@ ARCHITECTURE.md section 7 sets the Down? contract: mutual interest through PSI f
 - **No false match:** a phone notifies only while holding the peer's accept of the identical plan. The tests check this on the wire for every match.
 - **A missed match is possible** when the confirmation is lost and every retry of the acceptor's accept is also lost. The offerer then notifies and the acceptor does not. No finite exchange over a lossy link can rule this out (the two generals problem); the retries make it unlikely on a live link. The offerer's owner sees a real plan the friend accepted.
 - **What one-sided interest reveals:** the starter learns "no reply," which looks the same as "unreachable." The receiver, if it has no intent, learns (with the stub) the starter's free slots and nothing reaches its owner. With real PSI it learns nothing beyond the fact that a run was attempted. A friend with an intent but no shared time learns the empty result.
-- **Remaining leak:** the existence of a PSI run shows that the starter has Down turned on. Hiding this would take cover traffic (periodic runs with dummy sets), which with the stub means constant consent prompts. Recorded for the threat model; revisit when Nightjar's PSI lands.
+- **Remaining leak:** the existence of a PSI run shows that the starter has Down turned on. Hiding this would take cover traffic (periodic runs with dummy sets), which with the stub means constant consent prompts. Recorded for the threat model.
 - **A dishonest friend** can still learn our free slots within the next 12 hours by submitting every slot. The set cap and the three-runs-per-intent cap bound it; they do not remove it.
-- **PSI initiator requirement:** a provider whose initiator learns nothing would need the responder to drive step 2. Nightjar's API must be checked against this when it lands.
-- Routing every conversation that opens with a PSI step to Down is a Phase 1 workaround; a per-conversation feature tag is deferred to Phase 2 (`docs/requests/F.md`, request 4).
+- **PSI initiator requirement:** a provider whose initiator learns nothing would need the responder to drive step 2.
+- Phase 1 routes every conversation that opens with a PSI step to Down, because v1 envelopes carry no feature tag (`docs/requests/F.md`, request 4). Core v2's `Envelope.skill` names the skill on every message (ADR 0010).
 
 ## Sources
 

@@ -80,7 +80,7 @@ Phase 1.5 section 3: every skill goes Compose (intent and audience), Consent (wh
 
 ## Consequences
 
-- Home, the proposal card, It's a plan, and the plan timeline render any skill, including future ones, from `Interaction` and `SkillDescriptor` alone.
+- Home, the proposal card, It's a plan, and the plan timeline render any skill from `Interaction` and `SkillDescriptor` alone.
 - Silence stays the default: nobody up, declined, and expired end in history without notifying anyone (brief 2.6).
 - Down's Phase 1 `DownEvent` maps onto these events when lane B moves Down into its skill package.
 

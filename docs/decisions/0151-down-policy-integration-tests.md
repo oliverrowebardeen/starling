@@ -39,7 +39,7 @@ Lane I owns test code, not the production simulator composition.
    keywords, and invented or unsafe model output. Check both rejected attempts
    and subsequent valid exchanges where recovery is expected.
 6. Preserve issue #8's existing impersonation marker until the Orchestrator
-   wires the secure channel. Keep the existing opt-in model experiment and #9
+   wires the secure channel (since done: the scenario runs over it). Keep the existing opt-in model experiment and #9
    marker unchanged pending C2's merge. These deterministic integration tests
    measure protocol containment; they do not measure the real model's injection
    susceptibility or the app's device behavior.

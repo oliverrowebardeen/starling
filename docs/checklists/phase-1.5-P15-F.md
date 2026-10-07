@@ -1,8 +1,8 @@
 # P15-F device checklist
 
 Not run by the agent. Oliver runs this after the real skills and shell merge.
-Use paired phones and test data. Down for requires Debug until private PSI
-exists; Release shows it as unavailable (ADR 0206). The exclusion checks need a third phone.
+Use paired phones and test data. Down for requires Debug, because its PSI
+provider is a test stub; Release shows it as unavailable (ADR 0206). The exclusion checks need a third phone.
 Issue #49 tracks automated evidence and its limits, including wire and timing
 checks that a visual device pass cannot establish. The original Phase 1.5
 service and app findings passed automated regressions. Change the plan checks

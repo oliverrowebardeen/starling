@@ -27,7 +27,7 @@ Rule 7 of ARCHITECTURE.md says no free text crosses the wire. Agreeing on a venu
 2. **Venues on the wire.** `IssueValue.places([PlaceChoice])` (1 to 8) lets Pick a place exchange candidates and the agreed venue.
    - A `PlaceChoice` holds a `PlaceName` (1 to 64 characters, no control characters or line breaks, validated on decode), an optional coordinate to five decimals, and Apple Maps' item identifier.
    - A venue name is the one bounded display string a peer may send. It is shown to people and never treated as an instruction.
-   - Until lane D designs how the model sees places, the prompt renderer shows "N place options", never venue names. A 64-character name allows spaces and punctuation, so it could carry an instruction-like phrase.
+   - The prompt renderer shows "N place options", never venue names (ADR 0231). A 64-character name allows spaces and punctuation, so it could carry an instruction-like phrase.
 3. **What can chain.** A skill can follow another when it accepts at least one kind the other produces (`SkillDescriptor.canFollow`).
    - Suggestions come from `SkillRegistry.chainSuggestions`, which drops anything not available locally or not supported by every peer's card.
    - A suggestion the group cannot run is hidden, not shown and then failed.

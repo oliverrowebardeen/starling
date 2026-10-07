@@ -50,7 +50,7 @@ public struct SkillRequest: Hashable, Sendable {
 
 /// A question a skill's agent puts to its own owner (the "Just ask me
 /// instead" fallback, or an invitee's review), with typed candidate answers.
-/// The availability source's time-only `OwnerQuestion` stays for Phase 2's
+/// The availability source's time-only `OwnerQuestion` stays with
 /// `AvailabilitySource`.
 public struct SkillQuestion: Hashable, Sendable, Codable {
     /// Increases with each question in an interaction, so an answer to an

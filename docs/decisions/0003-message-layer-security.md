@@ -11,7 +11,6 @@ The brief asks for a choice between a Noise handshake and "QUIC/TLS with pinned 
 - Network framework TLS-PSK "doesn't work with QUIC, it doesn't support TLS 1.3, and it only works with the older Network framework API" (TN3213).
 - Mutual TLS needs a `SecIdentity` on each device, and "Apple platforms have no API to" create one; TN3213 points to the swift-certificates package. There is no raw-public-key (RFC 7250) option.
 - QUIC always runs TLS, so QUIC without real identities means embedding one shared identity and disabling trust checks (TN3213 describes this as having no meaningful security).
-- Remote coordination (brief 3.4) is store-and-forward through a relay. TLS only protects a live connection to the relay. End-to-end encryption of stored blobs needs message-layer crypto regardless.
 - Wi-Fi Aware already encrypts at the link layer between OS-paired devices, but that binds devices, not Starling identities.
 
 ## Decision
@@ -21,15 +20,14 @@ The brief asks for a choice between a Noise handshake and "QUIC/TLS with pinned 
 3. Default mechanism: the Noise Protocol Framework on CryptoKit primitives (X25519, ChaChaPoly, SHA-256), the same suite Bitchat uses.
    - Pairing: `Noise_XX`, with a short authentication string derived from the handshake hash that both people compare, so an attacker in the room cannot sit in the middle.
    - Paired peers, live link: `Noise_KK` (both static keys already pinned).
-   - Paired peers, through a relay: a one-way pattern (`Noise_K`) or HPKE auth mode (RFC 9180, in CryptoKit) using the same pinned keys. Lane L picks one in Phase 2.
 4. `PeerID` becomes a hash of the peer's static public key in Phase 1, so an ID cannot be claimed without the key.
 
 ## Consequences
 
-- One scheme covers Loopback, LocalP2P, Wi-Fi Aware, and the relay, so there is one thing to audit and it runs in the simulator without radios.
+- One scheme covers Loopback, LocalP2P, and Wi-Fi Aware, so there is one thing to audit and it runs in the simulator without radios.
 - We own security-critical code. Mitigations: implement against the Noise spec revision 34 test vectors, keep the code small, or adopt an existing Swift Noise implementation if lane E finds one with a credible review. No privacy claim ships before `docs/THREAT_MODEL.md` (brief 3.5).
 - Phase 0 LocalP2P is **unauthenticated and unencrypted**. It is labeled as such in code and UI and carries only spike data.
-- If the owner prefers TLS, the fallback is QUIC with per-device self-signed certificates from swift-certificates and a pinning validator, plus a separate message-layer scheme for the relay.
+- If the owner prefers TLS, the fallback is QUIC with per-device self-signed certificates from swift-certificates and a pinning validator.
 
 ## Care requirements
 

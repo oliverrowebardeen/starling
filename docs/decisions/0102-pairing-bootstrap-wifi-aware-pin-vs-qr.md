@@ -1,4 +1,4 @@
-# ADR 0102: Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback yet
+# ADR 0102: Pairing bootstrap: Wi-Fi Aware PIN first, no QR or tap fallback
 
 - Status: Proposed (answers brief open question 3; needs the owner's agreement)
 - Date: 2026-09-30
@@ -46,22 +46,20 @@ The first step is unavoidable. The second step is there because the OS pairing d
 
 1. **Wi-Fi Aware PIN pairing is the bootstrap for v1.** It is mandatory for the Wi-Fi Aware transport anyway, happens once per friend, uses the pairing model with the best measured security, and every target phone supports it. The friction worth removing is the second step, not the PIN.
 2. **Phase 1 ships both steps.** The OS pairing, then the ADR 0101 ceremony over the new link. This is secure without depending on any Wi-Fi Aware internals, and the same ceremony works over any link.
-3. **Recommended next step (not built in this lane): bind the Starling handshake to the OS pairing and drop the code comparison on Wi-Fi Aware links.**
-   - Both apps call `deriveSharedSecret` on the connection with a Starling-specific protocol name.
-   - They run `Noise_XXpsk3_25519_ChaChaPoly_SHA256` with that secret as the PSK. This is a standard Noise pattern, and cacophony publishes vectors for it.
+3. **Considered, not adopted: binding the Starling handshake to the OS pairing** to drop the code comparison on Wi-Fi Aware links.
+   - Both apps would call `deriveSharedSecret` on the connection with a Starling-specific protocol name.
+   - They would run `Noise_XXpsk3_25519_ChaChaPoly_SHA256` with that secret as the PSK. This is a standard Noise pattern, and cacophony publishes vectors for it.
    - A man in the middle would then have to be the device the owner typed the PIN into.
-   - The ceremony becomes "type the PIN once," then pin automatically.
-   - This needs a way for `WiFiAwareTransport` to expose a per-link secret (`docs/requests/E1.md`), XXpsk3 vectors, and a device test. Owner decision.
+   - It would need `WiFiAwareTransport` to expose a per-link secret (`docs/requests/E1.md`), XXpsk3 vectors, and a device test. Starling keeps the code comparison (decision 2).
 4. **No QR or tap fallback in Phase 1.**
    - No target phone lacks Wi-Fi Aware.
    - NFC and tap have no usable public API.
    - The LocalP2P path with the ADR 0101 code already covers development, the Mac peer tool, and a Wi-Fi Aware outage.
-   - Revisit QR if device tests show Wi-Fi Aware pairing failing often, or if Phase 4 brings in phones without Wi-Fi Aware. A QR code would then carry the static public key and a one-time secret, with the other direction confirmed through the same channel.
 
 ## Consequences
 
-- Until step 3 lands, pairing a friend means typing a PIN and then comparing a code. The checklist in `docs/checklists/phase-1-E1.md` measures how long the whole thing takes on real phones.
-- The code comparison stays the security-critical step until then. The UI (lane H) should show the code large, ask "Does Bob's phone show 123 456?", and never pre-select "match".
+- Pairing a friend means typing a PIN and then comparing a code. The checklist in `docs/checklists/phase-1-E1.md` measures how long the whole thing takes on real phones.
+- The code comparison is the security-critical step. The UI (lane H) should show the code large, ask "Does Bob's phone show 123 456?", and never pre-select "match".
 - Unpairing in Starling (remove from `PairedPeerStore`, then `SecureTransport.disconnect`) does not remove the OS pairing, and removing the OS pairing in Settings does not remove the Starling pin. Lane H should explain both in the UI.
 
 ## Sources

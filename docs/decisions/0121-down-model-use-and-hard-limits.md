@@ -28,7 +28,7 @@ Budget per match: at most one `match` call (the responder answers each issue onc
 - Zero hard-limit violations can reach the Outbox whatever the model says. The tests use a hostile scripted model (avoided and invented keywords, a counter that breaks every limit) and check the wire.
 - The model's influence is small by design. If device runs show `match` quality is poor on the weaker iOS 27 model, the fallback (exact matching) still works, just with fewer matches.
 - A budget in a different currency from the cap is a `currencyMismatch` violation (Core v1.1, from lane F's request), so the one hard-limit check covers it, and a repair replaces it with the owner's cap.
-- Owner `DisclosureRule`s are enforced by the policy layer, not here. A `never` rule on activity or budget makes the Outbox refuse the query, and that conversation ends. Leaving withheld issues out of the Down exchange altogether is a Phase 2 improvement.
+- Owner `DisclosureRule`s are enforced by the policy layer, not here. A `never` rule on activity or budget makes the Outbox refuse the query, and that conversation ends.
 
 ## Sources
 

@@ -9,7 +9,7 @@ Interface change requests from the Negotiation lane. Everything below has a loca
 | 1 | `handle(_:)` on `DownService` | Done | `DownNegotiator` conforms; the tests drive it through `any DownService` |
 | 2 | A key for the Down level | Done: `IssueKey.downLevel` | Used instead of spelling `down_level` |
 | 3 | Currency check in `violations` | Done: `LimitViolation.Reason.currencyMismatch` | Local special case removed |
-| 4 | Feature tag per conversation | Deferred to Phase 2 | Phase 1 routes every conversation to Down |
+| 4 | Feature tag per conversation | Not in v1.1; Core v2's `Envelope.skill` later named the skill on every message (ADR 0010) | Phase 1 routes every conversation to Down |
 | 5 | Consent memory for retries | Assigned to lane H's consent coordinator | None |
 | 6 | Test-only `StarlingTransport` dependency | Approved | None |
 
@@ -52,7 +52,7 @@ Why: today `violations` returns nothing for `atMost($15)` against `€1,000`, so
 
 Meanwhile: checked in `StarlingNegotiation`.
 
-## 4. Telling a conversation's feature apart (Phase 2)
+## 4. Telling a conversation's feature apart
 
 What: a way for the receiver to know which feature a conversation belongs to, for example a `feature: Capability` on the first message of a conversation, or on `Envelope`.
 
@@ -88,7 +88,7 @@ makeDownService: { consent in
         outbox: outbox,
         pairedPeers: pairedPeerStore,
         model: agentModel,
-        psi: psiProvider                 // InsecurePSIStub() until Nightjar lands
+        psi: psiProvider                 // InsecurePSIStub(), the only provider
     )
 }
 ```
@@ -118,12 +118,10 @@ Yes. One merged `OwnerRules` per intent (ADR 0141: constraints accumulate, the m
 Down does not read `disclosure`; the policy enforces it. Two consequences to show in review:
 
 - A `never` rule on `time` makes the policy refuse every PSI step, so Down cannot run at all.
-- A `never` rule on `activity` or `budget` makes the policy refuse that query, and the run with that friend ends without a match. Leaving withheld issues out of the exchange instead is a candidate Phase 2 change (ADR 0121).
+- A `never` rule on `activity` or `budget` makes the policy refuse that query, and the run with that friend ends without a match (ADR 0121).
 
-## Phase 2 candidates
-
-### Offer window intersections as options (from lane C2)
+## Window intersections as options (from lane C2)
 
 Lane C2 found that two agents converge only on an option one of them listed. In the `down-2p` bench scenario the windows overlap (20:00 to 23:00), but neither side lists that overlap, and they reject after 6 rounds.
 
-Down v1 does not hit this: the time in the opening offer is the PSI intersection, computed in code, and the model never proposes a time (ADR 0121). It matters for Phase 2 negotiations where `decide` weighs times, such as scheduling and group decision. I agree with building in code the intersections of both sides' known windows and offering them to `decide` as options, the same "code lists compliant options, the model picks" pattern as ADR 0121. That is a design for the Phase 2 negotiation lane, not a Phase 1 change.
+Down v1 does not hit this: the time in the opening offer is the PSI intersection, computed in code, and the model never proposes a time (ADR 0121). It matters only where `decide` weighs times. There, the right design builds in code the intersections of both sides' known windows and offers them to `decide` as options, the same "code lists compliant options, the model picks" pattern as ADR 0121. It is not a Phase 1 change.

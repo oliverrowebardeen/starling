@@ -33,7 +33,7 @@ Verified (2026-09-30):
    - No model output decides egress, starts a skill, or requests a permission.
 3. **Peer input stays typed.**
    - The only peer data a prompt may contain is bounded typed values: keywords, time slots, amounts, counts.
-   - Venue names stay out of prompts until lane D and the red team design for them (ADR 0012).
+   - Venue names stay out of prompts (ADRs 0012 and 0231).
    - A peer's message can never route the owner's text, choose a skill, or produce a proposal sentence that triggers an action.
 4. **Measure on the iOS 27 model.** Routing accuracy, chip accuracy, and match quality are measured with labeled sets, as in ADR 0160, on an iOS 27 device. The macOS numbers are a baseline only, not a release gate. Token budgets follow ADR 0002: count with `tokenCount(for:)` at runtime.
 

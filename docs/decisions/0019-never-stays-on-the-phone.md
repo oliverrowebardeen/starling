@@ -73,7 +73,7 @@ The protocol already has the yes/no answer: `query` asks "which of these candida
    - Share: "Sent without asking to friends whose agent runs on their phone. Anyone else still needs your OK."
    - Ask me: "You see and approve exactly what is sent, every time. Your agent can still say whether a friend's option works."
    - Never: "Stays on this phone. Your agent uses it to say yes or no to a friend's options, so friends can learn whether an option works for you."
-9. **Calendar details have no Share use yet.** Find a time sends only free and busy times, as the time overlap. In Phase 1.5 no skill sends calendar details, so You shows that topic's Share and Ask me as "Not used by any skill yet" until a skill does.
+9. **Calendar details have no Share use.** Find a time sends only free and busy times, as the time overlap. No skill sends calendar details, so You shows that topic's Share and Ask me as "Not used by any skill yet".
 
 ### Amendment (2026-10-01, lane P15-D's request 12)
 

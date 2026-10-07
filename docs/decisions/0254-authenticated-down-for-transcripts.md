@@ -58,8 +58,8 @@ ordinary regression assertions after PRs #70 to #72. A real quiet plan also
 feeds ChainPlanner and PickAPlaceService, with a hostile venue name, explicit
 owner consent, and only the parent plan's friend as recipient.
 
-Phase 1 Down integration tests stay until the app migration and Orchestrator's
-facade-removal step in ADR 0211. Adding the new service tests is not permission
+Phase 1 Down integration tests stay, with the Down facade they use (ADR
+0211). Adding the new service tests is not permission
 to remove another lane's code or the still-used legacy test infrastructure.
 
 ## Sources

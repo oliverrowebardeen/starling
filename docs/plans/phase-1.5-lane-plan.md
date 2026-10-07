@@ -11,8 +11,8 @@ Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`. Decisions: ADRs 0010 
 | 1 | ~~Merge Core v2 (PR #45)~~ Done, c07c036 | Orchestrator | Lanes build on the frozen interfaces |
 | 2 | ~~Agree or redirect ADRs 0010 decision 2, 0013, and 0018~~ All three approved | Oliver | Lanes A, B, C, and E build on these |
 | 3 | ~~Say what Muse and Dots are, or drop them from hand-offs~~ Out of scope (ADR 0018) | Oliver | Hand-off scope |
-| 4 | Restore hosted CI (not running again since about 02:52Z on 2026-10-01) | Oliver | CI is the merge gate; until then the Orchestrator gates locally (ADR 0007) |
-| 5 | Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling` and sign in again in Xcode | Oliver | Signed device builds with Wi-Fi Aware, needed for the exit test |
+| 4 | ~~Restore hosted CI (not running again since about 02:52Z on 2026-10-01)~~ Not restored during the run; every merge went through the local gate | Oliver | CI is the merge gate; without it the Orchestrator gates locally (ADR 0007) |
+| 5 | ~~Enable the Wi-Fi Aware capability for `com.oliverrowebardeen.starling` and sign in again in Xcode~~ Done | Oliver | Signed device builds with Wi-Fi Aware, needed for the exit test |
 
 ## 1. Lanes
 
@@ -44,71 +44,3 @@ The prompt's section 12, on two real iPhones, with criterion 7 changed by Oliver
 - **The iOS 27 on-device model is new.** Routing and chips are measured on the macOS 26.7 model first. The device numbers decide whether New leads with free text or with tiles.
 - **Hosted CI is off.** Six lanes push often. Until CI runs again, merges wait on the local gate, which checks one branch at a time.
 - **The device test needs two people.** Oliver and a friend run the checklists. Everything before that is covered by Loopback and the simulator.
-
-## 5. Ideas recorded after Phase 1.5
-
-Oliver recorded these on 2026-10-01. They were not started.
-
-### Pairing methods, as its own lane
-
-Updated by Oliver later on 2026-10-01; this replaces the earlier note that treated links as unverified requests.
-
-- **Remote pairing by link is first-class.**
-  - The link carries the public key fingerprint and a one-time token, and is shared through any existing channel (Messages, Instagram, and so on).
-  - Trust on first use.
-- **Security comes from key-change detection.** If a paired friend's key changes, show a clear warning and require re-confirmation before any negotiation continues.
-- **In person stays the fastest.**
-  - In-person QR and the nearby flow remain the quickest options when together.
-  - "Verify in person" is an optional upgrade on the friend's page.
-  - No badges or warnings for unverified friends in normal UI.
-- **The owner stays in control.** Links are single-use or expiring, and the owner approves incoming link requests.
-- **No discovery by phone number or contacts.** That would need accounts and a server directory.
-- **An App Clip** for the link flow when available.
-
-### Onboarding and personalization
-
-Principle: the agent knows preferences and constraints, not the user's life. Starling combines private data, untrusted peer content, and external communication by design, so it minimizes what the agent knows.
-
-- **About you card.**
-  - The agent's only personal memory: a short, editable list of facts, each with its source and a delete control.
-  - Negotiation context may include only card facts, filtered by privacy topics.
-- **Sources for card facts:**
-  1. Onboarding answers and plain-language notes, parsed by the on-device model and confirmed by the owner.
-  2. Optional on-device imports, offered just in time:
-     - calendar rhythms (with Find a time);
-     - photo metadata places and food (opt-in);
-     - Apple Music taste;
-     - Contacts for pairing suggestions (limited access is fine).
-
-     Raw data is never stored or sent, only summaries the owner approves. Private Cloud Compute is allowed for heavy passes, never third-party cloud models.
-  3. Learning from use, always proposed as a one-tap confirmation.
-- **Out of scope for v1:**
-  - Messages access (not available to third-party apps).
-  - Gmail (restricted scope, verification and a security assessment at scale).
-- **Siri.** Skills are exposed through App Intents, so Siri can pass in-context information (for example from a group chat) into a single request.
-- **Onboarding:** three screens, under 60 seconds, zero permission prompts.
-  1. Name and pair symbol reveal.
-  2. "What are you usually up for?": activity chips, a comfortable spend range, a rough area as text (no GPS), and an optional free-text note parsed into card entries.
-  3. Add your first friend: QR or nearby, with a "Send a link" fallback (App Clip when available).
-
-  Then land on Home with a suggested first action ("Post your first Down for…"). All permissions stay just in time, per skill.
-
-### To settle when these are planned
-
-These touch current decisions or depend on facts to re-verify against primary sources first.
-
-- **Pairing by link changes the trust bootstrap.**
-  - Brief 2.2 ("Pair in person, coordinate anywhere") and ADR 0102 make being together the trust bootstrap; trust on first use over a link replaces that as the default.
-  - That needs a brief update and an ADR, plus the threat model's view of a link shared through a channel someone else controls.
-  - ADR 0003's pinned keys already give key-change detection a base.
-- **Onboarding replaces ADR 0202's "no onboarding" (lane A).** The zero-prompt rule matches ADR 0202's Local Network and notifications at first use.
-- **A "pair symbol reveal" for the owner** needs a definition. DESIGN.md section 4 gives each friend a pair symbol of the pair, not one per person.
-- **The About you card becomes the only owner context in prompts.**
-  - That narrows PromptRenderer and ADR 0016's intent inputs.
-  - The card's facts need topics (ADR 0019), so Never keeps a card fact out of negotiation.
-- **Imports and model location to verify first:**
-  - Whether third-party apps can use Private Cloud Compute, as opposed to the on-device Foundation Models framework.
-  - What MusicKit exposes for taste.
-  - The photo metadata APIs under limited library access.
-  - The Contacts limited-access picker.
-  - The App Clip and link (universal link) flow.

@@ -2,7 +2,7 @@ Starling: Project Brief for Coding Agents
 
 Status: ideation-stage plan, researched late September 2026. Everything here is a default backed by sources, not a commitment. If you find a better approach, propose it with primary sources and a clear tradeoff, then proceed once the owner agrees. Re-verify anything time-sensitive (APIs, SDK versions, library status) before building on it.
 
-> Orchestrator note: Phase 0 verification of Sections 3.1 to 3.6 is in `docs/research/phase-0-verification.md`. Where it contradicts this brief, the ADRs in `docs/decisions/` take precedence. This file is otherwise kept as the owner wrote it, except that personal details were removed before publication.
+> Orchestrator note: Phase 0 verification of Sections 3.1 to 3.6 is in `docs/research/phase-0-verification.md`. Where it contradicts this brief, the ADRs in `docs/decisions/` take precedence. This file is otherwise kept as the owner wrote it, except that personal details were removed before publication and the plans for phases after 1.5 were removed when the project was paused. Section and question numbers are unchanged, so references from other docs still match.
 
 ---
 
@@ -48,7 +48,7 @@ An open-source, local-first agent-to-agent system for iPhone. Each person's phon
 Two deliverables in one repo, Apache-2.0:
 
 - **StarlingKit**: Swift packages (protocol, transport, policy and consent layer, negotiation building blocks). The open-source contribution other developers can use.
-- **Starling app**: the reference iOS client, shipped via TestFlight.
+- **Starling app**: the reference iOS client.
 
 Apache-2.0 because it matches A2A and includes a patent grant. Avoid GPL: it is widely considered incompatible with App Store distribution.
 
@@ -56,7 +56,7 @@ Apache-2.0 because it matches A2A and includes a patent grant. Avoid GPL: it is 
 
 - Being in the same place is the trust bootstrap. Pairing = adding a friend. No accounts, no phone numbers, no server-side identity.
 - Keys exchanged at pairing secure all later sessions over any transport.
-- Co-located negotiation is the headline only for group moments (friends at a table) and, later, events with no signal.
+- Co-located negotiation is the headline only for group moments (friends at a table) and events with no signal.
 
 ### 2.3 Audiences
 
@@ -85,7 +85,7 @@ A feature qualifies only if the on-device model does real work: turning messy na
    - Precedent: Blockit (former Sequoia partner; 200+ companies) does agent-to-agent calendar negotiation, but it is cloud-based and work-focused via email and Slack. Starling's position: personal and family scheduling where the calendar never leaves the device.
 3. **Group decision.** Pick a place or activity from private per-person constraints (budget, diet, preferences) that nobody has to say aloud.
 
-Demo narrative: one night. Before (Down forms the plan), during (group decision picks the place), after (v2 photo swap). Plus a short demo of a parent and a student scheduling across the calendar/no-calendar gap.
+Demo narrative: one night. Before (Down forms the plan), during (group decision picks the place), after (photo swap). Plus a short demo of a parent and a student scheduling across the calendar/no-calendar gap.
 
 ### 2.7 Five building blocks (StarlingKit API design)
 
@@ -96,17 +96,6 @@ Features are thin layers over these:
 3. **Private query:** an agent answers a question from its owner's data without exposing the data.
 4. **Negotiation with private limits:** each side's walk-away point stays secret. Single-issue price needs no model; the model matters for multi-issue deals.
 5. **Matched exchange:** items offered only to relevant people; the owner approves each one.
-
-### 2.8 Backlog (v2, mostly as example apps in the repo, not in the main app)
-
-- Event photo swap (match by time and location window; approve each photo). Candidate for the main app in v2.
-- Gift help (private query; the recipient opts in; their agent never reveals who asked or what).
-- Mutual reveal for rooming, reconnecting, crushes. Precedent: Facebook Secret Crush (2019) required a server holding everyone's lists and notified targets of one-sided interest. Starling needs neither.
-- Fair rent and chore splits with envy-free fair division (precedent: Spliddit, CMU; 60,000+ users and 13,277 rent-division instances by Feb 2016). Open problem: the computation needs all valuations in one place. Compare one-trusted-phone computation vs. secure multiparty computation and document the tradeoff.
-- Selling among friends (multi-issue negotiation only).
-- Study-partner matching.
-- Shared party queue across music services.
-- Warm intros through paired friends (one hop at a time, consent at each hop).
 
 ### 2.9 Explicitly cut
 
@@ -134,9 +123,9 @@ StarlingKit
   Policy          deterministic egress rules + consent sheet data
   Availability    pluggable sources: EventKit, stated intent, ask-owner
   Identity        device identity keys, paired-peer store, key exchange at pairing
-  Protocol        typed messages; A2A mapping (Phase 3)
-  Transport       protocol + implementations: Loopback, LocalP2P, WiFiAware, Relay
-  PSI             interface only; implementation comes from Nightjar (separate project)
+  Protocol        typed messages
+  Transport       protocol + implementations: Loopback, LocalP2P, WiFiAware
+  PSI             interface, plus an insecure stub for development
 ```
 
 ### 3.3 Transport
@@ -152,21 +141,6 @@ StarlingKit
 - **BLE:** presence hints only. In the background the local name is not advertised and service UUIDs move to the overflow area.
   - https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising(_:)
 - **Loopback:** in-memory transport for tests and simulation. Build this first.
-
-### 3.4 Remote coordination: the hard part (research task, Phase 2)
-
-"Coordinate anywhere" cannot be fully serverless on iOS:
-
-- A backgrounded iOS app cannot keep listening sockets open, so a friend's phone is usually unreachable.
-- Waking it requires APNs, and sending APNs pushes requires a server.
-- Foundation Models requests in the background may be throttled or canceled, so the woken agent may not be able to negotiate until its owner opens the app.
-  - https://developer.apple.com/forums/thread/833642
-
-Default design, to be validated:
-
-- A **blind relay**: store-and-forward of end-to-end encrypted blobs addressed by opaque peer IDs, plus APNs wake-ups. The relay sees no content, no names, and no social graph beyond opaque IDs.
-- Negotiations are **asynchronous**. UX example: "Maya's agent will reply when she next opens her phone." Down matching must degrade gracefully (for example, matches computed when either party opens the app).
-- Candidates for the relay: iroh (1.0 released; QUIC with BLAKE3; research whether usable Swift bindings exist: https://iroh.computer/blog/the-road-to-iroh-1-0) or the existing Rust relay from the owner's Pigeon project.
 
 ### 3.5 Identity and security
 
@@ -195,14 +169,7 @@ Default design, to be validated:
   - A per-exchange consent sheet shows exactly which fields will leave the phone.
 - Open question: can model locality be verified (App Attest?) or only self-declared? Be honest in the UI about which.
 
-### 3.8 Protocol: A2A (Phase 3)
-
-- A2A v1.0 is stable, governed by the Linux Foundation, and supports extensions and custom bindings. https://a2a-protocol.org/latest/ and https://github.com/a2aproject/A2A
-- There is no official Swift SDK; see the open proposal: https://github.com/a2aproject/A2A/discussions/1931
-- The community SDK arkavo-ai/a2a-swift has pluggable transport and a conformance harness (arkavo-ai/a2a-conformance): https://github.com/arkavo-ai/a2a-swift
-- Open question: A2A assumes client/server roles over HTTP and may map poorly onto symmetric, intermittent local links. Acceptable alternative: a native lightweight protocol plus an A2A bridge. Decide with evidence.
-
-### 3.9 PSI (Nightjar, separate project)
+### 3.9 PSI
 
 - Define a `PSIProvider` protocol in StarlingCore and ship a clearly labeled **insecure stub** for development.
 - Known risk: small input domains. A week of 30-minute slots is about 336 items, so a dishonest peer can submit every slot and learn your full availability. Required mitigations: reject oversized sets (set sizes are visible in DH-based PSI), plus a cardinality-only mode.
@@ -226,10 +193,7 @@ starling/
     StarlingPolicy/
     StarlingAvailability/
     StarlingNegotiation/
-    StarlingProtocolA2A/    (Phase 3)
   App/                      (SwiftUI app target)
-  Examples/                 (v2 example apps)
-  Relay/                    (Phase 2, if a relay is built here)
   Tools/Simulator/          (N-agent simulation over Loopback)
 ```
 
@@ -275,27 +239,6 @@ Exit: two paired iPhones get a notification only on a mutual match; no data leav
 
 Skills, one lifecycle, chaining through artifacts, just-in-time permissions, global privacy topics, and a new Home, New, Friends, and You. Scope and exit criteria: `docs/plans/phase-1.5-prompt.md`; decisions: ADRs 0010 to 0018.
 
-### Phase 2: Scheduling, group decision, remote
-
-- Availability sources: EventKit free/busy (full calendar access required to read), stated intent, ask-owner fallback. Calendar and non-calendar agents must interoperate.
-- Group decision: N-party private aggregation over LocalP2P.
-- Remote: research and implement the blind relay + APNs design in Section 3.4, or propose a better one. Asynchronous negotiation UX.
-
-Exit: parent/student scheduling demo works remotely across the calendar/no-calendar gap; 4+ phones complete a group decision at a table.
-
-### Phase 3: Protocol and open-source readiness
-
-- A2A binding (or a justified alternative) with a local transport; run the conformance harness.
-- THREAT_MODEL.md, README with demo video, contributor docs.
-- TestFlight build; 5.1.2(i) consent flows reviewed.
-- First milestone with users: 5 friends fully paired with each other and actually using it.
-
-### Phase 4: v2
-
-- Event photo swap.
-- Example apps from Section 2.8.
-- Research: letting iPhones without Apple Intelligence participate via PCC or a consented cloud model, and what that costs in privacy and consent UX.
-
 ---
 
 ## 6. Agent lanes
@@ -316,17 +259,6 @@ Suggested lanes. Any lane can run on Claude Code or Codex; keep the Orchestrator
 - **G. Policy and consent:** Owns `Packages/StarlingPolicy/`.
 - **H. App features:** onboarding, rules editor, Down UI, consent sheet. Owns `App/`.
 - **I. Red team:** adversarial simulator scenarios and fuzzing of message decoding. Owns `Tools/Simulator/Scenarios/` and test targets only; files issues rather than editing other lanes' code.
-
-### Phase 2
-
-- **J. Availability:** Owns `Packages/StarlingAvailability/`.
-- **K. Group decision:** N-party aggregation in `Packages/StarlingNegotiation/Group/`.
-- **L. Remote:** relay research, ADR, implementation. Owns `Relay/` and `Packages/StarlingTransport/Relay/`. Research first, code second.
-
-### Phase 3
-
-- **M. A2A binding:** Owns `Packages/StarlingProtocolA2A/`.
-- **N. Docs and release:** README, threat model review, TestFlight prep.
 
 ### Kickoff prompt template for a lane
 
@@ -354,20 +286,17 @@ Follow the owner's norms: no sycophancy, no em dashes in prose, cite primary sou
 
 ## 8. Open questions (research before or during the relevant phase)
 
-1. Does A2A map cleanly onto symmetric, intermittent local links, or is a native protocol plus bridge better? (Phase 3)
-2. Remote design: relay choice (iroh vs. Pigeon's Rust relay vs. other), APNs usage, what the relay can learn, async UX. (Phase 2)
-3. Is Wi-Fi Aware PIN pairing too much friction? Would a QR or tap-based key exchange over Network framework be a better trust bootstrap? (Phase 1)
-4. Can a peer's model locality be verified, or only self-declared? (Phase 1)
-5. Does 4096 tokens suffice for multi-round, multi-party negotiation, and how does the weaker iOS 27 on-device model perform? (Phase 0)
-6. Can iPhones without Apple Intelligence participate via PCC or a consented cloud model? (Phase 4)
-7. Prior art: find existing local or on-device agent-to-agent systems on phones and local A2A bindings, and state how Starling differs. (Phase 0)
-8. Name collisions: an ETHGlobal hackathon project named "Starling" (P2P agent swarm) and a "Starling Agent" VS Code extension exist. Choose a repo name that avoids confusion (for example `starling-ios`). (Phase 0)
+- **3.** Is Wi-Fi Aware PIN pairing too much friction? Would a QR or tap-based key exchange over Network framework be a better trust bootstrap? (Phase 1)
+- **4.** Can a peer's model locality be verified, or only self-declared? (Phase 1)
+- **5.** Does 4096 tokens suffice for multi-round, multi-party negotiation, and how does the weaker iOS 27 on-device model perform? (Phase 0)
+- **7.** Prior art: find existing local or on-device agent-to-agent systems on phones and local A2A bindings, and state how Starling differs. (Phase 0)
+- **8.** Name collisions: an ETHGlobal hackathon project named "Starling" (P2P agent swarm) and a "Starling Agent" VS Code extension exist. Choose a repo name that avoids confusion (for example `starling-ios`). (Phase 0)
 
 ---
 
 ## 9. Related projects (separate repos and chats; interfaces only here)
 
-- **Nightjar:** private set intersection library (Rust core, Swift via UniFFI). Starling consumes it through `PSIProvider`.
-- **Crow:** capability-based content-addressed storage, being repositioned on top of iroh. Possible future attachment backend.
-- **Pigeon:** BLE/LoRa mesh messenger with a Rust relay. Its relay is a candidate for Starling's remote transport.
+- **Nightjar:** private set intersection library (Rust core, Swift via UniFFI). Starling defines `PSIProvider` for a library like it; this repository ships only the insecure stub, so Down for… runs in Debug builds only.
+- **Crow:** capability-based content-addressed storage.
+- **Pigeon:** BLE/LoRa mesh messenger with a Rust relay.
 - **Weaver:** local-first group expense ledger. No core dependency from Starling.

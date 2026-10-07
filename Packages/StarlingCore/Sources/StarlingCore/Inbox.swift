@@ -43,8 +43,7 @@ public actor Inbox {
     private var replay: [ReplayKey: ReplayState] = [:]
 
     /// - Parameters:
-    ///   - maxAge: Oldest `sentAt` accepted. Local links want minutes; the
-    ///     Phase 2 relay will need hours.
+    ///   - maxAge: Oldest `sentAt` accepted. Local links want minutes.
     ///   - maxClockSkew: How far in the future `sentAt` may be.
     public init(
         localPeer: PeerID,

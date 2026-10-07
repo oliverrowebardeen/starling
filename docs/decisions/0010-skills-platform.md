@@ -6,7 +6,7 @@
 
 ## Context
 
-The Phase 1 device review found the whole app built around Down. The Phase 1.5 prompt (Oliver, 2026-09-30) makes features into **skills**: Down for…, Find a time, Pick a place, and Swap photos now; Gift pool, Vouch, and Keep in touch later. A skill provides only what is unique to it: an id and version, an intent schema the model fills from free text, its building block, the privacy topics it touches and requires, the system permissions it may need, the artifacts it accepts and produces, and its proposal wording.
+The Phase 1 device review found the whole app built around Down. The Phase 1.5 prompt (Oliver, 2026-09-30) makes features into **skills**: Down for…, Find a time, Pick a place, and Swap photos. A skill provides only what is unique to it: an id and version, an intent schema the model fills from free text, its building block, the privacy topics it touches and requires, the system permissions it may need, the artifacts it accepts and produces, and its proposal wording.
 
 The prompt asks for a `StarlingSkill` protocol with an `@Generable` intent schema. Two constraints shape that:
 
@@ -20,7 +20,7 @@ The prompt asks for a `StarlingSkill` protocol with an `@Generable` intent schem
    - `SkillService` (StarlingCore protocol): the runtime over the app's single Outbox and Inbox. It generalizes Phase 1's `DownService`.
    - `SkillModel` (StarlingCore protocol, implemented in StarlingAgent): routing, intent parsing, and proposal sentences (ADR 0016).
 2. **The intent schema is data, not an `@Generable` type.** `IntentSchema` lists issue slots (required or not, with a hint for the prompt). StarlingAgent builds the guided-generation schema from it at runtime, the pattern ADR 0162 already ships for match and decide. This keeps ADR 0009's boundary: the skill packages never import `FoundationModels`, and every prompt stays in one package.
-3. **Wire names and versions.** `SkillID` has the `IssueKey` format (`down_for`, `find_a_time`, `pick_a_place`, `swap_photos`). `SkillVersion` is `major.minor`, and two agents can run a skill together when the majors match. This is Starling's own extension. When the A2A bridge lands (Phase 3), the version travels in the skill's `tags` or `id`.
+3. **Wire names and versions.** `SkillID` has the `IssueKey` format (`down_for`, `find_a_time`, `pick_a_place`, `swap_photos`). `SkillVersion` is `major.minor`, and two agents can run a skill together when the majors match. This is Starling's own extension.
 4. **Agent cards advertise skills.** `AgentCard.skills: [SkillRef]`, at most 32 and no duplicates. A Phase 1 card without the key decodes with no skills. `AgentCard.support(for:)` answers supported, missing, or incompatible. The app turns missing into "Maya's Starling doesn't do this yet" and hides chain suggestions the group cannot run. `Capability` stays for protocol features such as `psi`.
 5. **Envelopes carry the skill.** Envelope version 1 adds `skill: SkillRef?` and `chainedFrom: ConversationID?` (ADR 0012). Version 0 frames from Phase 1 builds still decode, without either field. Phase 1 builds reject version 1, so both test phones need the Phase 1.5 build.
 6. **Registry and flags.**
@@ -34,7 +34,7 @@ The prompt asks for a `StarlingSkill` protocol with an `@Generable` intent schem
 - A new skill needs only a descriptor, a service, and its model hints. The shell, consent, lifecycle, chaining, and audit are shared.
 - Skill packages are testable with `ScriptedSkillModel`, `ScriptedSkillService`, and `SampleSkills` from `StarlingFakes`.
 - The intent schema cannot use `@Generable`'s compile-time features (`@Guide` on Swift properties). Slot hints and runtime schema construction replace them. ADR 0162 measured this pattern on the real model.
-- Phase 1's `DownService`, `DownIntent`, and `DownEvent` stay in Core until lane B moves Down into its skill package, then they go.
+- Phase 1's `DownService`, `DownIntent`, and `DownEvent` stay in Core beside the skills, for the simulator's Phase 1 Down tests (ADR 0211).
 
 ## Sources
 

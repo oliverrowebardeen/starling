@@ -85,8 +85,8 @@ public struct PSIProviderDescriptor: Hashable, Sendable {
     }
 }
 
-/// Private set intersection. The real implementation comes from Nightjar;
-/// `StarlingFakes.InsecurePSIStub` stands in until then.
+/// Private set intersection. The only implementation in this repository is
+/// `StarlingFakes.InsecurePSIStub`, which is not private.
 public protocol PSIProvider: Sendable {
     var descriptor: PSIProviderDescriptor { get }
     func makeSession(role: PSIRole, localSet: Set<PSIElement>, configuration: PSIConfiguration) throws -> any PSISession
