@@ -1,10 +1,10 @@
 # Starling Phase 1.5: From a Down app to an agent interaction platform
 
-Oliver's Phase 1.5 prompt, 2026-09-30, kept as written below this note. Where it and an ADR differ, the ADR wins:
+Oliver's Phase 1.5 prompt, 2026-09-30, kept as written below this note, except that skills it named for after this phase were removed. Where it and an ADR differ, the ADR wins:
 
 - **Intent schema** (section 2): data in `IntentSchema`, turned into a guided-generation schema by StarlingAgent at runtime, not an `@Generable` type in each skill. ADR 0010, decision 2; approved by Oliver.
 - **Pre-permission sheet** (sections 5 and 10.3): one "Continue" button before the system alert, per the HIG. "Just ask me" is the fallback on denial and a switch in You. ADR 0013; approved by Oliver.
-- **Banned words** (section 9, exit criterion 7): Oliver clarified on 2026-09-30 that the goal is not looking like a dating app, not a word list, and that a crush skill could come later. Tone is reviewed by eye (ADR 0017).
+- **Banned words** (section 9, exit criterion 7): Oliver clarified on 2026-09-30 that the goal is not looking like a dating app, not a word list. Tone is reviewed by eye (ADR 0017).
 - **New (+) button** (section 7): a `Tab(role: .prominent)` whose screen is the composer. iOS has no action-button tab, and the HIG reserves tab bars for navigation. ADR 0015.
 - **Message the group** (section 4): Starling has no phone numbers. The owner may link a friend to a contact on this phone. ADR 0018; approved by Oliver.
 - **Muse and Dots** (section 3): out of scope. They are not in the brief or the repo (ADR 0018, decision 5).
@@ -30,7 +30,7 @@ This phase fixes all three before any new feature work.
 
 ## 2. Core concept: skills
 
-- Starling is an agent interaction platform. Features are **skills**: Down for…, Find a time, Pick a place, Swap photos, and later Gift pool, Vouch, Keep in touch, etc.
+- Starling is an agent interaction platform. Features are **skills**: Down for…, Find a time, Pick a place, Swap photos.
 - StarlingKit defines a `StarlingSkill` protocol. A skill provides only what is unique to it:
   - `id` and `version`
   - an intent schema (`@Generable`) the model extracts from free text
