@@ -115,7 +115,7 @@ Tools/local-gate.sh <branch>       # CI's checks on <branch> merged into origin/
 - [Design](docs/DESIGN.md): the app's screens and copy rules.
 - [Decisions](docs/decisions/README.md): 79 ADRs, each with primary sources.
 - [Research](docs/research/): verification reports and model measurements.
-- [Brief](docs/BRIEF.md): the original product brief, kept as written.
+- [Brief](docs/BRIEF.md): the original product brief, without the plans for later phases.
 
 ## How this was built
 
